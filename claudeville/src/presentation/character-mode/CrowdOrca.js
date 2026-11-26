@@ -870,7 +870,7 @@ export function solveOrcaVelocity(
         if (cnLen > 1e-6 && coastCount < ORCA_MAX_COAST_LINES) {
             const inx = cnx / cnLen;
             const iny = cny / cnLen;
-            const push = Math.max(0, (aRadius - options.coastDist) / ORCA_TAU_OBST);
+            const push = (aRadius - options.coastDist) / ORCA_TAU_OBST;
             scratch.linePx[lineCount] = inx * push;
             scratch.linePy[lineCount] = iny * push;
             // Inward normal is (-dy, dx) = (inx, iny) => dx = iny, dy = -inx.

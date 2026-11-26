@@ -156,6 +156,10 @@ function shieldRuns(w, h) {
 }
 
 const MAX_REPO_FIRST_SEEN = 512;
+const MAX_SIMULTANEOUS_CHRISTENINGS = 2;
+const CHRISTENING_BANNER_TTL_MS = 6000;
+const CHRISTENING_STAGGER_MS = 1800;
+const MAX_PENDING_CHRISTENINGS = 12;
 const HARBOR_MAINTENANCE_INTERVAL_MS = 10000;
 const HARBOR_CRATE_TTL_MS = 30000;
 const MAX_LABEL_CHARS = 30;
@@ -1278,7 +1282,13 @@ export class HarborTraffic {
         this._pendingChecksPassFlash = false;
         // #18 — repos seen at least once, so a brand-new repo's first anchorage
         // can fire a one-time christening (maiden banner) and skip it thereafter.
+        // Compact staggered queue caps simultaneous "Maiden Voyage" banners at
+        // MAX_SIMULTANEOUS_CHRISTENINGS so multi-repo loads never stack 5-6 deep.
         this._repoFirstSeen = new Map();
+        this._christeningQueue = [];
+        this._activeChristenings = [];
+        this._lastChristeningEmitAt = -Infinity;
+        this._activeBannerProbe = null;
         this._activeRepoAnchorages = new Map();
         this._activeProjectsKey = '';
         this._lastEventsVersion = '';
@@ -1539,6 +1549,9 @@ export class HarborTraffic {
         if (this._disposed) return;
         this._advanceCalls++;
         this.frame += (dt / 16) * this.motionScale;
+        if (this._christeningQueue.length > 0) {
+            this._flushChristeningQueue(Date.now());
+        }
     }
 
     reconcile(agents, now = Date.now(), { force = false, incremental = false } = {}) {
@@ -1667,6 +1680,10 @@ export class HarborTraffic {
         this._activeRepoAnchorages.clear();
         this._activeProjectsKey = '';
         this._repoFirstSeen.clear();
+        this._christeningQueue.length = 0;
+        this._activeChristenings.length = 0;
+        this._lastChristeningEmitAt = -Infinity;
+        this._activeBannerProbe = null;
         this._eventSourceSnapshot = null;
         this._lastRawEventCount = 0;
         this._lastNormalizedEventCount = 0;
@@ -2803,19 +2820,20 @@ export class HarborTraffic {
             const pos = toWorld(tile.tileX, tile.tileY);
             const lively = repo.docked > 0 || (now - repo.lastActive) < REPO_ANCHORAGE_ACTIVE_MS;
             // #18 — christening: the first time a repo ever earns an anchorage,
-            // emit a one-shot event so ChronicleMonuments raises a maiden banner.
+            // enqueue a one-shot christening so ChronicleMonuments raises at most
+            // MAX_SIMULTANEOUS_CHRISTENINGS staggered "Maiden Voyage" banners at once.
             if (!this._repoFirstSeen.has(repo.key)) {
                 this._repoFirstSeen.set(repo.key, now);
                 if (this._repoFirstSeen.size > MAX_REPO_FIRST_SEEN) {
                     this._repoFirstSeen.delete(this._repoFirstSeen.keys().next().value);
                 }
-                eventBus?.emit?.('harbor:repo-christened', {
+                this._enqueueChristening({
                     project: repo.project,
                     repoName: repo.profile.shortName,
                     tileX: tile.tileX,
                     tileY: tile.tileY,
                     ts: now,
-                });
+                }, now);
             }
             drawables.push({
                 kind: 'harbor-traffic',
@@ -2853,7 +2871,68 @@ export class HarborTraffic {
                 },
             });
         }
+        this._flushChristeningQueue(now);
         return drawables;
+    }
+
+    setActiveBannerProbe(probe) {
+        this._activeBannerProbe = typeof probe === 'function' ? probe : null;
+    }
+
+    _enqueueChristening(payload, now = Date.now()) {
+        if (!payload || this._christeningQueue.length >= MAX_PENDING_CHRISTENINGS) return;
+        this._christeningQueue.push(payload);
+        this._flushChristeningQueue(now);
+    }
+
+    _flushChristeningQueue(now = Date.now()) {
+        const active = this._activeChristenings;
+        for (let i = active.length - 1; i >= 0; i--) {
+            if (active[i] <= now) active.splice(i, 1);
+        }
+        if (this._christeningQueue.length === 0) return;
+
+        const externalBanners = this._activeBannerProbe ? this._activeBannerProbe(now) : null;
+        let externalLiveCount = 0;
+        if (Array.isArray(externalBanners)) {
+            for (let i = 0; i < externalBanners.length; i++) {
+                const b = externalBanners[i];
+                if (b && Number(b.expiresAt || 0) > now) externalLiveCount++;
+            }
+        }
+
+        while (this._christeningQueue.length > 0) {
+            const head = this._christeningQueue[0];
+            // Skip duplicate christening if ChronicleMonuments already raised a
+            // live Maiden Voyage banner for the same repo/project.
+            if (Array.isArray(externalBanners) && head) {
+                const headText = `Maiden Voyage - ${head.repoName || ''}`;
+                let duplicate = false;
+                for (let i = 0; i < externalBanners.length; i++) {
+                    const b = externalBanners[i];
+                    if (!b || Number(b.expiresAt || 0) <= now) continue;
+                    if (b.tier === 'maiden' && (b.project === head.project || b.text === headText)) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) {
+                    this._christeningQueue.shift();
+                    continue;
+                }
+            }
+            const totalLive = Math.max(active.length, externalLiveCount);
+            if (totalLive >= MAX_SIMULTANEOUS_CHRISTENINGS) break;
+            if (totalLive > 0 && (now - this._lastChristeningEmitAt) < CHRISTENING_STAGGER_MS) {
+                break;
+            }
+            const next = this._christeningQueue.shift();
+            next.ts = now;
+            active.push(now + CHRISTENING_BANNER_TTL_MS);
+            externalLiveCount++;
+            this._lastChristeningEmitAt = now;
+            eventBus?.emit?.('harbor:repo-christened', next);
+        }
     }
 
     activeFinaleEffects(now = Date.now()) {

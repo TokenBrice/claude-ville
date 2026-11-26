@@ -592,11 +592,14 @@ const AGENT_BODY_AREA_H = 62;
 // 3.4 — cell size (world px) for the static prop footprint index that keeps
 // name-tag de-collision slots from landing on prop art.
 const NAME_SLOT_PROP_CELL = 96;
-// W3.1/W3.3 — thought placement (ThoughtColumn.js owns the geometry). A
-// committed candidate is kept while it stays free; a collision must persist
-// THOUGHT_RESEARCH_MS before the column searches again, and a cheaper
-// candidate must stay free THOUGHT_RETURN_MS before the column moves back.
-const THOUGHT_RESEARCH_MS = 300;
+// W3.1/W3.3/W5-C — thought placement (ThoughtColumn.js owns the geometry). A
+// committed candidate is kept while it stays free; on the shared layered grid
+// a lower-priority thought collision holds up to THOUGHT_RESEARCH_MS (150 ms)
+// before re-searching (never overlapping Layer 1 plaques or Layer 2 plates).
+// Direct unlayered callers (without a shared grid or layered options) preserve
+// the legacy 300 ms transient-blocker window.
+const THOUGHT_RESEARCH_MS = 150;
+const THOUGHT_LEGACY_RESEARCH_MS = 300;
 const THOUGHT_RETURN_MS = 2000;
 const THOUGHT_EDGE_MARGIN = 8;
 // Thought budget: a swarm must not turn the World into a wall of text. At most
@@ -936,6 +939,9 @@ export class IsometricRenderer {
             // 8.2 — the release crown rides the release's own sloop.
             harbor: this.harborTraffic,
         });
+        this.harborTraffic?.setActiveBannerProbe?.(() => this.chronicleMonuments?._activeBanners || null);
+        this._deferredChronicleBanners = [];
+        this._lastChronicleBannerAt = -Infinity;
         // 6.7 — the Chronicle dressing layers read the planter's lifetime ledger;
         // 8.2 (M16) — the Harbor's day pennant reads the release records.
         if (this.buildingRenderer) {
@@ -2698,7 +2704,8 @@ export class IsometricRenderer {
         const buildings = this.buildingRenderer;
         if (!buildings) return;
         if (!glass?.enabled || postcardFrame()) {
-            buildings.setGlassCutawayTarget?.(null, now);
+            buildings.setGlassCutawayTarget?.(null, { resolved: true });
+            buildings._updateInspection?.();
             return;
         }
         const zoom = this.restZoom;
@@ -2706,27 +2713,30 @@ export class IsometricRenderer {
         const point = center && zoom >= 2 && this.camera?.screenToWorld?.(center.x, center.y);
         const type = point && buildings.hitTest?.(point.x, point.y)?.type;
         const cutawayEligible = Boolean(type && (getBuildingApertureProfile(type) || buildings.supportsCutaway?.(type)));
+        const model = buildings.getApertureModel?.() || null;
+        // Real user selection only — never treat The Glass's own cutaway
+        // (`trigger: 'glass'` / `source: 'glass'`) as a selection cutaway.
+        const selectionCutawayActive = Boolean(
+            buildings._selectedBuildingType
+            && model
+            && (model.trigger === 'selection' || (model.trigger == null && model.source !== 'glass'))
+        );
         const cut = glass.updateCutaway({
             buildingId: cutawayEligible ? type : null,
             zoom,
-            selectionCutawayActive: Boolean(buildings.getApertureModel?.()),
+            selectionCutawayActive,
             nowMs: now,
         });
-        // W5-B — forward 300ms glass dwell cutaway target (optional chaining for cross-lane safety).
-        buildings.setGlassCutawayTarget?.(cut.buildingId || null, now);
-        if (!cut.buildingId) return;
-        // The existing inspection builder reads the selection synchronously. Keep real selection intact.
-        const selected = buildings._selectedBuildingType;
-        const currentZoom = buildings._zoom;
-        try {
-            buildings._zoom = zoom;
-            buildings._selectedBuildingType = cut.buildingId;
+        // InspectionGlass.updateCutaway is the single owner of the 300ms dwell
+        // and 400ms exit state machine; forward the resolved target cleanly.
+        if (typeof buildings.setGlassCutawayTarget === 'function') {
+            buildings.setGlassCutawayTarget(cut.buildingId || null, { resolved: true });
             buildings._updateInspection?.();
-            const model = buildings.getApertureModel?.();
-            if (model) model.source = cut.source;
-        } finally {
-            buildings._selectedBuildingType = selected;
-            buildings._zoom = currentZoom;
+            return;
+        }
+        // Fallback for pre-W5-B unit-test doubles without `setGlassCutawayTarget`.
+        if (!selectionCutawayActive && 'model' in buildings) {
+            buildings.model = cut.buildingId ? { buildingType: cut.buildingId, source: cut.source } : null;
         }
     }
 
@@ -2892,6 +2902,7 @@ export class IsometricRenderer {
         this.harborTraffic?.dispose?.();
         this.landmarkActivity?.dispose?.();
         this.chronicleMonuments?.dispose?.();
+        if (this._deferredChronicleBanners) this._deferredChronicleBanners.length = 0;
         this.ritualConductor?.dispose?.();
         this.villageDirector?.dispose?.();
         if (getActiveMarkGovernor() === this.markGovernor) setActiveMarkGovernor(null);
@@ -4073,6 +4084,31 @@ export class IsometricRenderer {
 
     _allocateVisitTile(request = {}) {
         const building = request.building || this._getBuildingByType(request.intent?.building);
+        const agentId = request.agent?.id || request.sprite?.agent?.id || request.intent?.agentId || null;
+        const hasCustomCandidates = Array.isArray(request.candidates) && request.candidates.length > 0;
+        if (
+            agentId
+            && building
+            && !building.restSeats
+            && !building.commandQueue
+            && !hasCustomCandidates
+            && !request.role
+            && this._batchVisitAllocations?.size > 0
+        ) {
+            const cached = this._batchVisitAllocations.get(agentId);
+            const reqType = normalizeBuildingType(building.type || request.intent?.building);
+            const reqIntentId = request.intent?.id || null;
+            if (
+                cached
+                && cached.buildingType === reqType
+                && (cached.intentId === reqIntentId || !cached.intentId || !reqIntentId)
+                && cached.allocation?.reservationId
+                && this.visitTileAllocator?.reservations?.has?.(cached.allocation.reservationId)
+            ) {
+                this._batchVisitAllocations.delete(agentId);
+                return cached.allocation;
+            }
+        }
         return this.visitTileAllocator?.allocate?.({
             ...request,
             building,
@@ -4172,6 +4208,129 @@ export class IsometricRenderer {
         };
     }
 
+    // W5-C — slow-tick grouped visit-slot batch dispatch via
+    // `VisitTileAllocator.allocateBuildingBatch`, running Hungarian / ε-auction,
+    // 15% hysteresis, and squad formation anchors live across each building.
+    _dispatchVisitSlotBatches(agents, now = Date.now(), { includePending = false } = {}) {
+        const allocator = this.visitTileAllocator;
+        if (!allocator || typeof allocator.allocateBuildingBatch !== 'function') return 0;
+        const cache = this._batchVisitAllocations || (this._batchVisitAllocations = new Map());
+        for (const [cachedAgentId, entry] of cache.entries()) {
+            if (
+                !entry?.allocation?.reservationId
+                || (now - entry.at) > 2000
+                || !allocator.reservations?.has?.(entry.allocation.reservationId)
+            ) {
+                cache.delete(cachedAgentId);
+            }
+        }
+
+        const groupsByBuilding = this._visitBatchGroups || (this._visitBatchGroups = new Map());
+        groupsByBuilding.clear();
+
+        for (let i = 0; i < agents.length; i++) {
+            const agent = agents[i];
+            if (!agent?.id || agent.isDeparted || agent.status === AgentStatus.WAITING_ON_USER) continue;
+            const sprite = this.agentSprites?.get?.(agent.id) || null;
+            if (sprite) {
+                if (
+                    sprite.leaving
+                    || sprite._archiveAnim
+                    || sprite.chatting
+                    || sprite.chatPartner
+                    || (!includePending && sprite.isArrivalPending?.())
+                ) {
+                    continue;
+                }
+            }
+
+            const intent = this.visitIntentManager?.getIntentForAgent?.(agent.id, now) || null;
+            if (!intent && (agent.status === AgentStatus.IDLE || agent.status === AgentStatus.COMPLETED)) continue;
+            if (
+                !intent
+                && sprite?.visitRole
+                && (
+                    sprite.visitRole === 'rest'
+                    || sprite.visitRole === 'queue'
+                    || sprite.visitRole === 'stroll'
+                    || sprite.visitRole === 'errand'
+                    || sprite.visitRole === 'winddown'
+                )
+            ) {
+                continue;
+            }
+
+            const rawType = intent?.building
+                || (agent.status === AgentStatus.WORKING
+                    ? (sprite?._lastBuildingType || agent.targetBuildingType || agent.lastKnownBuildingType)
+                    : null);
+            const buildingType = normalizeBuildingType(rawType);
+            if (!buildingType) continue;
+
+            const building = this._getBuildingByType(buildingType);
+            if (!building || building.restSeats || building.commandQueue) continue;
+
+            // Respect AgentSprite's 5s arrival commitment cooldown so batch
+            // pre-allocation never steals a settled visitor's current slot early.
+            const arrivedAt = sprite?.behavior?.arrivedAt;
+            if (
+                intent
+                && intent.priority < 90
+                && buildingType !== sprite?.behavior?.building
+                && arrivedAt != null
+                && (now - arrivedAt) < 5000
+                && Number(intent.priority) <= Number(sprite?._lastIntentSnapshot?.priority ?? 0)
+            ) {
+                continue;
+            }
+
+            const existingId = allocator.agentReservationIds?.get?.(agent.id) || null;
+            const existing = existingId ? allocator.reservations?.get?.(existingId) || null : null;
+            const hasFreshSlot = Boolean(
+                existing
+                && existing.expiresAt > now
+                && existing.buildingType === buildingType
+                && !existing.line
+            );
+            const intentChanged = Boolean(intent?.id && sprite && intent.id !== sprite._lastIntentId);
+            const buildingChanged = Boolean(sprite && sprite._lastBuildingType !== buildingType);
+            const readyToRepick = Boolean(sprite && !sprite.moving && !(sprite.waitTimer > 0));
+            if (hasFreshSlot && !intentChanged && !buildingChanged && !readyToRepick && !includePending) {
+                continue;
+            }
+
+            let group = groupsByBuilding.get(buildingType);
+            if (!group) {
+                group = { building, requests: [] };
+                groupsByBuilding.set(buildingType, group);
+            }
+            group.requests.push({ agent, sprite, building, intent });
+        }
+
+        let dispatched = 0;
+        for (const [buildingType, group] of groupsByBuilding.entries()) {
+            const results = allocator.allocateBuildingBatch(buildingType, group.requests, {
+                building: group.building,
+                now,
+            });
+            dispatched += group.requests.length;
+            if (!Array.isArray(results)) continue;
+            for (let i = 0; i < group.requests.length; i++) {
+                const allocated = results[i];
+                const req = group.requests[i];
+                if (!allocated?.reservationId || !req?.agent?.id) continue;
+                cache.set(req.agent.id, {
+                    buildingType,
+                    intentId: req.intent?.id || null,
+                    allocation: allocated,
+                    at: now,
+                });
+            }
+        }
+        groupsByBuilding.clear();
+        return dispatched;
+    }
+
     _updateVisitSystems(now = Date.now()) {
         const agents = Array.from(this.world?.agents?.values?.() || []);
         this._activeAgentsSnapshot = agents;
@@ -4181,6 +4340,7 @@ export class IsometricRenderer {
             agentSprites: this.agentSprites,
             pathfinder: this.pathfinder,
         });
+        this._dispatchVisitSlotBatches(agents, now);
         // 3.13 — feed allocator occupancy into domain congestion state.
         // Building.updateVisitLoad emits 'building:congestion' on level
         // transitions; sprites read building.congestion directly per frame.
@@ -5154,6 +5314,7 @@ export class IsometricRenderer {
         if (this._portalEntryQueue?.length) {
             this._portalEntryQueue = this._portalEntryQueue.filter(entry => !settledSet.has(entry.sprite));
         }
+        const burstAgents = [];
         for (const sprite of sprites) {
             if (!sprite || sprite.leaving) continue;
             const agentId = sprite.agent?.id;
@@ -5161,6 +5322,13 @@ export class IsometricRenderer {
                 this.gateTransits.delete(agentId);
                 this.arrivalDeparture?.dispatches?.delete?.(agentId);
             }
+            if (sprite.agent) burstAgents.push(sprite.agent);
+        }
+        if (burstAgents.length > 0) {
+            this._dispatchVisitSlotBatches(burstAgents, Date.now(), { includePending: true });
+        }
+        for (const sprite of sprites) {
+            if (!sprite || sprite.leaving) continue;
             sprite.settleAtDestination?.();
         }
         this.visitTileAllocator?.updateContext?.({
@@ -5285,9 +5453,26 @@ export class IsometricRenderer {
         return Boolean(transit && (!type || transit.type === type));
     }
 
+    _isInGateChannelZone(sprite) {
+        if (!sprite || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) return false;
+        const halfW = TILE_WIDTH * 0.5;
+        const halfH = TILE_HEIGHT * 0.5;
+        const tx = (sprite.x / halfW + sprite.y / halfH) * 0.5;
+        const ty = (sprite.y / halfH - sprite.x / halfW) * 0.5;
+        return Math.abs(tx - VILLAGE_GATE.tileX) <= 1.2 && ty >= 36.6 && ty <= 40.2;
+    }
+
     _isGateChannelTransit(sprite) {
         const transit = this.gateTransits.get(sprite?.agent?.id);
-        return Boolean(transit && (transit.type === 'departure' || transit.gate));
+        if (!transit) return false;
+        if (transit.gate) return true;
+        // Departing villagers stay inside ORCA throughout their walk across the
+        // village and only switch to gate-channel transit once physically in the gate channel.
+        if (transit.type === 'departure') {
+            if (!Number.isFinite(sprite?.x) || !Number.isFinite(sprite?.y)) return true;
+            return this._isInGateChannelZone(sprite);
+        }
+        return false;
     }
 
     _updateGateDoorState(now = performance.now()) {
@@ -6697,18 +6882,8 @@ export class IsometricRenderer {
         this.villageDirector?.update?.(this, dt, updateNow);
         this.buildingRenderer?.setZoom?.(this.camera?.zoom, this.restZoom);
 
-        // Update building renderer (pass agent sprite positions + optional W5-B cutaway context)
+        // Update building renderer (pass agent sprite positions)
         this.buildingRenderer?.setAgentSprites(allSpritesSnapshot);
-        if (typeof this.buildingRenderer?.setCutawayAgents === 'function') {
-            const cutawayCtx = this._cutawayContext || (this._cutawayContext = { harborPendingRepos: [], compactionEvents: [] });
-            cutawayCtx.harborPendingRepos = this.harborTraffic?.pendingRepos
-                || this.harborTraffic?._pendingRepos
-                || cutawayCtx.harborPendingRepos;
-            cutawayCtx.compactionEvents = this.arrivalDeparture?.activeCompactions
-                || this.arrivalDeparture?._compactions
-                || cutawayCtx.compactionEvents;
-            this.buildingRenderer.setCutawayAgents(allSpritesSnapshot, cutawayCtx);
-        }
         this.buildingRenderer?.update(dt);
         this._updateGlassCutaway(updateNow);
         if (slowSystemsTick && this.focusedSquadIds) this._refreshCouncilFocus();
@@ -6766,6 +6941,7 @@ export class IsometricRenderer {
         pending.finally(() => {
             if (this._chronicleUpdatePromise === pending) this._chronicleUpdatePromise = null;
             this._chronicleUpdating = false;
+            this._reconcileChronicleBanners(Date.now());
             this._invalidateIdleFrame();
         });
     }
@@ -6955,30 +7131,85 @@ export class IsometricRenderer {
         return best;
     }
 
+    _ensureLaneIntIndex() {
+        const lanes = this._laneTiles;
+        if (
+            this._laneTilesByInt
+            && this._laneTilesByIntSource === lanes
+            && this._laneTilesByIntSize === (lanes?.size || 0)
+        ) {
+            return this._laneTilesByInt;
+        }
+        const byInt = this._laneTilesByInt || (this._laneTilesByInt = new Map());
+        byInt.clear();
+        if (lanes?.size) {
+            for (const lane of lanes.values()) {
+                if (!lane || !Number.isFinite(lane.tileX) || !Number.isFinite(lane.tileY)) continue;
+                byInt.set(((lane.tileX + 1024) << 12) | (lane.tileY + 1024), lane);
+            }
+        }
+        this._laneTilesByIntSource = lanes || null;
+        this._laneTilesByIntSize = lanes?.size || 0;
+        return byInt;
+    }
+
+    _getCrossingIntSet(crossingMap) {
+        if (!crossingMap || !crossingMap.size) return null;
+        if (
+            this._crossingIntSet
+            && this._crossingIntSource === crossingMap
+            && this._crossingIntSize === crossingMap.size
+        ) {
+            return this._crossingIntSet;
+        }
+        const set = this._crossingIntSet || (this._crossingIntSet = new Set());
+        set.clear();
+        for (const key of crossingMap.keys()) {
+            const comma = String(key).indexOf(',');
+            if (comma < 0) continue;
+            const tx = Number(String(key).slice(0, comma));
+            const ty = Number(String(key).slice(comma + 1));
+            if (!Number.isFinite(tx) || !Number.isFinite(ty)) continue;
+            set.add(((tx + 1024) << 12) | (ty + 1024));
+        }
+        this._crossingIntSource = crossingMap;
+        this._crossingIntSize = crossingMap.size;
+        return set;
+    }
+
     _laneInfoForSprite(sprite) {
         if (!sprite || !this._laneTiles?.size) return null;
-        const tile = worldToTile(sprite.x, sprite.y);
-        if (!tile || !Number.isFinite(tile.tileX) || !Number.isFinite(tile.tileY)) return null;
-        const roundedKey = `${Math.round(tile.tileX)},${Math.round(tile.tileY)}`;
-        const direct = this._laneTiles.get(roundedKey);
+        const sx = sprite.x;
+        const sy = sprite.y;
+        if (!Number.isFinite(sx) || !Number.isFinite(sy)) return null;
+        const halfW = TILE_WIDTH * 0.5;
+        const halfH = TILE_HEIGHT * 0.5;
+        const tileX = (sx / halfW + sy / halfH) * 0.5;
+        const tileY = (sy / halfH - sx / halfW) * 0.5;
+        const baseX = Math.round(tileX);
+        const baseY = Math.round(tileY);
+        const byInt = this._ensureLaneIntIndex();
+        const direct = byInt.get(((baseX + 1024) << 12) | (baseY + 1024));
         if (direct) return direct;
 
         let best = null;
-        let bestDistance = Infinity;
-        const baseX = Math.round(tile.tileX);
-        const baseY = Math.round(tile.tileY);
+        let bestDistSq = 1.15 * 1.15;
         for (let dx = -1; dx <= 1; dx++) {
+            const cx = baseX + dx;
+            const cxShift = (cx + 1024) << 12;
             for (let dy = -1; dy <= 1; dy++) {
-                const candidate = this._laneTiles.get(`${baseX + dx},${baseY + dy}`);
+                const candidate = byInt.get(cxShift | (baseY + dy + 1024));
                 if (!candidate) continue;
-                const distance = Math.hypot(tile.tileX - candidate.tileX, tile.tileY - candidate.tileY);
-                if (distance < bestDistance) {
+                const ddx = tileX - candidate.tileX;
+                const ddy = tileY - candidate.tileY;
+                const distSq = ddx * ddx + ddy * ddy;
+                if (distSq <= bestDistSq) {
                     best = candidate;
-                    bestDistance = distance;
+                    bestDistSq = distSq;
                 }
             }
         }
-        return bestDistance <= 1.15 ? best : null;
+        return best;
     }
 
     _laneSideForSprite(sprite, lane) {
@@ -6987,6 +7218,139 @@ export class IsometricRenderer {
         const along = vx * lane.tangentX + vy * lane.tangentY;
         if (Math.abs(along) > 0.05) return along >= 0 ? 1 : -1;
         return (this._stableHash(sprite?.agent?.id || sprite?.id || '') % 2) === 0 ? 1 : -1;
+    }
+
+    // Zero-allocation check for a same-tier ORCA neighbor lying ahead of `desc`
+    // within combined body radius (used to hold cleanly in narrow corridors /
+    // bridge landings instead of passing through).
+    _findNarrowCorridorBlocker(desc, agents, activeCount, outBlocker) {
+        if (!desc || !agents || activeCount <= 1) return null;
+        let fx = 0;
+        let fy = 0;
+        if (desc.hasStep) {
+            fx = desc.origX - desc.x;
+            fy = desc.origY - desc.y;
+        }
+        let fLen = Math.hypot(fx, fy);
+        if (!(fLen > 1e-6) && Number.isFinite(desc.targetX) && Number.isFinite(desc.targetY)) {
+            fx = desc.targetX - desc.x;
+            fy = desc.targetY - desc.y;
+            fLen = Math.hypot(fx, fy);
+        }
+        if (!(fLen > 1e-6)) return null;
+        fx /= fLen;
+        fy /= fLen;
+
+        const ax = desc.x;
+        const ay = desc.y;
+        const aTier = desc.surfaceTier;
+        const aRad = desc.radius;
+        const aSprite = desc.sprite;
+        const chatPartner = aSprite?.chatPartner || null;
+
+        let bestOther = null;
+        let bestDistSq = Infinity;
+        for (let j = 0; j < activeCount; j++) {
+            const other = agents[j];
+            if (!other || other === desc || other.surfaceTier !== aTier) continue;
+            if (aSprite && (other.sprite === aSprite || other.sprite === chatPartner)) continue;
+            const rx = other.x - ax;
+            const ry = other.y - ay;
+            const rawDistSq = rx * rx + ry * ry;
+            // Stacked bodies (< 6 px) separate actively instead of freezing in yield.
+            if (rawDistSq < 36) continue;
+            const sy = ry * ORCA_Y_SCALE;
+            const distSq = rx * rx + sy * sy;
+            const combR = aRad + other.radius;
+            // Sustain yield with a 1-stride release margin while holding in
+            // `_yieldToLeader` (`wasYielding`) so `_followKnotMs` never resets
+            // on the next frame when `_stepStartX` is NaN.
+            const effR = desc.wasYielding ? (combR + 4.5) : combR;
+            const effRSq = effR * effR;
+            let inRange = distSq <= effRSq;
+            if (!inRange && desc.hasStep) {
+                const srx = other.x - desc.origX;
+                const sry = (other.y - desc.origY) * ORCA_Y_SCALE;
+                if (srx * srx + sry * sry < combR * combR) inRange = true;
+            }
+            if (!inRange) continue;
+            const rawDist = Math.sqrt(rawDistSq);
+            if ((rx * fx + ry * fy) < 0.35 * rawDist) continue;
+            if (distSq < bestDistSq) {
+                bestDistSq = distSq;
+                bestOther = other;
+            }
+        }
+        if (!bestOther) return null;
+
+        let sameDirection = false;
+        if (!bestOther.planted && !bestOther.sprite?._followYield) {
+            const bSpd = Math.hypot(bestOther.vx || 0, bestOther.vy || 0);
+            if (bSpd > 1e-3 && ((bestOther.vx * fx + bestOther.vy * fy) / bSpd) > 0.35) {
+                sameDirection = true;
+            }
+        }
+        outBlocker.other = bestOther;
+        outBlocker.distSq = bestDistSq;
+        outBlocker.sameDirection = sameDirection;
+        return outBlocker;
+    }
+
+    // Zero-allocation pure-perpendicular corridor-width probe: returns the clear
+    // away side (+1 or -1) if at least one lateral stride perpendicular to the
+    // walker's heading is walkable and clear of neighbors; returns 0 only in a
+    // genuine narrow corridor or wall-pinched landing where the walker must yield.
+    _hasLateralBypassRoom(desc, blocker, agents, activeCount) {
+        const sprite = desc.sprite;
+        const other = blocker?.other;
+        if (!sprite || !other) return 0;
+        let dx = desc.hasStep ? (desc.origX - desc.x) : ((Number.isFinite(desc.targetX) ? desc.targetX : desc.x) - desc.x);
+        let dy = desc.hasStep ? (desc.origY - desc.y) : ((Number.isFinite(desc.targetY) ? desc.targetY : desc.y) - desc.y);
+        let len = Math.hypot(dx, dy);
+        if (!(len > 1e-6)) {
+            dx = (Number.isFinite(desc.targetX) ? desc.targetX : desc.x) - desc.x;
+            dy = (Number.isFinite(desc.targetY) ? desc.targetY : desc.y) - desc.y;
+            len = Math.hypot(dx, dy);
+            if (!(len > 1e-6)) return 0;
+        }
+        const fx = dx / len;
+        const fy = dy / len;
+        const px = -fy;
+        const py = fx;
+        const dotPerp = (other.x - desc.x) * px + (other.y - desc.y) * py;
+        const awaySide = dotPerp >= 0 ? -1 : 1;
+        const probeDist = 4.5;
+        const selfR = desc.radius || ORCA_AGENT_RADIUS;
+        const selfTier = desc.surfaceTier || 0;
+
+        for (let pass = 0; pass < 2; pass++) {
+            const side = pass === 0 ? awaySide : -awaySide;
+            const lx = desc.x + px * side * probeDist;
+            const ly = desc.y + py * side * probeDist;
+            if (!this._isSpritePositionWalkable(sprite, lx, ly)) continue;
+            const bdx = other.x - lx;
+            const bdy = (other.y - ly) * ORCA_Y_SCALE;
+            if (bdx * bdx + bdy * bdy < blocker.distSq) continue;
+            let sideClear = true;
+            for (let j = 0; j < activeCount; j++) {
+                const cand = agents[j];
+                if (!cand || cand === desc || cand === other) continue;
+                if ((cand.surfaceTier || 0) !== selfTier) continue;
+                const cdx = cand.x - lx;
+                const cdy = (cand.y - ly) * ORCA_Y_SCALE;
+                const curDx = cand.x - desc.x;
+                const curDy = (cand.y - desc.y) * ORCA_Y_SCALE;
+                const nextSq = cdx * cdx + cdy * cdy;
+                const curSq = curDx * curDx + curDy * curDy;
+                const minSep = (selfR + (cand.radius || ORCA_AGENT_RADIUS)) * 0.85;
+                if (nextSq < minSep * minSep && nextSq < curSq) {
+                    sideClear = false;
+                    break;
+                }
+            }
+            if (sideClear) return side;
+        }
+        return 0;
     }
 
     // W5-C — lazy-initialized preallocated pools for the 2D ORCA crowd solver.
@@ -7003,11 +7367,13 @@ export class IsometricRenderer {
         const pools = {
             pool: [],
             agents: [],
+            activeCount: 0,
             obstacles,
             staticFixtureCount: 0,
             wildlifePool: [],
             seenSet: new Set(),
             scratchSteer: { x: 0, y: 0 },
+            scratchBlocker: { other: null, distSq: Infinity, sameDirection: false },
             scratchOutVel: new Float64Array(2),
             scratchPrefVel: new Float64Array(2),
             compatNeighbors: [],
@@ -7033,12 +7399,15 @@ export class IsometricRenderer {
             },
             stepOptions: null,
         };
-        // Forward-progress cone (cos 45° ≈ 0.707): ORCA may deflect a walker
-        // up to 45° sideways around neighbors, guaranteeing strict distance
-        // reduction to every waypoint (orbiting a waypoint is mathematically
-        // impossible) and never shoving a walker backwards against its stride.
+        // Forward-progress cone (cos 45° ≈ 0.707; relaxed to cos 75° ≈ 0.259
+        // when a neighbor lies directly ahead within combined radius): ORCA
+        // peels cleanly around neighbors on walkable ground without orbiting
+        // waypoints, and yields cleanly on contact frames in narrow corridors
+        // when lateral bypass is unwalkable.
         const MIN_FORWARD_DOT = 0.70710678;
         const MAX_LATERAL_SIN = Math.sqrt(1 - MIN_FORWARD_DOT * MIN_FORWARD_DOT);
+        const MIN_CLOSE_FORWARD_DOT = 0.25881905;
+        const MAX_CLOSE_LATERAL_SIN = Math.sqrt(1 - MIN_CLOSE_FORWARD_DOT * MIN_CLOSE_FORWARD_DOT);
         const strideSteer = (desc, proposedX, proposedY) => {
             const sprite = desc.sprite;
             if (!sprite) {
@@ -7048,19 +7417,29 @@ export class IsometricRenderer {
             }
             if (sprite._stopLookActiveMs > 0) return null;
             if (typeof sprite.steeredPosition === 'function') {
+                const blocker = this._findNarrowCorridorBlocker(desc, pools.agents, pools.activeCount, pools.scratchBlocker);
+                const inWalkOut = (sprite._followYieldMs || 0) < 0;
                 let targetX = proposedX;
                 let targetY = proposedY;
+                let clampedCloseSide = 0;
+                let stepFx = 0;
+                let stepFy = 0;
+                let stepLen = 0;
                 if (desc.hasStep && desc.stepLength > 1e-6) {
                     const stepDx = desc.origX - desc.x;
                     const stepDy = desc.origY - desc.y;
-                    const stepLen = Math.hypot(stepDx, stepDy);
+                    stepLen = Math.hypot(stepDx, stepDy);
+                    if (stepLen > 1e-6) {
+                        stepFx = stepDx / stepLen;
+                        stepFy = stepDy / stepLen;
+                    }
                     // On the final step into a waypoint (or right after turning
                     // a waypoint corner inside AgentSprite.update), preserve the
-                    // sprite's clean waypoint landing so it never orbits a corner.
+                    // sprite's clean waypoint landing when no neighbor blocks ahead.
                     const distToWp = Number.isFinite(desc.targetX) && Number.isFinite(desc.targetY)
                         ? Math.hypot(desc.targetX - desc.x, desc.targetY - desc.y)
                         : Infinity;
-                    if (distToWp <= Math.max(12, stepLen * 2.5)) {
+                    if (!blocker && distToWp <= Math.max(12, stepLen * 2.5)) {
                         pools.scratchSteer.x = desc.origX;
                         pools.scratchSteer.y = desc.origY;
                         return pools.scratchSteer;
@@ -7069,40 +7448,117 @@ export class IsometricRenderer {
                     const propDy = proposedY - desc.y;
                     const propLen = Math.hypot(propDx, propDy);
                     if (!(propLen > 1e-6)) {
+                        if (blocker && !inWalkOut) {
+                            // In open plazas/roads, peel laterally around the
+                            // blocker instead of stalling; yield only when
+                            // neither lateral side is clear (narrow corridor).
+                            const bypassSide = stepLen > 1e-6
+                                ? this._hasLateralBypassRoom(desc, blocker, pools.agents, pools.activeCount)
+                                : 0;
+                            if (bypassSide !== 0) {
+                                const bx75 = desc.x + (stepFx * MIN_CLOSE_FORWARD_DOT + (-stepFy * bypassSide) * MAX_CLOSE_LATERAL_SIN) * stepLen;
+                                const by75 = desc.y + (stepFy * MIN_CLOSE_FORWARD_DOT + (stepFx * bypassSide) * MAX_CLOSE_LATERAL_SIN) * stepLen;
+                                const k75 = sprite.steeredPosition(bx75, by75);
+                                if (k75 && this._isSpritePositionWalkable(sprite, k75.x, k75.y)) {
+                                    pools.scratchSteer.x = k75.x;
+                                    pools.scratchSteer.y = k75.y;
+                                    return pools.scratchSteer;
+                                }
+                                const bx45 = desc.x + (stepFx * MIN_FORWARD_DOT + (-stepFy * bypassSide) * MAX_LATERAL_SIN) * stepLen;
+                                const by45 = desc.y + (stepFy * MIN_FORWARD_DOT + (stepFx * bypassSide) * MAX_LATERAL_SIN) * stepLen;
+                                const k45 = sprite.steeredPosition(bx45, by45);
+                                if (k45 && this._isSpritePositionWalkable(sprite, k45.x, k45.y)) {
+                                    pools.scratchSteer.x = k45.x;
+                                    pools.scratchSteer.y = k45.y;
+                                    return pools.scratchSteer;
+                                }
+                            }
+                            if (this._isSpritePositionWalkable(sprite, desc.x, desc.y)) {
+                                desc.yieldHold = true;
+                                desc.yieldKind = blocker.sameDirection ? true : 'knot';
+                                pools.frameWalkClamps++;
+                                return null;
+                            }
+                        }
                         pools.scratchSteer.x = desc.origX;
                         pools.scratchSteer.y = desc.origY;
                         return pools.scratchSteer;
                     }
                     if (stepLen > 1e-6) {
-                        const fx = stepDx / stepLen;
-                        const fy = stepDy / stepLen;
                         const ox = propDx / propLen;
                         const oy = propDy / propLen;
-                        const dot = ox * fx + oy * fy;
-                        if (dot < MIN_FORWARD_DOT) {
-                            const cross = fx * oy - fy * ox;
+                        const dot = ox * stepFx + oy * stepFy;
+                        const minDot = blocker ? MIN_CLOSE_FORWARD_DOT : MIN_FORWARD_DOT;
+                        const maxSin = blocker ? MAX_CLOSE_LATERAL_SIN : MAX_LATERAL_SIN;
+                        if (dot < minDot) {
+                            const cross = stepFx * oy - stepFy * ox;
                             const side = Math.abs(cross) > 1e-6
                                 ? (cross > 0 ? 1 : -1)
                                 : ((this._stableHash(desc.id || '') & 1) ? 1 : -1);
-                            const cdx = fx * MIN_FORWARD_DOT + (-fy * side) * MAX_LATERAL_SIN;
-                            const cdy = fy * MIN_FORWARD_DOT + (fx * side) * MAX_LATERAL_SIN;
+                            const cdx = stepFx * minDot + (-stepFy * side) * maxSin;
+                            const cdy = stepFy * minDot + (stepFx * side) * maxSin;
                             targetX = desc.x + cdx * stepLen;
                             targetY = desc.y + cdy * stepLen;
+                            if (blocker) clampedCloseSide = side;
                         }
                     }
                 }
                 const kept = sprite.steeredPosition(targetX, targetY);
-                if (!kept) {
-                    if (desc.hasStep) {
-                        pools.scratchSteer.x = desc.origX;
-                        pools.scratchSteer.y = desc.origY;
-                        return pools.scratchSteer;
-                    }
-                    return null;
-                }
-                if (this._isSpritePositionWalkable(sprite, kept.x, kept.y)) {
+                if (kept && this._isSpritePositionWalkable(sprite, kept.x, kept.y)) {
                     pools.scratchSteer.x = kept.x;
                     pools.scratchSteer.y = kept.y;
+                    return pools.scratchSteer;
+                }
+                // If a 75° close peel hit a corridor wall, try a 45° peel, or the
+                // opposite clear lateral side in open space, before yielding.
+                if (blocker && stepLen > 1e-6) {
+                    if (clampedCloseSide !== 0) {
+                        const altX = desc.x + (stepFx * MIN_FORWARD_DOT + (-stepFy * clampedCloseSide) * MAX_LATERAL_SIN) * stepLen;
+                        const altY = desc.y + (stepFy * MIN_FORWARD_DOT + (stepFx * clampedCloseSide) * MAX_LATERAL_SIN) * stepLen;
+                        const kept45 = sprite.steeredPosition(altX, altY);
+                        if (kept45 && this._isSpritePositionWalkable(sprite, kept45.x, kept45.y)) {
+                            pools.scratchSteer.x = kept45.x;
+                            pools.scratchSteer.y = kept45.y;
+                            return pools.scratchSteer;
+                        }
+                    }
+                    const bypassSide = this._hasLateralBypassRoom(desc, blocker, pools.agents, pools.activeCount);
+                    if (bypassSide !== 0 && bypassSide !== clampedCloseSide) {
+                        const ox75 = desc.x + (stepFx * MIN_CLOSE_FORWARD_DOT + (-stepFy * bypassSide) * MAX_CLOSE_LATERAL_SIN) * stepLen;
+                        const oy75 = desc.y + (stepFy * MIN_CLOSE_FORWARD_DOT + (stepFx * bypassSide) * MAX_CLOSE_LATERAL_SIN) * stepLen;
+                        const k75 = sprite.steeredPosition(ox75, oy75);
+                        if (k75 && this._isSpritePositionWalkable(sprite, k75.x, k75.y)) {
+                            pools.scratchSteer.x = k75.x;
+                            pools.scratchSteer.y = k75.y;
+                            return pools.scratchSteer;
+                        }
+                        const ox45 = desc.x + (stepFx * MIN_FORWARD_DOT + (-stepFy * bypassSide) * MAX_LATERAL_SIN) * stepLen;
+                        const oy45 = desc.y + (stepFy * MIN_FORWARD_DOT + (stepFx * bypassSide) * MAX_LATERAL_SIN) * stepLen;
+                        const k45 = sprite.steeredPosition(ox45, oy45);
+                        if (k45 && this._isSpritePositionWalkable(sprite, k45.x, k45.y)) {
+                            pools.scratchSteer.x = k45.x;
+                            pools.scratchSteer.y = k45.y;
+                            return pools.scratchSteer;
+                        }
+                    }
+                }
+                // Narrow-corridor / bridge-landing yield: when ORCA's steered step
+                // is unwalkable AND a neighbor lies ahead within combined radius,
+                // hold cleanly on the contact frame (`_followYield`) instead of
+                // marching straight through the neighbor (bounded by `_yieldToLeader`
+                // knot timeout so opposing walkers never deadlock).
+                if (blocker && !inWalkOut && this._isSpritePositionWalkable(sprite, desc.x, desc.y)) {
+                    desc.yieldHold = true;
+                    desc.yieldKind = blocker.sameDirection ? true : 'knot';
+                    pools.frameWalkClamps++;
+                    return null;
+                }
+                // No neighbor blocking ahead (or escaping unwalkable start / knot walk-out):
+                // try AgentSprite's own stepped position BEFORE screen-axis crab fallbacks.
+                if (desc.hasStep && this._isSpritePositionWalkable(sprite, desc.origX, desc.origY)) {
+                    pools.scratchSteer.x = desc.origX;
+                    pools.scratchSteer.y = desc.origY;
+                    pools.frameWalkClamps++;
                     return pools.scratchSteer;
                 }
                 const keptX = sprite.steeredPosition(targetX, desc.y);
@@ -7119,9 +7575,8 @@ export class IsometricRenderer {
                     pools.frameWalkClamps++;
                     return pools.scratchSteer;
                 }
-                // Always keep AgentSprite's own stepped position on narrow bridges,
-                // wall edges, or unwalkable-escape steps rather than rewinding
-                // back to `_stepStartX/_stepStartY`.
+                // Always keep AgentSprite's own stepped position when escaping an
+                // unwalkable wall edge rather than rewinding back onto it.
                 if (desc.hasStep) {
                     pools.scratchSteer.x = desc.origX;
                     pools.scratchSteer.y = desc.origY;
@@ -7182,6 +7637,8 @@ export class IsometricRenderer {
                 sprite: null,
                 x: 0,
                 y: 0,
+                startX: 0,
+                startY: 0,
                 vx: 0,
                 vy: 0,
                 targetX: NaN,
@@ -7196,11 +7653,14 @@ export class IsometricRenderer {
                 swingY: NaN,
                 swingOffsetX: NaN,
                 swingOffsetY: NaN,
-                direction: 'south',
+                direction: 's',
                 hasStep: false,
                 stepLength: 0,
                 origX: 0,
                 origY: 0,
+                wasYielding: false,
+                yieldHold: false,
+                yieldKind: false,
             };
             pools.pool[index] = desc;
             pools.stats.poolCapacity = pools.pool.length;
@@ -7282,10 +7742,10 @@ export class IsometricRenderer {
             && Number.isFinite(sprite._stepStartX)
             && Number.isFinite(sprite._stepStartY)
             && Number(sprite._stepLength) > 0;
-        const baseX = hasStep ? sprite._stepStartX : (Number(sprite.x) || 0);
-        const baseY = hasStep ? sprite._stepStartY : (Number(sprite.y) || 0);
-        const origX = Number(sprite.x) || baseX;
-        const origY = Number(sprite.y) || baseY;
+        const baseX = hasStep ? sprite._stepStartX : (Number.isFinite(sprite.x) ? sprite.x : 0);
+        const baseY = hasStep ? sprite._stepStartY : (Number.isFinite(sprite.y) ? sprite.y : 0);
+        const origX = Number.isFinite(sprite.x) ? sprite.x : baseX;
+        const origY = Number.isFinite(sprite.y) ? sprite.y : baseY;
 
         let gaitSpeed = 45;
         if (Number.isFinite(sprite.gaitSpeed) && sprite.gaitSpeed > 0) {
@@ -7371,6 +7831,8 @@ export class IsometricRenderer {
         desc.sprite = sprite;
         desc.x = baseX;
         desc.y = baseY;
+        desc.startX = baseX;
+        desc.startY = baseY;
         desc.vx = vx;
         desc.vy = vy;
         desc.targetX = tx;
@@ -7391,11 +7853,19 @@ export class IsometricRenderer {
         desc.swingY = Number.isFinite(sprite.swingY) ? sprite.swingY : NaN;
         desc.swingOffsetX = Number.isFinite(sprite.swingOffsetX) ? sprite.swingOffsetX : NaN;
         desc.swingOffsetY = Number.isFinite(sprite.swingOffsetY) ? sprite.swingOffsetY : NaN;
-        desc.direction = sprite.direction || 'south';
+        // SpriteSheet.DIRECTIONS is ['s','se','e','ne','n','nw','w','sw'],
+        // whereas CrowdOrca.DIR_X/Y is compass E..NE; always pass short direction
+        // name so strike-swing discs align on all 8 facings.
+        desc.direction = typeof sprite.direction === 'number'
+            ? (DIRECTIONS[sprite.direction] || 's')
+            : (sprite.direction || 's');
         desc.hasStep = hasStep;
         desc.stepLength = hasStep ? sprite._stepLength : 0;
         desc.origX = origX;
         desc.origY = origY;
+        desc.wasYielding = false;
+        desc.yieldHold = false;
+        desc.yieldKind = false;
         return desc;
     }
 
@@ -7454,11 +7924,13 @@ export class IsometricRenderer {
                 const sprite = movingSprites[i];
                 if (!sprite || seen.has(sprite)) continue;
                 seen.add(sprite);
-                // Clear legacy reactive queue flags cleanly.
+                const wasYielding = Boolean(sprite._followYield);
+                // Clear legacy reactive queue flags cleanly (re-asserted below if still blocked).
                 sprite._followGap = false;
                 sprite._followYield = false;
                 const desc = this._acquireOrcaDescriptor(pools, activeCount);
                 this._fillOrcaDescriptor(desc, sprite, false, dtSec, activeCount);
+                desc.wasYielding = wasYielding;
                 agents[activeCount++] = desc;
                 if (desc.planted) plantedCount++;
                 else movingCount++;
@@ -7469,13 +7941,33 @@ export class IsometricRenderer {
         if (this.agentSprites?.size > 0) {
             for (const sprite of this.agentSprites.values()) {
                 if (!sprite || seen.has(sprite)) continue;
-                if (this._isGateTransit(sprite, 'departure') || sprite.isArrivalPending?.()) continue;
+                // Keep walkers already inside the gate channel as solid ORCA
+                // obstacles so approaching crowds don't pile at the gatehouse;
+                // skip only hidden arrival-pending or archive-fading sprites.
+                if (sprite.isArrivalPending?.() || sprite._archiveAnim) continue;
                 seen.add(sprite);
                 const desc = this._acquireOrcaDescriptor(pools, activeCount);
                 this._fillOrcaDescriptor(desc, sprite, true, dtSec, activeCount);
                 agents[activeCount++] = desc;
                 plantedCount++;
                 if (desc.swingActive) swingArcCount++;
+            }
+        }
+
+        pools.activeCount = activeCount;
+
+        // Sustain narrow-corridor contact-frame yield for sprites holding in
+        // AgentSprite._yieldToLeader ONLY while their blocker remains ahead and
+        // no clear perpendicular lateral bypass exists (bounded by _yieldToLeader's knot timeout).
+        for (let i = 0; i < activeCount; i++) {
+            const desc = agents[i];
+            const sprite = desc.sprite;
+            if (!desc.wasYielding || !desc.planted || !sprite || !sprite.moving) continue;
+            if ((sprite._followYieldMs || 0) < 0) continue;
+            const blocker = this._findNarrowCorridorBlocker(desc, agents, activeCount, pools.scratchBlocker);
+            if (!blocker) continue;
+            if (this._hasLateralBypassRoom(desc, blocker, agents, activeCount) === 0) {
+                sprite._followYield = blocker.sameDirection ? true : 'knot';
             }
         }
 
@@ -7490,6 +7982,8 @@ export class IsometricRenderer {
 
             const obstructRadius = ORCA_AGENT_RADIUS * 2.0;
             const obstructRadiusSq = obstructRadius * obstructRadius;
+            const halfW = TILE_WIDTH * 0.5;
+            const halfH = TILE_HEIGHT * 0.5;
 
             for (let i = 0; i < activeCount; i++) {
                 const desc = agents[i];
@@ -7502,18 +7996,34 @@ export class IsometricRenderer {
                     if (Number.isFinite(sprite.vy)) sprite.vy = 0;
                     continue;
                 }
-                sprite._orcaVx = desc.vx;
-                sprite._orcaVy = desc.vy;
-                if (Number.isFinite(sprite.vx)) sprite.vx = desc.vx;
-                if (Number.isFinite(sprite.vy)) sprite.vy = desc.vy;
 
-                // Never rewind a sprite that already stepped in AgentSprite.update()
-                // back to its pre-step start when ORCA declined to integrate.
-                const stepMoved = desc.hasStep && Number.isFinite(sprite._stepStartX)
-                    ? Math.hypot(desc.x - sprite._stepStartX, desc.y - sprite._stepStartY)
-                    : 1;
-                const finalX = desc.hasStep && stepMoved < 1e-5 ? desc.origX : desc.x;
-                const finalY = desc.hasStep && stepMoved < 1e-5 ? desc.origY : desc.y;
+                let finalX;
+                let finalY;
+                if (desc.yieldHold) {
+                    // Narrow-corridor contact-frame yield: hold at pre-step start
+                    // and pause AgentSprite's walk stride cleanly via `_followYield`.
+                    finalX = desc.startX;
+                    finalY = desc.startY;
+                    sprite._followYield = desc.yieldKind || 'knot';
+                } else {
+                    // Never rewind a sprite that already stepped in AgentSprite.update()
+                    // back to its pre-step start when ORCA declined to integrate.
+                    const stepMoved = desc.hasStep && Number.isFinite(sprite._stepStartX)
+                        ? Math.hypot(desc.x - sprite._stepStartX, desc.y - sprite._stepStartY)
+                        : 1;
+                    finalX = desc.hasStep && stepMoved < 1e-5 ? desc.origX : desc.x;
+                    finalY = desc.hasStep && stepMoved < 1e-5 ? desc.origY : desc.y;
+                }
+
+                // Store actual realized velocity rather than raw unclamped solver velocity.
+                const refStartX = desc.hasStep && Number.isFinite(sprite._stepStartX) ? sprite._stepStartX : desc.startX;
+                const refStartY = desc.hasStep && Number.isFinite(sprite._stepStartY) ? sprite._stepStartY : desc.startY;
+                const realVx = (finalX - refStartX) / dtSec;
+                const realVy = (finalY - refStartY) / dtSec;
+                sprite._orcaVx = realVx;
+                sprite._orcaVy = realVy;
+                if (Number.isFinite(sprite.vx)) sprite.vx = realVx;
+                if (Number.isFinite(sprite.vy)) sprite.vy = realVy;
 
                 if (Math.hypot(finalX - desc.origX, finalY - desc.origY) > 0.001) {
                     adjustments++;
@@ -7541,10 +8051,15 @@ export class IsometricRenderer {
                         }
                     }
                     if (shouldAdvance) {
-                        const wpTile = worldToTile(sprite.targetX, sprite.targetY);
-                        const wpKey = `${Math.round(wpTile.tileX)},${Math.round(wpTile.tileY)}`;
                         const nextWp = sprite.waypoints[1];
-                        const onCrossing = sprite._crossingTiles?.().has(wpKey);
+                        const crossingMap = sprite._crossingTiles?.();
+                        let onCrossing = false;
+                        if (crossingMap?.size) {
+                            const wtx = Math.round((sprite.targetX / halfW + sprite.targetY / halfH) * 0.5);
+                            const wty = Math.round((sprite.targetY / halfH - sprite.targetX / halfW) * 0.5);
+                            const crossingInts = this._getCrossingIntSet(crossingMap);
+                            onCrossing = Boolean(crossingInts?.has(((wtx + 1024) << 12) | (wty + 1024)));
+                        }
                         if (!onCrossing && nextWp && sprite._isScreenSegmentWalkable?.(sprite.x, sprite.y, nextWp.x, nextWp.y)) {
                             sprite.waypoints.shift();
                             sprite.targetX = nextWp.x;
@@ -7719,10 +8234,17 @@ export class IsometricRenderer {
                     }
                 }
                 if (targetObstructed) {
-                    const wpTile = worldToTile(walker.targetX, walker.targetY);
-                    const wpKey = `${Math.round(wpTile.tileX)},${Math.round(wpTile.tileY)}`;
                     const nextWp = walker.waypoints[1];
-                    const onCrossing = walker._crossingTiles?.().has(wpKey);
+                    const crossingMap = walker._crossingTiles?.();
+                    let onCrossing = false;
+                    if (crossingMap?.size) {
+                        const halfW = TILE_WIDTH * 0.5;
+                        const halfH = TILE_HEIGHT * 0.5;
+                        const wtx = Math.round((walker.targetX / halfW + walker.targetY / halfH) * 0.5);
+                        const wty = Math.round((walker.targetY / halfH - walker.targetX / halfW) * 0.5);
+                        const crossingInts = this._getCrossingIntSet(crossingMap);
+                        onCrossing = Boolean(crossingInts?.has(((wtx + 1024) << 12) | (wty + 1024)));
+                    }
                     if (!onCrossing && nextWp && walker._isScreenSegmentWalkable?.(kept.x, kept.y, nextWp.x, nextWp.y)) {
                         walker.waypoints.shift();
                         walker.targetX = nextWp.x;
@@ -7798,20 +8320,24 @@ export class IsometricRenderer {
         }
         const arrivals = this._fanArrivalOrder ||= [];
         arrivals.length = 0;
+        const stopScratch = this._fanStopScratch ||= { x: 0, y: 0, reach: 0 };
         for (const sprite of movingSprites) {
             if (this._isGateChannelTransit(sprite)) continue;
             // A seat (7.1) or petitioner place (7.2) is an exact point: never re-aimed.
             if (FAN_EXEMPT_ROLES.has(sprite.visitRole)) continue;
-            const stop = this._fanStopOf(sprite);
-            if (stop.reach <= PERFORMING_FAN.approachPx) arrivals.push(sprite);
+            const stop = this._fanStopOf(sprite, stopScratch);
+            if (stop.reach <= PERFORMING_FAN.approachPx) {
+                sprite._fanReach = stop.reach;
+                arrivals.push(sprite);
+            }
         }
         if (!arrivals.length) return;
         // The nearer stop lands first and keeps its place.
-        arrivals.sort((a, b) => this._fanStopOf(a).reach - this._fanStopOf(b).reach);
+        arrivals.sort((a, b) => a._fanReach - b._fanReach);
         const landing = this._fanLanding ||= [];
         landing.length = 0;
         for (const sprite of arrivals) {
-            const stop = this._fanStopOf(sprite);
+            const stop = this._fanStopOf(sprite, stopScratch);
             const building = sprite._lastBuildingType;
             const fanned = sprite._fanTarget && sprite._fanTarget.x === stop.x && sprite._fanTarget.y === stop.y;
             if (fanned || !(stop.reach > PERFORMING_FAN.minApproachPx)) {
@@ -7850,18 +8376,31 @@ export class IsometricRenderer {
     // Where a walker will stop (its route's last point) and how far it still
     // walks to get there. Past PERFORMING_FAN.approachPx the walk is not summed
     // further: `reach` then only says "farther than that", and x/y are unset.
-    _fanStopOf(sprite) {
+    _fanStopOf(sprite, out = (this._fanStopScratch ||= { x: 0, y: 0, reach: 0 })) {
         const tx = Number(sprite.targetX);
         const ty = Number(sprite.targetY);
         let reach = Math.hypot(tx - sprite.x, ty - sprite.y);
         const route = sprite.waypoints;
-        if (!(route?.length > 1)) return { x: tx, y: ty, reach };
+        if (!(route?.length > 1)) {
+            out.x = tx;
+            out.y = ty;
+            out.reach = reach;
+            return out;
+        }
         for (let index = 1; index < route.length; index++) {
-            if (reach > PERFORMING_FAN.approachPx) return { x: NaN, y: NaN, reach };
+            if (reach > PERFORMING_FAN.approachPx) {
+                out.x = NaN;
+                out.y = NaN;
+                out.reach = reach;
+                return out;
+            }
             reach += Math.hypot(route[index].x - route[index - 1].x, route[index].y - route[index - 1].y);
         }
         const final = route[route.length - 1];
-        return { x: Number(final.x), y: Number(final.y), reach };
+        out.x = Number(final.x);
+        out.y = Number(final.y);
+        out.reach = reach;
+        return out;
     }
 
     _forEachNearbySpritePair(sprites, cellSize, visitor) {
@@ -8571,6 +9110,40 @@ export class IsometricRenderer {
             };
     }
 
+    _reconcileChronicleBanners(now = Date.now()) {
+        const list = this.chronicleMonuments?._activeBanners;
+        if (!Array.isArray(list)) return null;
+        const deferred = this._deferredChronicleBanners || (this._deferredChronicleBanners = []);
+        const maxSimultaneous = 2;
+        const seenText = new Set();
+        let write = 0;
+        for (let i = 0; i < list.length; i++) {
+            const b = list[i];
+            if (!b || Number(b.expiresAt || 0) <= now) continue;
+            const key = b.text || `${b.tier || ''}:${b.project || ''}`;
+            if (seenText.has(key)) continue;
+            seenText.add(key);
+            if (write < maxSimultaneous) {
+                list[write++] = b;
+            } else if (deferred.length < 12) {
+                deferred.push(b);
+            }
+        }
+        list.length = write;
+        while (list.length < maxSimultaneous && deferred.length > 0) {
+            const next = deferred.shift();
+            if (!next) continue;
+            const key = next.text || `${next.tier || ''}:${next.project || ''}`;
+            if (seenText.has(key)) continue;
+            seenText.add(key);
+            const dur = Math.max(2000, (Number(next.expiresAt || 0) - Number(next.startedAt || 0)) || 6000);
+            next.startedAt = now;
+            next.expiresAt = now + dur;
+            list.push(next);
+        }
+        return list;
+    }
+
     _reserveRectClampedInGrid(grid, rect, layer, tag, minX, minY, maxX, maxY) {
         if (!grid || !rect) return false;
         const rawL = rect.left !== undefined ? rect.left : rect.x;
@@ -8641,7 +9214,8 @@ export class IsometricRenderer {
         };
         const collides = rect => (useSpatialGrid
             ? this._rectGridHasOverlap(nameGrid, rect)
-            : this._rectListHasOverlap(nameRects, rect));
+            : this._rectListHasOverlap(nameRects, rect))
+            || (rect && sharedGrid.overlapsMaxLayer(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h, OVERLAY_LAYER_PLAQUE, 0));
 
         // Layer 1 (OVERLAY_LAYER_PLAQUE): reserve visible painted building plaques
         // in both the screen-space attention grid and the shared world-space overlay grid.
@@ -8725,6 +9299,34 @@ export class IsometricRenderer {
         // S4/S5 — building ledgers and assay furniture give way to T1.
         if (this.buildingRenderer) this.buildingRenderer.attentionWorldRects = attentionWorldRects;
 
+        // Deduplicate & cap active Harbor/Chronicle milestone banners (e.g.
+        // Maiden Voyage) at 2 simultaneous so multi-repo bursts never stack 4-6
+        // deep over the harbor or world labels, and reserve visible banner rects
+        // in the shared world occupancy grid so thoughts never draw over them.
+        const activeBanners = this._reconcileChronicleBanners(Date.now());
+        if (activeBanners?.length && typeof this.camera?.worldToScreen === 'function' && viewport?.width > 0) {
+            const bannerNow = Date.now();
+            const edgeMargin = 8;
+            const bgH = 18;
+            for (let i = 0; i < activeBanners.length; i++) {
+                const banner = activeBanners[i];
+                if (!banner || Number(banner.expiresAt || 0) <= bannerNow) continue;
+                const pos = tileToWorld(banner.tileX, banner.tileY);
+                const anchor = this.camera.worldToScreen(pos.x, pos.y);
+                const tier = banner.tier || 'maiden';
+                const lift = tier === 'flagship' ? -84 : tier === 'ribbon' ? -56 : -48;
+                const bgW = String(banner.text || '').length * 8 + 16;
+                const maxLeft = Math.max(edgeMargin, viewport.width - edgeMargin - bgW);
+                const maxTop = Math.max(edgeMargin, viewport.height - edgeMargin - bgH);
+                const left = Math.max(edgeMargin, Math.min(maxLeft, Math.round(anchor.x - bgW / 2)));
+                const top = Math.max(edgeMargin, Math.min(maxTop, Math.round(anchor.y + lift - bgH)));
+                const worldRect = this._screenRectToWorld({ left, top, right: left + bgW, bottom: top + bgH });
+                if (worldRect && worldRect.w > 0 && worldRect.h > 0) {
+                    sharedGrid.reserve(worldRect.x, worldRect.y, worldRect.x + worldRect.w, worldRect.y + worldRect.h, OVERLAY_LAYER_ATTENTION, attentionTag++);
+                }
+            }
+        }
+
         const focusId = this.selectedAgent?.id || this.cameraDirector?.attentionFrame?.focusedAgentId;
         const routineZoom = (this.restZoom ?? zoom) >= ROUTINE_NAME_MIN_ZOOM;
         const perRegion = zoom >= ROUTINE_NAME_DETAIL_ZOOM ? ROUTINE_NAMES_PER_REGION_DETAIL : ROUTINE_NAMES_PER_REGION;
@@ -8764,7 +9366,19 @@ export class IsometricRenderer {
                     sprite.nameTagSlot = null;
                     continue;
                 }
-                reserve(this._agentIdentityRect(sprite, 0));
+                // Check T2 plate against Layer 1 building plaques and step clear when possible.
+                let t2Slot = 0;
+                let t2Rect = this._agentIdentityRect(sprite, t2Slot);
+                while (
+                    t2Slot + 1 < READ_MODE_NAME_SLOTS
+                    && sharedGrid.overlapsMaxLayer(t2Rect.x, t2Rect.y, t2Rect.x + t2Rect.w, t2Rect.y + t2Rect.h, OVERLAY_LAYER_PLAQUE, 0)
+                ) {
+                    t2Slot++;
+                    t2Rect = this._agentIdentityRect(sprite, t2Slot);
+                }
+                sprite.overlaySlot = t2Slot;
+                sprite.nameTagSlot = t2Slot;
+                reserve(t2Rect);
                 continue;
             }
             // T1 owns the identity of every action-needed agent.
@@ -8857,8 +9471,8 @@ export class IsometricRenderer {
     // Reserves Layer 1 static plaques + Layer 2 attention plates in the shared
     // 96 px OverlayOccupancyGrid, then solves Layer 3 thoughts (<= 24 speakers x
     // 30 candidates) via `SlotAuction.solveLabelAuction` with sticky prior -2
-    // bonus, boundsViolation * 1000, 300ms collision hold, and zero per-frame
-    // heap allocations.
+    // bonus, boundsViolation * 1000, 150ms lower-priority-only hold, and zero
+    // per-frame heap allocations.
     _assignAgentBubbleSlots(
         sprites,
         zoom = this.camera?.zoom || 1,
@@ -8969,6 +9583,10 @@ export class IsometricRenderer {
             this._mergeIdenticalClusterBubbles(order, baseRects, useMergeSpatialGrid);
         }
 
+        const hasLayeredContext = externalSharedGrid
+            || Boolean(options?.plaques || options?.attentionPlates);
+        const researchHoldMs = hasLayeredContext ? THOUGHT_RESEARCH_MS : THOUGHT_LEGACY_RESEARCH_MS;
+
         // Populate standalone shared grid when called directly (not from `_assignAgentOverlaySlots`).
         if (!externalSharedGrid) {
             grid.beginFrame();
@@ -9001,10 +9619,12 @@ export class IsometricRenderer {
                     attnTag = reserveAttentionPlates(grid, options.attentionPlates, viewWorld, null, pad);
                 }
             }
+            const legacyLayer = hasLayeredContext ? OVERLAY_LAYER_ATTENTION : OVERLAY_LAYER_THOUGHT;
             if (Array.isArray(reservedLabels)) {
                 for (let i = 0; i < reservedLabels.length; i++) {
-                    if (this._reserveRectClampedInGrid(grid, reservedLabels[i], OVERLAY_LAYER_ATTENTION, attnTag, cMinX, cMinY, cMaxX, cMaxY)) {
-                        attnTag++;
+                    const tag = hasLayeredContext ? attnTag : -1;
+                    if (this._reserveRectClampedInGrid(grid, reservedLabels[i], legacyLayer, tag, cMinX, cMinY, cMaxX, cMaxY)) {
+                        if (hasLayeredContext) attnTag++;
                     }
                 }
             }
@@ -9016,8 +9636,9 @@ export class IsometricRenderer {
                     for (const item of bucket.items) {
                         if (seenLegacy.has(item)) continue;
                         seenLegacy.add(item);
-                        if (this._reserveRectClampedInGrid(grid, item.rect || item, OVERLAY_LAYER_ATTENTION, attnTag, cMinX, cMinY, cMaxX, cMaxY)) {
-                            attnTag++;
+                        const tag = hasLayeredContext ? attnTag : -1;
+                        if (this._reserveRectClampedInGrid(grid, item.rect || item, legacyLayer, tag, cMinX, cMinY, cMaxX, cMaxY)) {
+                            if (hasLayeredContext) attnTag++;
                         }
                     }
                 }
@@ -9026,7 +9647,8 @@ export class IsometricRenderer {
         }
 
         // Select cohort (all focused + up to `budget` non-focused unmerged speakers)
-        // and honor the 300ms collision grace hold on already-committed speakers.
+        // and honor the 150ms hold ONLY when blocked by a strictly lower-priority
+        // thought (never overlapping Layer 1 plaques or Layer 2 attention/names).
         const cohortSprites = this._auctionCohortSprites || (this._auctionCohortSprites = []);
         const overflowSprites = this._auctionOverflowSprites || (this._auctionOverflowSprites = []);
         cohortSprites.length = 0;
@@ -9034,9 +9656,8 @@ export class IsometricRenderer {
 
         let placedCount = 0;
         let nonFocusedAdmitted = 0;
-        let thoughtTag = 0;
 
-        const commitPlacement = (sprite, chosen, chosenClampX, committed, wasClamped, reserveBody = true) => {
+        const commitPlacement = (sprite, chosen, chosenClampX, committed, wasClamped, reserveBody = true, priorityTag = 0) => {
             if (chosen !== committed || (chosenClampX !== 0) !== wasClamped) {
                 sprite._bubbleBlockedSince = 0;
                 sprite._bubbleBetterSince = 0;
@@ -9046,13 +9667,13 @@ export class IsometricRenderer {
             sprite.bubbleClampX = chosenClampX;
             const rects = this._thoughtCandidateRects(sprite, chosen, s, chosenClampX);
             if (reserveBody) {
-                grid.reserve(rects.body.x, rects.body.y, rects.body.x + rects.body.w, rects.body.y + rects.body.h, OVERLAY_LAYER_THOUGHT, thoughtTag++);
+                grid.reserve(rects.body.x, rects.body.y, rects.body.x + rects.body.w, rects.body.y + rects.body.h, OVERLAY_LAYER_THOUGHT, priorityTag);
             }
             if (rects.leader) {
-                grid.reserve(rects.v.x, rects.v.y, rects.v.x + rects.v.w, rects.v.y + rects.v.h, OVERLAY_LAYER_THOUGHT, thoughtTag++);
+                grid.reserve(rects.v.x, rects.v.y, rects.v.x + rects.v.w, rects.v.y + rects.v.h, OVERLAY_LAYER_THOUGHT, priorityTag);
             }
             if (rects.horizontal) {
-                grid.reserve(rects.h.x, rects.h.y, rects.h.x + rects.h.w, rects.h.y + rects.h.h, OVERLAY_LAYER_THOUGHT, thoughtTag++);
+                grid.reserve(rects.h.x, rects.h.y, rects.h.x + rects.h.w, rects.h.y + rects.h.h, OVERLAY_LAYER_THOUGHT, priorityTag);
             }
             sprite.bubbleSlot = THOUGHT_CANDIDATE_SLOT[chosen];
             sprite.bubbleLateral = THOUGHT_CANDIDATE_LATERAL[chosen] * (sprite._thoughtSide || 1);
@@ -9068,6 +9689,16 @@ export class IsometricRenderer {
                 return true;
             }
             return rects.horizontal && grid.overlaps(rects.h.x, rects.h.y, rects.h.x + rects.h.w, rects.h.y + rects.h.h, pad);
+        };
+
+        const rectsOverlapHardOrHigher = (rects, spPriority) => {
+            if (grid.overlapsHardOrPriority(rects.body.x, rects.body.y, rects.body.x + rects.body.w, rects.body.y + rects.body.h, spPriority, pad)) {
+                return true;
+            }
+            if (rects.leader && grid.overlapsHardOrPriority(rects.v.x, rects.v.y, rects.v.x + rects.v.w, rects.v.y + rects.v.h, spPriority, pad)) {
+                return true;
+            }
+            return rects.horizontal && grid.overlapsHardOrPriority(rects.h.x, rects.h.y, rects.h.x + rects.h.w, rects.h.y + rects.h.h, spPriority, pad);
         };
 
         for (let i = 0; i < order.length; i++) {
@@ -9094,16 +9725,18 @@ export class IsometricRenderer {
                 sprite._bubbleClamped = false;
             }
 
+            const spPriority = (sprite._thoughtRank || 0) * 10000;
             const committed = sprite._bubbleCandidate ?? null;
             const wasClamped = Boolean(sprite._bubbleClamped);
             if (committed !== null) {
                 const committedClampX = wasClamped && viewWorld ? this._thoughtClampX(sprite, committed, s, viewWorld) : 0;
                 const committedRects = this._thoughtCandidateRects(sprite, committed, s, committedClampX);
                 const outOfBounds = this._thoughtBoundsViolationArea(committedRects.body, viewWorld, reservedWorld) > 0;
-                if (!outOfBounds && rectsOverlapGrid(committedRects)) {
+                const blockedByHardOrHigher = rectsOverlapHardOrHigher(committedRects, spPriority);
+                if (!outOfBounds && !blockedByHardOrHigher && rectsOverlapGrid(committedRects)) {
                     if (!sprite._bubbleBlockedSince) sprite._bubbleBlockedSince = now;
-                    if (now - sprite._bubbleBlockedSince < THOUGHT_RESEARCH_MS) {
-                        commitPlacement(sprite, committed, committedClampX, committed, wasClamped, true);
+                    if (now - sprite._bubbleBlockedSince < researchHoldMs) {
+                        commitPlacement(sprite, committed, committedClampX, committed, wasClamped, true, spPriority);
                         if (!focused) nonFocusedAdmitted++;
                         continue;
                     }
@@ -9156,7 +9789,10 @@ export class IsometricRenderer {
                 }
 
                 spDesc.id = String(sprite.agent.id);
-                spDesc.priority = (sprite._thoughtRank || 0) * 10000 + (LABEL_MAX_SPEAKERS - i) * 100;
+                // Tier-based priority: strictly higher tiers (selected > hovered >
+                // seated > normal) can never be evicted by lower tiers, while
+                // equal-tier peers bid cooperatively in the ε-auction to pack cleanly.
+                spDesc.priority = (sprite._thoughtRank || 0) * 10000;
                 spDesc.priorCandidate = committed !== null && !sprite._bubbleBlockedSince ? committed : -1;
 
                 const side = sprite._thoughtSide || 1;
@@ -9216,7 +9852,7 @@ export class IsometricRenderer {
 
                 if (chosen >= 0) {
                     // `solveLabelAuction` already reserved `rects.body` in `grid`.
-                    commitPlacement(sprite, chosen, chosenClampX, committed, wasClamped, false);
+                    commitPlacement(sprite, chosen, chosenClampX, committed, wasClamped, false, spDesc.priority);
                     continue;
                 }
 
@@ -9254,7 +9890,7 @@ export class IsometricRenderer {
                             }
                         }
                     }
-                    commitPlacement(sprite, least, leastClampX, committed, wasClamped, true);
+                    commitPlacement(sprite, least, leastClampX, committed, wasClamped, true, spDesc.priority);
                     continue;
                 }
 

@@ -716,3 +716,84 @@ test('Shared-grid label auction: 20 speakers + 6 static plaques + 3 attention pl
     solveLabelAuction(stickyGrid, edgeSpeaker, stickyAssign, { viewport });
     assert.equal(stickyAssign[0], 1, 'boundsViolation * 1000 must reject clipped candidate in favor of in-bounds box');
 });
+
+test('W5-Fix-C: CrowdOrca coast plane push uses (r - d) / tau without clamping at 0', () => {
+    // Agent 20 px from coast (outside radius 11.5, inside CONTEXT_COAST_MARGIN = 28):
+    // Coast normal points inland (+X = 1, 0), agent wants to walk toward coast (-X = -12 px/s).
+    // Allowed inward approach speed is (20 - 11.5) / 0.45 = 18.89 px/s, so -12 px/s MUST be feasible!
+    // (The old Math.max(0, ...) bug forced vx >= 0 at 20 px away like an invisible wall.)
+    const agent = { id: 'coastal', x: 20, y: 100, vx: -12, vy: 0, maxSpeed: 45, radius: ORCA_AGENT_RADIUS };
+    const outVel = new Float64Array(2);
+    const lines = solveOrcaVelocity(agent, -12, 0, null, null, outVel, {
+        coastDist: 20,
+        coastNormalX: 1,
+        coastNormalY: 0,
+        maxSpeed: 45,
+    });
+    assert.equal(lines, 1);
+    assert.ok(outVel[0] < -10, `expected unclamped (r - d)/tau to allow approaching coast at -12 px/s, got vx=${outVel[0]}`);
+
+    // When penetrating (coastDist = 5 < radius 11.5), coast plane actively pushes inland (+X > 0).
+    const penVel = new Float64Array(2);
+    solveOrcaVelocity(agent, -12, 0, null, null, penVel, {
+        coastDist: 5,
+        coastNormalX: 1,
+        coastNormalY: 0,
+        maxSpeed: 45,
+    });
+    assert.ok(penVel[0] >= (ORCA_AGENT_RADIUS - 5) / ORCA_TAU_OBST - 1e-3, `expected positive inland push, got vx=${penVel[0]}`);
+});
+
+test('W5-Fix-C: solveLabelAuction enforces strict priority so lower-priority speakers never evict higher-priority holders', () => {
+    const grid = new OverlayOccupancyGrid({ cellSize: OVERLAY_GRID_CELL });
+    grid.beginFrame();
+    const viewport = { left: 0, top: 0, right: 800, bottom: 600 };
+
+    // Selected speaker (priority 30000) has two nearly-tied candidates (small bid price ~1.1).
+    // Normal speaker (priority 100) has ONLY one cheap candidate overlapping selected's cand 0,
+    // and an expensive candidate 1 (creating a huge bid increment ~50 if eviction were allowed!).
+    const speakers = [
+        {
+            id: 'selected-speaker',
+            priority: 30000,
+            priorCandidate: -1,
+            candidates: [
+                { left: 200, top: 200, right: 300, bottom: 220, cost: 0 },
+                { left: 200, top: 170, right: 300, bottom: 190, cost: 0.1 },
+            ],
+        },
+        {
+            id: 'normal-speaker',
+            priority: 100,
+            priorCandidate: -1,
+            candidates: [
+                { left: 205, top: 202, right: 305, bottom: 222, cost: 0 },   // overlaps selected cand 0
+                { left: 320, top: 200, right: 420, bottom: 220, cost: 80 }, // free alternative
+            ],
+        },
+    ];
+    const assign = new Int32Array(2);
+    const placed = solveLabelAuction(grid, speakers, assign, { viewport, pad: 2 });
+    assert.equal(placed, 2);
+    assert.equal(assign[0], 0, 'selected speaker must keep its winning candidate 0 and never be evicted');
+    assert.equal(assign[1], 1, 'lower-priority speaker must treat higher-priority overlap as ineligible and pick candidate 1');
+
+    // Also test when lower-priority speaker has NO alternative at all: must stay unplaced (-1) rather than evict selected!
+    grid.beginFrame();
+    const singleCand = [
+        speakers[0],
+        {
+            id: 'blocked-normal',
+            priority: 100,
+            priorCandidate: -1,
+            candidates: [
+                { left: 205, top: 202, right: 305, bottom: 222, cost: 0 },
+            ],
+        },
+    ];
+    const assign2 = new Int32Array(2);
+    const placed2 = solveLabelAuction(grid, singleCand, assign2, { viewport, pad: 2 });
+    assert.equal(placed2, 1);
+    assert.equal(assign2[0], 0, 'selected speaker must never be evicted even when lower-priority speaker has no other slot');
+    assert.equal(assign2[1], -1, 'lower-priority speaker with only higher-priority overlapping slot must stay unplaced');
+});

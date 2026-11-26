@@ -582,6 +582,101 @@ export class OverlayOccupancyGrid {
         return this.overlaps(left, top, right, bottom, pad);
     }
 
+    /**
+     * Zero-allocation layer-filtered overlap query: returns true iff `rect`
+     * overlaps any reserved box whose layer is `<= maxLayer` (e.g., Layer 1
+     * plaques only, or Layer 1 + Layer 2 attention plates / names).
+     */
+    overlapsMaxLayer(left, top, right, bottom, maxLayer, pad = 0) {
+        if (this._rectCount === 0) return false;
+        const inv = this._invCell;
+        const x0 = Math.floor((left - pad) * inv);
+        const x1 = Math.floor((right + pad) * inv);
+        const y0 = Math.floor((top - pad) * inv);
+        const y1 = Math.floor((bottom + pad) * inv);
+        const gen = this._generation;
+        const bucketGen = this._bucketGen;
+        const bucketHead = this._bucketHead;
+        const nodeRect = this._nodeRect;
+        const nodeCellX = this._nodeCellX;
+        const nodeCellY = this._nodeCellY;
+        const nodeNext = this._nodeNext;
+        const rL = this._rectLeft;
+        const rT = this._rectTop;
+        const rR = this._rectRight;
+        const rB = this._rectBottom;
+        const rLayer = this._rectLayer;
+
+        for (let cx = x0; cx <= x1; cx++) {
+            for (let cy = y0; cy <= y1; cy++) {
+                const h = hashOverlayCell(cx, cy);
+                if (bucketGen[h] !== gen) continue;
+                let node = bucketHead[h];
+                while (node !== -1) {
+                    if (nodeCellX[node] === cx && nodeCellY[node] === cy) {
+                        const idx = nodeRect[node];
+                        if (
+                            rLayer[idx] <= maxLayer
+                            && rectsOverlapCoords(left, top, right, bottom, rL[idx], rT[idx], rR[idx], rB[idx], pad)
+                        ) {
+                            return true;
+                        }
+                    }
+                    node = nodeNext[node];
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns true iff `rect` overlaps any Layer 1/2 hard blocker OR any Layer 3
+     * thought whose tag (priority) is `>= minThoughtPriority`.
+     */
+    overlapsHardOrPriority(left, top, right, bottom, minThoughtPriority, pad = 0) {
+        if (this._rectCount === 0) return false;
+        const inv = this._invCell;
+        const x0 = Math.floor((left - pad) * inv);
+        const x1 = Math.floor((right + pad) * inv);
+        const y0 = Math.floor((top - pad) * inv);
+        const y1 = Math.floor((bottom + pad) * inv);
+        const gen = this._generation;
+        const bucketGen = this._bucketGen;
+        const bucketHead = this._bucketHead;
+        const nodeRect = this._nodeRect;
+        const nodeCellX = this._nodeCellX;
+        const nodeCellY = this._nodeCellY;
+        const nodeNext = this._nodeNext;
+        const rL = this._rectLeft;
+        const rT = this._rectTop;
+        const rR = this._rectRight;
+        const rB = this._rectBottom;
+        const rLayer = this._rectLayer;
+        const rTag = this._rectTag;
+
+        for (let cx = x0; cx <= x1; cx++) {
+            for (let cy = y0; cy <= y1; cy++) {
+                const h = hashOverlayCell(cx, cy);
+                if (bucketGen[h] !== gen) continue;
+                let node = bucketHead[h];
+                while (node !== -1) {
+                    if (nodeCellX[node] === cx && nodeCellY[node] === cy) {
+                        const idx = nodeRect[node];
+                        const layer = rLayer[idx];
+                        if (
+                            (layer <= OVERLAY_LAYER_ATTENTION || (layer === OVERLAY_LAYER_THOUGHT && rTag[idx] >= minThoughtPriority))
+                            && rectsOverlapCoords(left, top, right, bottom, rL[idx], rT[idx], rR[idx], rB[idx], pad)
+                        ) {
+                            return true;
+                        }
+                    }
+                    node = nodeNext[node];
+                }
+            }
+        }
+        return false;
+    }
+
     overlapArea(left, top, right, bottom, pad = 0) {
         if (this._rectCount === 0) return 0;
         let qGen = this._queryGen + 1;
@@ -964,6 +1059,7 @@ const labelScratch = {
     candEligible: new Uint8Array(LABEL_TOTAL_CANDS),
     candCount: new Int32Array(LABEL_MAX_SPEAKERS),
     speakerOrder: new Int32Array(LABEL_MAX_SPEAKERS),
+    speakerPriority: new Float64Array(LABEL_MAX_SPEAKERS),
     assignedCand: new Int32Array(LABEL_MAX_SPEAKERS),
     assignedPrice: new Float64Array(LABEL_MAX_SPEAKERS),
     evictList: new Int32Array(LABEL_MAX_SPEAKERS),
@@ -1065,6 +1161,7 @@ export function solveLabelAuction(grid, speakers, outAssignmentsOrOptions = null
     const candEligible = labelScratch.candEligible;
     const candCount = labelScratch.candCount;
     const speakerOrder = labelScratch.speakerOrder;
+    const speakerPriority = labelScratch.speakerPriority;
     const assignedCand = labelScratch.assignedCand;
     const assignedPrice = labelScratch.assignedPrice;
     const evictList = labelScratch.evictList;
@@ -1072,6 +1169,7 @@ export function solveLabelAuction(grid, speakers, outAssignmentsOrOptions = null
     // 1. Deterministic speaker ordering (priority desc, then stable id / index asc).
     for (let i = 0; i < count; i++) {
         speakerOrder[i] = i;
+        speakerPriority[i] = Number(speakers[i]?.priority) || 0;
         assignedCand[i] = -1;
         assignedPrice[i] = 0;
     }
@@ -1193,6 +1291,7 @@ export function solveLabelAuction(grid, speakers, outAssignmentsOrOptions = null
             const cNum = candCount[spIdx];
             if (cNum === 0) continue;
 
+            const spPriority = speakerPriority[spIdx];
             const base = spIdx * LABEL_MAX_CANDIDATES;
             let bestC = -1;
             let bestEff = Infinity;
@@ -1210,6 +1309,7 @@ export function solveLabelAuction(grid, speakers, outAssignmentsOrOptions = null
                 const b = candBottom[idx];
 
                 let overlapPrice = 0;
+                let blockedByHigherPriority = false;
                 for (let k = 0; k < count; k++) {
                     const kc = assignedCand[k];
                     if (kc === -1) continue;
@@ -1219,9 +1319,17 @@ export function solveLabelAuction(grid, speakers, outAssignmentsOrOptions = null
                         candLeft[kIdx], candTop[kIdx], candRight[kIdx], candBottom[kIdx],
                         pad,
                     )) {
+                        // Strict priority protection: a lower-priority speaker is
+                        // INELIGIBLE for any candidate overlapping a placed holder
+                        // with strictly higher priority (e.g. selected/hovered speaker).
+                        if (speakerPriority[k] > spPriority) {
+                            blockedByHigherPriority = true;
+                            break;
+                        }
                         overlapPrice += assignedPrice[k];
                     }
                 }
+                if (blockedByHigherPriority) continue;
 
                 const eff = bCost + overlapPrice;
                 if (eff < bestEff) {
@@ -1251,6 +1359,7 @@ export function solveLabelAuction(grid, speakers, outAssignmentsOrOptions = null
             const wb = candBottom[winIdx];
 
             let evictCount = 0;
+            let hitsHigherPriority = false;
             for (let k = 0; k < count; k++) {
                 const kc = assignedCand[k];
                 if (kc === -1) continue;
@@ -1260,9 +1369,14 @@ export function solveLabelAuction(grid, speakers, outAssignmentsOrOptions = null
                     candLeft[kIdx], candTop[kIdx], candRight[kIdx], candBottom[kIdx],
                     pad,
                 )) {
+                    if (speakerPriority[k] > spPriority) {
+                        hitsHigherPriority = true;
+                        break;
+                    }
                     evictList[evictCount++] = k;
                 }
             }
+            if (hitsHigherPriority) continue;
 
             // Do not allow an out-of-bounds candidate to evict an in-bounds holder.
             if (evictCount > 0 && bestBase >= LABEL_BOUNDS_PENALTY) {
@@ -1355,7 +1469,7 @@ export function solveLabelAuction(grid, speakers, outAssignmentsOrOptions = null
         const r = candRight[idx];
         const b = candBottom[idx];
         if (reserveInGrid && grid) {
-            grid.reserve(l, t, r, b, OVERLAY_LAYER_THOUGHT, i);
+            grid.reserve(l, t, r, b, OVERLAY_LAYER_THOUGHT, Math.round(speakerPriority[i]));
         }
         if (outRects) {
             const off = i * 4;
