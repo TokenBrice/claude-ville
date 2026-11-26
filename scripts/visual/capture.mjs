@@ -347,6 +347,7 @@ Options:
   --golden-dir=<dir>      Golden root (default: claudeville/visual/golden)
   --accept                Write/update golden baselines in --golden-dir
   --allow-fallback        Do not fail on software fallback adapter
+  --frontier              Enable WebGPU Frontier passes
   --authored-solar        Pin a zero day shift: authored diurnal keys at
                           06:00/12:30/18:00/18:27/19:45/22:00 on any date/host
   --url=<url>             Existing server URL (default: isolated ephemeral port)
@@ -367,6 +368,7 @@ export function parseArgs(argv) {
         goldenDir: DEFAULT_GOLDEN_DIR,
         accept: false,
         allowFallback: false,
+        frontier: false,
         authoredSolar: false,
         url: null,
         headed: false,
@@ -378,6 +380,7 @@ export function parseArgs(argv) {
         if (arg === '--accept') { opts.accept = true; continue; }
         if (arg === '--allow-fallback') { opts.allowFallback = true; continue; }
         if (arg === '--authored-solar') { opts.authoredSolar = true; continue; }
+        if (arg === '--frontier') { opts.frontier = true; continue; }
         if (arg === '--headed') { opts.headed = true; continue; }
         const [flag, inline] = arg.split('=', 2);
         const value = inline ?? argv[++i];
@@ -448,6 +451,7 @@ export function parseArgs(argv) {
     }
     const baseList = opts.scenarios || (opts.cases.length ? [] : DEFAULT_SCENARIOS.slice(0, 2));
     opts.scenarios = [...baseList, ...opts.cases];
+    if (opts.frontier && opts.backend !== 'webgpu') throw new Error('--frontier requires --backend=webgpu');
     return opts;
 }
 
@@ -837,6 +841,9 @@ function installVisualCaptureHelpers() {
             selfStableBytes: identicalStreak >= settleFrames - 1,
             canvasSea,
             ladderLevel,
+            cameraPose: { ...r.camera.screenToWorld(r.camera._viewportWidth() / 2, r.camera._viewportHeight() / 2), zoom: r.camera.zoom },
+            frontier: { featureMask: gpuDiag?.frontier?.featureMask ?? 0 },
+            substrateRevision: gpu?.substrateRevision ?? 0,
             adapter: adapterInfo ? {
                 vendor: adapterInfo.vendor || null,
                 architecture: adapterInfo.architecture || null,
@@ -930,6 +937,7 @@ export async function captureVisualRun(options) {
                 try {
                     const url = new URL(`${server.baseUrl}/`);
                     url.searchParams.set('sim', '1');
+                    if (options.frontier) url.searchParams.set('frontier', '1');
                     url.searchParams.set('scenario', item.scenario);
                     url.searchParams.set('renderer', options.backend);
                     await page.goto(url.href, { waitUntil: 'load', timeout: 60_000 });
@@ -967,6 +975,16 @@ export async function captureVisualRun(options) {
                         }
                     }
 
+                    if (options.frontier) {
+                        await page.waitForFunction(() => {
+                            const d = window.__claudeVilleApp.renderer.gpuWorld?.getDiagnostics().frontier;
+                            return d?.enabled && ['surfaceDepth', 'mirror', 'ripples', 'shafts', 'wind'].every(name => {
+                                const pass = d.passes[name];
+                                if (pass?.error) throw Error(name + ' failed to prepare: ' + pass.error);
+                                return pass?.ready;
+                            }) && (d.featureMask & 5) === 5;
+                        }, null, { timeout: 60000 });
+                    }
                     const captured = await page.evaluate(
                         (a) => window.__cvVisualCapture.freezeAndCapture(a),
                         { settleFrames: options.settleFrames, seaSettleMs: CANVAS_SEA_SETTLE_MS, seaSettleRenders: CANVAS_SEA_SETTLE_RENDERS },
@@ -1035,6 +1053,7 @@ export async function captureVisualRun(options) {
                         backing: [captured.width, captured.height],
                         dpr: size.dpr,
                         adapter: captured.adapter,
+                        cameraPose: captured.cameraPose, frontier: captured.frontier, substrateRevision: captured.substrateRevision,
                         determinism: {
                             selfStableBytes: captured.selfStableBytes,
                             ladderLevel: captured.ladderLevel,

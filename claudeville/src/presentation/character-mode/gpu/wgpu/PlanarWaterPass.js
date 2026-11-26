@@ -27,6 +27,7 @@
 //   - Strict role 0 receiver guard: emission RGB = 0, role alpha = 0, no bloom,
 //     linear luminance <= 0.70, encoded Rec.709 Y <= 0.74, HSV S <= maxSat
 //     (and S <= 0.65 at V >= 0.50).
+import { TIME_GRADE_WGSL } from '../wgsl/grade.js';
 import { GPU_RECORD_FLAGS } from '../GpuWorldPolicy.js';
 import {
     createUniformViews,
@@ -121,6 +122,10 @@ export const PLANAR_MIRROR_UNIFORM_LAYOUT = uniformLayout('PlanarMirrorUniforms'
     ['basinParams', 'vec4f'],     // waterZ, contactBandPx, collarPx, maxShiftPx
     ['depthRange', 'vec4f'],      // Dmin=-2048, Dmax=6144, recip=1/8192, reserved
     ['targetSize', 'vec4f'],      // 1024, 512, 1/1024, 1/512
+    ['gradeGain', 'vec3f'], ['gradeExposure', 'f32'],
+    ['gradePurkinje', 'vec3f'], ['gradeSaturation', 'f32'],
+    ['gradeLift', 'vec3f'], ['gradeGamma', 'vec3f'],
+    ['gradeHighlight', 'vec3f'], ['gradeShadow', 'vec3f'],
 ]);
 
 export const PLANAR_WATER_PARAMS_LAYOUT = uniformLayout('PlanarWaterParams', [
@@ -133,6 +138,7 @@ export const PLANAR_WATER_PARAMS_LAYOUT = uniformLayout('PlanarWaterParams', [
     ['skyFar', 'vec4f'],          // graded horizon linear sRGB, sky share W in [0,1]
     ['skyNear', 'vec4f'],         // graded upper sky linear sRGB, reserved 0
     ['coastOrigin', 'vec4f'],     // coastOriginX, coastOriginY, rippleOriginX, rippleOriginY
+    ['bedOrigin', 'vec2i'],
     ['rippleSize', 'vec4f'],      // rippleW, rippleH, rippleScale, contactY
 ]);
 
@@ -548,7 +554,7 @@ export function resolvePlanarWaterTexel({
     applyGuard = true,
 }) {
     const bed16 = srgbRgbToLinear16(bedRgb8);
-    if (!exposed) {
+    if (!exposed || !basinMatch || collarDistance(x, y, planarRect) < 0) {
         return {
             rgb8: [bedRgb8[0], bedRgb8[1], bedRgb8[2]],
             linear16: bed16,
@@ -653,6 +659,8 @@ ${PLANAR_MIRROR_UNIFORM_LAYOUT.wgsl}
 @group(0) @binding(${PLANAR_MIRROR_BINDING.albedo}) var mirrorAlbedo: texture_2d<f32>;
 @group(0) @binding(${PLANAR_MIRROR_BINDING.albedoSampler}) var mirrorSampler: sampler;
 
+${TIME_GRADE_WGSL.replaceAll('frame.', 'mirror.')}
+
 struct MirrorInstanceIn {
   @location(0) rect: vec4f,       // x, y, w, h in world art px
   @location(1) uvRect: vec4f,     // u0, v0, u1, v1
@@ -680,8 +688,9 @@ struct MirrorVsOut {
     (local.x / max(1.0, mirror.targetSize.x)) * 2.0 - 1.0,
     1.0 - (local.y / max(1.0, mirror.targetSize.y)) * 2.0
   );
-  // Geometric depth32float: d = (6144 - D) / 8192, clear=1.0, compare=less.
-  let depth = clamp((mirror.depthRange.y - inst.geom.z) * mirror.depthRange.z, 0.00001, 0.99999);
+  // Reflection keeps ground Y fixed and replaces H by 2Z-H in D=Y+H/2.
+  let reflectedOrder = inst.geom.z + z - 0.5 * h;
+  let depth = clamp((mirror.depthRange.y - reflectedOrder) * mirror.depthRange.z, 0.00001, 0.99999);
   var out: MirrorVsOut;
   out.position = vec4f(ndc, depth, 1.0);
   out.uv = vec2f(select(inst.uvRect.x, inst.uvRect.z, right), select(inst.uvRect.y, inst.uvRect.w, bottom));
@@ -696,7 +705,7 @@ struct MirrorVsOut {
   let texel = textureSampleLevel(mirrorAlbedo, mirrorSampler, in.uv, 0.0);
   // Alpha cutout discard before writing depth; role-neutral straight sRGB8 + alpha.
   if (texel.a < 0.5) { discard; }
-  return vec4f(clamp(texel.rgb, vec3f(0.0), vec3f(1.0)), texel.a);
+  return vec4f(applyTimeGrade(texel.rgb, true), texel.a);
 }
 `;
 
@@ -818,7 +827,8 @@ fn basinAtPixel(p: vec2i) -> u32 {
 
 fn rippleShiftAt(p: vec2i, rectMin: vec2i, rectSize: vec2i, basinId: u32) -> i32 {
   if (params.reducedMotion != 0u || (params.frontier.x & 2u) == 0u) { return 0; }
-  let contactRow = p.y - i32(floor(params.rippleSize.w));
+  let contactCoord = p - rectMin;
+  let contactRow = i32(round(textureLoad(coastTex, contactCoord, 0).r * 255.0)) - 1;
   if (contactRow <= 0) { return 0; }
   let maxShift = i32(floor(params.basinParams.w + 0.5));
   let cap = select(maxShift, min(1, maxShift), contactRow <= i32(floor(params.basinParams.y + 0.5)));
@@ -891,17 +901,16 @@ fn waterReceiverGuard(rgbIn: vec3u, maxSat: f32) -> vec3u {
 }
 
 fn resolveWaterAt(fragPos: vec2f) -> vec4f {
-  let world = fragPos / max(params.cameraScale, 0.0001) - params.cameraXy;
+  let screen = vec2f(fragPos.x, params.resolution.y - fragPos.y);
+  let world = screen / max(params.cameraScale, 0.0001) - params.cameraXy;
   let p = vec2i(floor(world));
   let bedDims = vec2i(textureDimensions(bedTex));
-  let bedCoord = clamp(vec2i(i32(fragPos.x), bedDims.y - 1 - i32(fragPos.y)), vec2i(0), bedDims - vec2i(1));
+  let absolute = vec2i(fragPos) - params.bedOrigin;
+  let bedCoord = vec2i(absolute.x, absolute.y % bedDims.y);
   let bedSample = textureLoad(bedTex, bedCoord, 0);
-  if (!isWaterExposed(p)) {
-    return bedSample;
-  }
+  if (!isWaterExposed(p)) { discard; }
 
-  let bedBytes = vec3u(floor(clamp(bedSample.rgb, vec3f(0.0), vec3f(1.0)) * 255.0 + 0.5));
-  let bed16 = srgbBytesToLin16(bedBytes);
+  var refracted = bedSample;
 
   let rectMin = vec2i(floor(params.planarRect.xy));
   let rectSize = vec2i(floor(params.planarRect.zw));
@@ -913,12 +922,19 @@ fn resolveWaterAt(fragPos: vec2f) -> vec4f {
   if (mirrorEnabled && basinOk && local.x >= 0 && local.y >= 0 && local.x < rectSize.x && local.y < rectSize.y) {
     collarDist = min(min(local.x, local.y), min(rectSize.x - 1 - local.x, rectSize.y - 1 - local.y));
   }
+  if (collarDist < 0 || bedSample.a == 0.0 || textureLoad(coastTex, local, 0).r == 0.0) { discard; }
   let useLive = bayerCollarSelect(collarDist, p);
 
   var objBytes = vec3u(0u);
   var objAlpha = 0u;
   if (useLive) {
     let shift = rippleShiftAt(p, rectMin, rectSize, basinId);
+    if (shift != 0) {
+      let delta = roundAwayFromZero(f32(shift) * params.cameraScale);
+      let copiedMaxX = min(bedDims.x, i32(params.resolution.x) - params.bedOrigin.x) - 1;
+      let q = vec2i(clamp(bedCoord.x + delta, 0, copiedMaxX), bedCoord.y);
+      refracted = textureLoad(bedTex, q, 0);
+    }
     let mDims = vec2i(textureDimensions(planarColorTex));
     let mCoord = clamp(vec2i(local.x + shift, local.y), vec2i(0), mDims - vec2i(1));
     let live = textureLoad(planarColorTex, mCoord, 0);
@@ -941,6 +957,7 @@ fn resolveWaterAt(fragPos: vec2f) -> vec4f {
   let sky16 = mix256rgb(skyFar16, skyNear16, SKY_COURSE_MIX[course]);
   let skyWeight = u32(floor(clamp(params.skyFar.w, 0.0, 1.0) * 256.0 + 0.5));
 
+  let bed16 = srgbBytesToLin16(vec3u(round(refracted.rgb * 255.0)));
   let skyRay = mix256rgb(bed16, sky16, skyWeight);
   let env = mix256rgb(skyRay, srgbBytesToLin16(objBytes), alphaByteToWeight(objAlpha));
   let landed16 = mix256rgb(bed16, env, fresnel);
@@ -1239,10 +1256,13 @@ export class PlanarWaterPass {
      */
     encode(encoder, {
         planarRect = [0, 0, 0, 0],
+        gradeGain = [1, 1, 1], gradeExposure = 1, gradePurkinje = [1, 1, 1], gradeSaturation = 1,
+        gradeLift = [0, 0, 0], gradeGamma = [1, 1, 1], gradeHighlight = [1, 1, 1], gradeShadow = [1, 1, 1],
         waterZ = 0,
         basinId = 0,
         records = [],
         mirrorBatches = [],
+        bedCopy = null, captureMirror = true,
         resolveTargetView = null,
         resolveEmissionView = null,
         resolveTextureBindGroup = null,
@@ -1264,9 +1284,11 @@ export class PlanarWaterPass {
         const rectH = Math.max(0, Math.min(this.height, Math.floor(planarRect[3] || 0)));
         const validRect = [Math.floor(planarRect[0] || 0), Math.floor(planarRect[1] || 0), rectW, rectH];
 
-        const admitted = filterMirrorRecords(records, { basinId: basinId || null });
-        this._admittedRecords = admitted.length;
-        this._rejectedRecords = Math.max(0, (Array.isArray(records) ? records.length : 0) - admitted.length);
+        const sources = Array.isArray(records) ? records : [];
+        const admission = { basinId: basinId || null };
+        this._admittedRecords = 0;
+        for (const source of sources) if (isMirrorAdmittedRecord(source, admission)) this._admittedRecords++;
+        this._rejectedRecords = sources.length - this._admittedRecords;
         this._lastRect = validRect;
         this._activeBasin = basinId >>> 0;
         this._revision = revision >>> 0;
@@ -1275,6 +1297,7 @@ export class PlanarWaterPass {
             planarRect: validRect,
             basinParams: [waterZ, PLANAR_CONTACT_BAND_PX, PLANAR_COLLAR_PX, PLANAR_MAX_SHIFT_PX],
             depthRange: [PLANAR_DEPTH_MIN, PLANAR_DEPTH_MAX, PLANAR_DEPTH_RECIP, 0],
+            gradeGain, gradeExposure, gradePurkinje, gradeSaturation, gradeLift, gradeGamma, gradeHighlight, gradeShadow,
             targetSize: [this.width, this.height, 1 / this.width, 1 / this.height],
         });
         this.device.queue.writeBuffer(this.mirrorUniformBuffer, 0, this._mirrorViews.buffer);
@@ -1282,42 +1305,45 @@ export class PlanarWaterPass {
         // Pass 1: Reflected mirror capture — always clears to transparent black
         // (0,0,0,0) and depth 1.0 so valid-empty = reflected sky and departed
         // hulls are purged cleanly.
-        const mirrorPass = encoder.beginRenderPass({
-            label: 'planar-water-mirror-capture',
-            colorAttachments: [{
-                view: this.colorView,
-                clearValue: PLANAR_CLEAR_COLOR,
-                loadOp: 'clear',
-                storeOp: 'store',
-            }],
-            depthStencilAttachment: {
-                view: this.depthView,
-                depthClearValue: PLANAR_CLEAR_DEPTH,
-                depthLoadOp: 'clear',
-                depthStoreOp: 'store',
-            },
-        });
-        this._mirrorClearCount++;
-        if (rectW > 0 && rectH > 0) {
-            mirrorPass.setScissorRect?.(0, 0, rectW, rectH);
-            mirrorPass.setViewport?.(0, 0, this.width, this.height, 0, 1);
-            if (Array.isArray(mirrorBatches) && mirrorBatches.length > 0 && this.mirrorPipeline) {
-                mirrorPass.setPipeline(this.mirrorPipeline);
-                for (const batch of mirrorBatches) {
-                    if (!batch?.bindGroup || !batch?.instanceBuffer || !(batch.instanceCount > 0)) continue;
-                    mirrorPass.setBindGroup(0, batch.bindGroup);
-                    mirrorPass.setVertexBuffer(0, batch.instanceBuffer, batch.instanceOffset || 0);
-                    mirrorPass.draw(4, batch.instanceCount, 0, batch.firstInstance || 0);
+        if (captureMirror) {
+            const mirrorPass = encoder.beginRenderPass({
+                label: 'planar-water-mirror-capture',
+                colorAttachments: [{
+                    view: this.colorView,
+                    clearValue: PLANAR_CLEAR_COLOR,
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                }],
+                depthStencilAttachment: {
+                    view: this.depthView,
+                    depthClearValue: PLANAR_CLEAR_DEPTH,
+                    depthLoadOp: 'clear',
+                    depthStoreOp: 'store',
+                },
+            });
+            this._mirrorClearCount++;
+            if (rectW > 0 && rectH > 0) {
+                mirrorPass.setScissorRect?.(0, 0, rectW, rectH);
+                mirrorPass.setViewport?.(0, 0, this.width, this.height, 0, 1);
+                if (Array.isArray(mirrorBatches) && mirrorBatches.length > 0 && this.mirrorPipeline) {
+                    mirrorPass.setPipeline(this.mirrorPipeline);
+                    for (const batch of mirrorBatches) {
+                        if (!batch?.bindGroup || !batch?.instanceBuffer || !(batch.instanceCount > 0)) continue;
+                        mirrorPass.setBindGroup(0, batch.bindGroup);
+                        mirrorPass.setVertexBuffer(0, batch.instanceBuffer, batch.instanceOffset || 0);
+                        mirrorPass.draw(4, batch.instanceCount, 0, batch.firstInstance || 0);
+                    }
                 }
             }
+            mirrorPass.end();
         }
-        mirrorPass.end();
 
         // Pass 2: Integer water resolve pass (optional when caller resolves later).
         let resolved = false;
         if (resolveTargetView && resolveTextureBindGroup) {
             writeUniforms(PLANAR_WATER_PARAMS_LAYOUT, this._resolveViews, {
                 cameraXy,
+                bedOrigin: bedCopy?.origin || [0, 0],
                 resolution,
                 cameraScale,
                 waterZ,
@@ -1347,22 +1373,31 @@ export class PlanarWaterPass {
                     storeOp: 'store',
                 });
             }
-            const resolvePass = encoder.beginRenderPass({
-                label: 'planar-water-resolve',
-                colorAttachments: attachments,
-            });
-            resolvePass.setPipeline(useMrt ? this.resolvePipeline : this.resolveColorOnlyPipeline);
-            resolvePass.setBindGroup(0, this.resolveParamsBindGroup);
-            resolvePass.setBindGroup(1, resolveTextureBindGroup);
-            resolvePass.draw(3, 1, 0, 0);
-            resolvePass.end();
+            const [x, y] = bedCopy?.origin || [0, 0];
+            const [width, height] = bedCopy?.size || resolution;
+            const strip = bedCopy?.bed.height || height;
+            for (let dy = 0; dy < height; dy += strip) {
+                const rows = Math.min(strip, height - dy);
+                if (bedCopy) encoder.copyTextureToTexture({ texture: bedCopy.source, origin: [x, y + dy] },
+                    { texture: bedCopy.bed }, [width, rows]);
+                const resolvePass = encoder.beginRenderPass({
+                    label: 'planar-water-resolve',
+                    colorAttachments: attachments,
+                });
+                resolvePass.setPipeline(useMrt ? this.resolvePipeline : this.resolveColorOnlyPipeline);
+                resolvePass.setBindGroup(0, this.resolveParamsBindGroup);
+                resolvePass.setBindGroup(1, resolveTextureBindGroup);
+                if (bedCopy) resolvePass.setScissorRect(x, y + dy, width, rows);
+                resolvePass.draw(3, 1, 0, 0);
+                resolvePass.end();
+            }
             resolved = true;
         }
 
         return {
             encoded: true,
             resolved,
-            admitted: admitted.length,
+            admitted: this._admittedRecords,
             rejected: this._rejectedRecords,
             validRect,
         };

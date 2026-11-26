@@ -115,7 +115,7 @@ struct ShaftInstanceGpu {
 
 @group(0) @binding(${SHAFT_BINDINGS.params}) var<uniform> params: ShaftFrameParams;
 @group(0) @binding(${SHAFT_BINDINGS.shafts}) var<storage, read> shafts: array<ShaftInstanceGpu>;
-@group(0) @binding(${SHAFT_BINDINGS.sceneDepth}) var sceneDepthTex: texture_2d<f32>;
+@group(0) @binding(${SHAFT_BINDINGS.sceneDepth}) var sceneDepthTex: texture_depth_2d;
 @group(0) @binding(${SHAFT_BINDINGS.windField}) var windFieldTex: texture_2d<f32>;
 
 const SHAFT_SLICES: u32 = ${SHAFT_TERMINAL_SLICES}u;
@@ -241,7 +241,8 @@ fn bayerThresholdAt(texel: vec2i) -> f32 {
     clip.y = -clip.y;
   }
 
-  out.position = vec4f(clip.x, clip.y, encodeShaftDepth(depthD), 1.0);
+  // With a sampled scene depth, the quantized terminal slice owns the test.
+  out.position = vec4f(clip.x, clip.y, select(encodeShaftDepth(depthD), 0.0, (params.flags & 2u) != 0u), 1.0);
   out.worldPos = world;
   return out;
 }
@@ -277,7 +278,7 @@ fn evaluateShaftFragment(in: ShaftVsOut) -> vec4f {
   if ((params.flags & 2u) != 0u) {
     let dims = vec2i(textureDimensions(sceneDepthTex));
     let px = clamp(vec2i(floor(in.position.xy)), vec2i(0), max(dims - vec2i(1), vec2i(0)));
-    let sceneDepthNdc = textureLoad(sceneDepthTex, px, 0).r;
+    let sceneDepthNdc = textureLoad(sceneDepthTex, px, 0);
     if (sceneDepthNdc < shaftDepthNdc) {
       discard;
     }
@@ -855,6 +856,16 @@ export class VolumetricShaftsPass {
     } = {}) {
         if (!device) throw new Error('VolumetricShaftsPass.prepare requires a GPUDevice');
         this.release();
+        const resources = this.resources;
+        try {
+            return await this._prepare(device, resources, depthFormat, emissionFormat, colorFormat);
+        } catch (error) {
+            if (resources === this.resources) this.release();
+            throw error;
+        }
+    }
+
+    async _prepare(device, resources, depthFormat, emissionFormat, colorFormat) {
         this._device = device;
         this.depthFormat = depthFormat;
         this.colorFormat = colorFormat;
@@ -877,7 +888,7 @@ export class VolumetricShaftsPass {
                 {
                     binding: SHAFT_BINDINGS.sceneDepth,
                     visibility: vf,
-                    texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+                    texture: { sampleType: 'depth', viewDimension: '2d' },
                 },
                 {
                     binding: SHAFT_BINDINGS.windField,
@@ -929,36 +940,35 @@ export class VolumetricShaftsPass {
             }),
         ]);
 
+        if (resources !== this.resources) return this.getDiagnostics();
         const paramsBuffer = device.createBuffer({
             label: 'w5d-shafts-params',
             size: SHAFT_PARAMS_LAYOUT.size,
             usage: gpuUsage('UNIFORM', 64) | gpuUsage('COPY_DST', 8),
         });
+        resources.push(paramsBuffer);
         const shaftBuffer = device.createBuffer({
             label: 'w5d-shafts-instances',
             size: SHAFT_INSTANCE_BUFFER_BYTES,
             usage: gpuUsage('STORAGE', 128) | gpuUsage('COPY_DST', 8),
         });
+        resources.push(shaftBuffer);
 
         const tUsage = texUsage('TEXTURE_BINDING', 4) | texUsage('COPY_DST', 2);
         const fallbackDepthTex = device.createTexture({
             label: 'w5d-shafts-fallback-depth',
             size: [1, 1],
-            format: 'r32float',
-            usage: tUsage,
+            format: 'depth32float',
+            usage: texUsage('TEXTURE_BINDING', 4),
         });
-        device.queue.writeTexture(
-            { texture: fallbackDepthTex },
-            new Float32Array([1.0]),
-            { offset: 0, bytesPerRow: 4, rowsPerImage: 1 },
-            { width: 1, height: 1, depthOrArrayLayers: 1 },
-        );
+        resources.push(fallbackDepthTex);
         const fallbackWindTex = device.createTexture({
             label: 'w5d-shafts-fallback-wind',
             size: [1, 1],
             format: 'rgba8unorm',
             usage: tUsage,
         });
+        resources.push(fallbackWindTex);
         device.queue.writeTexture(
             { texture: fallbackWindTex },
             new Uint8Array([0, 0, 0, 0]),
@@ -1140,10 +1150,8 @@ export class VolumetricShaftsPass {
     }
 
     release() {
-        this._paramsBuffer?.destroy?.();
-        this._shaftBuffer?.destroy?.();
-        this._fallbackDepthTex?.destroy?.();
-        this._fallbackWindTex?.destroy?.();
+        for (const resource of this.resources || []) resource.destroy();
+        this.resources = [];
         this._bindGroupCache.clear();
 
         this._device = null;

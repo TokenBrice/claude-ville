@@ -15,6 +15,7 @@ import {
     shouldEvictAtHighWater,
     unpinnedCacheKeys,
 } from './CanvasBudget.js';
+import { getBuildingVisual } from './BuildingVisualRegistry.js';
 
 export const PLACEHOLDER_PATH = 'assets/sprites/_placeholder/checker-64.png';
 const OUTLINE_COLOR = '#f2d36b';
@@ -37,9 +38,10 @@ function auxiliarySidecarPathFor(entry, channel, albedoPath) {
     }
     if (channel === 'underside') {
         if (typeof entry.undersideSidecar === 'string') return entry.undersideSidecar;
-        return entry.undersideSidecar === true
-            ? String(albedoPath).replace(/\/base\.png(?=($|\?))/, '/underside.png')
-            : null;
+        if (entry.undersideSidecar !== true) return null;
+        const path = String(albedoPath);
+        return /(?:^|\/)base\.png$/.test(path.split('?', 1)[0])
+            ? path.replace(/base\.png(?=$|\?)/, 'underside.png') : null;
     }
     return null;
 }
@@ -981,6 +983,24 @@ export class AssetManager {
         ));
         await Promise.all([...sidecarLoads, ...atlasLoads]);
         if (!this._canCommitLoad(signal, generation)) return false;
+        const harbor = this.bitmaps.get('building.harbor');
+        const pierHeights = this.companions.get('occluder')?.get('building.harbor');
+        if (harbor && pierHeights) {
+            const { harborMirrorProfile } = await import('./CoastBake.js');
+            if (!this._canCommitLoad(signal, generation)) return false;
+            this.harborMirrorColumns = harborMirrorProfile(harbor, pierHeights);
+        }
+        const forgeSurface = this.companions.get('surface')?.get('building.forge');
+        if (forgeSurface && typeof OffscreenCanvas !== 'undefined') {
+            const { hearth, chimney } = getBuildingVisual('forge').effectAnchors;
+            const ctx = new OffscreenCanvas(1, 1).getContext('2d', { willReadFrequently: true });
+            this.forgeWindHeights = [hearth, chimney].map(([x, y]) => {
+                ctx.clearRect(0, 0, 1, 1);
+                ctx.drawImage(forgeSurface, x, y, 1, 1, 0, 0, 1, 1);
+                const [lo, hi] = ctx.getImageData(0, 0, 1, 1).data;
+                return (lo | hi << 8) / 16;
+            });
+        }
         this._invalidateDerivedArt();
         this._materialDecodedLoaded = true;
         if (this._optionalLoadMisses.length > 0) {
@@ -1988,6 +2008,8 @@ export class AssetManager {
         for (const id of [...this.actionStrips.keys()]) this._releaseActionStrip(id);
         this._actionStripLoads.clear();
         this.bitmaps.clear();
+        this.harborMirrorColumns = null;
+        this.forgeWindHeights = null;
         this.alphaMasks.clear();
         this.dimensions.clear();
         this.anchors.clear();

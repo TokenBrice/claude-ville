@@ -1,3 +1,5 @@
+import { CALM_WATER_FAUNA } from '../../config/scenery.js';
+import { duckPoint } from './WildlifeRenderer.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
@@ -923,6 +925,14 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         gpuFeed.rainSplashTiles = renderer.weatherRenderer?.sceneContext?.openGroundTiles || null;
         // RN-1 — the overlay weather's own viewport: one pressure-latch size key.
         gpuFeed.rainViewport = viewport;
+        if (renderer.gpuWorld.frontierEnabled && !gpuFeed.reducedMotion && renderer.wildlifeRenderer) {
+            const wildlife = renderer.wildlifeRenderer;
+            const opts = { motionMs: renderer.motionTimeMs, cover: wildlife._duckCover, ashore: wildlife._duckAshoreShare() };
+            gpuFeed.duckPaddles = atmosphere?.weather?.type === 'storm' ? [] : CALM_WATER_FAUNA.map((duck, i) => {
+                const p = duckPoint(duck, i, opts);
+                return [(p.tileX - p.tileY) * TILE_WIDTH / 2, (p.tileX + p.tileY) * TILE_HEIGHT / 2];
+            });
+        }
         // MS-1 — the low mist's density (fog weather or the dawn mist);
         // MS-2 — its burn-off shares (land, sea) as the sun climbs.
         const mistBurn = mistBurnFor(atmosphere);

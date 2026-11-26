@@ -213,7 +213,7 @@ export const BATCH_UNIFORM_LAYOUT = uniformLayout('BatchUniforms', [
     ['albedoPaged', 'u32'], ['fatPixels', 'u32'],
     ['additive', 'u32'], ['terrainBatch', 'u32'], ['puddleGround', 'u32'], ['hasMaterialMap', 'u32'],
     ['hasEmissiveMap', 'u32'], ['hasOccluderMap', 'u32'], ['cueRuns', 'u32'], ['writesDepth', 'u32'],
-    ['trimColumn', 'i32'], ['supportH', 'f32'], ['surfaceOffset', 'vec2i'],
+    ['trimColumn', 'i32'], ['supportH', 'f32'], ['surfaceOffset', 'vec2i'], ['sublayerRank', 'u32'],
 ]);
 if (BATCH_UNIFORM_LAYOUT.size > BATCH_UNIFORM_STRIDE) throw new Error('BatchUniforms exceeds its dynamic-offset slot');
 

@@ -246,31 +246,7 @@ function rainDescriptor(layouts, module, { roles = null, attachment = true } = {
 // persisted sparse contact stream. The integer resolve and collar stay shared.
 export async function prepareWorldWaterResolve(device, pass, layouts, roles) {
     const emissionFormat = roles || SCENE_EMISSION_FORMAT;
-    const sparseLookup = /* wgsl */ `
-fn contactAt(local: vec2i) -> vec4f {
-  let stride = textureDimensions(occupancyTex).x * 2u;
-  let at = u32(local.y) * stride + u32(local.x);
-  let dims = textureDimensions(contactTex);
-  var lo = 0u;
-  var hi = dims.x / 2u * dims.y;
-  while (lo < hi) {
-    let mid = (lo + hi) >> 1u;
-    let offset = 2u * mid;
-    let pos = vec2i(i32(offset % dims.x), i32(offset / dims.x));
-    let bytes = vec4u(round(textureLoad(contactTex, pos, 0) * 255.0));
-    let key = bytes.r | (bytes.g << 8u) | (bytes.b << 16u) | (bytes.a << 24u);
-    if (key == at) { return textureLoad(contactTex, pos + vec2i(1, 0), 0); }
-    if (key < at) { lo = mid + 1u; } else { hi = mid; }
-  }
-  return vec4f(0.0);
-}
-`;
-    const code = PLANAR_WATER_RESOLVE_WGSL
-        .replace('fn resolveWaterAt(', sparseLookup + '\nfn resolveWaterAt(')
-        .replaceAll('resolveWaterAt(in.position.xy)', 'resolveWaterAt(vec2f(in.position.x, params.resolution.y - in.position.y))')
-        .replace('if (!isWaterExposed(p)) {\n    return bedSample;', 'if (!isWaterExposed(p) || bedSample.a == 0.0) { discard;')
-        .replace('let cDims = vec2i(textureDimensions(contactTex));', 'let cDims = vec2i(textureDimensions(occupancyTex)) * 2;')
-        .replace('textureLoad(contactTex, cLocal, 0)', 'contactAt(cLocal)');
+    const code = PLANAR_WATER_RESOLVE_WGSL;
     const module = await compileModule(device, code, 'world-water-resolve.wgsl');
     const layout = device.createPipelineLayout({ bindGroupLayouts: [pass.resolveParamsLayout, pass.resolveTexturesLayout] });
     const pipeline = (entryPoint, targets) => device.createRenderPipelineAsync({
@@ -286,9 +262,41 @@ fn contactAt(local: vec2i) -> vec4f {
     ]);
 }
 
+// The compute output is also the instance stream. Decorative sparks keep the
+// emission attachment intact and test their emitter's foot against the scene.
+export async function prepareEmberPipelines(device, layouts, roles) {
+    const module = await compileModule(device, FRAME_UNIFORM_LAYOUT.wgsl + `
+@group(0) @binding(0) var<uniform> frame: FrameUniforms;
+@vertex fn emberVs(@builtin(vertex_index) vi: u32,
+    @location(0) posVel: vec4f, @location(1) lifeHeat: vec4f) -> @builtin(position) vec4f {
+  if (lifeHeat.z < 0.1) { return vec4f(2.0, 2.0, 0.0, 1.0); }
+  let p = floor(posVel.xy) + vec2f(f32(vi & 1u), f32(vi >> 1u));
+  let xy = (p + frame.cameraXy) * frame.cameraScale / frame.resolution * 2.0 - 1.0;
+  let d = clamp((6144.0 - (2.0 * p.y + 2.5 * max(0.0, lifeHeat.w - p.y))) / 8192.0, 0.0, 1.0);
+  let flat = 1.0 - clamp((lifeHeat.w + 2048.0) * 8.0 / 65535.0, 0.0, 1.0);
+  return vec4f(xy, select(flat, d, (frame.frontier.x & 4u) != 0u), 1.0);
+}
+@fragment fn emberFs() -> @location(0) vec4f { return vec4f(0.83, 0.41, 0.16, 1.0); }
+`, 'wind-embers.wgsl');
+    const variants = new Map();
+    await Promise.all([SCENE_DEPTH_FORMAT, 'depth32float'].flatMap(format => (roles ? [true] : [false, true]).map(async attachment => {
+        const pipeline = await device.createRenderPipelineAsync({
+            label: 'wind-embers', layout: layouts.particlePipeline,
+            vertex: { module, entryPoint: 'emberVs', buffers: [{ arrayStride: 32, stepMode: 'instance', attributes: [
+                { shaderLocation: 0, format: 'float32x4', offset: 0 }, { shaderLocation: 1, format: 'float32x4', offset: 16 },
+            ] }] }, primitive: { topology: 'triangle-strip' },
+            fragment: { module, entryPoint: 'emberFs', targets: [{ format: SCENE_COLOR_FORMAT },
+                ...(attachment ? [{ format: roles || SCENE_EMISSION_FORMAT, writeMask: 0 }] : [])] },
+            depthStencil: { format, depthCompare: 'less-equal', depthWriteEnabled: false },
+        });
+        variants.set(format + attachment, pipeline);
+    })));
+    return variants;
+}
+
 // All consumers of the geometric attachment use the same art-space projection.
 export async function prepareSurfacePipelines(device, layouts, roles = null) {
-    const shader = assembleScene().replace(SCENE_WGSL, () => sceneWgsl(false, true)).replace('var motifs: texture_2d<f32>', 'var surfacePage: texture_2d<f32>');
+    const shader = assembleScene().replace(SCENE_WGSL, () => sceneWgsl(false, true));
     const depthFor = (sy, foot) => `clamp((6144.0 - (2.0 * ${sy} + 2.5 * max(0.0, ${foot} - ${sy}))) / 8192.0, 0.000001, 0.999999)`;
     const [scene, particle, rain] = await Promise.all([
         compileModule(device, shader + SURFACE_DEPTH_WGSL, 'surface-v1.wgsl'),

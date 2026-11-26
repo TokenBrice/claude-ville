@@ -408,12 +408,20 @@ fn seaLiftedStop(stop: f32, lift0: f32, m: f32, order: f32) -> f32 {
     return max(stop - lift, min(stop, ${SEA_SUN_LIFT_FLOOR.toFixed(1)}));
 }
 fn seaGustAt(cell: vec2f) -> f32 {
+    if ((frame.frontier.x & 8u) != 0u) {
+        let p = vec2i(floor((cell - frame.seaGustRect.xy) / frame.seaGustRect.zw));
+        return textureLoad(seaGust, p, 0).b;
+    }
     if (frame.seaGustRect.z <= 0.0) { return 0.0; }
     let g = (cell + 0.5 - frame.seaGustRect.xy) / (frame.seaGustRect.zw * 128.0);
     if (any(g < vec2f(0.0)) || any(g >= vec2f(1.0))) { return 0.0; }
     return textureSampleLevel(seaGust, seaGustSampler, g, 0.0).r;
 }
 fn seaGustIntAt(cell: vec2f) -> f32 {
+    if ((frame.frontier.x & 8u) != 0u) {
+        let p = vec2i(floor((cell - frame.seaGustRect.xy) / frame.seaGustRect.zw));
+        return textureLoad(seaGust, p, 0).b;
+    }
     if (frame.seaGustRect.z <= 0.0) { return 0.0; }
     let num = vec2i(floor(cell)) * 2 + vec2i(1) - vec2i(floor(frame.seaGustRect.xy)) * 2;
     let den = vec2i(floor(frame.seaGustRect.zw)) * 2;

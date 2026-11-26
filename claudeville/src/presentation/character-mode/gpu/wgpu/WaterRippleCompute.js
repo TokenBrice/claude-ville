@@ -515,9 +515,10 @@ export class WaterRippleCompute {
             this.uploadBoundaryField(init);
         }
 
+        this.paramStride = Math.ceil(RIPPLE_PARAMS_LAYOUT.size / (device.limits?.minUniformBufferOffsetAlignment || 256)) * (device.limits?.minUniformBufferOffsetAlignment || 256);
         this.paramsBuffer = device.createBuffer({
             label: 'water-ripple-params',
-            size: RIPPLE_PARAMS_LAYOUT.size,
+            size: this.paramStride * RIPPLE_MAX_STEPS_PER_FRAME,
             usage: bu.UNIFORM | bu.COPY_DST,
         });
         this.impulseBuffer = device.createBuffer({
@@ -530,7 +531,7 @@ export class WaterRippleCompute {
         this.bindGroupLayout = device.createBindGroupLayout({
             label: 'water-ripple-compute-bgl',
             entries: [
-                { binding: B.params, visibility: computeStage, buffer: { type: 'uniform', minBindingSize: RIPPLE_PARAMS_LAYOUT.size } },
+                { binding: B.params, visibility: computeStage, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: RIPPLE_PARAMS_LAYOUT.size } },
                 { binding: B.previousState, visibility: computeStage, texture: { sampleType: 'float' } },
                 { binding: B.nextState, visibility: computeStage, storageTexture: { access: 'write-only', format: RIPPLE_STATE_FORMAT } },
                 { binding: B.boundaryField, visibility: computeStage, texture: { sampleType: 'float' } },
@@ -558,7 +559,7 @@ export class WaterRippleCompute {
                 label: `water-ripple-bg-${readIdx}-to-${writeIdx}`,
                 layout: this.bindGroupLayout,
                 entries: [
-                    { binding: B.params, resource: { buffer: this.paramsBuffer } },
+                    { binding: B.params, resource: { buffer: this.paramsBuffer, size: RIPPLE_PARAMS_LAYOUT.size } },
                     { binding: B.previousState, resource: this.pingPongViews[readIdx] },
                     { binding: B.nextState, resource: this.pingPongViews[writeIdx] },
                     { binding: B.boundaryField, resource: this.boundaryView },
@@ -720,11 +721,11 @@ export class WaterRippleCompute {
                 pad0: 0,
                 pad1: 0,
             });
-            this.device.queue.writeBuffer(this.paramsBuffer, 0, this._paramsViews.buffer);
+            this.device.queue.writeBuffer(this.paramsBuffer, step * this.paramStride, this._paramsViews.buffer);
 
             const pass = encoder.beginComputePass({ label: `water-ripple-step-${step}` });
             pass.setPipeline(this.pipeline);
-            pass.setBindGroup(0, this.bindGroups[this._readIndex]);
+            pass.setBindGroup(0, this.bindGroups[this._readIndex], [step * this.paramStride]);
             pass.dispatchWorkgroups(groupsX, groupsY, 1);
             pass.end();
 

@@ -283,7 +283,7 @@ struct WindEmitter {
 }
 struct DecorativeEmber {
   posVel: vec4f,   // x=worldX, y=worldY, z=vx, w=vy
-  lifeHeat: vec4f, // x=age, y=life, z=heat, w=seed
+  lifeHeat: vec4f, // age, lifetime, heat, projected ground foot
 }
 
 @group(0) @binding(${WIND_EMBER_BINDINGS.params}) var<uniform> params: WindFieldParams;
@@ -314,7 +314,7 @@ fn windEmberCs(@builtin(global_invocation_id) gid: vec3u) {
   var pos = ember.posVel.xy;
   var vel = ember.posVel.zw;
   var heat = ember.lifeHeat.z;
-  let seed = ember.lifeHeat.w;
+  var footY = ember.lifeHeat.w;
 
   let sizeF = vec2f(f32(params.gridSize.x), f32(params.gridSize.y));
   let maxCoord = vec2i(i32(params.gridSize.x) - 1, i32(params.gridSize.y) - 1);
@@ -333,12 +333,16 @@ fn windEmberCs(@builtin(global_invocation_id) gid: vec3u) {
         found = found + 1u;
       }
     }
-    if (hearthIdx >= 0) {
+    // Rotate births through the entire pool, one per emitter per fixed tick.
+    let births = max(count, 1u);
+    let cohort = params.stepIndex % ((params.emberCount + births - 1u) / births);
+    if (hearthIdx >= 0 && idx / births == cohort) {
       let em = emitters[hearthIdx];
       let h0 = emberHash(((idx + 1u) * 73856093u) ^ (params.stepIndex * 19349663u));
       let h1 = emberHash(((idx + 1u) * 83492791u) ^ (params.stepIndex * 2971215073u));
-      let cellUv = (em.posRadiusGust.xy + vec2f((h0 - 0.5) * 1.5, (h1 - 0.5) * 1.5)) / max(sizeF, vec2f(1.0));
-      pos = params.worldOrigin + cellUv * params.worldExtent;
+      let origin = params.worldOrigin + em.posRadiusGust.xy / sizeF * params.worldExtent;
+      pos = origin + (vec2f(h0, h1) - vec2f(0.5)) * 3.0;
+      footY = origin.y + f32(u32(em.dirMistFlags.w + 0.5) >> 2u) / 16.0;
       vel = vec2f((h0 - 0.5) * 8.0, -14.0 - h1 * 12.0);
       age = 0.0;
       life = 0.9 + h0 * 1.4;
@@ -359,7 +363,7 @@ fn windEmberCs(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   ember.posVel = vec4f(pos.x, pos.y, vel.x, vel.y);
-  ember.lifeHeat = vec4f(age, life, heat, seed);
+  ember.lifeHeat = vec4f(age, life, heat, footY);
   embers[idx] = ember;
 }
 `;
@@ -507,7 +511,8 @@ function normalizeEmitters(emitters = [], bounds = WIND_WORLD_BOUNDS, size = WIN
             if (gustStrength > 0 || dirX !== 0 || dirY !== 0) flags |= WIND_EMITTER_FLAGS.gust;
             if (raw.hearth === true || raw.kind === 'hearth') flags |= WIND_EMITTER_FLAGS.hearth;
         }
-        list.push({ cellX, cellY, radius, gustStrength, mistStrength, dirX, dirY, flags });
+        const height16 = clamp(Math.round(finite(raw.height, 0) * 16), 0, 65535);
+        list.push({ cellX, cellY, radius, gustStrength, mistStrength, dirX, dirY, flags, height16 });
     }
     return list;
 }
@@ -750,13 +755,14 @@ export function stepEmbersCpu(embers, windField, params = {}, emitters = []) {
                     found++;
                 }
             }
-            if (hearth) {
+            const births = Math.max(1, normEmitters.length);
+            if (hearth && Math.floor(idx / births) === stepIndex % Math.ceil(count / births)) {
                 const h0 = emberHashCpu(Math.imul(idx + 1, 73856093) ^ Math.imul(stepIndex, 19349663));
                 const h1 = emberHashCpu(Math.imul(idx + 1, 83492791) ^ Math.imul(stepIndex, 2971215073));
-                const u = (hearth.cellX + (h0 - 0.5) * 1.5) / size;
-                const v = (hearth.cellY + (h1 - 0.5) * 1.5) / size;
-                x = bounds.originX + u * bounds.width;
-                y = bounds.originY + v * bounds.height;
+                const origin = windCellToWorld(hearth.cellX, hearth.cellY, bounds, size);
+                x = origin.x + (h0 - 0.5) * 3;
+                y = origin.y + (h1 - 0.5) * 3;
+                embers[off + 7] = origin.y + hearth.height16 / 16;
                 vx = (h0 - 0.5) * 8;
                 vy = -14 - h1 * 12;
                 age = 0;
@@ -975,13 +981,23 @@ export class WindFieldCompute {
             this._emitterStaging[off + 4] = em.dirX;
             this._emitterStaging[off + 5] = em.dirY;
             this._emitterStaging[off + 6] = em.mistStrength;
-            this._emitterStaging[off + 7] = em.flags;
+            this._emitterStaging[off + 7] = (em.height16 << 2) | em.flags;
         }
     }
 
     async prepare(device, { obstacleBytes = null } = {}) {
         if (!device) throw new Error('WindFieldCompute.prepare requires a GPUDevice');
         this.release();
+        const resources = this.resources;
+        try {
+            return await this._prepare(device, resources, obstacleBytes);
+        } catch (error) {
+            if (resources === this.resources) this.release();
+            throw error;
+        }
+    }
+
+    async _prepare(device, resources, obstacleBytes) {
         this._device = device;
         if (obstacleBytes) this.setObstacleField(obstacleBytes);
 
@@ -1068,6 +1084,7 @@ export class WindFieldCompute {
             }),
         ]);
 
+        if (resources !== this.resources) return this.getDiagnostics();
         const fieldUsage = texUsage('TEXTURE_BINDING', 4)
             | texUsage('STORAGE_BINDING', 8)
             | texUsage('COPY_DST', 2)
@@ -1078,35 +1095,41 @@ export class WindFieldCompute {
             format: WIND_FIELD_FORMAT,
             usage: fieldUsage,
         });
+        resources.push(fieldA);
         const fieldB = device.createTexture({
             label: 'w5d-wind-field-b',
             size: [this.gridSize, this.gridSize],
             format: WIND_FIELD_FORMAT,
             usage: fieldUsage,
         });
+        resources.push(fieldB);
         const obstacleTexture = device.createTexture({
             label: 'w5d-wind-obstacle',
             size: [this.gridSize, this.gridSize],
             format: WIND_OBSTACLE_FORMAT,
             usage: texUsage('TEXTURE_BINDING', 4) | texUsage('COPY_DST', 2),
         });
+        resources.push(obstacleTexture);
 
         const paramsBuffer = device.createBuffer({
             label: 'w5d-wind-params',
             size: WIND_PARAMS_LAYOUT.size,
             usage: gpuUsage('UNIFORM', 64) | gpuUsage('COPY_DST', 8),
         });
+        resources.push(paramsBuffer);
         const emitterBuffer = device.createBuffer({
             label: 'w5d-wind-emitters',
             size: WIND_EMITTER_BUFFER_BYTES,
             usage: gpuUsage('STORAGE', 128) | gpuUsage('COPY_DST', 8),
         });
+        resources.push(emitterBuffer);
         const emberBytes = Math.max(WIND_EMBER_STRIDE_BYTES, this.emberCapacity * WIND_EMBER_STRIDE_BYTES);
         const emberBuffer = device.createBuffer({
             label: 'w5d-wind-embers',
             size: emberBytes,
-            usage: gpuUsage('STORAGE', 128) | gpuUsage('COPY_DST', 8) | gpuUsage('COPY_SRC', 4),
+            usage: gpuUsage('STORAGE', 128) | gpuUsage('COPY_DST', 8) | gpuUsage('COPY_SRC', 4) | gpuUsage('VERTEX', 32),
         });
+        resources.push(emberBuffer);
 
         const fieldViews = [fieldA.createView(), fieldB.createView()];
         const obstacleView = obstacleTexture.createView();
@@ -1284,13 +1307,8 @@ export class WindFieldCompute {
     }
 
     release() {
-        if (this._fieldTextures) {
-            for (const tex of this._fieldTextures) tex?.destroy?.();
-        }
-        this._obstacleTexture?.destroy?.();
-        this._paramsBuffer?.destroy?.();
-        this._emitterBuffer?.destroy?.();
-        this._emberBuffer?.destroy?.();
+        for (const resource of this.resources || []) resource.destroy();
+        this.resources = [];
 
         this._device = null;
         this._prepared = false;

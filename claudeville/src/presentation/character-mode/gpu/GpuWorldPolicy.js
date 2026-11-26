@@ -1868,6 +1868,11 @@ export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     normalized.occluderTextureUpdates = record.occluderTextureUpdates || null;
     normalized.textureKey = textureKey;
     normalized.sidecarKey = sidecarKey;
+    normalized.surfaceKey = record.surfaceKey;
+    normalized.sublayerRank = record.sublayerRank;
+    normalized.surfaceOffset = record.surfaceOffset;
+    normalized.supportH = record.supportH;
+    normalized.surfaceSource = record.surfaceSource;
     normalized.sourceWidth = sourceWidth;
     normalized.sourceHeight = sourceHeight;
     normalized.sx = sx;
@@ -1964,6 +1969,11 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
         if (!current || current.page !== page
             || (!page && (current.textureKey !== record.textureKey || current.source !== record.source))
             || current.sidecarKey !== record.sidecarKey
+            || current.records[0]?.surfaceSource !== record.surfaceSource
+            || (record.surfaceSource && (current.records[0].sublayerRank !== record.sublayerRank
+                || current.records[0].supportH !== record.supportH
+                || current.records[0].surfaceOffset?.[0] !== record.surfaceOffset?.[0]
+                || current.records[0].surfaceOffset?.[1] !== record.surfaceOffset?.[1]))
             || current.blend !== record.blend
             || current.writesDepth !== record.writesDepth
             || current.materialSource !== record.materialSource

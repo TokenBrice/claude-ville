@@ -2543,6 +2543,37 @@ function imagePixels(source, cache) {
     return pixels;
 }
 
+// A single screen column can cross all three piers. Each opaque span has a
+// distinct waterline, given by its last texel and the authored height there.
+export function harborMirrorProfile(base, occluder) {
+    if (!base?.width || base.complete === false) return null;
+    const cache = new Map();
+    const pixels = imagePixels(base, cache);
+    if (!pixels) return null;
+    const heights = imagePixels(occluder, cache);
+    const { w, h, data } = pixels;
+    const columns = Array.from({ length: w }, () => []);
+    for (let x = 0; x < w; x++) {
+        let start = -1;
+        for (let y = 0; y <= h; y++) {
+            if (y < h && data[(y * w + x) * 4 + 3] >= 128) {
+                if (start < 0) start = y;
+            } else if (start >= 0) {
+                const lift = heights?.data[((y - 1) * w + x) * 4] || 0;
+                columns[x].push({ start, end: y, foot: y + lift });
+                start = -1;
+            }
+        }
+    }
+    // Even when a deck crosses the same column, its piling touches water at
+    // the first transparent row, independently of the adjacent raised deck.
+    for (const tip of detectPilingTips(pixels)) for (let k = 0; k < tip.run; k++) {
+        const span = columns[tip.sx + k].find(span => span.end === tip.colY[k]);
+        if (span) span.foot = span.end;
+    }
+    return columns;
+}
+
 const ALWAYS_GROUNDED = () => true;
 
 // A landmark's lamp: its static `fixture` manifest layers (the Pharos lamp,

@@ -5,7 +5,7 @@
 // frame (`mapAsync` never blocks the loop). The whole-frame span (first begin
 // to last end) is the ladder's sample; per-pass spans are diagnostics only
 // (V2: isolated per-pass timestamps are not evidence on ANGLE-Metal).
-export const WGPU_TIMED_PASSES = Object.freeze(['scene', 'bloom', 'present']);
+export const WGPU_TIMED_PASSES = Object.freeze(['scene', 'bloom', 'present', 'compute']);
 const QUERIES_PER_SLOT = WGPU_TIMED_PASSES.length * 2;
 const RESOLVE_STRIDE = 256;
 

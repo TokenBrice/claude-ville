@@ -7,7 +7,7 @@ import {
     materialClassId,
 } from './GpuWorldPolicy.js';
 import { sourceEnergyFor } from '../AtmosphereState.js';
-import { tileToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from '../Projection.js';
+import { buildingCenterToWorld, tileToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from '../Projection.js';
 import { offshoreSceneryRecords } from '../OffshoreScenery.js';
 import { landmarkFootprint } from '../FootprintField.js';
 import { ownerSlotFor } from '../LightSourceRegistry.js';
@@ -602,6 +602,18 @@ function shadeFieldRecord(renderer) {
     };
 }
 
+const SURFACE_PART_RANK = Object.freeze({ banked: 3, hearth: 3, bellows: 4, gate: 4, door: 4, banner: 5 });
+
+function registerSurface(record, id, page, x, y, rank, supportH = 0) {
+    record.surfacePage = true;
+    record.surfaceKey = id;
+    record.surfaceSource = page;
+    record.supportH = finite(supportH);
+    record.surfaceOffset = [x, y];
+    record.sublayerRank = rank;
+    record.pageable = false;
+}
+
 function recordForBuilding(renderer, drawable, sequence) {
     const assets = renderer?.assets;
     const id = drawable?.entry?.id;
@@ -624,7 +636,7 @@ function recordForBuilding(renderer, drawable, sequence) {
     const dx = surface?.offsetX || 0, dy = surface?.offsetY || 0;
     const surfaceDepth = page && page.complete !== false && dx >= 0 && dy >= 0
         && page.width >= dx + dims.w && page.height >= dy + dims.h && page.width <= 512 && page.height <= 512;
-    const useAtlas = Boolean(!surfaceDepth && renderer._gpuAtlasDecision?.building && atlasAlbedo && atlasFrame?.rect);
+    const useAtlas = Boolean(!(frontier && id === 'building.harbor') && !surfaceDepth && renderer._gpuAtlasDecision?.building && atlasAlbedo && atlasFrame?.rect);
     let source;
     let sourceWidth;
     let sourceHeight;
@@ -748,17 +760,32 @@ function recordForBuilding(renderer, drawable, sequence) {
     const forgeOverlay = forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, split ? horizon : null, front, sequence);
     if (frontier) {
         if (surfaceDepth) {
-            record.surfacePage = true;
-            record.surfaceSource = page;
-            record.supportH = finite(drawable.supportH);
-            record.surfaceOffset = [dx, dy];
-            record.sidecarKey += `:surface:${record.supportH}:${dx},${dy}`;
-            record.pageable = false;
+            const register = (layer, rank) => {
+                const offsetX = dx + layer.x - spriteLeft - layer.sx;
+                const offsetY = dy + layer.y - Math.round(drawable.wy - ay) - layer.sy;
+                registerSurface(layer, id, page, offsetX, offsetY, rank, drawable.supportH);
+            };
+            register(record, drawable.sublayerRank ?? 0);
+            if (glass) register(glass, 1);
+            roof.forEach((layer, index) => register(layer, 2 + index));
+            for (const layer of parts) {
+                const name = layer.id.split(':').at(-1);
+                register(layer, SURFACE_PART_RANK[name] ?? 5);
+            }
+            if (forgeOverlay) register(forgeOverlay, 6);
+        }
+        if (buildingType === 'forge' && workOpen && !front && (!col || col.index === 0)) {
+            const anchors = getBuildingVisual('forge').effectAnchors;
+            const points = [anchors.hearth, anchors.chimney];
+            record.windEmitters = points.map(([x, y], i) => ({
+                worldX: spriteLeft + x, worldY: Math.round(drawable.wy - ay) + y, height: assets.forgeWindHeights?.[i] || 0,
+                hearth: true, strength: 0.65, mistStrength: 0.2, dirY: -0.25,
+            }));
         }
         record.shaftReceiver = buildingType === 'archive' || buildingType === 'forge';
-        if (buildingType === 'harbor') {
+        if (buildingType === 'harbor' && assets.harborMirrorColumns) {
             record.mirrorSource = true;
-            record.mirrorFootY = Math.round(drawable.wy);
+            record.mirrorColumns = assets.harborMirrorColumns;
             let underside = sidecarFor(assets, id, 'underside');
             if (!underside && typeof Image !== 'undefined') {
                 if (!renderer._harborUnderside) {
@@ -1212,6 +1239,23 @@ function recordForProp(renderer, drawable, sequence) {
         sequence,
         sourceKind,
     };
+    const parentId = drawable.buildingId || drawable.payload?.buildingId;
+    const crop = drawable.surfaceCrop || drawable.payload?.surfaceCrop;
+    if (renderer.gpuWorld?.frontierEnabled && (parentId === 'building.forge' || crop || propId === 'forge-open-front')) {
+        const id = parentId || 'building.forge';
+        const surface = sidecarFor(assets, id, 'surface');
+        const page = surface?.source ?? surface;
+        const parent = renderer.buildingRenderer?.buildings?.find(building => 'building.' + building.type === id);
+        if (page?.width && page.complete !== false && (parent || crop)) {
+            const centre = parent && buildingCenterToWorld(parent);
+            const anchor = assets.getAnchor(id);
+            const x = crop?.x ?? crop?.sx ?? crop?.[0] ?? cached.x - Math.round(centre?.x - anchor?.[0]);
+            const y = crop?.y ?? crop?.sy ?? crop?.[1] ?? cached.y - Math.round(centre?.y - anchor?.[1]);
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+                registerSurface(record, id, page, x + (surface.offsetX || 0), y + (surface.offsetY || 0), 7);
+            }
+        }
+    }
     const casts = treeCastRecords(renderer, sprite, part, sequence);
     return casts.length ? [...casts, record] : record;
 }

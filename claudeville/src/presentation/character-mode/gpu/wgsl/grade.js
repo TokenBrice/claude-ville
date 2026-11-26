@@ -10,9 +10,7 @@
 import { GRADE_CONSTANTS, gradeLiteral } from '../GpuWorldPolicy.js';
 
 /** GRADE_WGSL from a constants table (the shipped one is `GRADE_CONSTANTS`). */
-export function gradeWgsl(constants = GRADE_CONSTANTS) {
-    const k = name => gradeLiteral(constants, name);
-    return /* wgsl */ `
+export const TIME_GRADE_WGSL = /* wgsl */ `
 const GRADE_LUMA: vec3f = vec3f(0.2126, 0.7152, 0.0722);
 
 fn timeGradeBase(albedo: vec3f, lift: bool) -> vec3f {
@@ -32,6 +30,12 @@ fn applyTimeGrade(albedo: vec3f, lift: bool) -> vec3f {
     let c = timeGradeBase(albedo, lift) * lumaTint(dot(albedo, GRADE_LUMA));
     return c / max(1.0, max(c.r, max(c.g, c.b)));
 }
+`;
+
+export function gradeWgsl(constants = GRADE_CONSTANTS) {
+    const k = name => gradeLiteral(constants, name);
+    return /* wgsl */ `
+${TIME_GRADE_WGSL}
 
 const WATER_MAX_SATURATION: f32 = ${k('WATER_MAX_SATURATION')};
 const WATER_DAY_MAX_SATURATION: f32 = ${k('WATER_DAY_MAX_SATURATION')};

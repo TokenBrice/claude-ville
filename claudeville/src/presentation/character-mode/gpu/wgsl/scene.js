@@ -591,6 +591,10 @@ fn seaFretAlpha(world: vec2f, landShare: f32) -> f32 {
 
 // main() up to the receiver knee's floor: the sampled, weathered, water-state
 // and graded surface.
+${cleanBed ? `fn planarOwns(world: vec2f) -> bool {
+  let p = vec2i(floor(world - frame.planarRect.xy));
+  return (frame.frontier.x & 1u) != 0u && all(p >= vec2i(0)) && all(p < vec2i(frame.planarRect.zw)) && textureLoad(motifs, p, 0).r > 0.0;
+}` : ''}
 fn sceneSurface() -> SurfaceSample {
   // V9 — sample inside the record's own source rect.
   var uv = clamp(v_uv, v_uvClamp.xy, v_uvClamp.zw);
@@ -606,6 +610,7 @@ fn sceneSurface() -> SurfaceSample {
   var reflectSd = 0.0;
   var rowKeep = 1.0;
   if (reflectRecord) {
+    ${cleanBed ? 'if (planarOwns(v_world)) { discard; }' : ''}
     reflectRow = floor(v_world.y - v_reflect.x);
     var reflectTaps = FatTaps(vec2f(0.0, reflectRow), vec2f(0.0));
     if (fatOn) { reflectTaps = fatTaps(v_world - vec2f(0.0, v_reflect.x), fatWorldFw); }
@@ -684,6 +689,10 @@ fn sceneSurface() -> SurfaceSample {
   if (geometry.a > 0.0) { elevation = select(geometry.r, min(1.0, geometry.r * 255.0 / 128.0), surfaceCoded); }
   let px = vec2f(glFragCoord.x, frame.resolution.y - glFragCoord.y);
   var color = albedoRgba.rgb;
+  if ((frame.frontier.x & 8u) != 0u && frame.motionScale > 0.0 && (material == 4.0 || material == 5.0)) {
+    let gust = seaGustIntAt(floor(v_world));
+    if (gust > 0.4 && bayer4(floor(v_world)) < gust * 0.25) { color *= 1.0625; }
+  }
   var waterMaterial = false;
   var seaPath = false;
   var waterHue = false;
@@ -773,7 +782,7 @@ fn sceneSurface() -> SurfaceSample {
         color = capSaturation(mix(color, poolAlbedo * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * frame.waterMood.x), waterMaxSat());
       }
       color = seaPathCap(color);
-    } else${cleanBed ? ' if ((frame.frontier.x & 1u) == 0u || batch.terrainBatch == 0u || frame.skyFar.w == 0.0)' : ''} {
+    } else${cleanBed ? ' if (!planarOwns(v_world) || batch.terrainBatch == 0u || frame.skyFar.w == 0.0)' : ''} {
       color = capSaturation(applyWaterSky(color, skyCourse), waterMaxSat());
       // SEA-2 / SEA-3 — open water's share of the cool sky (applyWaterState).
       if (skyCourse == 3 && seaSkyTake > 0.0) { color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), waterMaxSat()); }
@@ -1539,19 +1548,21 @@ fn surfaceFragment(in: VsOut, roles: bool) -> SurfaceOut {
   if ((v_flags & RECORD_FLAG_SURFACE_DEPTH) != 0u && (frame.frontier.x & 4u) != 0u) {
     let uv = clamp(in.uv, in.uvClamp.xy, in.uvClamp.zw);
     let coord = vec2i(uv * batch.albedoSize) + batch.surfaceOffset;
-    let raw = vec4u(round(textureLoad(surfacePage, coord, 0) * 255.0));
+    let raw = vec4u(round(textureLoad(motifs, coord, 0) * 255.0));
     if ((raw.a & 128u) != 0u && raw.b < 64u) {
       h = batch.supportH + f32(raw.r | (raw.g << 8u)) / 16.0;
       if ((raw.a & 64u) == 0u) {
         let normal = oct64Normal(raw.b);
         let light = dot(normal, normalize(vec3f(frame.sun.xy, 1.0)));
         let ao = f32(raw.a & 15u) / 15.0;
-        color = vec4f(color.rgb * (1.0 + 0.08 * light * frame.sun.w - 0.12 * ao), color.a);
+        let course = round((0.08 * light * frame.sun.w - 0.12 * ao) * 16.0) / 16.0;
+        color = vec4f(color.rgb * (1.0 + course), color.a);
       }
     }
   }
   let Y = 2.0 * (in.world.y + h);
-  let D = Y + h / 2.0;
+  // A rank step survives depth32 rounding and the entire range is below one H16 step.
+  let D = Y + h / 2.0 + f32(min(batch.sublayerRank, 7u)) / 128.0;
   return SurfaceOut(color, shaded.emission, clamp((6144.0 - D) / 8192.0, 0.000001, 0.999999));
 }
 @fragment fn surfaceFs(in: VsOut) -> SurfaceOut { return surfaceFragment(in, false); }

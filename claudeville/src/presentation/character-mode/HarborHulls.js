@@ -482,6 +482,7 @@ export function hullRecords(pose, out = []) {
         frontCornerX: Math.round(pose.x),
         frontCornerY: -1,
         receiverAxis: true,
+        bowOffsetX: (strip.bowX || 1) * Math.round(strip.frameWidth * 0.30),
         // 5.3 — lit lamps: the sidecar is the record's emissive channel (same
         // source rect as the albedo), so they bloom and skip the grade like
         // a building's windows; its gate is the lamp strength (the record's

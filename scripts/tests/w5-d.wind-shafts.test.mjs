@@ -726,11 +726,33 @@ test('WGSL shaders satisfy entry points, group-0 bindings, storage format, role-
     assert.match(VOLUMETRIC_SHAFTS_WGSL, /@fragment\s+fn\s+shaftColorFs\b/);
     assert.match(VOLUMETRIC_SHAFTS_WGSL, new RegExp(`@group\\(0\\)\\s+@binding\\(${SHAFT_BINDINGS.params}\\)\\s+var<uniform>`));
     assert.match(VOLUMETRIC_SHAFTS_WGSL, new RegExp(`@group\\(0\\)\\s+@binding\\(${SHAFT_BINDINGS.shafts}\\)\\s+var<storage,\\s*read>`));
-    assert.match(VOLUMETRIC_SHAFTS_WGSL, new RegExp(`@group\\(0\\)\\s+@binding\\(${SHAFT_BINDINGS.sceneDepth}\\)\\s+var\\s+sceneDepthTex:\\s*texture_2d<f32>`));
+    assert.match(VOLUMETRIC_SHAFTS_WGSL, new RegExp(`@group\\(0\\)\\s+@binding\\(${SHAFT_BINDINGS.sceneDepth}\\)\\s+var\\s+sceneDepthTex:\\s*texture_depth_2d`));
     assert.match(VOLUMETRIC_SHAFTS_WGSL, new RegExp(`@group\\(0\\)\\s+@binding\\(${SHAFT_BINDINGS.windField}\\)\\s+var\\s+windFieldTex:\\s*texture_2d<f32>`));
     assert.match(VOLUMETRIC_SHAFTS_WGSL, /\bBAYER_4X4\b/);
     assert.match(VOLUMETRIC_SHAFTS_WGSL, /\bSHAFT_SLICES\s*:\s*u32\s*=\s*8u\b/);
     assert.match(VOLUMETRIC_SHAFTS_WGSL, /out\.emission\s*=\s*vec4f\(\s*0\.0\s*,\s*0\.0\s*,\s*0\.0\s*,\s*0\.0\s*\)/);
     assert.doesNotMatch(VOLUMETRIC_SHAFTS_WGSL, /\bsmoothstep\b/i, 'volumetric shafts WGSL must have zero smoothstep blur violations');
     assert.doesNotMatch(VOLUMETRIC_SHAFTS_WGSL, /gaussian|radialGradient|linearGradient/i, 'volumetric shafts WGSL must contain zero smooth gradient blurs');
+});
+
+test('every partial wind and shaft allocation is released on preparation failure', async () => {
+    for (const Pass of [WindFieldCompute, VolumetricShaftsPass]) {
+        const count = Pass === WindFieldCompute ? 6 : 4;
+        for (let failAfter = 1; failAfter < count; failAfter++) {
+            const device = createMockWebGpuDevice();
+            let allocations = 0;
+            for (const key of ['createBuffer', 'createTexture']) {
+                const allocate = device[key].bind(device);
+                device[key] = desc => {
+                    if (allocations++ === failAfter) throw Error('injected allocation failure');
+                    return allocate(desc);
+                };
+            }
+            const pass = new Pass();
+            await assert.rejects(pass.prepare(device), /injected allocation/);
+            pass.release();
+            const allocated = [...device.log.textures, ...device.log.buffers].map(obj => obj.label);
+            assert.deepEqual(device.log.destroyed.sort(), allocated.sort());
+        }
+    }
 });
