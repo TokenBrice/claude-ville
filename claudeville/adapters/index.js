@@ -221,9 +221,51 @@ function withoutLauncherWait(session) {
   return { ...session, waitReason: null, openQuestion: null, awaitingSince: null };
 }
 
+const COMPACTION_MAX_RECORDS = 4;
+const COMPACTION_PRE_TOKENS_MAX = 10_000_000;
+const COMPACTION_DURATION_MAX_MS = 3_600_000;
+
+function normalizeCompactions(session, provider) {
+  if (provider !== 'claude' || !Array.isArray(session?.compactions)) {
+    return { compactions: null, compactionCount: null };
+  }
+  const sanitized = [];
+  for (const item of session.compactions) {
+    if (!item || typeof item !== 'object') continue;
+    const at = Number(item.at);
+    const preTokens = item.preTokens;
+    if (!Number.isFinite(at) || at <= 0) continue;
+    if (typeof preTokens !== 'number' || !Number.isInteger(preTokens)
+      || preTokens < 1 || preTokens > COMPACTION_PRE_TOKENS_MAX) continue;
+    const postTokens = typeof item.postTokens === 'number'
+      && Number.isInteger(item.postTokens)
+      && item.postTokens >= 0
+      && item.postTokens <= preTokens
+      ? item.postTokens
+      : null;
+    const durationMs = typeof item.durationMs === 'number'
+      && Number.isInteger(item.durationMs)
+      && item.durationMs >= 0
+      && item.durationMs <= COMPACTION_DURATION_MAX_MS
+      ? item.durationMs
+      : null;
+    const trigger = item.trigger === 'manual' || item.trigger === 'auto'
+      ? item.trigger
+      : 'unknown';
+    sanitized.push({ at, trigger, preTokens, postTokens, durationMs });
+  }
+  const compactions = sanitized.slice(-COMPACTION_MAX_RECORDS);
+  const rawCount = session?.compactionCount;
+  const compactionCount = typeof rawCount === 'number' && Number.isInteger(rawCount) && rawCount >= compactions.length
+    ? rawCount
+    : compactions.length;
+  return { compactions, compactionCount };
+}
+
 function normalizeSession(rawSession, context = {}) {
   const session = withoutLauncherWait(rawSession);
   const provider = normalizeProviderId(session?.provider, context.provider || 'unknown');
+  const { compactions, compactionCount } = normalizeCompactions(session, provider);
   const workingSet = Array.isArray(session?.workingSet)
     ? session.workingSet.slice(0, 16).flatMap((item) => {
       const itemPath = typeof item?.path === 'string' ? item.path.trim() : '';
@@ -265,6 +307,8 @@ function normalizeSession(rawSession, context = {}) {
     reasoningEffort: session?.reasoningEffort ?? null,
     workflowId: session?.workflowId ?? null,
     workflowName: session?.workflowName ?? null,
+    compactions,
+    compactionCount,
     permissionMode: session?.permissionMode ?? null,
     turnState: session?.turnState ?? 'unknown',
     pendingTool: session?.pendingTool ?? null,

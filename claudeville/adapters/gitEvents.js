@@ -14,6 +14,16 @@ const GH_EVENT_COMMANDS = Object.freeze({
   // (`--draft=false`); the emitting branch filters ordinary metadata edits.
   release: new Set(['create', 'edit']),
 });
+// Spec 04 §3.3 — separate from GH_EVENT_TYPES (`{ pr, issue, release }`) so
+// the Harbor's forge URL pipeline is untouched.
+const GH_CHECK_COMMANDS = Object.freeze({
+  pr: new Set(['checks']),
+  run: new Set(['watch']),
+});
+const MAX_CHECKS_EVENTS_PER_PROJECT = 8;
+const GH_CHECKS_FAIL_EVIDENCE_RE = /(?:^|\s)fail(?:\s|$)/im;
+const GH_CHECKS_FAILING_COUNT_RE = /[1-9]\d* failing/;
+const GH_CHECKS_REJECTED_OUTPUT_RE = /^\s*(?:The user doesn't want to proceed with this tool use|\[Request interrupted by user)/;
 const GH_GLOBAL_FLAGS_WITH_VALUE = new Set([
   '--repo',
   '-R',
@@ -1905,6 +1915,80 @@ function findGhCommand(tokens) {
   return null;
 }
 
+function findGhCheckCommand(tokens) {
+  let index = 0;
+  if (tokens[index] !== 'gh') return null;
+
+  index++;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === '--') return null;
+    if (GH_GLOBAL_FLAGS_WITH_VALUE.has(token)) {
+      index += 2;
+      continue;
+    }
+    if (token.startsWith('--repo=') || token.startsWith('--hostname=') || token.startsWith('--config=')) {
+      index++;
+      continue;
+    }
+    if (token.startsWith('-')) {
+      index++;
+      continue;
+    }
+
+    const source = String(token).toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(GH_CHECK_COMMANDS, source)) return null;
+    index++;
+    while (index < tokens.length) {
+      const actionToken = tokens[index];
+      if (actionToken === '--') return null;
+      if (GH_GLOBAL_FLAGS_WITH_VALUE.has(actionToken)) {
+        index += 2;
+        continue;
+      }
+      if (actionToken.startsWith('--repo=') || actionToken.startsWith('--hostname=') || actionToken.startsWith('--config=')) {
+        index++;
+        continue;
+      }
+      if (actionToken.startsWith('-')) {
+        index++;
+        continue;
+      }
+
+      const action = String(actionToken).toLowerCase();
+      if (!GH_CHECK_COMMANDS[source]?.has(action)) return null;
+      return { source, action, actionIndex: index };
+    }
+  }
+
+  return null;
+}
+
+const GH_PR_CHECKS_ARG_SPEC = {
+  shortWithValue: 'iqtR',
+  longWithValue: new Set(['--interval', '--jq', '--json', '--template', '--repo', '--hostname', '--config']),
+};
+const GH_RUN_WATCH_ARG_SPEC = {
+  shortWithValue: 'iR',
+  longWithValue: new Set(['--interval', '--repo', '--hostname', '--config']),
+};
+
+function parseGhChecksPrNumber(selector) {
+  if (typeof selector !== 'string') return null;
+  const trimmed = selector.trim();
+  if (!trimmed) return null;
+  if (/^\d+$/.test(trimmed)) {
+    const num = Number(trimmed);
+    return Number.isSafeInteger(num) && num > 0 ? num : null;
+  }
+  const match = trimmed.match(/^https?:\/\/(?:www\.)?github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)(?:[/?#]|$)/i);
+  if (match) {
+    const num = Number(match[1]);
+    return Number.isSafeInteger(num) && num > 0 ? num : null;
+  }
+  return null;
+}
+
 // `gh` subcommand options that take a value, so a quoted flag spelling inside
 // one (`gh pr merge --subject "--auto"`) is that option's value, never a flag.
 const GH_PR_MERGE_ARG_SPEC = {
@@ -2619,26 +2703,42 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
     segment.index = segmentIndex;
     if (segment.start < 0) return;
     if (segment.word === 'gh') {
-      const forge = findGhCommand(segment.tokens.slice(segment.start));
-      if (!forge || segment.tokens.some((token) => HELP_FLAGS.has(token))) return;
-      const dryRun = segment.tokens.some((token) => token === '--dry-run' || token.startsWith('--dry-run='));
-      if (dryRun && ignoreDryRun) return;
-      const scan = scanSubcommandArgs(segment.tokens.slice(segment.start), forge.actionIndex, ghForgeArgSpec(forge));
-      // Only an edit whose effective `--draft` is an explicit false publishes
-      // a prior draft; ordinary metadata edits and re-drafting stay out.
-      if (forge.type === 'release' && forge.action === 'edit' && scan.bools.get('--draft') !== false) return;
-      // `--disable-auto` only cancels a pending auto-merge: there is no merge
-      // outcome to report.
-      if (forge.type === 'pr' && forge.action === 'merge' && ghFlagEnabled(scan, '--disable-auto')) return;
-      // GT-1/GT-3 — `--auto` only enables a merge GitHub may never run, and a
-      // `--draft` (`-d`) release is not published: the call's own exit 0 is
-      // not that outcome, so the event reports no outcome (never a success).
+      const ghTokens = segment.tokens.slice(segment.start);
+      const forge = findGhCommand(ghTokens);
+      if (forge) {
+        if (segment.tokens.some((token) => HELP_FLAGS.has(token))) return;
+        const dryRun = segment.tokens.some((token) => token === '--dry-run' || token.startsWith('--dry-run='));
+        if (dryRun && ignoreDryRun) return;
+        const scan = scanSubcommandArgs(ghTokens, forge.actionIndex, ghForgeArgSpec(forge));
+        // Only an edit whose effective `--draft` is an explicit false publishes
+        // a prior draft; ordinary metadata edits and re-drafting stay out.
+        if (forge.type === 'release' && forge.action === 'edit' && scan.bools.get('--draft') !== false) return;
+        // `--disable-auto` only cancels a pending auto-merge: there is no merge
+        // outcome to report.
+        if (forge.type === 'pr' && forge.action === 'merge' && ghFlagEnabled(scan, '--disable-auto')) return;
+        // GT-1/GT-3 — `--auto` only enables a merge GitHub may never run, and a
+        // `--draft` (`-d`) release is not published: the call's own exit 0 is
+        // not that outcome, so the event reports no outcome (never a success).
+        segment.candidate = {
+          type: forge.type,
+          forge,
+          dryRun,
+          autoEnabled: forge.type === 'pr' && forge.action === 'merge' && ghFlagEnabled(scan, '--auto'),
+          deferred: forge.type === 'release' && forge.action === 'create' && ghFlagEnabled(scan, '--draft'),
+        };
+        return;
+      }
+      const check = findGhCheckCommand(ghTokens);
+      if (!check || segment.tokens.some((token) => HELP_FLAGS.has(token))) return;
+      const argSpec = check.source === 'pr' ? GH_PR_CHECKS_ARG_SPEC : GH_RUN_WATCH_ARG_SPEC;
+      const scan = scanSubcommandArgs(ghTokens, check.actionIndex, argSpec);
+      if (isHelpFlag(scan)) return;
       segment.candidate = {
-        type: forge.type,
-        forge,
-        dryRun,
-        autoEnabled: forge.type === 'pr' && forge.action === 'merge' && ghFlagEnabled(scan, '--auto'),
-        deferred: forge.type === 'release' && forge.action === 'create' && ghFlagEnabled(scan, '--draft'),
+        type: 'checks',
+        check,
+        watch: check.source === 'run' ? true : ghFlagEnabled(scan, '--watch'),
+        exitStatusFlag: check.source === 'run' ? ghFlagEnabled(scan, '--exit-status') : false,
+        pr: check.source === 'pr' ? parseGhChecksPrNumber(scan.positionals[0]) : null,
       };
       return;
     }
@@ -2677,7 +2777,7 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
   const candidates = walk.segments.filter((segment) => segment.candidate);
   for (const segment of candidates) {
     const { type } = segment.candidate;
-    if (isForgeEventType(type)) continue;
+    if (isForgeEventType(type) || type === 'checks') continue;
     const displayText = normalizeCommand(displayCommand(segment.text));
     const commandHash = stableHash(stripSecrets(displayText));
     const id = `git-${type}-${stableHash(gitEventIdentity(type, commandHash, context, segment.index))}`;
@@ -2748,7 +2848,7 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
   const usedPushBlocks = new Set();
   for (const segment of walk.segments) {
     const candidate = segment.candidate;
-    if (!candidate || isForgeEventType(candidate.type)) continue;
+    if (!candidate || isForgeEventType(candidate.type) || candidate.type === 'checks') continue;
     if (candidate.type === 'commit') {
       let lineIndex = commitLines.findIndex((line, index) => !usedCommitLines.has(index)
         && candidate.subject && line.subject === candidate.subject);
@@ -2794,6 +2894,100 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
         ? { ...context, inferred: true, observed: false, success: undefined, exitCode: undefined, status: undefined }
         : { ...context, inferred: true, observed: false };
       events.push(createGitEvent(segment.text, candidate.type, candidate.dryRun, forgeContext, parsed));
+      continue;
+    }
+
+    if (candidate.type === 'checks') {
+      const cancelledOrRejected = context.interrupted === true
+        || context.rejected === true
+        || context.status === 'cancelled'
+        || context.status === 'canceled'
+        || context.status === 'rejected'
+        || GH_CHECKS_REJECTED_OUTPUT_RE.test(output);
+      if (cancelledOrRejected || segment.outcome === 'notRun') continue;
+      const completedAt = parseTimestamp(context.completedAt);
+      const hasCompletion = completedAt > 0
+        || exit !== null
+        || contextExitCode !== null
+        || typeof context.success === 'boolean'
+        || context.exitCodeSource === 'exit'
+        || context.exitCodeSource === 'flag';
+      if (!hasCompletion) continue;
+
+      const isLastSegment = segment.index === walk.segments.length - 1;
+      const allAndAndZero = exit === true && segment.outcomeFromExit === true;
+      const takesExitCode = segment.outcomeFromExit === true && (isLastSegment || allAndAndZero);
+
+      let rawExitCode = contextExitCode !== null && Number.isInteger(contextExitCode) ? contextExitCode : null;
+      let rawExitCodeSource = (context.exitCodeSource === 'exit' || context.exitCodeSource === 'flag')
+        ? context.exitCodeSource
+        : null;
+      if (rawExitCodeSource === null) {
+        if (rawExitCode !== null && context.exitCodeSource !== null) {
+          rawExitCodeSource = 'exit';
+        } else if (typeof context.success === 'boolean') {
+          rawExitCodeSource = 'flag';
+          if (context.success === true && rawExitCode === null) rawExitCode = 0;
+        }
+      }
+
+      const effectiveExitCode = takesExitCode ? rawExitCode : null;
+      const effectiveExitCodeSource = takesExitCode ? rawExitCodeSource : null;
+
+      let checkOutcome = 'unknown';
+      if (takesExitCode) {
+        if (candidate.check.source === 'pr') {
+          if (effectiveExitCode === 0) {
+            checkOutcome = 'pass';
+          } else if (effectiveExitCode === 8 && effectiveExitCodeSource === 'exit') {
+            checkOutcome = 'pending';
+          } else if (
+            effectiveExitCode === 1
+            && effectiveExitCodeSource === 'exit'
+            && (GH_CHECKS_FAIL_EVIDENCE_RE.test(output) || GH_CHECKS_FAILING_COUNT_RE.test(output))
+          ) {
+            checkOutcome = 'fail';
+          } else {
+            checkOutcome = 'unknown';
+          }
+        } else if (candidate.check.source === 'run') {
+          if (!candidate.exitStatusFlag) {
+            checkOutcome = 'unknown';
+          } else if (effectiveExitCode === 0) {
+            checkOutcome = 'pass';
+          } else if (effectiveExitCode !== null && effectiveExitCode !== 0 && effectiveExitCodeSource === 'exit') {
+            checkOutcome = 'fail';
+          } else {
+            checkOutcome = 'unknown';
+          }
+        }
+      }
+
+      const rawNormalized = normalizeCommand(displayCommand(segment.text));
+      const commandHash = stableHash(stripSecrets(rawNormalized));
+      const segmentIndex = Number(segment.index) || 0;
+      const ts = parseTimestamp(context.ts);
+      events.push(scrubEventStrings({
+        id: `git-checks-${stableHash(gitEventIdentity('checks', commandHash, context, segmentIndex))}`,
+        type: 'checks',
+        command: candidate.check.source === 'pr' ? 'gh pr checks' : 'gh run watch',
+        source: candidate.check.source,
+        watch: candidate.watch === true,
+        outcome: checkOutcome,
+        exitCode: effectiveExitCode,
+        exitCodeSource: effectiveExitCodeSource,
+        pr: candidate.pr,
+        project: normalizeProjectPath(context.project),
+        provider: context.provider || 'unknown',
+        sessionId: context.sessionId || null,
+        sourceId: context.sourceId || null,
+        ts: ts ? ts + segmentIndex : ts,
+        completedAt: completedAt ? completedAt + segmentIndex : null,
+        commandHash,
+        inferred: false,
+        observed: true,
+        confidence: 0.9,
+      }));
       continue;
     }
 
@@ -2899,20 +3093,30 @@ function dedupeGitEvents(events, { scrubbed = false } = {}) {
   }
 
   // Adapter scans can contain many old tool records for one repository. Keep
-  // the newest forge records without imposing a new limit on Git history.
+  // the newest forge records without imposing a new limit on Git history, and
+  // cap `checks` events to MAX_CHECKS_EVENTS_PER_PROJECT (8) newest per project.
   const dropped = new Set();
   const forgeCountsByProject = new Map();
+  const checksCountsByProject = new Map();
   for (let index = unique.length - 1; index >= 0; index--) {
     const event = unique[index];
-    const type = event?.type || event?.kind;
-    if (!isForgeEventType(type)) continue;
+    const type = String(event?.type || event?.kind || '').toLowerCase();
     const project = String(event?.project || '').trim() || '<unknown>';
-    const count = forgeCountsByProject.get(project) || 0;
-    if (count >= MAX_FORGE_EVENTS_PER_PROJECT) {
-      dropped.add(index);
-      continue;
+    if (isForgeEventType(type)) {
+      const count = forgeCountsByProject.get(project) || 0;
+      if (count >= MAX_FORGE_EVENTS_PER_PROJECT) {
+        dropped.add(index);
+        continue;
+      }
+      forgeCountsByProject.set(project, count + 1);
+    } else if (type === 'checks') {
+      const count = checksCountsByProject.get(project) || 0;
+      if (count >= MAX_CHECKS_EVENTS_PER_PROJECT) {
+        dropped.add(index);
+        continue;
+      }
+      checksCountsByProject.set(project, count + 1);
     }
-    forgeCountsByProject.set(project, count + 1);
   }
 
   return unique.filter((_, index) => !dropped.has(index));
@@ -4501,7 +4705,8 @@ function extractGitEventsFromCommandSource(source, context = {}, options = {}) {
 }
 
 module.exports = {
-  _test: { containmentSteps, freezeFields, repoStateSignature },
+  _test: { containmentSteps, findGhCheckCommand, freezeFields, GH_CHECK_COMMANDS, GH_EVENT_TYPES, repoStateSignature },
+  MAX_CHECKS_EVENTS_PER_PROJECT,
   MAX_FORGE_EVENTS_PER_PROJECT,
   compactGitEventsForWire,
   dedupeGitEvents,

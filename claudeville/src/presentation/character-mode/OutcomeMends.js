@@ -101,9 +101,21 @@ export class MendLedger {
             if (event.exitCodeSource !== 'exit'
                 && !(event.exitCodeSource === 'flag' && flagIsFailure(event.provider))) return null;
             if (at < (this._quietUntil.get(key) ?? -Infinity)) return null;
-            // The newest failure stands for its command.
+            // The newest failure stands for its command; repeated consecutive
+            // failures increment the stubborn-billet notch streak (capped 1..3).
+            const previous = this._open.get(key);
+            const streak = previous && at >= previous.at && at - previous.at <= this.windowMs
+                ? Math.min(3, (previous.streak || 1) + 1)
+                : 1;
             this._open.delete(key);
-            this._open.set(key, { at, id: event.id ?? null, exitCode });
+            this._open.set(key, {
+                at,
+                id: event.id ?? null,
+                exitCode,
+                streak,
+                agentId,
+                project: event.project ?? null,
+            });
             while (this._open.size > this.openLimit) this._open.delete(this._open.keys().next().value);
             return null;
         }
@@ -125,6 +137,41 @@ export class MendLedger {
             building: event.building ?? null,
             at,
         };
+    }
+
+    /**
+     * Repeated open failure streak for an agent (stubborn-billet notch count),
+     * capped at 1..3 when open failures exist, or 0 when none are open.
+     */
+    failureStreakFor(agentId, { now = null } = {}) {
+        const target = agentId == null ? '' : String(agentId);
+        if (!target) return 0;
+        const current = Number(now);
+        const checkWindow = now !== null && Number.isFinite(current);
+        let maxStreak = 0;
+        for (const entry of this._open.values()) {
+            if (entry.agentId !== target) continue;
+            if (checkWindow && current - entry.at > this.windowMs) continue;
+            if (entry.streak > maxStreak) maxStreak = entry.streak;
+        }
+        return Math.min(3, maxStreak);
+    }
+
+    /**
+     * Repeated open failure streak for a project, capped at 1..3 (0 when none).
+     */
+    failureStreakForProject(project, { now = null } = {}) {
+        const target = project == null ? '' : String(project);
+        if (!target) return 0;
+        const current = Number(now);
+        const checkWindow = now !== null && Number.isFinite(current);
+        let maxStreak = 0;
+        for (const entry of this._open.values()) {
+            if (entry.project !== target) continue;
+            if (checkWindow && current - entry.at > this.windowMs) continue;
+            if (entry.streak > maxStreak) maxStreak = entry.streak;
+        }
+        return Math.min(3, maxStreak);
     }
 
     /** Forget a departed agent's open failures. */

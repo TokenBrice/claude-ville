@@ -176,6 +176,13 @@ const MIST_FADE_MS = 800;
 const INBOUND_SHIP_CLASS_KEY = 'cutter';
 const PR_PENNANT_CLOTH = '#e8dcb8';
 const PR_PENNANT_RIM = '#3a2c1a';
+// Spec 04 §3.3 — `gh pr checks` / `gh run watch --exit-status`: verified pass
+// hoists a second pennant on the matching PR cutter for up to 60 min (or until
+// next checks event / merge); fail stands the failure bracket on that cutter.
+export const CHECKS_PENNANT_HOLD_MS = 60 * 60 * 1000;
+const CHECKS_PASS_PENNANT_CLOTH = GOLD;
+const CHECKS_PASS_PENNANT_RIM = PR_PENNANT_RIM;
+const MAX_SEEN_CHECKS_IDS = 512;
 const NO_SINK = Object.freeze({ progress: 0, px: 0, alphaScale: 1, force: false });
 
 // The repo flag's staff foot laps this many texels down the mast top.
@@ -1259,6 +1266,11 @@ export class HarborTraffic {
         this._grade = null;
         // 6.5 — first sighting of each repo's failure bracket: { firstSeen, fresh }.
         this._failureBrackets = new Map();
+        // Spec 04 §3.3 — latest verified `checks` outcome per PR cutter +
+        // one-shot Lighthouse keeper lamp flash hook for `pass`.
+        this._checksByShipId = new Map();
+        this._seenChecksIds = new Set();
+        this._pendingChecksPassFlash = false;
         // #18 — repos seen at least once, so a brand-new repo's first anchorage
         // can fire a one-time christening (maiden banner) and skip it thereafter.
         this._repoFirstSeen = new Map();
@@ -1576,6 +1588,11 @@ export class HarborTraffic {
             this._unchangedReconciliations++;
         }
         this._observeHarborCrates(agents, sourceChanged || force ? events : [], now);
+        if (sourceChanged || force) {
+            this._observeChecksEvents(agents, now);
+        } else if (this._checksByShipId.size > 0) {
+            this._pruneChecksState(now);
+        }
         this._repoAnchorageDrawableCache = this._repoAnchorageDrawables(this._repoDockSummaryCache, now);
         this._observePeakDensity(now);
         this._enumeratedFrame = -1;
@@ -1661,6 +1678,9 @@ export class HarborTraffic {
         this.waterRouteData = null;
         this._grade = null;
         this._failureBrackets.clear();
+        this._checksByShipId.clear();
+        this._seenChecksIds.clear();
+        this._pendingChecksPassFlash = false;
         releaseSuccessGrammar(this);
         this.sprites = null;
     }
@@ -3020,6 +3040,22 @@ export class HarborTraffic {
                 eventTime: Number(push.eventTime || 0),
             });
         }
+        // Spec 04 §3.3 — verified `checks` fail stands the existing failure
+        // bracket on the matching PR cutter.
+        for (const ship of this.state.ships.values()) {
+            const checks = this.checksStateForShip(ship, now);
+            if (!checks || checks.outcome !== 'fail') continue;
+            const key = `checks:${ship.id}`;
+            if (marks.has(key)) continue;
+            marks.set(key, {
+                key,
+                tile: this._shipStartTile(ship),
+                onShip: true,
+                status: 'failed',
+                agentId: checks.agentId || ship.agentId || null,
+                eventTime: Number(checks.at || 0),
+            });
+        }
         for (const key of this._failureBrackets.keys()) {
             if (!marks.has(key)) this._failureBrackets.delete(key);
         }
@@ -3767,7 +3803,12 @@ export class HarborTraffic {
         if (ship.status === 'docked' && ship.pushStatus === 'rejected') {
             this._drawRejectedCautionFlag(ctx, ship, zoom, shipClass);
         }
-        if (ship.prShip) this._drawPullRequestPennant(ctx, ship, zoom, shipClass);
+        if (ship.prShip) {
+            this._drawPullRequestPennant(ctx, ship, zoom, shipClass);
+            if (this.checksStateForShip(ship)?.outcome === 'pass') {
+                this._drawChecksPassPennant(ctx, ship, zoom, shipClass);
+            }
+        }
         // Boomerang collision flare at apex (~50% of phase 1).
         if (ship.status === 'rejecting' && ship.boomerangOutbound && Number(ship.boomerangPhaseProgress || 0) > 0.92) {
             this._drawCollisionFlare(ctx, ship.x, ship.y, Math.min(1, (Number(ship.boomerangPhaseProgress) - 0.92) / 0.08));
@@ -4230,6 +4271,152 @@ export class HarborTraffic {
             withPole: false,
         });
         ctx.restore();
+    }
+
+    // Spec 04 §3.3 — second pennant hoisted above a PR cutter's parchment
+    // pennant when verified checks pass.
+    _drawChecksPassPennant(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
+        const { x, y } = this._flagAnchor(ship, shipClass);
+        const windX = currentPennantWind();
+        ctx.save();
+        drawPennant(ctx, x, y - 9, {
+            accent: CHECKS_PASS_PENNANT_CLOTH,
+            rim: CHECKS_PASS_PENNANT_RIM,
+            frame: pennantFrame(currentPennantTime(), windX, { motion: this.motionScale > 0, phase: 3 }),
+            windX,
+            withPole: false,
+        });
+        ctx.restore();
+    }
+
+    // Spec 04 §3.3 — Read-only / single-consume hook for the Lighthouse
+    // keeper's lamp 1-frame cream flash on verified checks pass.
+    consumeChecksPassFlash() {
+        if (!this._pendingChecksPassFlash) return false;
+        this._pendingChecksPassFlash = false;
+        return true;
+    }
+
+    _shipPrNumber(ship) {
+        if (Number.isInteger(ship?.pr) && ship.pr > 0) return ship.pr;
+        const urlMatch = String(ship?.prUrl || ship?.url || '').match(/\/pull\/(\d+)(?:[/?#]|$)/i);
+        if (urlMatch) return Number(urlMatch[1]);
+        const labelMatch = String(ship?.label || '').match(/#(\d+)\b/);
+        return labelMatch ? Number(labelMatch[1]) : null;
+    }
+
+    _isPrShipMergedOrGone(ship) {
+        if (!ship?.prShip) return true;
+        if (ship.arrivingKind === 'pr-merge' || Number(ship.prMergedAt) > 0) return true;
+        return ship.status === 'departing' || ship.status === 'exiting';
+    }
+
+    _matchPrCutterForChecks(project, pr = null) {
+        if (!project) return null;
+        let best = null;
+        let bestTime = -Infinity;
+        for (const ship of this.state.ships.values()) {
+            if (!ship?.prShip || this._isPrShipMergedOrGone(ship)) continue;
+            if (String(ship.project || '') !== String(project)) continue;
+            if (pr !== null && this._shipPrNumber(ship) !== pr) continue;
+            const t = Number(ship.prCreatedAt || ship.eventTime || ship.createdAt || 0);
+            if (!best || t >= bestTime) {
+                best = ship;
+                bestTime = t;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Current active checks state for a PR cutter (`pass` or `fail`), or null
+     * when merged, expired (> 60 min), pending, unknown, or absent.
+     */
+    checksStateForShip(ship, now = Date.now()) {
+        if (!ship || this._isPrShipMergedOrGone(ship)) return null;
+        const entry = this._checksByShipId.get(ship.id);
+        if (!entry) return null;
+        if (entry.at > 0 && now - entry.at > CHECKS_PENNANT_HOLD_MS) {
+            this._checksByShipId.delete(ship.id);
+            return null;
+        }
+        if (entry.outcome !== 'pass' && entry.outcome !== 'fail') return null;
+        return { ...entry };
+    }
+
+    /**
+     * Ingest verified `checks` git events directly (called from `reconcile` and
+     * available for focused unit testing).
+     */
+    observeChecksEvents(events = [], now = Date.now()) {
+        const list = [];
+        for (const raw of Array.isArray(events) ? events : []) {
+            if (!raw || String(raw.type || '').toLowerCase() !== 'checks') continue;
+            const outcome = ['pass', 'fail', 'pending', 'unknown'].includes(raw.outcome)
+                ? raw.outcome
+                : 'unknown';
+            const project = String(raw.repoRoot || raw.project || '').trim();
+            const pr = Number.isInteger(raw.pr) && raw.pr > 0 ? raw.pr : null;
+            const at = parseEventTime(raw.completedAt || raw.ts || raw.timestamp, 0);
+            const id = String(raw.id || `${project}:${pr ?? ''}:${outcome}:${at}`);
+            list.push({ id, project, pr, outcome, at, agentId: raw.agentId || raw.sessionId || null });
+        }
+        list.sort((a, b) => (a.at - b.at) || a.id.localeCompare(b.id));
+
+        for (const item of list) {
+            const expired = item.at > 0 && now - item.at > CHECKS_PENNANT_HOLD_MS;
+            if (item.outcome === 'pass' && !this._seenChecksIds.has(item.id)) {
+                this._seenChecksIds.add(item.id);
+                while (this._seenChecksIds.size > MAX_SEEN_CHECKS_IDS) {
+                    this._seenChecksIds.delete(this._seenChecksIds.values().next().value);
+                }
+                if (!expired) this._pendingChecksPassFlash = true;
+            }
+            const cutter = this._matchPrCutterForChecks(item.project, item.pr);
+            if (!cutter) continue;
+            if (expired) {
+                this._checksByShipId.delete(cutter.id);
+                continue;
+            }
+            const existing = this._checksByShipId.get(cutter.id);
+            if (existing && existing.at > item.at) continue;
+            this._checksByShipId.set(cutter.id, item);
+        }
+
+        this._pruneChecksState(now);
+    }
+
+    _pruneChecksState(now = Date.now()) {
+        // Clear any checks state whose cutter merged, retired, or aged past 60 min.
+        for (const [shipId, entry] of [...this._checksByShipId.entries()]) {
+            const ship = this.state.ships.get(shipId);
+            if (!ship || this._isPrShipMergedOrGone(ship) || (entry.at > 0 && now - entry.at > CHECKS_PENNANT_HOLD_MS)) {
+                this._checksByShipId.delete(shipId);
+            }
+        }
+    }
+
+    _observeChecksEvents(agents, now = Date.now()) {
+        const checks = [];
+        const seenSources = new Set();
+        for (const agent of agents || []) {
+            const sources = [agent?.gitEvents, agent?.git?.events, agent?.vcsEvents].filter(Array.isArray);
+            for (const source of sources) {
+                if (seenSources.has(source)) continue;
+                seenSources.add(source);
+                for (const event of source) {
+                    if (event?.type !== 'checks' && String(event?.type || '').toLowerCase() !== 'checks') continue;
+                    checks.push({
+                        ...event,
+                        project: event.repoRoot || event.project || agent.repoRoot || agent.projectPath || agent.project || '',
+                        agentId: event.agentId || agent.id || event.sessionId || null,
+                    });
+                }
+            }
+        }
+        if (checks.length || this._checksByShipId.size > 0) {
+            this.observeChecksEvents(checks, now);
+        }
     }
 
     // 3.1 — thin yellow underline beneath the flag for --force-if-includes.

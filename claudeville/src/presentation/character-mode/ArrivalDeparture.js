@@ -46,6 +46,13 @@ const MAX_SIGILS = 6;
 const MAX_COMPLETION_CUES = 8;
 const MAX_ORPHAN_RETURNS = 6;
 const MAX_ARRIVALS = 6;
+// Spec 04 §3.2 — Compaction rite & carrier bird: plays once per unseen
+// compaction whose `at` is within the last 120 s (never on page load/backfill).
+export const COMPACTION_RITE_WINDOW_MS = 120_000;
+const COMPACTION_RITE_DURATION_MS = 1600;
+const COMPACTION_REDUCED_DURATION_MS = 1200;
+const MAX_COMPACTION_RITES = 4;
+const MAX_SEEN_COMPACTIONS = 512;
 // 2.5 — snapshot pixels of a child's idle row travel with its dispatch and its
 // return. Bounded so the cache can never grow with the session: 24 crops of at
 // most 14 px stay far under the 64 KiB the proposal budgeted.
@@ -117,6 +124,29 @@ function tileToScreen(tile) {
 
 function providerColor(provider) {
     return PROVIDER_COLORS[String(provider || '').toLowerCase()] || PROVIDER_COLORS.default;
+}
+
+function formatCompactTokens(value) {
+    if (value === null || value === undefined) return null;
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return null;
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1000) return `${Math.min(999, Math.round(n / 1000))}K`;
+    return `${Math.round(n)}`;
+}
+
+/**
+ * Spec 04 §3.2 — Compaction chit label:
+ *   "412K → 38K" when both preTokens and postTokens exist;
+ *   "412K" alone when postTokens is null;
+ *   "K" below one million, "1.2M" at or above one million.
+ */
+export function formatCompactionChit(compaction) {
+    if (!compaction || typeof compaction !== 'object') return null;
+    const pre = formatCompactTokens(compaction.preTokens);
+    if (!pre) return null;
+    const post = formatCompactTokens(compaction.postTokens);
+    return post !== null ? `${pre} → ${post}` : pre;
 }
 
 // 2.5 — the child's stable signature (plan 2.4) resolved from the agent record
@@ -372,6 +402,10 @@ export class ArrivalDepartureController {
         this.sigils = [];
         this.completionCues = [];
         this.orphanReturns = [];
+        this.compactions = new Map();
+        this._seenCompactions = new Set();
+        this._compactionBaselinePrimed = new Set();
+        this._compactionsPrimed = false;
         // 2.5 — snapshot crops keyed by child id, captured while the child is
         // alive and reused by its merge or completion return.
         this.miniatures = new Map();
@@ -622,6 +656,100 @@ export class ArrivalDepartureController {
         return departure;
     }
 
+    // Spec 04 §3.2 — Prime already-present compaction entries on initial page
+    // load so backfilled history never replays the rite.
+    primeCompactions(agents = []) {
+        this._compactionsPrimed = true;
+        for (const agent of agents || []) {
+            if (!agent?.id) continue;
+            this._compactionBaselinePrimed.add(agent.id);
+            if (!Array.isArray(agent.compactions)) continue;
+            for (const item of agent.compactions) {
+                const at = Number(item?.at);
+                if (Number.isFinite(at) && at > 0) this._rememberCompactionKey(`${agent.id}:${at}`);
+            }
+        }
+    }
+
+    _rememberCompactionKey(key) {
+        this._seenCompactions.add(key);
+        while (this._seenCompactions.size > MAX_SEEN_COMPACTIONS) {
+            this._seenCompactions.delete(this._seenCompactions.values().next().value);
+        }
+    }
+
+    // Spec 04 §3.2 — Observe an agent's `compactions[]`. Plays the rite +
+    // carrier bird at most once per unseen compaction whose `at` is within
+    // COMPACTION_RITE_WINDOW_MS (120 s) of `wallNow`. Entries seen on page load
+    // or backfill never trigger a rite.
+    observeAgentCompactions(agent, sprite, {
+        archivePoint = null,
+        now = nowMs(),
+        wallNow = Date.now(),
+        initialLoad = false,
+    } = {}) {
+        if (!agent?.id || !Array.isArray(agent.compactions) || !agent.compactions.length) return [];
+        const baselineOnly = initialLoad === true
+            || (!this._compactionsPrimed && !this._compactionBaselinePrimed.has(agent.id));
+        if (baselineOnly) {
+            this._compactionBaselinePrimed.add(agent.id);
+            for (const item of agent.compactions) {
+                const at = Number(item?.at);
+                if (Number.isFinite(at) && at > 0) this._rememberCompactionKey(`${agent.id}:${at}`);
+            }
+            return [];
+        }
+        this._compactionBaselinePrimed.add(agent.id);
+        const started = [];
+        for (const item of agent.compactions) {
+            const at = Number(item?.at);
+            if (!Number.isFinite(at) || at <= 0) continue;
+            const key = `${agent.id}:${at}`;
+            if (this._seenCompactions.has(key)) continue;
+            this._rememberCompactionKey(key);
+            const ageMs = Number(wallNow) - at;
+            if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > COMPACTION_RITE_WINDOW_MS) continue;
+            const rite = this.beginCompactionRite(agent, sprite, item, { archivePoint, now });
+            if (rite) started.push(rite);
+        }
+        return started;
+    }
+
+    beginCompactionRite(agent, sprite, compaction, { archivePoint = null, now = nowMs() } = {}) {
+        if (!agent?.id || !compaction) return null;
+        const chit = formatCompactionChit(compaction);
+        if (!chit) return null;
+        const start = {
+            x: Number(sprite?.x) || 0,
+            y: Number(sprite?.y) || 0,
+        };
+        const end = archivePoint && Number.isFinite(Number(archivePoint.x)) && Number.isFinite(Number(archivePoint.y))
+            ? { x: Number(archivePoint.x), y: Number(archivePoint.y) }
+            : { x: start.x + 48, y: start.y - 36 };
+        const key = `${agent.id}:${Number(compaction.at) || Math.round(now)}`;
+        while (this.compactions.size >= MAX_COMPACTION_RITES) {
+            this.compactions.delete(this.compactions.keys().next().value);
+        }
+        const reduced = this.motionScale === 0;
+        const rite = {
+            id: key,
+            agentId: agent.id,
+            sprite: sprite || null,
+            chit,
+            trigger: compaction.trigger || 'unknown',
+            at: Number(compaction.at) || 0,
+            start,
+            end,
+            startedAt: now,
+            duration: reduced ? COMPACTION_REDUCED_DURATION_MS : COMPACTION_RITE_DURATION_MS,
+            reduced,
+            seed: hashId(key),
+        };
+        this.compactions.set(key, rite);
+        noteMoment('compaction');
+        return rite;
+    }
+
     _sigilFor({ id, provider }, point, { now, glow = false }) {
         return {
             id: `${id}:${Math.round(now)}`,
@@ -701,6 +829,9 @@ export class ArrivalDepartureController {
         this.sigils = this.sigils.filter(sigil => now - sigil.startedAt <= sigil.duration);
         this.completionCues = this.completionCues.filter(cue => now - cue.startedAt <= cue.duration);
         this.orphanReturns = this.orphanReturns.filter(entry => now - entry.startedAt <= entry.duration);
+        for (const [id, rite] of this.compactions.entries()) {
+            if (now - rite.startedAt >= rite.duration) this.compactions.delete(id);
+        }
     }
 
     _landArrival(arrival) {
@@ -733,6 +864,7 @@ export class ArrivalDepartureController {
         for (const sigil of this.sigils) drawDepartureSigil(ctx, sigil, { now, motionScale: this.motionScale });
         for (const departure of this.departures.values()) this._drawDeparture(ctx, departure, now);
         for (const cue of this.completionCues) drawSubagentCompletionCue(ctx, cue, { zoom, now, motionScale: this.motionScale });
+        for (const rite of this.compactions.values()) this._drawCompactionRite(ctx, rite, now, zoom);
         ctx.restore();
     }
 
@@ -999,6 +1131,40 @@ export class ArrivalDepartureController {
         default:
             break;
         }
+    }
+
+    // Spec 04 §3.2 — Compaction rite + carrier bird: brief rune pulse at the
+    // villager, a 2-frame pixel carrier bird arcing toward the Archive, and the
+    // parchment compaction chit (suppressed in postcards).
+    _drawCompactionRite(ctx, rite, now, zoom) {
+        const age = now - rite.startedAt;
+        if (age < 0 || age >= rite.duration) return;
+        const alpha = rite.reduced ? 0.8 : steppedDecay(age, rite.duration);
+        if (alpha <= 0) return;
+        const t = rite.reduced ? 0 : Math.min(1, age / Math.max(1, rite.duration * 0.72));
+        const origin = rite.sprite ? { x: Number(rite.sprite.x) || rite.start.x, y: Number(rite.sprite.y) || rite.start.y } : rite.start;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        if (age < 240 && !rite.reduced) {
+            ringDots(ctx, origin.x, origin.y, 10, { count: 8, dot: 1, color: age < 80 ? PEAK : STONE_RAMP[2] });
+        }
+        const bird = rite.reduced
+            ? { x: origin.x, y: origin.y - 26 }
+            : pointOnArc({ x: origin.x, y: origin.y - 20 }, { x: rite.end.x, y: rite.end.y - 20 }, t, 22);
+        const bx = snap(bird.x);
+        const by = snap(bird.y);
+        const flap = !rite.reduced && (Math.floor(age / 140) % 2 === 1);
+        // 5x3 pixel carrier bird (cream body, dark wingtips, tiny parchment chit parcel).
+        ctx.fillStyle = STONE_RAMP[0];
+        ctx.fillRect(bx - 2, by + (flap ? -1 : 1), 1, 1);
+        ctx.fillRect(bx + 2, by + (flap ? -1 : 1), 1, 1);
+        ctx.fillStyle = PEAK;
+        ctx.fillRect(bx - 1, by, 3, 1);
+        ctx.fillStyle = STONE_RAMP[2];
+        ctx.fillRect(bx - 1, by + 1, 3, 2);
+        ctx.fillStyle = MAGIC_RAMP[1];
+        ctx.fillRect(bx, by + 1, 1, 1);
+        ctx.restore();
     }
 }
 

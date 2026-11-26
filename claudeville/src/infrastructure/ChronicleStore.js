@@ -11,7 +11,83 @@ const FOUNDING_META_KEY = 'founding';
 const EVENT_RETENTION_DAYS = 14;
 const EVENT_RETENTION_MAX_ROWS = 20_000;
 export const RECORDED_TRAIL_INTERVAL_MS = 5 * 60_000;
+// Spec 04 §5.4 — Loom of Days meta keys (stored in existing `meta` store; DB_VERSION stays 7).
+export const COVERAGE_QUARTERS = 96;
+export const EMPTY_COVERAGE_MASK = '0'.repeat(24);
+export const COVERAGE_WRITE_INTERVAL_MS = 5 * 60_000;
+export const SKY_HOURS = 24;
+const COVERAGE_MASK_HEX_RE = /^[0-9a-f]{24}$/i;
 const CHRONICLE_OPEN_TIMEOUT_MS = 5000;
+
+export function coverageMetaKey(dateKey) {
+    return `coverage:${String(dateKey || '')}`;
+}
+
+export function skyMetaKey(dateKey) {
+    return `sky:${String(dateKey || '')}`;
+}
+
+export function quarterIndexForTime(ts = Date.now()) {
+    const date = new Date(ts);
+    const quarter = date.getHours() * 4 + Math.floor(date.getMinutes() / 15);
+    return Math.max(0, Math.min(COVERAGE_QUARTERS - 1, quarter));
+}
+
+export function normalizeCoverageMask(mask) {
+    if (typeof mask === 'string' && COVERAGE_MASK_HEX_RE.test(mask)) {
+        return mask.toLowerCase();
+    }
+    return EMPTY_COVERAGE_MASK;
+}
+
+/**
+ * Pure helper: set one quarter-hour bit (0..95) in a 96-bit (24-hex) presence mask.
+ */
+export function setCoverageQuarter(mask, quarterIndex) {
+    const normalized = normalizeCoverageMask(mask);
+    const q = Math.trunc(Number(quarterIndex));
+    if (!Number.isInteger(q) || q < 0 || q >= COVERAGE_QUARTERS) return normalized;
+    const value = BigInt(`0x${normalized}`) | (1n << BigInt(q));
+    return value.toString(16).padStart(24, '0');
+}
+
+export function hasCoverageQuarter(mask, quarterIndex) {
+    const normalized = normalizeCoverageMask(mask);
+    const q = Math.trunc(Number(quarterIndex));
+    if (!Number.isInteger(q) || q < 0 || q >= COVERAGE_QUARTERS) return false;
+    return ((BigInt(`0x${normalized}`) >> BigInt(q)) & 1n) === 1n;
+}
+
+export function mergeCoverageMasks(left, right) {
+    const a = BigInt(`0x${normalizeCoverageMask(left)}`);
+    const b = BigInt(`0x${normalizeCoverageMask(right)}`);
+    return (a | b).toString(16).padStart(24, '0');
+}
+
+function finiteSkyField(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+
+export function normalizeSkyCode(code) {
+    if (!code || typeof code !== 'object') return null;
+    return {
+        cloud: finiteSkyField(code.cloud),
+        rain: finiteSkyField(code.rain),
+        snow: finiteSkyField(code.snow),
+        moon: finiteSkyField(code.moon),
+    };
+}
+
+export function normalizeDaySky(value) {
+    const slots = Array(SKY_HOURS).fill(null);
+    if (!Array.isArray(value)) return slots;
+    for (let hour = 0; hour < SKY_HOURS; hour++) {
+        slots[hour] = normalizeSkyCode(value[hour]);
+    }
+    return slots;
+}
 
 const RETENTION_MS = {
     manifests: 24 * 60 * 60 * 1000,
@@ -559,6 +635,41 @@ export class ChronicleStore {
 
     async setMeta(key, value) {
         return this.put('meta', { key, value, ts: nowMs() });
+    }
+
+    /** Spec 04 §5.4 — 96-bit quarter-hour presence mask for `dateKey`, or null when missing. */
+    async getDayCoverage(dateKey) {
+        const raw = await this.getMeta(coverageMetaKey(dateKey), null);
+        return typeof raw === 'string' && COVERAGE_MASK_HEX_RE.test(raw)
+            ? raw.toLowerCase()
+            : null;
+    }
+
+    /** Spec 04 §5.4 — mark one quarter-hour (0..95) present in `meta` key `coverage:<dateKey>`. */
+    async markCoverageQuarter(dateKey, quarterIndex) {
+        const key = coverageMetaKey(dateKey);
+        const existing = await this.getMeta(key, EMPTY_COVERAGE_MASK);
+        const next = setCoverageQuarter(existing, quarterIndex);
+        await this.setMeta(key, next);
+        return next;
+    }
+
+    /** Spec 04 §5.4 — 24-element hourly sky codes for `dateKey`, or null when missing. */
+    async getDaySky(dateKey) {
+        const raw = await this.getMeta(skyMetaKey(dateKey), null);
+        return Array.isArray(raw) ? normalizeDaySky(raw) : null;
+    }
+
+    /** Spec 04 §5.4 — write one hour's `{ cloud, rain, snow, moon }` code in `meta` key `sky:<dateKey>`. */
+    async recordSkyHour(dateKey, hour, code) {
+        const h = Math.trunc(Number(hour));
+        if (!Number.isInteger(h) || h < 0 || h >= SKY_HOURS) return null;
+        const key = skyMetaKey(dateKey);
+        const existing = await this.getMeta(key, null);
+        const slots = normalizeDaySky(existing);
+        slots[h] = normalizeSkyCode(code);
+        await this.setMeta(key, slots);
+        return slots;
     }
 
     async _loadLifetimeCounts() {

@@ -392,6 +392,51 @@ function finiteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+const COMPACTION_MAX_RECORDS = 4;
+const COMPACTION_PRE_TOKENS_MAX = 10_000_000;
+const COMPACTION_DURATION_MAX_MS = 3_600_000;
+const COMPACTION_UUID_LIMIT = 512;
+
+function parseCompactBoundary(entry) {
+  if (!entry || entry.type !== 'system' || entry.subtype !== 'compact_boundary') return null;
+  const at = toEpochMs(entry.timestamp);
+  if (!Number.isFinite(at) || at <= 0) return null;
+  const meta = entry.compactMetadata;
+  if (!meta || typeof meta !== 'object') return null;
+  const preTokens = meta.preTokens;
+  if (typeof preTokens !== 'number' || !Number.isInteger(preTokens)
+    || preTokens < 1 || preTokens > COMPACTION_PRE_TOKENS_MAX) return null;
+  const postTokens = typeof meta.postTokens === 'number'
+    && Number.isInteger(meta.postTokens)
+    && meta.postTokens >= 0
+    && meta.postTokens <= preTokens
+    ? meta.postTokens
+    : null;
+  const durationMs = typeof meta.durationMs === 'number'
+    && Number.isInteger(meta.durationMs)
+    && meta.durationMs >= 0
+    && meta.durationMs <= COMPACTION_DURATION_MAX_MS
+    ? meta.durationMs
+    : null;
+  const trigger = meta.trigger === 'manual' || meta.trigger === 'auto'
+    ? meta.trigger
+    : 'unknown';
+  return { at, trigger, preTokens, postTokens, durationMs };
+}
+
+function recordCompactBoundary(list, countKey, uuidSet, projection, record, uuid) {
+  if (uuid) {
+    if (uuidSet.has(uuid)) return;
+    uuidSet.add(uuid);
+    while (uuidSet.size > COMPACTION_UUID_LIMIT) {
+      uuidSet.delete(uuidSet.values().next().value);
+    }
+  }
+  projection[countKey] += 1;
+  list.push(record);
+  if (list.length > COMPACTION_MAX_RECORDS) list.shift();
+}
+
 function createTranscriptProjection() {
   return {
     cost: null,
@@ -404,6 +449,12 @@ function createTranscriptProjection() {
     hookErrors: null,
     modelHistory: [],
     workingSet: [],
+    compactions: [],
+    compactionCount: 0,
+    _compactionUuids: new Set(),
+    _allCompactions: [],
+    _allCompactionCount: 0,
+    _allCompactionUuids: new Set(),
   };
 }
 
@@ -414,6 +465,15 @@ function cloneTranscriptProjection(projection) {
     modelHistory: projection.modelHistory.map(item => ({ ...item })),
     workingSet: projection.workingSet.map(item => ({ ...item })),
     cost: projection.cost ? { ...projection.cost } : null,
+    compactions: Array.isArray(projection.compactions)
+      ? projection.compactions.map(item => ({ ...item }))
+      : projection.compactions ?? null,
+    compactionCount: projection.compactionCount ?? null,
+    ...(projection._compactionUuids ? { _compactionUuids: new Set(projection._compactionUuids) } : {}),
+    ...(Array.isArray(projection._allCompactions)
+      ? { _allCompactions: projection._allCompactions.map(item => ({ ...item })) }
+      : {}),
+    ...(projection._allCompactionUuids ? { _allCompactionUuids: new Set(projection._allCompactionUuids) } : {}),
   };
 }
 
@@ -487,6 +547,30 @@ function addTranscriptProjectionEntry(projection, entry, msg, prompt) {
   if (entry.type === 'system' && entry.subtype === 'turn_duration') {
     const duration = finiteNumber(entry.durationMs);
     if (duration !== null && duration >= 0) projection.lastTurnDurationMs = duration;
+  }
+  if (entry.type === 'system' && entry.subtype === 'compact_boundary') {
+    const record = parseCompactBoundary(entry);
+    if (record) {
+      const uuid = typeof entry.uuid === 'string' && entry.uuid.trim() ? entry.uuid.trim() : null;
+      recordCompactBoundary(
+        projection._allCompactions,
+        '_allCompactionCount',
+        projection._allCompactionUuids,
+        projection,
+        record,
+        uuid,
+      );
+      if (entry.isSidechain !== true) {
+        recordCompactBoundary(
+          projection.compactions,
+          'compactionCount',
+          projection._compactionUuids,
+          projection,
+          record,
+          uuid,
+        );
+      }
+    }
   }
   if (entry.type === 'last-prompt' && typeof entry.lastPrompt === 'string') {
     projection.lastPrompt = entry.lastPrompt.trim().slice(0, 200) || null;
@@ -2275,23 +2359,45 @@ function aggregateSettledOn(filePath, identity) {
     && sameTranscriptTarget(record.aggregate, identity));
 }
 
-function getTranscriptProjection(sessionFilePath, projectPath, model, provider = 'claude') {
-  if (!sessionFilePath) return readTranscriptProjection(sessionFilePath, projectPath, model, provider);
-  const projection = memoizedDerivation(sessionFilePath, `projection:${projectPath ?? ''}:${model ?? ''}:${provider ?? 'claude'}`, identity => ({
-    value: readTranscriptProjection(sessionFilePath, projectPath, model, provider),
+function isSubagentTranscriptPath(sessionFilePath) {
+  return typeof sessionFilePath === 'string' && /[/\\]subagents[/\\]/.test(sessionFilePath);
+}
+
+function stripInternalProjectionFields(projection) {
+  const {
+    _compactionUuids,
+    _allCompactions,
+    _allCompactionCount,
+    _allCompactionUuids,
+    ...publicFields
+  } = projection;
+  return publicFields;
+}
+
+function getTranscriptProjection(sessionFilePath, projectPath, model, provider = 'claude', options = {}) {
+  const isSubagent = options?.isSubagent === true || isSubagentTranscriptPath(sessionFilePath);
+  if (!sessionFilePath) return readTranscriptProjection(sessionFilePath, projectPath, model, provider, { isSubagent });
+  const projection = memoizedDerivation(sessionFilePath, `projection:${projectPath ?? ''}:${model ?? ''}:${provider ?? 'claude'}:${isSubagent ? 'sub' : 'main'}`, identity => ({
+    value: readTranscriptProjection(sessionFilePath, projectPath, model, provider, { isSubagent }),
     cacheable: aggregateSettledOn(sessionFilePath, identity),
   }));
   return cloneTranscriptProjection(projection);
 }
 
-function readTranscriptProjection(sessionFilePath, projectPath, model, provider = 'claude') {
-  const empty = { ...createTranscriptProjection(), reasoningEffort: null };
+function readTranscriptProjection(sessionFilePath, projectPath, model, provider = 'claude', options = {}) {
+  const empty = {
+    ...stripInternalProjectionFields(createTranscriptProjection()),
+    compactions: null,
+    compactionCount: null,
+    reasoningEffort: null,
+  };
   const contextWindowMax = contextWindowMaxForClaudeModel(model, provider);
   if (!sessionFilePath) return { ...empty, contextWindowMax };
   try {
     const aggregate = getTranscriptAggregate(sessionFilePath);
     const source = aggregate?.displayProjection || aggregate?.projection;
     if (!source) return { ...empty, contextWindowMax };
+    const isSubagent = options?.isSubagent === true || isSubagentTranscriptPath(sessionFilePath);
     const projection = cloneTranscriptProjection(source);
     const newest = [];
     const seen = new Set();
@@ -2303,9 +2409,15 @@ function readTranscriptProjection(sessionFilePath, projectPath, model, provider 
       newest.push({ path: canonicalPath, op: item.op, at: item.at, source: 'transcript' });
     }
     projection.workingSet = newest;
+    const compactions = (isSubagent ? projection._allCompactions : projection.compactions) || [];
+    const compactionCount = isSubagent
+      ? (Number.isInteger(projection._allCompactionCount) ? projection._allCompactionCount : compactions.length)
+      : (Number.isInteger(projection.compactionCount) ? projection.compactionCount : compactions.length);
     const effort = projection.modelHistory.at(-1)?.effort;
     return {
-      ...projection,
+      ...stripInternalProjectionFields(projection),
+      compactions,
+      compactionCount,
       reasoningEffort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : null,
       contextWindowMax: contextWindowMaxForClaudeModel(model || latestTranscriptModel(aggregate), provider),
       ...(projection.cost ? { estimatedCost: projection.cost.usd } : {}),
@@ -2588,10 +2700,19 @@ function claudeToolCompletion(entry, block) {
   };
   if (interrupted) {
     completion.status = 'cancelled';
+    completion.interrupted = true;
   } else {
     completion.success = !isError;
-    if (exitMatch) completion.exitCode = Number(exitMatch[1]);
-    else if (!isError) completion.exitCode = 0;
+    if (CLAUDE_REJECTED_RESULT_PATTERN.test(output)) completion.rejected = true;
+    if (exitMatch) {
+      completion.exitCode = Number(exitMatch[1]);
+      completion.exitCodeSource = 'exit';
+    } else if (!isError) {
+      completion.exitCode = 0;
+      completion.exitCodeSource = 'flag';
+    } else {
+      completion.exitCodeSource = 'flag';
+    }
   }
   return completion;
 }
@@ -3046,7 +3167,7 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
   const model = detail.model || null;
   return {
     ...getClaudeTurnState(filePath, permissionMode),
-    ...getTranscriptProjection(filePath, decodedProject, model),
+    ...getTranscriptProjection(filePath, decodedProject, model, 'claude', { isSubagent: true }),
     // A nested crew lives in the same flat `subagents/` directory.
     backgroundPending: readBackgroundPending(filePath, {
       subagentsDir: path.dirname(filePath),
@@ -3823,7 +3944,7 @@ class ClaudeAdapter {
 
 module.exports = {
   ClaudeAdapter,
-  _test: { claudeProjectDirName, encodeClaudeProjectDir, foldBackgroundWork, getGitEvents, projectClaudeTailEntry },
+  _test: { claudeProjectDirName, encodeClaudeProjectDir, foldBackgroundWork, getGitEvents, getTranscriptProjection, parseCompactBoundary, projectClaudeTailEntry },
   // Path-based transcript readers for Claude Code runs kept outside
   // ~/.claude (glm.js: one CLAUDE_CONFIG_DIR per glm-cc-mcp thread).
   claudeTranscript: {

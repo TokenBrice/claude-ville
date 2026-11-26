@@ -80,6 +80,8 @@ export class Agent {
         rootSessionId,
         workflowId,
         workflowName,
+        compactions,
+        compactionCount,
         lastSessionActivity,
         activityAgeMs,
         turnState,
@@ -119,6 +121,20 @@ export class Agent {
         this.rootSessionId = rootSessionId || null;
         this.workflowId = workflowId || null;
         this.workflowName = workflowName || null;
+        this.compactions = Array.isArray(compactions)
+            ? compactions.slice(-4).map(item => ({
+                at: Number(item?.at) || 0,
+                trigger: item?.trigger === 'manual' || item?.trigger === 'auto' ? item.trigger : 'unknown',
+                preTokens: Number.isInteger(item?.preTokens) ? item.preTokens : 0,
+                postTokens: Number.isInteger(item?.postTokens) ? item.postTokens : null,
+                durationMs: Number.isInteger(item?.durationMs) ? item.durationMs : null,
+            }))
+            : null;
+        this.compactionCount = this.compactions !== null
+            ? (Number.isInteger(compactionCount) && compactionCount >= this.compactions.length
+                ? compactionCount
+                : this.compactions.length)
+            : null;
         // isAdvisor (below) keys off the raw '__advisor' agentName; the
         // display name is remapped once here so every surface (world tags,
         // sidebar, inspector, toasts) reads it as a villager, not a slug.

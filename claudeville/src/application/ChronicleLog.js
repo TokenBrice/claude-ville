@@ -1,6 +1,28 @@
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
 import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
+import { VERIFIED_OUTCOME_EVENT } from '../domain/services/VerifiedOutcome.js';
+import {
+    COVERAGE_WRITE_INTERVAL_MS,
+    EMPTY_COVERAGE_MASK,
+    coverageMetaKey,
+    hasCoverageQuarter,
+    normalizeCoverageMask,
+    normalizeDaySky,
+    normalizeSkyCode,
+    quarterIndexForTime,
+    setCoverageQuarter,
+    skyMetaKey,
+} from '../infrastructure/ChronicleStore.js';
+
+export {
+    COVERAGE_WRITE_INTERVAL_MS,
+    coverageMetaKey,
+    hasCoverageQuarter,
+    quarterIndexForTime,
+    setCoverageQuarter,
+    skyMetaKey,
+};
 
 // The village has always been a live view: look away for forty minutes and
 // nothing tells you what happened. Monuments remember commits and biographies
@@ -23,6 +45,9 @@ export const ChronicleEventKind = Object.freeze({
     PUSH: 'push',
     // D2 — the same shell command failed with a real exit code, then passed.
     MENDED: 'mended',
+    // Spec 04 §3.2 & §5.4 — Claude compact_boundary (live-watched only) and verified releases.
+    COMPACTED: 'compacted',
+    RELEASE: 'release',
 });
 
 // D2 — one Chronicle line per mend; mends repeat for the same result id only
@@ -129,13 +154,15 @@ export function commitSubject(event) {
 }
 
 export class ChronicleLog {
-    constructor({ store = null } = {}) {
+    constructor({ store = null, skyProvider = null } = {}) {
         this.store = store;
         this.retentionDays = Number(store?.eventRetentionDays) || 14;
         this.running = false;
         this._statusById = new Map();
         this._waitingSince = new Map();
         this._seenGitEvents = new Set();
+        this._seenCompactions = new Set();
+        this._seenReleases = new Set();
         this._presentIds = new Set();   // arrived today, no departure since
         this._writeTail = Promise.resolve();
         this._seq = 0;
@@ -145,6 +172,10 @@ export class ChronicleLog {
         this._pendingRemovals = new Map();
         this._stopPromise = null;
         this._mendSeen = new Set();
+        this._skyProvider = typeof skyProvider === 'function' ? skyProvider : null;
+        this._metaTimer = null;
+        this._captureLease = null;
+        this._lastSkyHourKey = null;
     }
 
     start() {
@@ -169,10 +200,12 @@ export class ChronicleLog {
                 this._noteStatus(agent);
             }
             this._noteGitEvents(agent);
+            this._noteCompactions(agent);
         };
         this._onUpdated = (agent) => {
             this._noteStatus(agent);
             this._noteGitEvents(agent);
+            this._noteCompactions(agent);
         };
         this._onRemoved = (agent) => {
             if (!this._replayed && this._pendingArrivals.has(agent.id)) {
@@ -195,22 +228,26 @@ export class ChronicleLog {
         };
 
         this._onMended = (mend) => this._noteMend(mend);
+        this._onVerifiedOutcome = (outcome) => this._noteVerifiedOutcome(outcome);
 
         eventBus.on('agent:added', this._onAdded);
         eventBus.on('agent:updated', this._onUpdated);
         eventBus.on('agent:removed', this._onRemoved);
         eventBus.on('outcome:mended', this._onMended);
+        eventBus.on(VERIFIED_OUTCOME_EVENT, this._onVerifiedOutcome);
         return this;
     }
 
     stop() {
         if (this._stopPromise) return this._stopPromise;
+        this.stopMetaSampling();
         if (this.running) {
             this.running = false;
             eventBus.off('agent:added', this._onAdded);
             eventBus.off('agent:updated', this._onUpdated);
             eventBus.off('agent:removed', this._onRemoved);
             eventBus.off('outcome:mended', this._onMended);
+            eventBus.off(VERIFIED_OUTCOME_EVENT, this._onVerifiedOutcome);
             if (activeChronicleLog === this) {
                 activeChronicleLog = null;
                 eventBus.emit('chronicle:log-stopped', this);
@@ -285,6 +322,12 @@ export class ChronicleLog {
                     if (event.gitKey) this._seenGitEvents.add(event.gitKey);
                     const replayKey = subjectKey(event.label);
                     if (replayKey) this._seenGitEvents.add(gitReplayKey(event.kind, event.outcome || null, replayKey));
+                } else if (event.kind === ChronicleEventKind.COMPACTED) {
+                    if (event.compactionKey) this._seenCompactions.add(event.compactionKey);
+                    else if (event.agentId && event.ts) this._seenCompactions.add(`${event.agentId}:${event.ts}`);
+                } else if (event.kind === ChronicleEventKind.RELEASE) {
+                    if (event.releaseKey) this._seenReleases.add(event.releaseKey);
+                    else if (event.ts) this._seenReleases.add(`${event.project || ''}:${event.agentId || ''}:${event.ts}`);
                 }
                 return null;
             });
@@ -342,6 +385,25 @@ export class ChronicleLog {
         for (const event of agent.gitEvents || []) {
             if (!event?.id) continue;
             const type = String(event.type || '').toLowerCase();
+            if (type === 'release') {
+                const verified = event.dryRun !== true && (event.success === true || Number(event.exitCode) === 0);
+                if (verified) {
+                    const ts = Number(event.completedAt || event.ts || 0);
+                    if (ts && Date.now() - ts <= 60 * 60 * 1000) {
+                        const releaseKey = `${projectName(agent?.projectPath) || ''}:${agent?.id || ''}:${ts}`;
+                        if (!this._seenReleases.has(releaseKey) && !this._seenReleases.has(event.id)) {
+                            this._seenReleases.add(releaseKey);
+                            this._seenReleases.add(event.id);
+                            this.record(ChronicleEventKind.RELEASE, agent, {
+                                ts,
+                                label: event.tag || event.label || null,
+                                releaseKey,
+                            });
+                        }
+                    }
+                }
+                continue;
+            }
             if (type !== 'commit' && type !== 'push') continue;
             // #10 / R7 — a push is one occurrence: its own event id (which
             // carries the chain segment), never a shared commandHash or
@@ -401,6 +463,157 @@ export class ChronicleLog {
             failedExit: Number.isFinite(Number(mend.failedExit)) ? Number(mend.failedExit) : null,
             ts: Number(mend.at) || Date.now(),
         });
+    }
+
+    // Spec 04 §3.2 — live-watched Claude compaction records (`{ pre, post }`).
+    // Follows the same watching-window rule as commits: never backfills old history.
+    _noteCompactions(agent) {
+        if (!agent?.id || !Array.isArray(agent.compactions) || !agent.compactions.length) return;
+        for (const entry of agent.compactions) {
+            const ts = Number(entry?.at);
+            if (!Number.isFinite(ts) || ts <= 0) continue;
+            const key = `${agent.id}:${ts}`;
+            if (this._seenCompactions.has(key)) continue;
+            this._seenCompactions.add(key);
+            if (Date.now() - ts > 60 * 60 * 1000) continue;
+            this.record(ChronicleEventKind.COMPACTED, agent, {
+                ts,
+                pre: Number.isInteger(entry.preTokens) ? entry.preTokens : null,
+                post: Number.isInteger(entry.postTokens) ? entry.postTokens : null,
+                trigger: entry.trigger || 'unknown',
+                compactionKey: key,
+            });
+        }
+        if (this._seenCompactions.size > 2000) {
+            this._seenCompactions = new Set([...this._seenCompactions].slice(-1000));
+        }
+    }
+
+    // Spec 04 §5.4 — log `RELEASE` when a verified outcome is a release.
+    _noteVerifiedOutcome(outcome) {
+        if (!outcome || outcome.kind !== 'release') return;
+        const ts = Number(outcome.at) || Date.now();
+        if (Date.now() - ts > 60 * 60 * 1000) return;
+        const proj = projectName(outcome.project) || (outcome.project ? String(outcome.project) : null);
+        const releaseKey = `${proj || ''}:${outcome.agentId || ''}:${ts}`;
+        if (this._seenReleases.has(releaseKey)) return;
+        this._seenReleases.add(releaseKey);
+        if (this._seenReleases.size > 2000) {
+            this._seenReleases = new Set([...this._seenReleases].slice(-1000));
+        }
+        this.record(ChronicleEventKind.RELEASE, {
+            id: outcome.agentId || null,
+            name: null,
+            provider: null,
+            projectPath: outcome.project || null,
+        }, {
+            ts,
+            project: proj,
+            label: outcome.label || null,
+            releaseKey,
+        });
+    }
+
+    /** Spec 04 §5.4 — record one 96-bit presence quarter in `meta` (`coverage:<dateKey>`). */
+    async recordCoverageQuarter(ts = Date.now(), { requireLease = false } = {}) {
+        if (!this.store) return null;
+        if (requireLease && typeof this.store.acquireCaptureLease === 'function') {
+            const held = this._captureLease?.renew?.() === true;
+            if (!held) {
+                this._captureLease = this.store.acquireCaptureLease();
+                if (!this._captureLease?.acquired) return null;
+            }
+        }
+        const dateKey = chronicleDateKey(ts);
+        const quarter = quarterIndexForTime(ts);
+        if (typeof this.store.markCoverageQuarter === 'function') {
+            return this.store.markCoverageQuarter(dateKey, quarter);
+        }
+        if (typeof this.store.getMeta === 'function' && typeof this.store.setMeta === 'function') {
+            const key = coverageMetaKey(dateKey);
+            const existing = await this.store.getMeta(key, EMPTY_COVERAGE_MASK);
+            const next = setCoverageQuarter(existing, quarter);
+            await this.store.setMeta(key, next);
+            return next;
+        }
+        return null;
+    }
+
+    /** Spec 04 §5.4 — record one hour's `{ cloud, rain, snow, moon }` code in `meta` (`sky:<dateKey>`). */
+    async recordSkyHour(code, ts = Date.now()) {
+        if (!this.store) return null;
+        const dateKey = chronicleDateKey(ts);
+        const hour = new Date(ts).getHours();
+        if (typeof this.store.recordSkyHour === 'function') {
+            return this.store.recordSkyHour(dateKey, hour, code);
+        }
+        if (typeof this.store.getMeta === 'function' && typeof this.store.setMeta === 'function') {
+            const key = skyMetaKey(dateKey);
+            const existing = await this.store.getMeta(key, null);
+            const slots = normalizeDaySky(existing);
+            slots[hour] = normalizeSkyCode(code);
+            await this.store.setMeta(key, slots);
+            return slots;
+        }
+        return null;
+    }
+
+    async readDayCoverage(date = new Date()) {
+        if (!this.store) return null;
+        const dateKey = typeof date === 'string' ? date : chronicleDateKey(date);
+        if (typeof this.store.getDayCoverage === 'function') {
+            return this.store.getDayCoverage(dateKey);
+        }
+        if (typeof this.store.getMeta === 'function') {
+            const raw = await this.store.getMeta(coverageMetaKey(dateKey), null);
+            return typeof raw === 'string' ? normalizeCoverageMask(raw) : null;
+        }
+        return null;
+    }
+
+    async readDaySky(date = new Date()) {
+        if (!this.store) return null;
+        const dateKey = typeof date === 'string' ? date : chronicleDateKey(date);
+        if (typeof this.store.getDaySky === 'function') {
+            return this.store.getDaySky(dateKey);
+        }
+        if (typeof this.store.getMeta === 'function') {
+            const raw = await this.store.getMeta(skyMetaKey(dateKey), null);
+            return Array.isArray(raw) ? normalizeDaySky(raw) : null;
+        }
+        return null;
+    }
+
+    /** Start periodic 5-minute lease-guarded coverage & hourly sky writes. */
+    startMetaSampling({ intervalMs = COVERAGE_WRITE_INTERVAL_MS, skyProvider = this._skyProvider } = {}) {
+        if (typeof skyProvider === 'function') this._skyProvider = skyProvider;
+        if (this._metaTimer || typeof setInterval !== 'function') return;
+        const tick = () => {
+            const now = Date.now();
+            this.recordCoverageQuarter(now, { requireLease: true }).catch(() => {});
+            if (typeof this._skyProvider === 'function') {
+                const hourKey = `${chronicleDateKey(now)}:${new Date(now).getHours()}`;
+                if (hourKey !== this._lastSkyHourKey) {
+                    const code = this._skyProvider(now);
+                    if (code) {
+                        this._lastSkyHourKey = hourKey;
+                        this.recordSkyHour(code, now).catch(() => {});
+                    }
+                }
+            }
+        };
+        tick();
+        this._metaTimer = setInterval(tick, intervalMs);
+        this._metaTimer.unref?.();
+    }
+
+    stopMetaSampling() {
+        if (this._metaTimer) {
+            clearInterval(this._metaTimer);
+            this._metaTimer = null;
+        }
+        this._captureLease?.release?.();
+        this._captureLease = null;
     }
 
     // #10 — a push logs once per occurrence and outcome, labelled by its own
@@ -622,6 +835,8 @@ function createDaySummary() {
         commits: 0,
         pushes: 0,
         mends: 0,
+        compactions: 0,
+        releases: 0,
         completed: 0,
         errors: 0,
         rateLimits: 0,
@@ -873,6 +1088,8 @@ function accumulateDaySummary(summary, event) {
         case ChronicleEventKind.COMMIT: summary.commits++; break;
         case ChronicleEventKind.PUSH: if (!event.outcome) summary.pushes++; break;
         case ChronicleEventKind.MENDED: summary.mends++; break;
+        case ChronicleEventKind.COMPACTED: summary.compactions++; break;
+        case ChronicleEventKind.RELEASE: summary.releases++; break;
         case ChronicleEventKind.COMPLETED: summary.completed++; break;
         case ChronicleEventKind.ERRORED: summary.errors++; break;
         case ChronicleEventKind.RATE_LIMITED: summary.rateLimits++; break;

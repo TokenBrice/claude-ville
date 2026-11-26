@@ -503,6 +503,16 @@ export const EFFECT_BUDGET = Object.freeze({
         staticFallback: 'none',
         canvas: 'none',
     }),
+    // W3-C (Spec 04 §2.4, CarriedArtifact.js) — 6x6 code-drawn carried
+    // artifact stamps at z >= 1.6, nearest view centre first, shed before
+    // carried-lanterns. No resident GPU attachment or light slot.
+    'carried-artifacts': Object.freeze({
+        id: 'carried-artifacts',
+        levels: Object.freeze({ FULL: 48, REDUCED: 24, MINIMAL: 0 }),
+        cost: Object.freeze({ gpuMsBand: [0, 0.04], cpuMsBand: [0, 0.02], bytes: 0, scope: 'shared-scene-envelope' }),
+        staticFallback: 'static-stamp',
+        canvas: 'overlay-stamp',
+    }),
     // NL-4 (look `nl4`, CarriedLantern.js) — every eligible carrier keeps its
     // stamp; this caps how many of them, nearest the view centre, lay a
     // pool: one small fixture light each, admitted after every other light

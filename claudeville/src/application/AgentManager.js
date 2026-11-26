@@ -69,6 +69,8 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'rootSessionId',
     'workflowId',
     'workflowName',
+    'compactions',
+    'compactionCount',
     'model',
     'effort',
     'status',
@@ -990,6 +992,20 @@ export class AgentManager {
             rootSessionId: session.rootSessionId || null,
             workflowId: session.workflowId || null,
             workflowName: session.workflowName || null,
+            compactions: Array.isArray(session.compactions)
+                ? session.compactions.slice(-4).map(item => ({
+                    at: Number(item?.at) || 0,
+                    trigger: item?.trigger === 'manual' || item?.trigger === 'auto' ? item.trigger : 'unknown',
+                    preTokens: Number.isInteger(item?.preTokens) ? item.preTokens : 0,
+                    postTokens: Number.isInteger(item?.postTokens) ? item.postTokens : null,
+                    durationMs: Number.isInteger(item?.durationMs) ? item.durationMs : null,
+                }))
+                : null,
+            compactionCount: Array.isArray(session.compactions)
+                ? (Number.isInteger(session.compactionCount) && session.compactionCount >= session.compactions.length
+                    ? session.compactionCount
+                    : session.compactions.length)
+                : null,
             model: teamInfo?.model || session.model || 'unknown',
             effort: session.reasoningEffort || session.effort || null,
             status,
