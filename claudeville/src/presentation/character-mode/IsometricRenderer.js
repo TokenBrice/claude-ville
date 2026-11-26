@@ -2257,6 +2257,7 @@ export class IsometricRenderer {
         this.signageMode = readSignageMode();
         this.buildingRenderer?.setSignageMode?.(this.signageMode);
         this.buildingRenderer?.setTheatreMode?.(Boolean(this.theatreMode));
+        this.harborTraffic?.setTheatreMode?.(Boolean(this.theatreMode));
         // #attract — idle attract camera defaults on; honor the persisted toggle.
         let autoCam = true;
         try { autoCam = window.localStorage?.getItem('cv-auto-camera') !== '0'; } catch (_) { /* storage unavailable */ }
@@ -2481,7 +2482,9 @@ export class IsometricRenderer {
         this._onPointerInputMain = event => {
             this._pointerInputAt = performance.now();
             const glass = this.inspectionGlass;
-            if (!glass.enabled || event.type === 'wheel') return;
+            if (event.type === 'wheel') return;
+            const mouseMove = event.type === 'pointermove' && event.pointerType === 'mouse';
+            if (!glass.enabled && !mouseMove) return;
             const rect = canvas.getBoundingClientRect();
             const x = event.clientX - rect.left;
             const y = event.clientY - rect.top;
@@ -2597,6 +2600,7 @@ export class IsometricRenderer {
         this._endTheatreTransition?.();
         this.theatreMode = Boolean(active);
         this.buildingRenderer?.setTheatreMode?.(this.theatreMode);
+        this.harborTraffic?.setTheatreMode?.(this.theatreMode);
         const whisper = document.getElementById('theatreWhisper');
         clearTimeout(this._whisperTimer);
         whisper?.toggleAttribute('data-visible', active);
@@ -4324,7 +4328,7 @@ export class IsometricRenderer {
             return;
         }
 
-        if (!blocked && event.code === 'KeyH') {
+        if (!blocked && event.code === 'KeyH' && !this.stripProfile) {
             this.setTheatreMode(!this.theatreMode);
         } else if (!blocked && event.code === 'KeyG' && this.inspectionGlass?.onKeyDown(event)) {
             this._invalidateIdleFrame();
@@ -6097,19 +6101,15 @@ export class IsometricRenderer {
     }
 
     _resetContextAfterFrameFailure() {
-        const ctx = this.ctx;
-        if (!ctx) return;
-        try {
-            if (typeof ctx.reset === 'function') {
-                ctx.reset();
-                return;
-            }
-            const canvas = this.canvas;
-            if (canvas && canvas.width > 0 && canvas.height > 0) {
-                canvas.width = canvas.width;
-                this.ctx = canvas.getContext('2d', { alpha: false });
-            }
-        } catch { /* context recovery is best-effort */ }
+        // A painter can throw with saves and a clip still on either canvas.
+        for (const ctx of [this.ctx, this.overlayCtx]) {
+            if (!ctx) continue;
+            try {
+                if (typeof ctx.reset === 'function') ctx.reset();
+                else if (ctx.canvas) ctx.canvas.width = ctx.canvas.width;
+                if (ctx === this.overlayCtx) this._resetScreenTransform(ctx);
+            } catch { /* context recovery is best-effort */ }
+        }
     }
 
     _resumeFrameFailures() {
@@ -6517,6 +6517,8 @@ export class IsometricRenderer {
                 dt,
                 agentSprites: this.agentSprites,
                 snapshot: this.villageDirector?.getSnapshot?.() || null,
+                plaqueCounts: this.buildingRenderer?._plaqueCounts || null,
+                plaquePatrons: this.buildingRenderer?.plaquePatrons || null,
             });
             // #50 — pass wall-clock time so the camera can measure idle duration
             // for the Ken-Burns drift independently of accumulated dt.
@@ -8380,6 +8382,8 @@ export class IsometricRenderer {
                 });
             }
         }
+        const readMode = this.getReadMode();
+        const effectiveTheatre = Boolean(this.theatreMode && !readMode);
         const lens = this.inspectionGlass?.getCenter();
         this._attentionLayout = layoutAttentionPlates(this.overlayCtx, {
             // Every agent, not the visible snapshot: off-view action-needed
@@ -8396,8 +8400,8 @@ export class IsometricRenderer {
             hoveredAttentionKey: this._hoverPoint ? attentionKeyAt(this._attentionLayout, this._hoverPoint.x, this._hoverPoint.y) : null,
             selectedAgentId: this.selectedAgent?.id,
             attentionHold: Boolean(this.cameraDirector?.attentionFrame?.hold && !this.cameraDirector.attentionFrame.hold.done),
-            readMode: this.getReadMode(),
-            theatreMode: Boolean(this.theatreMode),
+            readMode,
+            theatreMode: effectiveTheatre,
             glassScreen: lens ? { cx: lens.x, cy: lens.y } : null,
             // Ages default to the shared 1 Hz tick (`elapsedTickNow`), so a
             // plate and the card beside it always print the same second.
@@ -8415,7 +8419,6 @@ export class IsometricRenderer {
         if (this.buildingRenderer) this.buildingRenderer.attentionWorldRects = attentionWorldRects;
 
         const focusId = this.selectedAgent?.id || this.cameraDirector?.attentionFrame?.focusedAgentId;
-        const readMode = this.getReadMode();
         const routineZoom = (this.restZoom ?? zoom) >= ROUTINE_NAME_MIN_ZOOM;
         const perRegion = zoom >= ROUTINE_NAME_DETAIL_ZOOM ? ROUTINE_NAMES_PER_REGION_DETAIL : ROUTINE_NAMES_PER_REGION;
         const regionCounts = this._overlayRegionCounts;
@@ -8424,7 +8427,7 @@ export class IsometricRenderer {
             const attention = isAttentionStatus(sprite.agent.status);
             const focused = sprite.selected || sprite.agent.id === focusId;
             const primary = focused || attention;
-            sprite.theatreMode = Boolean(this.theatreMode && !readMode);
+            sprite.theatreMode = effectiveTheatre;
             sprite.decisionFocusMuted = Boolean(focusId && sprite.agent.id !== focusId);
             sprite.decisionFocusRoutine = sprite.decisionFocusMuted && !primary;
             sprite.readVerb = readMode && !primary ? sprite.readToolVerb || 'OTHER' : null;
@@ -8458,7 +8461,7 @@ export class IsometricRenderer {
                 continue;
             }
             // T1 owns the identity of every action-needed agent.
-            if (attention || (this.theatreMode && !readMode)) continue;
+            if (attention || effectiveTheatre) continue;
             // A name the operator gave the session (Claude Code `/rename`)
             // always shows: past decision focus, the zoom gate, the region
             // cap and the crowd fold, offset rather than dropped on overlap.

@@ -512,7 +512,7 @@ export function promenadeTargetPose({
     };
 }
 
-function occupiedPromenadeTypes(agentSprites, snapshot) {
+function occupiedPromenadeTypes({ agentSprites, snapshot, plaqueCounts, plaquePatrons }) {
     const occupied = new Set();
     const mark = (rawType) => {
         const type = normalizeBuildingType(rawType);
@@ -528,8 +528,8 @@ function occupiedPromenadeTypes(agentSprites, snapshot) {
             if (count > 0) mark(type);
         }
     };
-    addCountEntries(snapshot?.plaqueCounts);
-    addCountEntries(snapshot?.plaquePatrons);
+    addCountEntries(plaqueCounts ?? snapshot?.plaqueCounts);
+    addCountEntries(plaquePatrons ?? snapshot?.plaquePatrons);
 
     for (const cohort of snapshot?.workCohorts || []) {
         const count = Number(cohort?.total ?? cohort?.working ?? 0);
@@ -546,7 +546,8 @@ function occupiedPromenadeTypes(agentSprites, snapshot) {
         const agent = sprite?.agent;
         if (!agent || agent.isDeparted || sprite._archiveAnim || sprite.isArrivalPending?.()) continue;
         if (sprite.visitRole === 'rest') {
-            const restType = sprite._restSeatBuilding
+            const restType = sprite._seatedSeat?.()?.building
+                || sprite._restBuilding
                 || sprite._foldBuildingType
                 || sprite._lastBuildingType
                 || agent.targetBuildingType
@@ -923,7 +924,8 @@ export class CameraDirector {
         this._lastEventKindAt.clear();
     }
 
-    update({ now = nowMs(), dt = 16, agentSprites = null, snapshot = null } = {}) {
+    update(frame = {}) {
+        const { now = nowMs(), dt = 16, agentSprites = null, snapshot = null } = frame;
         this._latestSnapshot = snapshot || null;
         if (this.attentionFrame && this.attentionFrame.inputAt !== this.camera?._lastUserInputAt) {
             this.attentionFrame = null;
@@ -943,14 +945,13 @@ export class CameraDirector {
             }
             this._ambient = null;
         }
-        if (this._ambient) {
-            this._updateAmbient(now, agentSprites, snapshot);
+        if (this.stripProfile) {
+            if (this._ambient) this._updatePromenade(now, frame);
+            else if (this._promenadePaused) this._updatePromenadePause(now, frame);
             return;
         }
-        if (this.stripProfile) {
-            if (this._promenadePaused) {
-                this._updatePromenadePause(now, agentSprites, snapshot);
-            }
+        if (this._ambient) {
+            this._updateAmbient(now, agentSprites, snapshot);
             return;
         }
         if (!this.autoMode || this.motionScale <= 0 || !this.camera) return;
@@ -995,10 +996,6 @@ export class CameraDirector {
     // sake: every replacement shot has to be a different real subject, and a
     // subject that is already comfortably framed is left alone.
     _updateAmbient(now, agentSprites, snapshot) {
-        if (this.stripProfile) {
-            this._updatePromenade(now, agentSprites, snapshot);
-            return;
-        }
         const camera = this.camera;
         const state = this._ambient;
         const cohorts = (snapshot?.workCohorts || []).filter(cohort => validBox(cohort?.box));
@@ -1318,7 +1315,7 @@ export class CameraDirector {
         };
     }
 
-    _updatePromenadePause(now, agentSprites, snapshot) {
+    _updatePromenadePause(now, frame) {
         const camera = this.camera;
         const pause = this._promenadePaused;
         if (!camera || !pause) return;
@@ -1347,12 +1344,12 @@ export class CameraDirector {
         if (this._ambient?.promenade) {
             this._ambient.promenade.stationIndex = resumeIndex;
         }
-        this._updatePromenade(now, agentSprites, snapshot);
+        this._updatePromenade(now, frame);
     }
 
     // W4.2 (§4.6) — Promenade Rail schedule inside Ambient mode for /strip/.
     // Owner stays `'ambient'`, motion stays `'ambient'` (shipped `glideToPose`).
-    _updatePromenade(now, agentSprites, snapshot) {
+    _updatePromenade(now, frame) {
         const camera = this.camera;
         const state = this._ambient;
         if (!camera || !state) return;
@@ -1371,7 +1368,7 @@ export class CameraDirector {
 
         // Attention override: glide to oldest action-needed agent with the same
         // 0.12 * rows ground-line framing; cycle every 20 s when several exist.
-        const attention = collectPromenadeAttentionAgents(agentSprites, snapshot);
+        const attention = collectPromenadeAttentionAgents(frame.agentSprites, frame.snapshot);
         if (attention.length > 0) {
             this._updatePromenadeAttention(state, prom, attention, { now, stripHeight, zoom, reducedMotion });
             return;
@@ -1390,7 +1387,7 @@ export class CameraDirector {
             return;
         }
 
-        const occupied = occupiedPromenadeTypes(agentSprites, snapshot);
+        const occupied = occupiedPromenadeTypes(frame);
 
         if (prom.mode === 'none') {
             this._startPromenadeStation(state, prom, occupied, { now, stripHeight, zoom, reducedMotion });

@@ -1056,7 +1056,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     if (council) {
         const members = sortedSprites.filter(sprite => renderer.focusedSquadIds.has(sprite.agent.id));
         drawCouncilScrim(overlayCtx, viewport, members, renderer._lanternNightFactor?.(atmosphere) >= 0.5,
-            { camera: renderer.camera, zoom });
+            { camera: renderer.camera, zoom, dpr: renderer.dpr || globalThis.devicePixelRatio || 1 });
     }
     renderer.camera.applyTransform(overlayCtx);
     if (gpuWorldRendered) {
@@ -2323,7 +2323,9 @@ function drawGlassPass(ctx, renderer, sprites, labelOptions) {
             sprite.drawThought?.(ctx, labelOptions.zoom, THOUGHT_PAINT.COLUMN);
             const slot = sprite.overlaySlot, verb = sprite.readVerb;
             try {
-                const lines = [null, sprite.readToolVerb || 'OTHER', sprite.carriedArtifact?.kind,
+                const kind = sprite.carriedArtifact?.kind;
+                const artifact = kind === 'toolScroll' ? 'scroll' : kind?.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+                const lines = [null, sprite.readToolVerb || 'OTHER', artifact,
                     sprite.workflowRibbon?.label || sprite.agent.workflowName, sprite._cairnSpec?.label];
                 sprite.overlaySlot = 0;
                 for (const line of lines) {

@@ -16,10 +16,11 @@ import { WORLD_BODY_FONT, WORLD_DISPLAY_FACE } from '../../config/theme.js';
 // in the same task, so the screen never shows the bare frame: no flash.
 
 let active = false;
+let livingPostcardHoldDepth = 0;
 
-/** True only while a postcard frame draws. */
+/** Hide live world labels for still captures and throughout a living postcard. */
 export function postcardFrame() {
-    return active;
+    return active || livingPostcardHoldDepth > 0;
 }
 
 const TEXT_METHODS = ['fillText', 'strokeText'];
@@ -48,12 +49,13 @@ export function withPostcardFrame(draw, { trace = false } = {}) {
             };
         }
     }
+    const previous = active;
     active = true;
     try {
         const result = draw();
         return { result, textCalls: guard.textCalls, textSites: guard.textSites };
     } finally {
-        active = false;
+        active = previous;
         for (const undo of restore) undo();
     }
 }
@@ -572,41 +574,16 @@ export async function recordLivingPostcard(renderer, {
         return { ok: false, aborted: false, reason: 'unsupported-recorder', frames: 0, textCalls: 0, message };
     }
 
-    const first = await capturePostcardFrameLayers(renderer, { trace, restoreLive: false, documentRef });
-    if (!first.layers) {
-        renderer?.renderNow?.();
-        const message = 'Living postcard unavailable · the World is not drawing';
-        emitStatus({ state: 'error', reason: 'not-drawn', frames: 0, textCalls: first.textCalls, message });
-        eventBus.emit('postcard:status', { ok: false, message });
-        return { ok: false, aborted: false, reason: 'not-drawn', frames: 0, textCalls: first.textCalls, message };
-    }
-
-    // Dedicated compose canvas — NEVER the live GPU/world canvas.
-    const composeCanvas = composePostcard({
-        surfaces: first.layers.surfaces,
-        width: first.width,
-        height: first.height,
-        caption: first.layers.caption,
-        unit: first.unit,
-        crop,
-        border,
-        documentRef,
-    });
-
-    if (typeof composeCanvas?.captureStream !== 'function') {
-        renderer?.renderNow?.();
-        const message = 'Living postcard unavailable · canvas captureStream unsupported';
-        emitStatus({ state: 'error', reason: 'capture-stream-unsupported', frames: 1, textCalls: first.textCalls, message });
-        eventBus.emit('postcard:status', { ok: false, message });
-        return { ok: false, aborted: false, reason: 'capture-stream-unsupported', frames: 1, textCalls: first.textCalls, message };
-    }
-
-    let frames = 1;
-    let totalTextCalls = first.textCalls;
-    const perFrameTextCalls = [first.textCalls];
+    let composeCanvas;
+    let frames = 0;
+    let totalTextCalls = 0;
+    const perFrameTextCalls = [];
     let aborted = false;
     let abortReason = null;
-    let finished = false;
+    let settleLoop;
+    const loopDone = new Promise((resolve, reject) => {
+        settleLoop = (error) => error ? reject(error) : resolve();
+    });
     let pendingHandle = null;
     let recorder = null;
     let stream = null;
@@ -647,9 +624,10 @@ export async function recordLivingPostcard(renderer, {
     };
 
     const triggerAbort = (reason) => {
-        if (aborted || finished) return;
+        if (aborted) return;
         aborted = true;
         abortReason = reason;
+        settleLoop();
         clearScheduled(pendingHandle);
         pendingHandle = null;
         stopRecorderSafely();
@@ -676,7 +654,60 @@ export async function recordLivingPostcard(renderer, {
         signal?.removeEventListener?.('abort', onAbortSignal);
     };
 
+    const abortResult = () => {
+        const message = abortReason === 'attention-needed'
+            ? 'Living postcard aborted · an agent needs attention'
+            : 'Living postcard cancelled';
+        emitStatus({ state: 'aborted', reason: abortReason, frames, textCalls: totalTextCalls, message });
+        eventBus.emit('postcard:status', { ok: false, message });
+        return {
+            ok: false,
+            aborted: true,
+            reason: abortReason,
+            frames,
+            textCalls: totalTextCalls,
+            perFrameTextCalls,
+            mimeType,
+            fileName: null,
+            message,
+        };
+    };
+
+    livingPostcardHoldDepth++;
     try {
+        const first = await Promise.race([
+            capturePostcardFrameLayers(renderer, { trace, restoreLive: false, documentRef }),
+            loopDone,
+        ]);
+        if (aborted) return abortResult();
+        if (!first.layers) {
+            const message = 'Living postcard unavailable · the World is not drawing';
+            emitStatus({ state: 'error', reason: 'not-drawn', frames: 0, textCalls: first.textCalls, message });
+            eventBus.emit('postcard:status', { ok: false, message });
+            return { ok: false, aborted: false, reason: 'not-drawn', frames: 0, textCalls: first.textCalls, message };
+        }
+
+        // Dedicated compose canvas — NEVER the live GPU/world canvas.
+        composeCanvas = composePostcard({
+            surfaces: first.layers.surfaces,
+            width: first.width,
+            height: first.height,
+            caption: first.layers.caption,
+            unit: first.unit,
+            crop,
+            border,
+            documentRef,
+        });
+
+        if (typeof composeCanvas?.captureStream !== 'function') {
+            const message = 'Living postcard unavailable · canvas captureStream unsupported';
+            emitStatus({ state: 'error', reason: 'capture-stream-unsupported', frames: 1, textCalls: first.textCalls, message });
+            eventBus.emit('postcard:status', { ok: false, message });
+            return { ok: false, aborted: false, reason: 'capture-stream-unsupported', frames: 1, textCalls: first.textCalls, message };
+        }
+        frames = 1;
+        totalTextCalls = first.textCalls;
+        perFrameTextCalls.push(first.textCalls);
         if (hasActionNeeded?.()) {
             triggerAbort('attention-needed');
         } else {
@@ -715,75 +746,75 @@ export async function recordLivingPostcard(renderer, {
                 message: `Recording living postcard… 0.0s / ${(targetDurationMs / 1000).toFixed(1)}s`,
             });
 
-            await new Promise((resolveLoop) => {
-                const tick = async () => {
-                    pendingHandle = null;
-                    if (aborted) {
-                        resolveLoop();
-                        return;
-                    }
-                    if (hasActionNeeded?.()) {
-                        triggerAbort('attention-needed');
-                        resolveLoop();
-                        return;
-                    }
-                    const elapsedMs = Math.max(0, now() - startedAt);
-                    if (elapsedMs >= targetDurationMs) {
-                        resolveLoop();
-                        return;
-                    }
-                    const frame = await capturePostcardFrameLayers(renderer, { trace, restoreLive: false, documentRef });
-                    if (aborted || hasActionNeeded?.()) {
-                        if (!aborted) triggerAbort('attention-needed');
-                        resolveLoop();
-                        return;
-                    }
-                    if (frame.layers) {
-                        frames += 1;
-                        totalTextCalls += frame.textCalls;
-                        perFrameTextCalls.push(frame.textCalls);
-                        composePostcard({
-                            surfaces: frame.layers.surfaces,
-                            width: frame.width,
-                            height: frame.height,
-                            caption: frame.layers.caption,
-                            unit: frame.unit,
-                            crop,
-                            border,
-                            targetCanvas: composeCanvas,
-                            documentRef,
-                        });
-                    }
-                    const afterElapsed = Math.max(0, now() - startedAt);
-                    emitStatus({
-                        state: 'recording',
-                        elapsedMs: afterElapsed,
-                        durationMs: targetDurationMs,
-                        progress: Math.min(1, afterElapsed / targetDurationMs),
-                        frames,
-                        message: `Recording living postcard… ${(Math.min(afterElapsed, targetDurationMs) / 1000).toFixed(1)}s / ${(targetDurationMs / 1000).toFixed(1)}s`,
+            const tick = async () => {
+                pendingHandle = null;
+                if (aborted) return;
+                if (hasActionNeeded?.()) {
+                    triggerAbort('attention-needed');
+                    return;
+                }
+                const elapsedMs = Math.max(0, now() - startedAt);
+                if (elapsedMs >= targetDurationMs) {
+                    settleLoop();
+                    return;
+                }
+                const frame = await capturePostcardFrameLayers(renderer, { trace, restoreLive: false, documentRef });
+                if (aborted || hasActionNeeded?.()) {
+                    if (!aborted) triggerAbort('attention-needed');
+                    return;
+                }
+                if (frame.layers) {
+                    frames += 1;
+                    totalTextCalls += frame.textCalls;
+                    perFrameTextCalls.push(frame.textCalls);
+                    composePostcard({
+                        surfaces: frame.layers.surfaces,
+                        width: frame.width,
+                        height: frame.height,
+                        caption: frame.layers.caption,
+                        unit: frame.unit,
+                        crop,
+                        border,
+                        targetCanvas: composeCanvas,
+                        documentRef,
                     });
-                    if (afterElapsed >= targetDurationMs) {
-                        resolveLoop();
-                        return;
-                    }
-                    pendingHandle = scheduleNext(tick);
-                };
-                pendingHandle = scheduleNext(tick);
-            });
+                }
+                const afterElapsed = Math.max(0, now() - startedAt);
+                emitStatus({
+                    state: 'recording',
+                    elapsedMs: afterElapsed,
+                    durationMs: targetDurationMs,
+                    progress: Math.min(1, afterElapsed / targetDurationMs),
+                    frames,
+                    message: `Recording living postcard… ${(Math.min(afterElapsed, targetDurationMs) / 1000).toFixed(1)}s / ${(targetDurationMs / 1000).toFixed(1)}s`,
+                });
+                if (afterElapsed >= targetDurationMs) {
+                    settleLoop();
+                    return;
+                }
+                if (!aborted) pendingHandle = scheduleNext(runTick);
+            };
+            const runTick = () => tick().catch(settleLoop);
+            if (!aborted) pendingHandle = scheduleNext(runTick);
+            await loopDone;
 
             if (!aborted && hasActionNeeded?.()) {
                 triggerAbort('attention-needed');
             }
 
             if (!aborted) {
-                finished = true;
-                stopRecorderSafely();
+                if (recorder.state !== 'inactive') recorder.stop();
                 await stoppedPromise;
-                stopTracks();
             }
         }
+    } catch (error) {
+        console.warn('[Postcard] Living postcard recording failed', error);
+        const message = 'Living postcard unavailable · recording failed';
+        emitStatus({ state: 'error', reason: 'recording-failed', frames, textCalls: totalTextCalls, message });
+        eventBus.emit('postcard:status', { ok: false, message });
+        return { ok: false, aborted: false, reason: 'recording-failed', frames, textCalls: totalTextCalls, message };
     } finally {
+        livingPostcardHoldDepth--;
         clearScheduled(pendingHandle);
         pendingHandle = null;
         stopRecorderSafely();
@@ -793,24 +824,7 @@ export async function recordLivingPostcard(renderer, {
         renderer?.renderNow?.();
     }
 
-    if (aborted) {
-        const message = abortReason === 'attention-needed'
-            ? 'Living postcard aborted · an agent needs attention'
-            : 'Living postcard cancelled';
-        emitStatus({ state: 'aborted', reason: abortReason, frames, textCalls: totalTextCalls, message });
-        eventBus.emit('postcard:status', { ok: false, message });
-        return {
-            ok: false,
-            aborted: true,
-            reason: abortReason,
-            frames,
-            textCalls: totalTextCalls,
-            perFrameTextCalls,
-            mimeType,
-            fileName: null,
-            message,
-        };
-    }
+    if (aborted) return abortResult();
 
     if (totalTextCalls > 0) {
         console.warn(`[Postcard] ${totalTextCalls} text call(s) reached the living postcard frames and were dropped`);
