@@ -1,14 +1,35 @@
 {
   "schemaVersion": 1,
   "caseId": "readme-noon-1920x1080-webgpu",
-  "capturedAt": "2026-11-26T05:53:10.458Z",
+  "capturedAt": "2026-11-26T09:00:44.258Z",
   "scenario": "readme-showcase",
   "hour": 12,
   "weather": "clear",
   "zoom": 2,
   "date": "2026-07-15",
+  "timezone": "Europe/Belgrade",
   "season": "summer",
   "backend": "webgpu",
+  "worldBackendReason": "?renderer=webgpu · webgpu ready · webgl2 not probed",
+  "gradeKey": "morning>noon",
+  "afterglow": 0,
+  "rimStrength": 0,
+  "solar": {
+    "authored": false,
+    "zone": "Europe/Belgrade",
+    "sunriseShift": -53.787837766607595,
+    "sunsetShift": 71.9335532718485,
+    "goldenShift": 121.29685390351779
+  },
+  "weatherProfile": {
+    "type": "clear",
+    "intensity": 0,
+    "precipitation": 0,
+    "fog": 0,
+    "cloudCover": 0.08,
+    "windX": 0
+  },
+  "snow": null,
   "backing": [
     1680,
     1032
@@ -22,12 +43,13 @@
   "determinism": {
     "selfStableBytes": true,
     "ladderLevel": 0,
-    "nondeterministicMasks": []
+    "nondeterministicMasks": [],
+    "canvasSea": null
   },
   "fence": {
-    "elapsedMs": 6798,
+    "elapsedMs": 6747,
     "terrainKey": "-1640,-376,3280,2000@1|assets|season:summer|stage:summer|scenery:0|passes:ground-splat:sheetsw,coast-field:e0:0:723:9:136:24:313|s0,coast-reflections:1:9:9:3:12,|retry:0",
-    "presentGeneration": 9,
+    "presentGeneration": 4,
     "centerRgb": [
       206,
       138,
@@ -2918,13 +2940,13 @@
       "index": 479,
       "id": "building.archive:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 480,
       "id": "building.archive:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 481,
@@ -2942,7 +2964,7 @@
       "index": 483,
       "id": "building.archive:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 484,
@@ -2954,55 +2976,55 @@
       "index": 485,
       "id": "building.archive:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 486,
       "id": "building.archive:column:3:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 487,
       "id": "building.archive:column:16",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 488,
       "id": "building.archive:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 489,
       "id": "building.archive:column:4:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 490,
       "id": "building.archive:column:15",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 491,
       "id": "building.archive:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 492,
       "id": "building.archive:column:5:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 493,
       "id": "building.archive:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 494,
@@ -3014,13 +3036,13 @@
       "index": 495,
       "id": "building.archive:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 496,
       "id": "building.archive:column:6:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 497,
@@ -3032,7 +3054,7 @@
       "index": 498,
       "id": "building.archive:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 499,
@@ -3044,19 +3066,19 @@
       "index": 500,
       "id": "building.archive:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 501,
       "id": "building.archive:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 502,
       "id": "building.archive:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 503,
@@ -3092,19 +3114,19 @@
       "index": 508,
       "id": "building.archive:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 509,
       "id": "building.archive:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 510,
       "id": "building.archive:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 511,
@@ -3116,13 +3138,13 @@
       "index": 512,
       "id": "building.archive:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 513,
       "id": "building.archive:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 514,
@@ -3134,13 +3156,13 @@
       "index": 515,
       "id": "building.archive:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 516,
       "id": "building.archive:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 517,
@@ -3212,19 +3234,19 @@
       "index": 528,
       "id": "building.command:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 529,
       "id": "building.command:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 530,
       "id": "building.command:column:1:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 531,
@@ -3242,13 +3264,13 @@
       "index": 533,
       "id": "building.command:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 534,
       "id": "building.command:column:2:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 535,
@@ -3266,19 +3288,19 @@
       "index": 537,
       "id": "building.command:column:17",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 538,
       "id": "building.command:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 539,
       "id": "building.command:column:3:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 540,
@@ -3302,19 +3324,19 @@
       "index": 543,
       "id": "building.command:column:16",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 544,
       "id": "building.command:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 545,
       "id": "building.command:column:4:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 546,
@@ -3332,25 +3354,25 @@
       "index": 548,
       "id": "building.command:column:15",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 549,
       "id": "building.command:column:15:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 550,
       "id": "building.command:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 551,
       "id": "building.command:column:5:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 552,
@@ -3368,13 +3390,13 @@
       "index": 554,
       "id": "building.command:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 555,
       "id": "building.command:column:14:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 556,
@@ -3410,13 +3432,13 @@
       "index": 561,
       "id": "building.command:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 562,
       "id": "building.command:column:6:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 563,
@@ -3434,25 +3456,25 @@
       "index": 565,
       "id": "building.command:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 566,
       "id": "building.command:column:13:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 567,
       "id": "building.command:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 568,
       "id": "building.command:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 569,
@@ -3470,13 +3492,13 @@
       "index": 571,
       "id": "building.command:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 572,
       "id": "building.command:column:12:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 573,
@@ -3494,19 +3516,19 @@
       "index": 575,
       "id": "building.command:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 576,
       "id": "building.command:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 577,
       "id": "building.portal:column:15",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 578,
@@ -3518,115 +3540,115 @@
       "index": 579,
       "id": "building.portal:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 580,
       "id": "building.command:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 581,
       "id": "building.command:column:11:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 582,
       "id": "building.command:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 583,
       "id": "building.command:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 584,
       "id": "building.portal:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 585,
       "id": "building.portal:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 586,
       "id": "building.command:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 587,
       "id": "building.command:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 588,
       "id": "building.portal:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 589,
       "id": "building.portal:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 590,
       "id": "building.portal:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 591,
       "id": "building.portal:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 592,
       "id": "building.tavern:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 593,
       "id": "building.tavern:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 594,
       "id": "building.tavern:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 595,
       "id": "building.tavern:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 596,
       "id": "building.tavern:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 597,
       "id": "building.tavern:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 598,
@@ -3650,43 +3672,43 @@
       "index": 601,
       "id": "building.portal:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 602,
       "id": "building.tavern:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 603,
       "id": "building.portal:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 604,
       "id": "building.portal:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 605,
       "id": "building.tavern:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 606,
       "id": "building.tavern:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 607,
       "id": "building.portal:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 608,
@@ -3722,7 +3744,7 @@
       "index": 613,
       "id": "building.portal:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 614,
@@ -3740,19 +3762,19 @@
       "index": 616,
       "id": "building.tavern:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 617,
       "id": "building.tavern:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 618,
       "id": "building.portal:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 619,
@@ -3764,7 +3786,7 @@
       "index": 620,
       "id": "building.portal:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 621,
@@ -3776,19 +3798,19 @@
       "index": 622,
       "id": "building.tavern:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 623,
       "id": "building.tavern:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 624,
       "id": "building.portal:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 625,
@@ -3812,7 +3834,7 @@
       "index": 628,
       "id": "building.tavern:column:17",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 629,
@@ -3824,13 +3846,13 @@
       "index": 630,
       "id": "building.tavern:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 631,
       "id": "building.tavern:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 632,
@@ -3842,13 +3864,13 @@
       "index": 633,
       "id": "building.tavern:column:16",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 634,
       "id": "building.tavern:column:16:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 635,
@@ -3878,13 +3900,13 @@
       "index": 639,
       "id": "building.tavern:column:15",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 640,
       "id": "building.tavern:column:15:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 641,
@@ -3896,7 +3918,7 @@
       "index": 642,
       "id": "building.watchtower:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 643,
@@ -3908,13 +3930,13 @@
       "index": 644,
       "id": "building.tavern:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 645,
       "id": "building.tavern:column:14:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 646,
@@ -3926,13 +3948,13 @@
       "index": 647,
       "id": "building.watchtower:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 648,
       "id": "building.watchtower:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 649,
@@ -3944,13 +3966,13 @@
       "index": 650,
       "id": "building.tavern:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 651,
       "id": "building.tavern:column:13:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 652,
@@ -3962,13 +3984,13 @@
       "index": 653,
       "id": "building.watchtower:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 654,
       "id": "building.watchtower:column:6:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 655,
@@ -3980,13 +4002,13 @@
       "index": 656,
       "id": "building.tavern:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 657,
       "id": "building.tavern:column:12:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 658,
@@ -3998,19 +4020,19 @@
       "index": 659,
       "id": "building.watchtower:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 660,
       "id": "building.watchtower:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 661,
       "id": "building.watchtower:column:5:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 662,
@@ -4052,13 +4074,13 @@
       "index": 668,
       "id": "building.tavern:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 669,
       "id": "building.tavern:column:11:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 670,
@@ -4070,19 +4092,19 @@
       "index": 671,
       "id": "building.watchtower:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 672,
       "id": "building.watchtower:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 673,
       "id": "building.watchtower:column:4:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 674,
@@ -4118,13 +4140,13 @@
       "index": 679,
       "id": "building.watchtower:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 680,
       "id": "building.watchtower:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 681,
@@ -4304,7 +4326,7 @@
       "index": 710,
       "id": "building.mine:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 711,
@@ -4334,7 +4356,7 @@
       "index": 715,
       "id": "building.mine:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 716,
@@ -4382,37 +4404,37 @@
       "index": 723,
       "id": "building.mine:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 724,
       "id": "building.mine:column:2:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 725,
       "id": "building.mine:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 726,
       "id": "building.mine:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 727,
       "id": "building.mine:column:3:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 728,
       "id": "building.mine:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 729,
@@ -4424,31 +4446,31 @@
       "index": 730,
       "id": "building.mine:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 731,
       "id": "building.mine:column:4:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 732,
       "id": "building.mine:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 733,
       "id": "building.mine:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 734,
       "id": "building.mine:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 735,
@@ -4472,13 +4494,13 @@
       "index": 738,
       "id": "building.mine:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 739,
       "id": "building.mine:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 740,
@@ -4490,85 +4512,85 @@
       "index": 741,
       "id": "building.mine:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 742,
       "id": "building.mine:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 743,
       "id": "building.harbor:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 744,
       "id": "building.harbor:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 745,
       "id": "building.harbor:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 746,
       "id": "building.harbor:column:15",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 747,
       "id": "building.harbor:column:16",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 748,
       "id": "building.harbor:column:17",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 749,
       "id": "building.harbor:column:18",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 750,
       "id": "building.harbor:column:19",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 751,
       "id": "building.harbor:column:20",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 752,
       "id": "building.harbor:column:21",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 753,
       "id": "building.harbor:column:22",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 754,
       "id": "building.harbor:column:23",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 755,
@@ -4580,31 +4602,31 @@
       "index": 756,
       "id": "building.harbor:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 757,
       "id": "building.harbor:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 758,
       "id": "building.harbor:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 759,
       "id": "building.harbor:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 760,
       "id": "building.harbor:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 761,
@@ -4616,37 +4638,37 @@
       "index": 762,
       "id": "building.harbor:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 763,
       "id": "building.harbor:column:11:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 764,
       "id": "building.harbor:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 765,
       "id": "building.harbor:column:5:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 766,
       "id": "building.harbor:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 767,
       "id": "building.harbor:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 768,
@@ -4658,37 +4680,37 @@
       "index": 769,
       "id": "building.harbor:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 770,
       "id": "building.harbor:column:6:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 771,
       "id": "building.harbor:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 772,
       "id": "building.harbor:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 773,
       "id": "building.harbor:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 774,
       "id": "building.harbor:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 775,
@@ -4700,13 +4722,13 @@
       "index": 776,
       "id": "building.harbor:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 777,
       "id": "building.harbor:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 778,
@@ -4802,7 +4824,7 @@
       "index": 793,
       "id": "building.forge:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 794,
@@ -4826,7 +4848,7 @@
       "index": 797,
       "id": "building.forge:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 798,
@@ -4838,7 +4860,7 @@
       "index": 799,
       "id": "building.forge:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 800,
@@ -4868,7 +4890,7 @@
       "index": 804,
       "id": "building.forge:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 805,
@@ -4880,7 +4902,7 @@
       "index": 806,
       "id": "building.forge:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 807,
@@ -4892,7 +4914,7 @@
       "index": 808,
       "id": "building.forge:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 809,
@@ -4904,7 +4926,7 @@
       "index": 810,
       "id": "building.forge:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 811,
@@ -4922,13 +4944,13 @@
       "index": 813,
       "id": "building.forge:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 814,
       "id": "building.forge:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 815,
@@ -4940,13 +4962,13 @@
       "index": 816,
       "id": "building.forge:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 817,
       "id": "building.forge:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 818,
@@ -4964,7 +4986,7 @@
       "index": 820,
       "id": "building.forge:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 821,
@@ -4976,13 +4998,13 @@
       "index": 822,
       "id": "building.forge:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 823,
       "id": "building.forge:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 824,
@@ -4994,13 +5016,13 @@
       "index": 825,
       "id": "building.forge:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 826,
       "id": "building.forge:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 827,
@@ -5012,13 +5034,13 @@
       "index": 828,
       "id": "building.forge:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 829,
       "id": "building.forge:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 830,
@@ -5042,13 +5064,13 @@
       "index": 833,
       "id": "building.taskboard:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 834,
       "id": "building.taskboard:column:0:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 835,
@@ -5066,13 +5088,13 @@
       "index": 837,
       "id": "building.taskboard:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 838,
       "id": "building.taskboard:column:1:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 839,
@@ -5084,25 +5106,25 @@
       "index": 840,
       "id": "building.taskboard:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 841,
       "id": "building.taskboard:column:2:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 842,
       "id": "building.taskboard:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 843,
       "id": "building.taskboard:column:11:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 844,
@@ -5132,25 +5154,25 @@
       "index": 848,
       "id": "building.taskboard:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 849,
       "id": "building.taskboard:column:3:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 850,
       "id": "building.taskboard:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 851,
       "id": "building.taskboard:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 852,
@@ -5162,25 +5184,25 @@
       "index": 853,
       "id": "building.taskboard:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 854,
       "id": "building.taskboard:column:4:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 855,
       "id": "building.taskboard:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 856,
       "id": "building.taskboard:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 857,
@@ -5192,25 +5214,25 @@
       "index": 858,
       "id": "building.taskboard:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 859,
       "id": "building.taskboard:column:5:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 860,
       "id": "building.taskboard:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 861,
       "id": "building.taskboard:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 862,
@@ -5222,25 +5244,25 @@
       "index": 863,
       "id": "building.taskboard:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 864,
       "id": "building.taskboard:column:6:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 865,
       "id": "building.taskboard:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 866,
       "id": "building.taskboard:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 867,
@@ -5340,11 +5362,11 @@
           "volatile": 10007948,
           "retained": 657424
         },
-        "canvasBytes": 123422140,
+        "canvasBytes": 123896124,
         "gpu": {
           "textures": {
             "gpuWorld.pinnedSources": 83318650,
-            "gpuWorld.evictableSources": 53729472,
+            "gpuWorld.evictableSources": 52646080,
             "gpuWorld.albedoPage": 4194304,
             "gpuWorld.radiance": 0
           },
@@ -5363,22 +5385,22 @@
             "gpuWorld.lights": 16384
           },
           "groupTotals": {
-            "textures": 141242426,
+            "textures": 140159034,
             "attachments": 26223120,
             "buffers": 90688
           },
-          "totalBytes": 167556234,
+          "totalBytes": 166472842,
           "pinnedBytes": 113826762,
-          "evictableBytes": 53729472
+          "evictableBytes": 52646080
         },
-        "gpuBytes": 167556234,
+        "gpuBytes": 166472842,
         "ownershipLeaves": {
           "cpuDecodedEstimateBytes": 640641744,
-          "cpuDerivedEstimateBytes": 109552060,
+          "cpuDerivedEstimateBytes": 110026044,
           "canvasVisibleEstimateBytes": 13870080,
-          "gpuOwnedBytes": 167556234
+          "gpuOwnedBytes": 166472842
         },
-        "totalBytes": 931620118,
+        "totalBytes": 931010710,
         "budgetBytes": 378217728
       },
       "cacheCounts": {
@@ -5426,9 +5448,9 @@
           "codexEquipmentEstimateBytes": 0,
           "canvasCellBytes": 15201344,
           "canvasCells": 449,
-          "modelSheetBytes": 62836736,
-          "modelBaseBytes": 18146816,
-          "layerCacheBytes": 80051616,
+          "modelSheetBytes": 63378432,
+          "modelBaseBytes": 18079104,
+          "layerCacheBytes": 80525600,
           "gpuEquippedSheetPixelLimit": 0,
           "gpuEquippedSheets": 0,
           "gpuEquippedSheetEstimateBytes": 0,
@@ -5440,7 +5462,7 @@
           "privateDerivedEstimateBytes": 33856,
           "gpuAgentMaterialAtlasEstimateBytes": 0,
           "gpuAgentEmissiveAtlasEstimateBytes": 0,
-          "cpuDerivedEstimateBytes": 80085472,
+          "cpuDerivedEstimateBytes": 80559456,
           "ownership": {
             "compositorSpriteSheets": {
               "ownershipClass": "CPU-derived",
@@ -5456,7 +5478,7 @@
             },
             "agentLayerSheets": {
               "ownershipClass": "CPU-derived",
-              "estimateBytes": 80051616
+              "estimateBytes": 80525600
             },
             "packedGeometrySheets": {
               "ownershipClass": "CPU-derived",
@@ -5543,8 +5565,8 @@
           "errors": 0,
           "dropped": 0,
           "samples": 3,
-          "gpuMs": 1.7494784,
-          "gpuMsP25": 0.63584
+          "gpuMs": 0.76396128,
+          "gpuMsP25": 0.756096
         },
         "supported": true,
         "active": true,
@@ -5552,8 +5574,8 @@
         "suspended": false,
         "width": 1680,
         "height": 1032,
-        "frames": 12,
-        "skippedFrames": 4,
+        "frames": 10,
+        "skippedFrames": 0,
         "records": 876,
         "batches": 330,
         "markRecords": 16,
@@ -5582,10 +5604,10 @@
         "gradeExposure": 1.079708474547976,
         "cloudCourses": 3,
         "aerialHaze": 0.03,
-        "uploads": 517,
-        "uploadBytes": 250357602,
+        "uploads": 513,
+        "uploadBytes": 245956322,
         "uploadBytesByKind": {
-          "wholeImages": 241255972,
+          "wholeImages": 236854692,
           "imagePatches": 0,
           "albedoPage": 3119868,
           "typedFields": 5965378,
@@ -5601,12 +5623,12 @@
             "other": 200
           }
         },
-        "skippedOccluderUploads": 3834,
-        "uploadMs": 40.984965468000006,
-        "cpuMs": 49.75470019200001,
-        "shaderCpuMs": 8.769734724,
-        "gpuMs": 1.7494784,
-        "gpuMsP25": 0.63584,
+        "skippedOccluderUploads": 2556,
+        "uploadMs": 50.60292659999999,
+        "cpuMs": 60.45632040000001,
+        "shaderCpuMs": 9.8533938,
+        "gpuMs": 0.76396128,
+        "gpuMsP25": 0.756096,
         "gpuTimerSamples": 3,
         "gpuTimerEvery": 4,
         "gpuTimerSupported": true,
@@ -5646,10 +5668,10 @@
           }
         },
         "qualityTimingSource": "gpu-timer",
-        "frameGapMs": 66.537120939,
-        "textureBytes": 160530506,
-        "residentTextureBytes": 160530506,
-        "cachedTextureBytes": 137048122,
+        "frameGapMs": 70.19014949999999,
+        "textureBytes": 159447114,
+        "residentTextureBytes": 159447114,
+        "cachedTextureBytes": 135964730,
         "cachedTextureCapBytes": 167411712,
         "cachedTextureCapExceeded": false,
         "cachedTextures": 138,
@@ -5670,7 +5692,7 @@
           "override": null,
           "reason": "not ported to WebGPU (Stage A declared exclusion)"
         },
-        "textureEvictions": 56,
+        "textureEvictions": 52,
         "maxCachedTextureBytes": 167411712,
         "maxCachedTextures": 512,
         "materialAttachments": 2,
@@ -5690,7 +5712,7 @@
           "refreshHz": null,
           "periodMs": null,
           "budgetMs": 8.333333333333334,
-          "timerVeto": "over-budget",
+          "timerVeto": "under-budget",
           "missShare": 0,
           "intervals": 0,
           "window": 60,
@@ -5698,7 +5720,7 @@
           "pacedLevel": 2,
           "coolDownUntilMs": null,
           "nextProbeAtMs": null,
-          "sampledAtMs": 8641
+          "sampledAtMs": 8608
         },
         "lightAdmission": {
           "cap": 0,
@@ -5716,13 +5738,13 @@
         "resources": {
           "textures": {
             "pinnedSources": 83318650,
-            "evictableSources": 53729472,
+            "evictableSources": 52646080,
             "albedoPage": 4194304,
             "radiance": 0
           },
           "pinnedBytes": 113826762,
-          "evictableBytes": 53729472,
-          "totalBytes": 167556234,
+          "evictableBytes": 52646080,
+          "totalBytes": 166472842,
           "atlasPages": [
             {
               "name": "world-pilot",
@@ -5766,7 +5788,7 @@
         "atlasRecords": 163,
         "individualRecords": 713,
         "sourceBatchCount": 330,
-        "sourceUploadBytes": 250357602
+        "sourceUploadBytes": 245956322
       },
       "terrainCache": {
         "strategy": "single-surface",
@@ -5824,11 +5846,11 @@
         "harbor": {
           "stateVersion": 1,
           "stateReductions": 1,
-          "unchangedReconciliations": 20,
+          "unchangedReconciliations": 19,
           "sourceNormalizations": 1,
-          "sourceCacheHits": 20,
-          "animationAdvances": 159,
-          "semanticReconciliations": 21,
+          "sourceCacheHits": 19,
+          "animationAdvances": 157,
+          "semanticReconciliations": 20,
           "rawEventCount": 5,
           "normalizedEventCount": 5,
           "seenEventIds": 5,
@@ -5878,7 +5900,7 @@
           "oversizedCacheFallbacks": 0,
           "cameraMotion": {
             "stationary": {
-              "frames": 12,
+              "frames": 6,
               "drawTimeMs": 0,
               "repaintCount": 0,
               "repaintTimeMs": 0
@@ -5971,7 +5993,7 @@
           "pendingGathers": 0,
           "pendingGatherLimit": 64,
           "disposed": false,
-          "gitReplayCacheHits": 21,
+          "gitReplayCacheHits": 20,
           "gitReplayCacheMisses": 1,
           "gitReplayNormalized": 5,
           "gitReplayRawDuplicates": 0
@@ -6250,10 +6272,10 @@
           "memoryBytes": 141692,
           "flow": {
             "lookups": 41,
-            "avgLookupMs": 0.0975609756097561,
+            "avgLookupMs": 0.12195121951219512,
             "maxLookupMs": 2,
             "avgTraceLookupMs": 0,
-            "avgGuidedLookupMs": 0.125,
+            "avgGuidedLookupMs": 0.15625,
             "avgAdhocLookupMs": 0,
             "sinkLookups": 33,
             "traceHits": 1,
@@ -6264,8 +6286,8 @@
             "sinkHitRate": 0.8048780487804879,
             "traceHitRate": 0.030303030303030304,
             "rebuilds": 11,
-            "rebuildMs": 3,
-            "avgRebuildMs": 0.2727272727272727,
+            "rebuildMs": 2,
+            "avgRebuildMs": 0.18181818181818182,
             "lastRebuildMs": 0,
             "maxRebuildMs": 1,
             "deferredRebuilds": 0,
@@ -6297,8 +6319,8 @@
             "errors": 0,
             "dropped": 0,
             "samples": 3,
-            "gpuMs": 1.7494784,
-            "gpuMsP25": 0.63584
+            "gpuMs": 0.76396128,
+            "gpuMsP25": 0.756096
           },
           "supported": true,
           "active": true,
@@ -6306,8 +6328,8 @@
           "suspended": false,
           "width": 1680,
           "height": 1032,
-          "frames": 12,
-          "skippedFrames": 4,
+          "frames": 10,
+          "skippedFrames": 0,
           "records": 876,
           "batches": 330,
           "markRecords": 16,
@@ -6336,10 +6358,10 @@
           "gradeExposure": 1.079708474547976,
           "cloudCourses": 3,
           "aerialHaze": 0.03,
-          "uploads": 517,
-          "uploadBytes": 250357602,
+          "uploads": 513,
+          "uploadBytes": 245956322,
           "uploadBytesByKind": {
-            "wholeImages": 241255972,
+            "wholeImages": 236854692,
             "imagePatches": 0,
             "albedoPage": 3119868,
             "typedFields": 5965378,
@@ -6355,12 +6377,12 @@
               "other": 200
             }
           },
-          "skippedOccluderUploads": 3834,
-          "uploadMs": 40.984965468000006,
-          "cpuMs": 49.75470019200001,
-          "shaderCpuMs": 8.769734724,
-          "gpuMs": 1.7494784,
-          "gpuMsP25": 0.63584,
+          "skippedOccluderUploads": 2556,
+          "uploadMs": 50.60292659999999,
+          "cpuMs": 60.45632040000001,
+          "shaderCpuMs": 9.8533938,
+          "gpuMs": 0.76396128,
+          "gpuMsP25": 0.756096,
           "gpuTimerSamples": 3,
           "gpuTimerEvery": 4,
           "gpuTimerSupported": true,
@@ -6400,10 +6422,10 @@
             }
           },
           "qualityTimingSource": "gpu-timer",
-          "frameGapMs": 66.537120939,
-          "textureBytes": 160530506,
-          "residentTextureBytes": 160530506,
-          "cachedTextureBytes": 137048122,
+          "frameGapMs": 70.19014949999999,
+          "textureBytes": 159447114,
+          "residentTextureBytes": 159447114,
+          "cachedTextureBytes": 135964730,
           "cachedTextureCapBytes": 167411712,
           "cachedTextureCapExceeded": false,
           "cachedTextures": 138,
@@ -6424,7 +6446,7 @@
             "override": null,
             "reason": "not ported to WebGPU (Stage A declared exclusion)"
           },
-          "textureEvictions": 56,
+          "textureEvictions": 52,
           "maxCachedTextureBytes": 167411712,
           "maxCachedTextures": 512,
           "materialAttachments": 2,
@@ -6444,7 +6466,7 @@
             "refreshHz": null,
             "periodMs": null,
             "budgetMs": 8.333333333333334,
-            "timerVeto": "over-budget",
+            "timerVeto": "under-budget",
             "missShare": 0,
             "intervals": 0,
             "window": 60,
@@ -6452,7 +6474,7 @@
             "pacedLevel": 2,
             "coolDownUntilMs": null,
             "nextProbeAtMs": null,
-            "sampledAtMs": 8641
+            "sampledAtMs": 8608
           },
           "lightAdmission": {
             "cap": 0,
@@ -6470,13 +6492,13 @@
           "resources": {
             "textures": {
               "pinnedSources": 83318650,
-              "evictableSources": 53729472,
+              "evictableSources": 52646080,
               "albedoPage": 4194304,
               "radiance": 0
             },
             "pinnedBytes": 113826762,
-            "evictableBytes": 53729472,
-            "totalBytes": 167556234,
+            "evictableBytes": 52646080,
+            "totalBytes": 166472842,
             "atlasPages": [
               {
                 "name": "world-pilot",
@@ -6520,7 +6542,7 @@
           "atlasRecords": 163,
           "individualRecords": 713,
           "sourceBatchCount": 330,
-          "sourceUploadBytes": 250357602
+          "sourceUploadBytes": 245956322
         },
         "worldRendererMode": "webgpu",
         "worldBackendReason": "?renderer=webgpu · webgpu ready · webgl2 not probed"
@@ -6565,9 +6587,9 @@
         "codexEquipmentEstimateBytes": 0,
         "canvasCellBytes": 15201344,
         "canvasCells": 449,
-        "modelSheetBytes": 62836736,
-        "modelBaseBytes": 18146816,
-        "layerCacheBytes": 80051616,
+        "modelSheetBytes": 63378432,
+        "modelBaseBytes": 18079104,
+        "layerCacheBytes": 80525600,
         "gpuEquippedSheetPixelLimit": 0,
         "gpuEquippedSheets": 0,
         "gpuEquippedSheetEstimateBytes": 0,
@@ -6579,7 +6601,7 @@
         "privateDerivedEstimateBytes": 33856,
         "gpuAgentMaterialAtlasEstimateBytes": 0,
         "gpuAgentEmissiveAtlasEstimateBytes": 0,
-        "cpuDerivedEstimateBytes": 80085472,
+        "cpuDerivedEstimateBytes": 80559456,
         "ownership": {
           "compositorSpriteSheets": {
             "ownershipClass": "CPU-derived",
@@ -6595,7 +6617,7 @@
           },
           "agentLayerSheets": {
             "ownershipClass": "CPU-derived",
-            "estimateBytes": 80051616
+            "estimateBytes": 80525600
           },
           "packedGeometrySheets": {
             "ownershipClass": "CPU-derived",
@@ -6682,8 +6704,8 @@
         "errors": 0,
         "dropped": 0,
         "samples": 3,
-        "gpuMs": 1.7494784,
-        "gpuMsP25": 0.63584
+        "gpuMs": 0.76396128,
+        "gpuMsP25": 0.756096
       },
       "supported": true,
       "active": true,
@@ -6691,8 +6713,8 @@
       "suspended": false,
       "width": 1680,
       "height": 1032,
-      "frames": 12,
-      "skippedFrames": 4,
+      "frames": 10,
+      "skippedFrames": 0,
       "records": 876,
       "batches": 330,
       "markRecords": 16,
@@ -6721,10 +6743,10 @@
       "gradeExposure": 1.079708474547976,
       "cloudCourses": 3,
       "aerialHaze": 0.03,
-      "uploads": 517,
-      "uploadBytes": 250357602,
+      "uploads": 513,
+      "uploadBytes": 245956322,
       "uploadBytesByKind": {
-        "wholeImages": 241255972,
+        "wholeImages": 236854692,
         "imagePatches": 0,
         "albedoPage": 3119868,
         "typedFields": 5965378,
@@ -6740,12 +6762,12 @@
           "other": 200
         }
       },
-      "skippedOccluderUploads": 3834,
-      "uploadMs": 40.984965468000006,
-      "cpuMs": 49.75470019200001,
-      "shaderCpuMs": 8.769734724,
-      "gpuMs": 1.7494784,
-      "gpuMsP25": 0.63584,
+      "skippedOccluderUploads": 2556,
+      "uploadMs": 50.60292659999999,
+      "cpuMs": 60.45632040000001,
+      "shaderCpuMs": 9.8533938,
+      "gpuMs": 0.76396128,
+      "gpuMsP25": 0.756096,
       "gpuTimerSamples": 3,
       "gpuTimerEvery": 4,
       "gpuTimerSupported": true,
@@ -6785,10 +6807,10 @@
         }
       },
       "qualityTimingSource": "gpu-timer",
-      "frameGapMs": 66.537120939,
-      "textureBytes": 160530506,
-      "residentTextureBytes": 160530506,
-      "cachedTextureBytes": 137048122,
+      "frameGapMs": 70.19014949999999,
+      "textureBytes": 159447114,
+      "residentTextureBytes": 159447114,
+      "cachedTextureBytes": 135964730,
       "cachedTextureCapBytes": 167411712,
       "cachedTextureCapExceeded": false,
       "cachedTextures": 138,
@@ -6809,7 +6831,7 @@
         "override": null,
         "reason": "not ported to WebGPU (Stage A declared exclusion)"
       },
-      "textureEvictions": 56,
+      "textureEvictions": 52,
       "maxCachedTextureBytes": 167411712,
       "maxCachedTextures": 512,
       "materialAttachments": 2,
@@ -6829,7 +6851,7 @@
         "refreshHz": null,
         "periodMs": null,
         "budgetMs": 8.333333333333334,
-        "timerVeto": "over-budget",
+        "timerVeto": "under-budget",
         "missShare": 0,
         "intervals": 0,
         "window": 60,
@@ -6837,7 +6859,7 @@
         "pacedLevel": 2,
         "coolDownUntilMs": null,
         "nextProbeAtMs": null,
-        "sampledAtMs": 8641
+        "sampledAtMs": 8608
       },
       "lightAdmission": {
         "cap": 0,
@@ -6855,13 +6877,13 @@
       "resources": {
         "textures": {
           "pinnedSources": 83318650,
-          "evictableSources": 53729472,
+          "evictableSources": 52646080,
           "albedoPage": 4194304,
           "radiance": 0
         },
         "pinnedBytes": 113826762,
-        "evictableBytes": 53729472,
-        "totalBytes": 167556234,
+        "evictableBytes": 52646080,
+        "totalBytes": 166472842,
         "atlasPages": [
           {
             "name": "world-pilot",
@@ -6905,7 +6927,7 @@
       "atlasRecords": 163,
       "individualRecords": 713,
       "sourceBatchCount": 330,
-      "sourceUploadBytes": 250357602
+      "sourceUploadBytes": 245956322
     },
     "pathDiag": {
       "cacheEntries": 0,
@@ -6916,10 +6938,10 @@
       "memoryBytes": 141692,
       "flow": {
         "lookups": 41,
-        "avgLookupMs": 0.0975609756097561,
+        "avgLookupMs": 0.12195121951219512,
         "maxLookupMs": 2,
         "avgTraceLookupMs": 0,
-        "avgGuidedLookupMs": 0.125,
+        "avgGuidedLookupMs": 0.15625,
         "avgAdhocLookupMs": 0,
         "sinkLookups": 33,
         "traceHits": 1,
@@ -6930,8 +6952,8 @@
         "sinkHitRate": 0.8048780487804879,
         "traceHitRate": 0.030303030303030304,
         "rebuilds": 11,
-        "rebuildMs": 3,
-        "avgRebuildMs": 0.2727272727272727,
+        "rebuildMs": 2,
+        "avgRebuildMs": 0.18181818181818182,
         "lastRebuildMs": 0,
         "maxRebuildMs": 1,
         "deferredRebuilds": 0,

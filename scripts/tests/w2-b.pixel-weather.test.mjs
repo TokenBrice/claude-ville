@@ -827,7 +827,7 @@ test('W2-Fix-B §4.12: puddle rings follow the ground history — none on dry gr
 
 test('W2-Fix-B harness: bench weather presets, strict capture weather, snow cover, authored solar and backend fail-fast', () => {
     assert.deepEqual(BENCH_WEATHER.overcast, { type: 'overcast', intensity: 0, precipitation: 0, fog: 0.08, cloudCover: 0.96, windX: -0.15 });
-    assert.deepEqual(BENCH_WEATHER.fog, { type: 'fog', intensity: 0, precipitation: 0, fog: 0.82, cloudCover: 0.72, windX: -0.05 });
+    assert.deepEqual(BENCH_WEATHER.fog, { type: 'fog', intensity: 0.85, precipitation: 0, fog: 0.82, cloudCover: 0.72, windX: -0.05 });
     assert.deepEqual(BENCH_WEATHER.snow, { type: 'snow', intensity: 0.78, precipitation: 0.85, fog: 0.14, cloudCover: 0.94, windX: -0.25, snowCover: 0.92 });
     for (const key of ['clear', 'rain', 'storm']) assert.ok(BENCH_WEATHER[key], `${key} kept`);
 

@@ -1,14 +1,35 @@
 {
   "schemaVersion": 1,
   "caseId": "readme-night-1920x1080-webgpu",
-  "capturedAt": "2026-11-26T05:53:19.541Z",
+  "capturedAt": "2026-11-26T09:00:53.396Z",
   "scenario": "readme-showcase",
   "hour": 22,
   "weather": "clear",
   "zoom": 3,
   "date": "2026-07-15",
+  "timezone": "Europe/Belgrade",
   "season": "summer",
   "backend": "webgpu",
+  "worldBackendReason": "?renderer=webgpu · webgpu ready · webgl2 not probed",
+  "gradeKey": "blue-hour>night",
+  "afterglow": 0,
+  "rimStrength": 0,
+  "solar": {
+    "authored": false,
+    "zone": "Europe/Belgrade",
+    "sunriseShift": -53.787837766607595,
+    "sunsetShift": 71.9335532718485,
+    "goldenShift": 121.29685390351779
+  },
+  "weatherProfile": {
+    "type": "clear",
+    "intensity": 0,
+    "precipitation": 0,
+    "fog": 0,
+    "cloudCover": 0.08,
+    "windX": 0
+  },
+  "snow": null,
   "backing": [
     1680,
     1032
@@ -22,19 +43,20 @@
   "determinism": {
     "selfStableBytes": true,
     "ladderLevel": 0,
-    "nondeterministicMasks": []
+    "nondeterministicMasks": [],
+    "canvasSea": null
   },
   "fence": {
-    "elapsedMs": 6615,
+    "elapsedMs": 6575,
     "terrainKey": "-1640,-376,3280,2000@1|assets|season:summer|stage:summer|scenery:0|passes:ground-splat:sheetsw,coast-field:e0:0:723:9:136:24:313|s0,coast-reflections:1:9:9:3:12,|retry:0",
-    "presentGeneration": 9,
+    "presentGeneration": 7,
     "centerRgb": [
-      210,
-      159,
-      131
+      204,
+      152,
+      124
     ],
     "greenFillShare": 0,
-    "distinctInteriorColors": 155
+    "distinctInteriorColors": 156
   },
   "attributionFormat": "r32uint",
   "recordsCount": 827,
@@ -2732,13 +2754,13 @@
       "index": 448,
       "id": "building.archive:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 449,
       "id": "building.archive:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 450,
@@ -2756,7 +2778,7 @@
       "index": 452,
       "id": "building.archive:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 453,
@@ -2768,31 +2790,31 @@
       "index": 454,
       "id": "building.archive:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 455,
       "id": "building.archive:column:3:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 456,
       "id": "building.archive:column:16",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 457,
       "id": "building.archive:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 458,
       "id": "building.archive:column:4:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 459,
@@ -2804,25 +2826,25 @@
       "index": 460,
       "id": "building.archive:column:15",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 461,
       "id": "building.archive:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 462,
       "id": "building.archive:column:5:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 463,
       "id": "building.archive:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 464,
@@ -2840,19 +2862,19 @@
       "index": 466,
       "id": "building.archive:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 467,
       "id": "building.archive:column:6:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 468,
       "id": "building.archive:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 469,
@@ -2864,19 +2886,19 @@
       "index": 470,
       "id": "building.archive:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 471,
       "id": "building.archive:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 472,
       "id": "building.archive:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 473,
@@ -2924,19 +2946,19 @@
       "index": 480,
       "id": "building.archive:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 481,
       "id": "building.archive:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 482,
       "id": "building.archive:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 483,
@@ -2948,25 +2970,25 @@
       "index": 484,
       "id": "building.archive:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 485,
       "id": "building.archive:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 486,
       "id": "building.archive:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 487,
       "id": "building.archive:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 488,
@@ -3074,19 +3096,19 @@
       "index": 505,
       "id": "building.command:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 506,
       "id": "building.command:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 507,
       "id": "building.command:column:1:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 508,
@@ -3098,13 +3120,13 @@
       "index": 509,
       "id": "building.command:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 510,
       "id": "building.command:column:2:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 511,
@@ -3122,19 +3144,19 @@
       "index": 513,
       "id": "building.command:column:17",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 514,
       "id": "building.command:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 515,
       "id": "building.command:column:3:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 516,
@@ -3158,19 +3180,19 @@
       "index": 519,
       "id": "building.command:column:16",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 520,
       "id": "building.command:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 521,
       "id": "building.command:column:4:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 522,
@@ -3188,25 +3210,25 @@
       "index": 524,
       "id": "building.command:column:15",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 525,
       "id": "building.command:column:15:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 526,
       "id": "building.command:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 527,
       "id": "building.command:column:5:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 528,
@@ -3230,13 +3252,13 @@
       "index": 531,
       "id": "building.command:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 532,
       "id": "building.command:column:14:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 533,
@@ -3278,13 +3300,13 @@
       "index": 539,
       "id": "building.command:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 540,
       "id": "building.command:column:6:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 541,
@@ -3308,25 +3330,25 @@
       "index": 544,
       "id": "building.command:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 545,
       "id": "building.command:column:13:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 546,
       "id": "building.command:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 547,
       "id": "building.command:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 548,
@@ -3338,13 +3360,13 @@
       "index": 549,
       "id": "building.command:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 550,
       "id": "building.command:column:12:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 551,
@@ -3362,13 +3384,13 @@
       "index": 553,
       "id": "building.command:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 554,
       "id": "building.command:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 555,
@@ -3380,73 +3402,73 @@
       "index": 556,
       "id": "building.command:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 557,
       "id": "building.command:column:11:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 558,
       "id": "building.command:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 559,
       "id": "building.command:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 560,
       "id": "building.command:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 561,
       "id": "building.command:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 562,
       "id": "building.tavern:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 563,
       "id": "building.tavern:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 564,
       "id": "building.tavern:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 565,
       "id": "building.tavern:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 566,
       "id": "building.tavern:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 567,
       "id": "building.tavern:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 568,
@@ -3464,19 +3486,19 @@
       "index": 570,
       "id": "building.tavern:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 571,
       "id": "building.tavern:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 572,
       "id": "building.tavern:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 573,
@@ -3524,25 +3546,25 @@
       "index": 580,
       "id": "building.tavern:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 581,
       "id": "building.tavern:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 582,
       "id": "building.tavern:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 583,
       "id": "building.tavern:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 584,
@@ -3572,7 +3594,7 @@
       "index": 588,
       "id": "building.tavern:column:17",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 589,
@@ -3584,13 +3606,13 @@
       "index": 590,
       "id": "building.tavern:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 591,
       "id": "building.tavern:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 592,
@@ -3602,13 +3624,13 @@
       "index": 593,
       "id": "building.tavern:column:16",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 594,
       "id": "building.tavern:column:16:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 595,
@@ -3632,13 +3654,13 @@
       "index": 598,
       "id": "building.tavern:column:15",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 599,
       "id": "building.tavern:column:15:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 600,
@@ -3656,13 +3678,13 @@
       "index": 602,
       "id": "building.tavern:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 603,
       "id": "building.tavern:column:14:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 604,
@@ -3686,13 +3708,13 @@
       "index": 607,
       "id": "building.tavern:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 608,
       "id": "building.tavern:column:13:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 609,
@@ -3710,13 +3732,13 @@
       "index": 611,
       "id": "building.tavern:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 612,
       "id": "building.tavern:column:12:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 613,
@@ -3764,13 +3786,13 @@
       "index": 620,
       "id": "building.tavern:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 621,
       "id": "building.tavern:column:11:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 622,
@@ -4016,7 +4038,7 @@
       "index": 662,
       "id": "building.mine:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 663,
@@ -4046,7 +4068,7 @@
       "index": 667,
       "id": "building.mine:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 668,
@@ -4094,13 +4116,13 @@
       "index": 675,
       "id": "building.mine:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 676,
       "id": "building.mine:column:2:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 677,
@@ -4112,19 +4134,19 @@
       "index": 678,
       "id": "building.mine:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 679,
       "id": "building.mine:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 680,
       "id": "building.mine:column:3:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 681,
@@ -4136,7 +4158,7 @@
       "index": 682,
       "id": "building.mine:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 683,
@@ -4148,13 +4170,13 @@
       "index": 684,
       "id": "building.mine:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 685,
       "id": "building.mine:column:4:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 686,
@@ -4166,19 +4188,19 @@
       "index": 687,
       "id": "building.mine:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 688,
       "id": "building.mine:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 689,
       "id": "building.mine:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 690,
@@ -4202,97 +4224,97 @@
       "index": 693,
       "id": "building.mine:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 694,
       "id": "building.mine:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 695,
       "id": "building.mine:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 696,
       "id": "building.mine:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 697,
       "id": "building.harbor:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 698,
       "id": "building.harbor:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 699,
       "id": "building.harbor:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 700,
       "id": "building.harbor:column:15",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 701,
       "id": "building.harbor:column:16",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 702,
       "id": "building.harbor:column:17",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 703,
       "id": "building.harbor:column:18",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 704,
       "id": "building.harbor:column:19",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 705,
       "id": "building.harbor:column:20",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 706,
       "id": "building.harbor:column:21",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 707,
       "id": "building.harbor:column:22",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 708,
       "id": "building.harbor:column:23",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 709,
@@ -4310,67 +4332,67 @@
       "index": 711,
       "id": "building.harbor:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 712,
       "id": "building.harbor:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 713,
       "id": "building.harbor:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 714,
       "id": "building.harbor:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 715,
       "id": "building.harbor:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 716,
       "id": "building.harbor:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 717,
       "id": "building.harbor:column:11:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 718,
       "id": "building.harbor:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 719,
       "id": "building.harbor:column:5:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 720,
       "id": "building.harbor:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 721,
       "id": "building.harbor:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 722,
@@ -4382,49 +4404,49 @@
       "index": 723,
       "id": "building.harbor:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 724,
       "id": "building.harbor:column:6:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 725,
       "id": "building.harbor:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 726,
       "id": "building.harbor:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 727,
       "id": "building.harbor:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 728,
       "id": "building.harbor:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 729,
       "id": "building.harbor:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 730,
       "id": "building.harbor:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 731,
@@ -4544,7 +4566,7 @@
       "index": 750,
       "id": "building.forge:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 751,
@@ -4556,7 +4578,7 @@
       "index": 752,
       "id": "building.forge:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 753,
@@ -4580,7 +4602,7 @@
       "index": 756,
       "id": "building.forge:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 757,
@@ -4598,7 +4620,7 @@
       "index": 759,
       "id": "building.forge:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 760,
@@ -4610,7 +4632,7 @@
       "index": 761,
       "id": "building.forge:column:14",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 762,
@@ -4628,7 +4650,7 @@
       "index": 764,
       "id": "building.forge:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 765,
@@ -4640,7 +4662,7 @@
       "index": 766,
       "id": "building.forge:column:13",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 767,
@@ -4652,13 +4674,13 @@
       "index": 768,
       "id": "building.forge:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 769,
       "id": "building.forge:column:12",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 770,
@@ -4676,13 +4698,13 @@
       "index": 772,
       "id": "building.forge:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 773,
       "id": "building.forge:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 774,
@@ -4700,7 +4722,7 @@
       "index": 776,
       "id": "building.forge:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 777,
@@ -4712,13 +4734,13 @@
       "index": 778,
       "id": "building.forge:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 779,
       "id": "building.forge:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 780,
@@ -4730,13 +4752,13 @@
       "index": 781,
       "id": "building.forge:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 782,
       "id": "building.forge:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 783,
@@ -4748,13 +4770,13 @@
       "index": 784,
       "id": "building.forge:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 785,
       "id": "building.forge:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 786,
@@ -4772,13 +4794,13 @@
       "index": 788,
       "id": "building.taskboard:column:0",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 789,
       "id": "building.taskboard:column:0:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 790,
@@ -4790,13 +4812,13 @@
       "index": 791,
       "id": "building.taskboard:column:1",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 792,
       "id": "building.taskboard:column:1:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 793,
@@ -4808,25 +4830,25 @@
       "index": 794,
       "id": "building.taskboard:column:2",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 795,
       "id": "building.taskboard:column:2:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 796,
       "id": "building.taskboard:column:11",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 797,
       "id": "building.taskboard:column:11:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 798,
@@ -4844,25 +4866,25 @@
       "index": 800,
       "id": "building.taskboard:column:3",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 801,
       "id": "building.taskboard:column:3:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 802,
       "id": "building.taskboard:column:10",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 803,
       "id": "building.taskboard:column:10:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 804,
@@ -4874,25 +4896,25 @@
       "index": 805,
       "id": "building.taskboard:column:4",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 806,
       "id": "building.taskboard:column:4:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 807,
       "id": "building.taskboard:column:9",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 808,
       "id": "building.taskboard:column:9:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 809,
@@ -4904,25 +4926,25 @@
       "index": 810,
       "id": "building.taskboard:column:5",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 811,
       "id": "building.taskboard:column:5:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 812,
       "id": "building.taskboard:column:8",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 813,
       "id": "building.taskboard:column:8:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 814,
@@ -4934,25 +4956,25 @@
       "index": 815,
       "id": "building.taskboard:column:6",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 816,
       "id": "building.taskboard:column:6:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 817,
       "id": "building.taskboard:column:7",
       "layer": 0,
-      "flags": 17
+      "flags": 98321
     },
     {
       "index": 818,
       "id": "building.taskboard:column:7:glass",
       "layer": 0,
-      "flags": 17
+      "flags": 32785
     },
     {
       "index": 819,
@@ -5238,9 +5260,9 @@
           "pending": 0,
           "errors": 0,
           "dropped": 0,
-          "samples": 4,
-          "gpuMs": 2.8708343999999997,
-          "gpuMsP25": 2.184192
+          "samples": 3,
+          "gpuMs": 2.1320912,
+          "gpuMsP25": 2.005216
         },
         "supported": true,
         "active": true,
@@ -5248,7 +5270,7 @@
         "suspended": false,
         "width": 1680,
         "height": 1032,
-        "frames": 14,
+        "frames": 13,
         "skippedFrames": 0,
         "records": 827,
         "batches": 333,
@@ -5275,17 +5297,17 @@
         "exposureBucket": "deep-night",
         "wetReflections": 0,
         "gradeKey": "blue-hour>night",
-        "gradeExposure": 0.750249167236455,
+        "gradeExposure": 0.6843462637900853,
         "cloudCourses": 3,
         "aerialHaze": 0.020679608373703452,
-        "uploads": 491,
-        "uploadBytes": 216769836,
+        "uploads": 489,
+        "uploadBytes": 216730502,
         "uploadBytesByKind": {
           "wholeImages": 207981500,
           "imagePatches": 0,
           "albedoPage": 1888948,
-          "typedFields": 6735548,
-          "lightRecords": 163840
+          "typedFields": 6712598,
+          "lightRecords": 147456
         },
         "sceneTextureBindings": {
           "groupsBound": 333,
@@ -5298,12 +5320,12 @@
           }
         },
         "skippedOccluderUploads": 0,
-        "uploadMs": 39.17357116307999,
-        "cpuMs": 46.81814357316,
-        "shaderCpuMs": 7.644572410079999,
-        "gpuMs": 2.8708343999999997,
-        "gpuMsP25": 2.184192,
-        "gpuTimerSamples": 4,
+        "uploadMs": 43.211816413200005,
+        "cpuMs": 52.0211611416,
+        "shaderCpuMs": 8.8093447284,
+        "gpuMs": 2.1320912,
+        "gpuMsP25": 2.005216,
+        "gpuTimerSamples": 3,
         "gpuTimerEvery": 4,
         "gpuTimerSupported": true,
         "gpuTimerExtension": "timestamp-query",
@@ -5342,7 +5364,7 @@
           }
         },
         "qualityTimingSource": "gpu-timer",
-        "frameGapMs": 69.91803532035,
+        "frameGapMs": 63.7291127205,
         "textureBytes": 160543050,
         "residentTextureBytes": 160543050,
         "cachedTextureBytes": 137060666,
@@ -5394,7 +5416,7 @@
           "pacedLevel": 2,
           "coolDownUntilMs": null,
           "nextProbeAtMs": null,
-          "sampledAtMs": 8385
+          "sampledAtMs": 8421
         },
         "lightAdmission": {
           "cap": 128,
@@ -5469,7 +5491,7 @@
         "atlasRecords": 140,
         "individualRecords": 687,
         "sourceBatchCount": 333,
-        "sourceUploadBytes": 216769836
+        "sourceUploadBytes": 216730502
       },
       "terrainCache": {
         "strategy": "single-surface",
@@ -5530,7 +5552,7 @@
           "unchangedReconciliations": 19,
           "sourceNormalizations": 1,
           "sourceCacheHits": 19,
-          "animationAdvances": 154,
+          "animationAdvances": 155,
           "semanticReconciliations": 20,
           "rawEventCount": 5,
           "normalizedEventCount": 5,
@@ -5581,7 +5603,7 @@
           "oversizedCacheFallbacks": 0,
           "cameraMotion": {
             "stationary": {
-              "frames": 10,
+              "frames": 9,
               "drawTimeMs": 0,
               "repaintCount": 0,
               "repaintTimeMs": 0
@@ -5953,9 +5975,9 @@
           "memoryBytes": 141692,
           "flow": {
             "lookups": 41,
-            "avgLookupMs": 0.12195121951219512,
-            "maxLookupMs": 2,
-            "avgTraceLookupMs": 1,
+            "avgLookupMs": 0.0975609756097561,
+            "maxLookupMs": 1,
+            "avgTraceLookupMs": 0,
             "avgGuidedLookupMs": 0.125,
             "avgAdhocLookupMs": 0,
             "sinkLookups": 33,
@@ -5999,9 +6021,9 @@
             "pending": 0,
             "errors": 0,
             "dropped": 0,
-            "samples": 4,
-            "gpuMs": 2.8708343999999997,
-            "gpuMsP25": 2.184192
+            "samples": 3,
+            "gpuMs": 2.1320912,
+            "gpuMsP25": 2.005216
           },
           "supported": true,
           "active": true,
@@ -6009,7 +6031,7 @@
           "suspended": false,
           "width": 1680,
           "height": 1032,
-          "frames": 14,
+          "frames": 13,
           "skippedFrames": 0,
           "records": 827,
           "batches": 333,
@@ -6036,17 +6058,17 @@
           "exposureBucket": "deep-night",
           "wetReflections": 0,
           "gradeKey": "blue-hour>night",
-          "gradeExposure": 0.750249167236455,
+          "gradeExposure": 0.6843462637900853,
           "cloudCourses": 3,
           "aerialHaze": 0.020679608373703452,
-          "uploads": 491,
-          "uploadBytes": 216769836,
+          "uploads": 489,
+          "uploadBytes": 216730502,
           "uploadBytesByKind": {
             "wholeImages": 207981500,
             "imagePatches": 0,
             "albedoPage": 1888948,
-            "typedFields": 6735548,
-            "lightRecords": 163840
+            "typedFields": 6712598,
+            "lightRecords": 147456
           },
           "sceneTextureBindings": {
             "groupsBound": 333,
@@ -6059,12 +6081,12 @@
             }
           },
           "skippedOccluderUploads": 0,
-          "uploadMs": 39.17357116307999,
-          "cpuMs": 46.81814357316,
-          "shaderCpuMs": 7.644572410079999,
-          "gpuMs": 2.8708343999999997,
-          "gpuMsP25": 2.184192,
-          "gpuTimerSamples": 4,
+          "uploadMs": 43.211816413200005,
+          "cpuMs": 52.0211611416,
+          "shaderCpuMs": 8.8093447284,
+          "gpuMs": 2.1320912,
+          "gpuMsP25": 2.005216,
+          "gpuTimerSamples": 3,
           "gpuTimerEvery": 4,
           "gpuTimerSupported": true,
           "gpuTimerExtension": "timestamp-query",
@@ -6103,7 +6125,7 @@
             }
           },
           "qualityTimingSource": "gpu-timer",
-          "frameGapMs": 69.91803532035,
+          "frameGapMs": 63.7291127205,
           "textureBytes": 160543050,
           "residentTextureBytes": 160543050,
           "cachedTextureBytes": 137060666,
@@ -6155,7 +6177,7 @@
             "pacedLevel": 2,
             "coolDownUntilMs": null,
             "nextProbeAtMs": null,
-            "sampledAtMs": 8385
+            "sampledAtMs": 8421
           },
           "lightAdmission": {
             "cap": 128,
@@ -6230,7 +6252,7 @@
           "atlasRecords": 140,
           "individualRecords": 687,
           "sourceBatchCount": 333,
-          "sourceUploadBytes": 216769836
+          "sourceUploadBytes": 216730502
         },
         "worldRendererMode": "webgpu",
         "worldBackendReason": "?renderer=webgpu · webgpu ready · webgl2 not probed"
@@ -6381,9 +6403,9 @@
         "pending": 0,
         "errors": 0,
         "dropped": 0,
-        "samples": 4,
-        "gpuMs": 2.8708343999999997,
-        "gpuMsP25": 2.184192
+        "samples": 3,
+        "gpuMs": 2.1320912,
+        "gpuMsP25": 2.005216
       },
       "supported": true,
       "active": true,
@@ -6391,7 +6413,7 @@
       "suspended": false,
       "width": 1680,
       "height": 1032,
-      "frames": 14,
+      "frames": 13,
       "skippedFrames": 0,
       "records": 827,
       "batches": 333,
@@ -6418,17 +6440,17 @@
       "exposureBucket": "deep-night",
       "wetReflections": 0,
       "gradeKey": "blue-hour>night",
-      "gradeExposure": 0.750249167236455,
+      "gradeExposure": 0.6843462637900853,
       "cloudCourses": 3,
       "aerialHaze": 0.020679608373703452,
-      "uploads": 491,
-      "uploadBytes": 216769836,
+      "uploads": 489,
+      "uploadBytes": 216730502,
       "uploadBytesByKind": {
         "wholeImages": 207981500,
         "imagePatches": 0,
         "albedoPage": 1888948,
-        "typedFields": 6735548,
-        "lightRecords": 163840
+        "typedFields": 6712598,
+        "lightRecords": 147456
       },
       "sceneTextureBindings": {
         "groupsBound": 333,
@@ -6441,12 +6463,12 @@
         }
       },
       "skippedOccluderUploads": 0,
-      "uploadMs": 39.17357116307999,
-      "cpuMs": 46.81814357316,
-      "shaderCpuMs": 7.644572410079999,
-      "gpuMs": 2.8708343999999997,
-      "gpuMsP25": 2.184192,
-      "gpuTimerSamples": 4,
+      "uploadMs": 43.211816413200005,
+      "cpuMs": 52.0211611416,
+      "shaderCpuMs": 8.8093447284,
+      "gpuMs": 2.1320912,
+      "gpuMsP25": 2.005216,
+      "gpuTimerSamples": 3,
       "gpuTimerEvery": 4,
       "gpuTimerSupported": true,
       "gpuTimerExtension": "timestamp-query",
@@ -6485,7 +6507,7 @@
         }
       },
       "qualityTimingSource": "gpu-timer",
-      "frameGapMs": 69.91803532035,
+      "frameGapMs": 63.7291127205,
       "textureBytes": 160543050,
       "residentTextureBytes": 160543050,
       "cachedTextureBytes": 137060666,
@@ -6537,7 +6559,7 @@
         "pacedLevel": 2,
         "coolDownUntilMs": null,
         "nextProbeAtMs": null,
-        "sampledAtMs": 8385
+        "sampledAtMs": 8421
       },
       "lightAdmission": {
         "cap": 128,
@@ -6612,7 +6634,7 @@
       "atlasRecords": 140,
       "individualRecords": 687,
       "sourceBatchCount": 333,
-      "sourceUploadBytes": 216769836
+      "sourceUploadBytes": 216730502
     },
     "pathDiag": {
       "cacheEntries": 0,
@@ -6623,9 +6645,9 @@
       "memoryBytes": 141692,
       "flow": {
         "lookups": 41,
-        "avgLookupMs": 0.12195121951219512,
-        "maxLookupMs": 2,
-        "avgTraceLookupMs": 1,
+        "avgLookupMs": 0.0975609756097561,
+        "maxLookupMs": 1,
+        "avgTraceLookupMs": 0,
         "avgGuidedLookupMs": 0.125,
         "avgAdhocLookupMs": 0,
         "sinkLookups": 33,
