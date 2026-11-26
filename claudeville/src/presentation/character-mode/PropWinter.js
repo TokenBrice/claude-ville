@@ -1,4 +1,5 @@
 import { ART_RAMPS } from '../../config/artPalette.js';
+import { QUOTA_TERRACE_SLOTS } from '../../config/scenery.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
 import { snowBucketOf } from './GroundState.js';
 import { roofSnowPixels } from './RoofWeather.js';
@@ -80,8 +81,8 @@ export const WINTER_PROPS = Object.freeze({
     'prop.toolRack': { dormancy: 'evergreen', surface: 'round', roof: true },
     // C-05 / v0.69 E2 — north-shore masonry landmarks & rustic trestle snow caps.
     'prop.windmill': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, poly: [[63, 24], [33, 60], [34, 69], [64, 78], [95, 69], [96, 60]] } },
-    'prop.quotaPillar': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, flats: true } },
-    'prop.quotaTerraceApron': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
+    'prop.quotaPillar': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, flats: true, poly: [[15, 2], [24, 6], [24, 8], [8, 8], [8, 6]], sheet: true } },
+    'prop.quotaTerraceApron': { dormancy: 'evergreen', surface: 'round', roof: { caps: true }, terraceSnow: true },
     'bridge.landmark.rustic.ns': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
     'bridge.landmark.farm.ew': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
     'prop.archiveCistern': { dormancy: 'evergreen', surface: 'round' },
@@ -231,12 +232,13 @@ function isOutline(data, width, height, x, y) {
  * `dormancy` and `surface` come from WINTER_PROPS; `winter` is the calendar
  * season; `bucket` the C-W2 snow bucket 0-4. Returns the pixels changed.
  */
-export function winterPropPixels(data, width, height, { dormancy, surface = 'round', winter = false, bucket = 0, roof = false }) {
+export function winterPropPixels(data, width, height, { dormancy, surface = 'round', winter = false, bucket = 0, roof = false, terraceSnow = false }) {
     const depth = (SNOW_DEPTH[surface] || SNOW_DEPTH.round)[Math.max(0, Math.min(4, bucket | 0))];
     const dormant = winter && (dormancy === 'plant' || dormancy === 'bloom');
     if (!depth && !dormant) return 0;
     // The slate roof first: its snow texels are never plant pixels.
-    const roofed = roof ? roofSnowPixels(data, width, height, bucket, roof) : 0;
+    let roofed = roof ? roofSnowPixels(data, width, height, bucket, roof) : 0;
+    if (terraceSnow && bucket > 0) roofed += terraceApronSnowPixels(data, width, height, bucket);
     const mask = plantMask(data, width, height);
     let lo = Infinity;
     let hi = -Infinity;
@@ -314,6 +316,96 @@ export function winterPropPixels(data, width, height, { dormancy, surface = 'rou
             if (depth > 1 && row === depth - 1) stop = Math.max(0, stop - 1);
             set(p * 4, SNOW[stop]);
             changed++;
+        }
+    }
+    return changed;
+}
+
+// Snow rim dusting and wind-sheltered drifts around the four pillar plinth
+// sockets on `prop.quotaTerraceApron` (144x80, anchor [72, 46]). Pure and
+// Node-safe; keeps the 1-px outer ink outline and central bronze sundial bare.
+const BAYER2_TERRACE = Object.freeze([0, 2, 3, 1]);
+export function terraceApronSnowPixels(data, width, height, bucket) {
+    const b = Math.max(0, Math.min(4, bucket | 0));
+    if (!b || width < 32 || height < 32) return 0;
+    const cx = Math.floor(width / 2);
+    const cy = 46;
+    const dialX = cx;
+    const dialY = cy + 7;
+    const sockets = QUOTA_TERRACE_SLOTS.map((slot) => ({
+        sx: cx + slot.apronOffset[0],
+        sy: cy + slot.apronOffset[1],
+    }));
+    const opaque = (x, y) => x >= 0 && y >= 0 && x < width && y < height && data[(y * width + x) * 4 + 3] >= 128;
+    const rimDepth = b; // 1..4 px inward from top/outer deck rim
+    const driftOuter = 1.05 + b * 0.16; // soft snow bank hugging pillar plinths
+    const setSnow = (i, stop) => {
+        const c = SNOW[Math.max(0, Math.min(SNOW.length - 1, stop))];
+        data[i] = c[0];
+        data[i + 1] = c[1];
+        data[i + 2] = c[2];
+        data[i + 3] = 255;
+    };
+    let changed = 0;
+    for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+            const p = y * width + x;
+            const i = p * 4;
+            if (!opaque(x, y) || isDark(data, i)) continue;
+            // Keep the dark 1-px silhouette outline and outer riser face (below deck) clear.
+            if (!opaque(x - 1, y) || !opaque(x + 1, y) || !opaque(x, y - 1) || !opaque(x, y + 1)) continue;
+            // Leave the central bronze sundial medallion unobstructed (only edge dusting at bucket 4).
+            const isoR = Math.hypot((x - dialX) / 22, (y - dialY) / 11);
+            if (isoR < (b >= 4 ? 0.96 : 1.06)) continue;
+
+            const dither = BAYER2_TERRACE[((y & 1) << 1) | (x & 1)] / 4; // 0, 0.25, 0.5, 0.75
+            const litSide = (x - cx) + (y - cy) * 1.5 < 8;
+
+            // 1. Terrace deck upper & outer stone curb rim dusting (keeps bottom riser clear).
+            let nearTop = false;
+            let nearSide = false;
+            for (let d = 1; d <= rimDepth + 1; d++) {
+                if (!opaque(x, y - d)) {
+                    if (d <= rimDepth || dither < 0.5) nearTop = true;
+                    break;
+                }
+            }
+            if (!nearTop && y <= cy + 20) {
+                for (let d = 1; d <= rimDepth; d++) {
+                    if (!opaque(x - d, y) || !opaque(x + d, y)) {
+                        if (d < rimDepth || dither < 0.5) nearSide = true;
+                        break;
+                    }
+                }
+            }
+            if (nearTop || nearSide) {
+                const stop = nearTop ? (litSide ? 4 : 3) : (litSide ? 3 : 2);
+                setSnow(i, stop);
+                changed++;
+                continue;
+            }
+
+            // 2. Subtle wind-sheltered snow drifts tucked around each pillar plinth socket.
+            let inDrift = false;
+            let driftLit = litSide;
+            for (const sock of sockets) {
+                const px = x - sock.sx;
+                const py = y - sock.sy;
+                // Bias the drift slightly toward the NW/upper shoulder behind each pillar foot.
+                const man = Math.abs(px + 1.5) / 15 + Math.abs(py + 1.0) / 7.5;
+                if (man >= 0.76 && man <= driftOuter) {
+                    const edgeFade = (driftOuter - man) / Math.max(0.08, driftOuter - 0.76);
+                    if (edgeFade > dither * 0.72) {
+                        inDrift = true;
+                        driftLit = px + py * 2 < 2;
+                        break;
+                    }
+                }
+            }
+            if (inDrift) {
+                setSnow(i, driftLit ? (b >= 3 ? 4 : 3) : (b >= 3 ? 3 : 2));
+                changed++;
+            }
         }
     }
     return changed;

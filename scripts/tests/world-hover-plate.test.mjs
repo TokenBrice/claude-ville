@@ -133,7 +133,7 @@ function worldHarness(t) {
         isleLandmarks: {
             hitTestQuotaPillar: (x, y) => (x >= 500 && x <= 540 && y >= 20 && y <= 180 ? pillarSprite : null),
             quotaPillarWorldBounds: (p) => (p === pillarSprite ? { left: 490, top: 10, right: 550, bottom: 190 } : null),
-            quotaPillarTooltip: () => 'Claude Weekly · 62% left\nResets in 3d 4h · 5h: 18% used',
+            quotaPillarTooltip: () => 'Claude Weekly · 62% left\nResets in 3d 4h · 5h: 82% left',
         },
         _isGateTransit: () => false,
         _openFleetCard() { fleetCards++; },
@@ -193,7 +193,7 @@ test('renderer: a quota pillar passes its drawn bounds, and the plate keeps clea
     const { move, plate } = worldHarness(t);
     move(500, 120);
     t.mock.timers.tick(250);
-    assert.deepEqual(plate().lines, ['Claude Weekly · 62% left', 'Resets in 3d 4h · 5h: 18% used']);
+    assert.deepEqual(plate().lines, ['Claude Weekly · 62% left', 'Resets in 3d 4h · 5h: 82% left']);
     const left = Number.parseInt(plate().style.left, 10);
     const top = Number.parseInt(plate().style.top, 10);
     const rect = { left, top, right: left + 160, bottom: top + 28 };

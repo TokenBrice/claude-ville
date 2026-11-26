@@ -155,19 +155,39 @@ test('Codex quota card: weekly %, reset, credits and LIMIT, hidden when the fiel
         credits: { balance: 2510.33, hasCredits: true, unlimited: false }, limitReached: true, observedAt: now - 60_000,
     }, now);
     assert.equal(facts.usedText, '100%');
-    assert.equal(facts.lit, 12);
+    assert.equal(facts.leftText, '0% left');
+    assert.equal(facts.lit, 0, 'LIMIT lights 0 remaining segments');
     assert.equal(facts.limit, true, 'Q3: LIMIT at 100 % on the account card');
     assert.equal(facts.windowLabel, 'weekly');
     assert.equal(facts.resetsAt, now + 86_400_000);
     assert.equal(facts.credits, '2,510.33 credits');
+    // Partial remaining quota lights by % left, with non-zero floor of 1 at 3% left.
+    const partial = codexQuotaFacts({ usedPercent: 40, windowMinutes: 10080, credits: { unlimited: true } }, now);
+    assert.equal(partial.leftText, '60% left');
+    assert.equal(partial.lit, 7);
+    assert.equal(partial.credits, 'unlimited credits');
+    const sliver = codexQuotaFacts({ usedPercent: 97, windowMinutes: 10080 }, now);
+    assert.equal(sliver.leftText, '3% left');
+    assert.equal(sliver.lit, 1, '3% left keeps at least 1 lit segment');
+    // Explicit Lane-1 weekly + fiveHour overrides a 5h top-level binding window.
+    const split = codexQuotaFacts({
+        weekly: { usedPercent: 32, windowMinutes: 10080, resetsAt: now + 86_400_000 },
+        fiveHour: { usedPercent: 15, windowMinutes: 300, resetsAt: now + 3_600_000 },
+        usedPercent: 15,
+        windowMinutes: 300,
+        resetsAt: now + 3_600_000,
+        limitReached: false,
+    }, now);
+    assert.equal(split.leftText, '68% left');
+    assert.equal(split.fiveHourText, '5h 85% left');
     // After the window reset passes, B1 nulls the numbers: unknown, never 0 %.
     const reset = codexQuotaFacts({ usedPercent: null, resetsAt: null, credits: { balance: null }, limitReached: false, observedAt: now }, now);
     assert.equal(reset.usedText, '—');
+    assert.equal(reset.leftText, '—');
     assert.equal(reset.lit, 0);
     assert.equal(reset.limit, false);
     assert.equal(reset.resetsAt, null);
     assert.equal(reset.credits, '');
-    assert.equal(codexQuotaFacts({ usedPercent: 40, credits: { unlimited: true } }, now).credits, 'unlimited credits');
 });
 
 test('UI-13: a departed villager is aged from its departure', () => {

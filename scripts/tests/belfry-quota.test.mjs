@@ -129,19 +129,34 @@ test('per-pillar hover plates return crisp 2-line copy for all four providers', 
 
     assert.deepEqual(quotaPillarTooltip('claude', usage, now).split('\n'), [
         'Claude Weekly · 62% left',
-        'Resets in 3d 4h · 5h: 18% used',
+        'Resets in 3d 4h · 5h: 82% left',
     ]);
     assert.deepEqual(quotaPillarTooltip('codex', usage, now).split('\n'), [
         'Codex Weekly · 56% left',
         'Resets in 4d 2h · Credits 2.5K',
     ]);
+    // Explicit Lane-1 Codex weekly + fiveHour fields take precedence and surface 5h in % left.
+    const codexSplit = {
+        codex: {
+            weekly: { usedPercent: 44, windowMinutes: 10080, resetsAt: now + (4 * 24 + 2) * HOUR },
+            fiveHour: { usedPercent: 18, windowMinutes: 300, resetsAt: now + 2 * HOUR },
+            usedPercent: 18,
+            windowMinutes: 300,
+            resetsAt: now + 2 * HOUR,
+            limitReached: false,
+        },
+    };
+    assert.deepEqual(quotaPillarTooltip('codex', codexSplit, now).split('\n'), [
+        'Codex Weekly · 56% left',
+        'Resets in 4d 2h · 5h: 82% left',
+    ]);
     assert.deepEqual(quotaPillarTooltip('glm', usage, now).split('\n'), [
         'GLM Weekly · 88% left',
-        'Resets in 5d 1h · 5h: 4% used',
+        'Resets in 5d 1h · 5h: 96% left',
     ]);
     assert.deepEqual(quotaPillarTooltip('antigravity', usage, now).split('\n'), [
-        'Gemini Weekly · 74% left',
-        '3P shared 88% left · Resets in 2d',
+        'Antigravity Weekly · 74% left',
+        'Gemini models · 3P shared 88% left · Resets in 2d',
     ]);
 
     assert.deepEqual(quotaPillarTooltip('claude', { quotaError: { status: 401, at: now } }, now).split('\n'), [

@@ -6,8 +6,10 @@
 //   2. prop.quotaPillar (.png, .emissive.png, .material.png, .occluder.png) —
 //      32x68 isometric carved stone gauge pillar with stepped plinth, chamfered
 //      ashlar shaft, recessed 5-course rune channel, and lantern-crown finial.
-//   3. prop.quotaPillarStrip.png — N-provider strip (4 x (9 states + 15 spend
-//      shimmer cells) = 96 cells of 16x48) stamped into each pillar's recess.
+//   3. prop.quotaPillarStrip (.png, .emissive.png) — N-provider strip
+//      (4 x (9 states + 15 spend shimmer cells) = 96 cells of 16x48) stamped
+//      into each pillar's recess; `.emissive.png` gives lit crystal courses,
+//      peak flash, and LIMIT seal a low-alpha night glow (l0 & unknown dark).
 //
 // Zero anti-aliasing, zero semi-alpha pixels, <= 48 unique colours per prop,
 // <= 5% Tier-A share, 100% #060402 warm-ink silhouette outline.
@@ -52,45 +54,47 @@ const SLATE = ART_RAMPS.slate.map(hex);
 const FOLIAGE = ART_RAMPS.foliage.map(hex);
 const CLOTH_OCHRE = ART_RAMPS.clothOchre.map(hex);
 const TRIM_GOLD = ART_RAMPS.trimGold.map(hex);
-const SAND = ART_RAMPS.sand.map(hex);
 const EMISSIVE = ART_RAMPS.emissive.map(hex);
 const PEAK = hex(EFFECT_COLORS.peak);
 const PEAK_EDGE = hex('#d9c88a');
 
-// Calm lavender wax-seal ribbon for LIMIT (Q3 account hue, never Tier-A alarm).
+// Muted rate-limit orchid-crimson / berry-rose wax seal for LIMIT (clearly
+// distinct from Claude's lavender-plum courses and Tier-A errored/rate_limited:
+// OKLab C <= 0.104, dE >= 0.095 from every STATUS_VISUALS hue).
 const SEAL = Object.freeze({
-    shade: hex('#5e488c'),
-    mid: hex('#8266b5'),
-    body: hex('#a98cd9'),
-    glint: hex('#c4b0e6'),
+    shade: hex('#59273f'),
+    mid: hex('#803d5a'),
+    body: hex('#a35978'),
+    glint: hex('#c2829c'),
 });
 
 // Tier-B provider house ramps (every stop held strictly below Tier-A:
-// luminance <= 0.65, HSV saturation <= 0.63; distinct hues across all 4).
+// OKLab chroma <= 0.105, OKLab dE >= 0.07 from every STATUS_VISUALS hue,
+// luminance <= 0.70, HSV saturation <= 0.65; unified with theme.js PROVIDER_HUES).
 export const PROVIDER_PALETTES = Object.freeze({
     claude: Object.freeze({
-        shadow: hex('#6b4528'),
-        body: hex('#a8763e'),
-        light: hex('#c99a54'),
-        glint: hex('#dec082'),
+        shadow: hex('#4e3b69'),
+        body: hex('#765c96'),
+        light: hex('#977bb5'),
+        glint: hex('#b69dcf'),
     }),
     codex: Object.freeze({
-        shadow: hex('#244854'),
-        body: hex('#3f7882'),
-        light: hex('#63a3a8'),
-        glint: hex('#96c9c8'),
+        shadow: hex('#20444d'),
+        body: hex('#366e75'),
+        light: hex('#529992'),
+        glint: hex('#78b3aa'),
     }),
     glm: Object.freeze({
-        shadow: hex('#5c2e24'),
-        body: hex('#964f3b'),
-        light: hex('#bd7358'),
-        glint: hex('#d99c7e'),
+        shadow: hex('#572c25'),
+        body: hex('#824638'),
+        light: hex('#a45e4a'),
+        glint: hex('#b8806a'),
     }),
     antigravity: Object.freeze({
-        shadow: hex('#2a3d5e'),
-        body: hex('#496d9c'),
-        light: hex('#6f99c7'),
-        glint: hex('#a3c2e0'),
+        shadow: hex('#253859'),
+        body: hex('#3f618f'),
+        light: hex('#5a82b0'),
+        glint: hex('#769ec7'),
     }),
 });
 
@@ -403,35 +407,63 @@ export function bakePillar() {
         }
     }
 
-    // 2b. Chamfered isometric carved stone shaft (y = 16..52, x = 7..24).
+    // 2b. Chamfered 2:1 isometric carved stone shaft (y = 16..52, x = 7..25):
+    //   - sunlit SW cheek (x = 7..10)
+    //   - recessed 5-course gauge channel (x = 11..20)
+    //   - shaded front-right niche frame (x = 21..22)
+    //   - 3px deep-shaded SE right-side bevel return facet (x = 23..25) stepping
+    //     up in true 2:1 isometric slope to match the corner-on plinth below
+    //     while staying within x <= 26 (clean separation between spaced pillars).
     for (let y = 16; y <= 52; y++) {
-        for (let x = 7; x <= 24; x++) {
+        for (let x = 7; x <= 25; x++) {
             const dx = x - cx;
             const adx = Math.abs(dx);
-            const shaftBotY = 52 - Math.floor(adx / 3);
-            if (y > shaftBotY) continue;
+            const seBevel = x >= 23;
+            const shaftTopY = seBevel ? (16 - Math.floor((x - 22) / 2)) : 16;
+            const shaftBotY = seBevel
+                ? (51 - Math.floor((x - 21) / 2))
+                : (52 - Math.floor(adx / 3));
+            if (y < shaftTopY || y > shaftBotY) continue;
             const h = 65 - y;
             const east = dx >= 0;
 
-            // Left sunlit SW stone cheek (x = 7..10) and right shaded SE cheek (x = 21..24).
+            // Shaded 2:1 SE right-side bevel return facet (x = 23..25).
+            if (seBevel) {
+                const bevelY = y + Math.floor((x - 22) / 2);
+                const courseJoint = bevelY === 22 || bevelY === 28 || bevelY === 34 || bevelY === 40 || bevelY === 46;
+                let color;
+                if (courseJoint) {
+                    color = INK;
+                } else if (x === 23) {
+                    // Crisp chamfer arris catching bounce light along each block top.
+                    color = ((bevelY % 6) === 1) ? ASHLAR[5] : ((bevelY % 6) === 2 ? ASHLAR[4] : ASHLAR[2]);
+                } else if (x === 25) {
+                    color = ((bevelY % 6) === 1) ? ASHLAR[3] : ASHLAR[1];
+                } else {
+                    color = ((bevelY % 6) === 1) ? ASHLAR[4] : (((hash2d(x, y) % 3) === 0) ? ASHLAR[1] : ASHLAR[2]);
+                }
+                art.set(x, y, color, 'stone', SURFACE_FACE.right, h);
+                continue;
+            }
+
+            // Left sunlit SW stone cheek (x = 7..10) and right niche frame (x = 21..22).
             if (x <= 10 || x >= 21) {
                 const courseJoint = y === 22 || y === 28 || y === 34 || y === 40 || y === 46;
-                const outerEdge = x === 7 || x === 24;
+                const outerEdge = x === 7;
                 const innerBevel = x === 10 || x === 21;
                 let color;
                 if (courseJoint) {
-                    color = east ? ASHLAR[1] : ASHLAR[3];
+                    color = east ? INK : ASHLAR[2];
                 } else if (!east) {
                     if (outerEdge) color = ASHLAR[8];
-                    else if (innerBevel) color = ASHLAR[5];
+                    else if (innerBevel) color = ASHLAR[4];
                     else color = ((y % 6) === 1) ? ASHLAR[8] : ASHLAR[7];
                 } else {
-                    if (innerBevel) color = ASHLAR[5]; // catchlight on recessed niche right lip
-                    else if (outerEdge) color = ASHLAR[2];
-                    else color = ((y % 6) === 1) ? ASHLAR[4] : ASHLAR[3];
+                    if (innerBevel) color = ASHLAR[6]; // catchlight on recessed niche right lip
+                    else color = ((y % 6) === 1) ? ASHLAR[5] : ASHLAR[3];
                 }
-                if (!courseJoint && !innerBevel && !outerEdge && (hash2d(x, y) % 5) === 0) {
-                    color = east ? ASHLAR[2] : ASHLAR[6];
+                if (!courseJoint && !innerBevel && !outerEdge && (hash2d(x, y) % 4) === 0) {
+                    color = east ? ASHLAR[2] : ASHLAR[5];
                 }
                 art.set(x, y, color, 'stone', east ? SURFACE_FACE.right : SURFACE_FACE.left, h);
                 continue;
@@ -463,11 +495,12 @@ export function bakePillar() {
         }
     }
 
-    // 2c. Projecting isometric cornice + bronze provider crest bezel (y = 11..17).
+    // 2c. Projecting isometric cornice + 10x2 bronze provider crest bezel (y = 11..16).
     for (let x = 5; x <= 26; x++) {
         const dx = x - cx;
         const adx = Math.abs(dx);
         const east = dx >= 0;
+        const seReturn = x >= 24;
         const drop = Math.max(0, 1 - Math.floor(adx / 7)); // subtle isometric prow center +1px
         for (let row = 0; row < 5; row++) {
             const y = 11 + row + drop;
@@ -478,14 +511,16 @@ export function bakePillar() {
             let kind = 'stone';
             let face = east ? SURFACE_FACE.right : SURFACE_FACE.left;
             if (row === 0) {
-                color = east ? ASHLAR[6] : ASHLAR[8];
+                color = seReturn ? ASHLAR[4] : (east ? ASHLAR[6] : ASHLAR[8]);
                 face = SURFACE_FACE.up;
             } else if (row === 4) {
-                color = ASHLAR[2];
-            } else if (x >= 12 && x <= 19 && y >= 13 && y <= 15) {
+                color = seReturn ? ASHLAR[1] : ASHLAR[2];
+            } else if (x >= 10 && x <= 21 && y >= 13 && y <= 16) {
                 kind = 'metal';
-                const frame = x === 12 || x === 19 || y === 13 || y === 15;
+                const frame = x === 10 || x === 21 || y === 13 || y === 16;
                 color = frame ? TRIM_GOLD[0] : CLOTH_OCHRE[0];
+            } else if (seReturn) {
+                color = x === 26 ? ASHLAR[1] : ASHLAR[2];
             } else {
                 const dentil = (x % 3) === 0 && row === 3;
                 color = dentil ? ASHLAR[2] : (east ? ASHLAR[4] : ASHLAR[7]);
@@ -494,12 +529,14 @@ export function bakePillar() {
         }
     }
 
-    // 2d. Carved stone lantern-crown housing (y = 7..11, x = 9..22).
+    // 2d. Carved stone lantern-crown housing with shaded SE return (y = 7..11, x = 9..23).
     for (let y = 7; y <= 11; y++) {
-        for (let x = 9; x <= 22; x++) {
+        for (let x = 9; x <= 23; x++) {
             const east = x >= cx;
             const h = 65 - y;
-            if (y === 7) {
+            if (x === 23) {
+                art.set(x, y, y === 7 ? ASHLAR[3] : ASHLAR[2], 'stone', SURFACE_FACE.right, h);
+            } else if (y === 7) {
                 art.set(x, y, east ? ASHLAR[4] : ASHLAR[6], 'stone', east ? SURFACE_FACE.right : SURFACE_FACE.left, h);
             } else if (x <= 11 || x >= 20) {
                 const pierEdge = x === 9 || x === 22;
@@ -523,10 +560,10 @@ export function bakePillar() {
 
     // 2e. Isometric stepped pyramid capstone + weathered bronze finial (y = 2..7).
     const capRows = [
-        { y: 6, x0: 8, x1: 23 },
-        { y: 5, x0: 10, x1: 21 },
-        { y: 4, x0: 12, x1: 19 },
-        { y: 3, x0: 14, x1: 17 },
+        { y: 6, x0: 8, x1: 24 },
+        { y: 5, x0: 10, x1: 22 },
+        { y: 4, x0: 12, x1: 20 },
+        { y: 3, x0: 14, x1: 18 },
     ];
     for (const { y, x0, x1 } of capRows) {
         for (let x = x0; x <= x1; x++) {
@@ -542,7 +579,7 @@ export function bakePillar() {
             }
             color = !east
                 ? (isTop ? ASHLAR[8] : ASHLAR[7])
-                : (x === x1 ? ASHLAR[3] : ASHLAR[4]);
+                : (x >= x1 - 1 ? ASHLAR[2] : ASHLAR[4]);
             art.set(x, y, color, 'stone', y <= 5 ? SURFACE_FACE.up : (east ? SURFACE_FACE.right : SURFACE_FACE.left), h);
         }
     }
@@ -562,7 +599,7 @@ export function bakePillar() {
 
 // ─── 3. prop.quotaPillarStrip (96 cells of 16x48 = 1536x48) ─────────────────
 
-function setStripPixel(png, cellIndex, lx, ly, rgb) {
+function setStripPixel(png, cellIndex, lx, ly, rgb, alpha = 255) {
     const [fw, fh] = QUOTA_PILLAR_STRIP_FRAME;
     if (lx < 0 || ly < 0 || lx >= fw || ly >= fh) return;
     const x = cellIndex * fw + lx;
@@ -570,20 +607,30 @@ function setStripPixel(png, cellIndex, lx, ly, rgb) {
     png.data[i] = rgb[0];
     png.data[i + 1] = rgb[1];
     png.data[i + 2] = rgb[2];
-    png.data[i + 3] = 255;
+    png.data[i + 3] = alpha;
 }
 
 function paintProviderCrest(png, cell, pal) {
-    // Base cornice crest bezel is x = 12..19, y = 13..15 -> local lx = 4..11, ly = 1..3.
-    for (let ly = 1; ly <= 3; ly++) {
-        for (let lx = 4; lx <= 11; lx++) {
-            const border = lx === 4 || lx === 11 || ly === 1 || ly === 3;
+    // Base cornice crest bezel is x = 10..21, y = 13..16 -> local lx = 2..13, ly = 1..4.
+    // Interior inlaid banner is 10x2 px (lx = 3..12, ly = 2..3) in the provider's house hue
+    // so pillars in l0, limit, or unknown stay identifiable at z1 and z3.
+    for (let ly = 1; ly <= 4; ly++) {
+        for (let lx = 2; lx <= 13; lx++) {
             let rgb;
-            if (border) {
-                rgb = (lx === 4 || ly === 1) ? TRIM_GOLD[0] : INK;
+            if (ly === 1) {
+                rgb = lx === 13 ? ASHLAR[2] : TRIM_GOLD[0];
+            } else if (ly === 4) {
+                rgb = INK;
+            } else if (lx === 2) {
+                rgb = TRIM_GOLD[0];
+            } else if (lx === 13) {
+                rgb = INK;
+            } else if (ly === 2) {
+                // Lit upper half of the 10x2 inlaid banner.
+                rgb = lx <= 5 ? pal.glint : lx <= 9 ? pal.light : pal.body;
             } else {
-                // Bright 6x1 provider identity jewel bar (reads even at l0 or unknown!).
-                rgb = lx <= 6 ? pal.glint : lx <= 9 ? pal.light : pal.body;
+                // Faceted lower half of the 10x2 inlaid banner.
+                rgb = lx <= 4 ? pal.light : lx <= 9 ? pal.body : pal.shadow;
             }
             setStripPixel(png, cell, lx, ly, rgb);
         }
@@ -595,10 +642,13 @@ function paintEmptyCourse(png, cell, yTop) {
         const ly = yTop + row;
         for (let lx = 3; lx <= 12; lx++) {
             const rim = lx === 3 || lx === 12 || row === 0;
-            const runeEtch = (lx === 7 || lx === 8) && row >= 1 && row <= 3;
+            const runeHollow = (lx === 7 || lx === 8) && (row === 1 || row === 3);
+            const runeCatch = ((lx === 6 || lx === 9) && row === 2) || (lx === 7 && row === 2);
             let rgb = ASHLAR[2];
-            if (rim) rgb = ASHLAR[1];
-            else if (runeEtch) rgb = ASHLAR[3];
+            if (rim) rgb = INK;
+            else if (runeHollow) rgb = INK;
+            else if (runeCatch) rgb = ASHLAR[4];
+            else if (row === 4) rgb = ASHLAR[1];
             setStripPixel(png, cell, lx, ly, rgb);
         }
     }
@@ -608,48 +658,66 @@ function paintEmptyCourse(png, cell, yTop) {
     }
 }
 
-function paintLitCourse(png, cell, yTop, pal, { peak = false, trickleRow = -1 } = {}) {
+function paintLitCourse(png, cell, yTop, pal, { peak = false, trickleRow = -1, emissivePng = null } = {}) {
     // Carved crystalline runic bar: chamfered stone pocket edges at lx=3,12,
     // faceted glowing crystal tablet at lx=4..11 with bright vertical-left prism
-    // spine (lx=5..6) and subtle carved runic chevron, never reading like a drawer.
+    // spine (lx=5..6) and engraved center runic diamond, never reading like a drawer.
     for (let row = 0; row < 5; row++) {
         const ly = yTop + row;
         for (let lx = 3; lx <= 12; lx++) {
             let rgb;
+            let emRgb = null;
+            let emAlpha = 0;
             if (lx === 3 || lx === 12) {
                 // Dark carved niche side wall framing the crystal stave.
-                rgb = lx === 3 ? (row === 0 ? ASHLAR[1] : ASHLAR[2]) : ASHLAR[1];
+                rgb = lx === 3 ? (row === 0 ? INK : ASHLAR[1]) : INK;
             } else if (peak) {
                 const core = lx >= 5 && lx <= 10 && row >= 1 && row <= 3;
                 rgb = core ? PEAK : PEAK_EDGE;
+                emRgb = core ? PEAK : PEAK_EDGE;
+                emAlpha = core ? 136 : 96;
             } else {
                 const isTrickle = trickleRow === row && (lx === 6 || lx === 7 || lx === 8);
                 const cornerCut = (row === 0 || row === 4) && (lx === 4 || lx === 11);
+                const runeNotch = (row === 2 && lx === 8) || ((row === 1 || row === 3) && lx === 9);
                 if (cornerCut) {
-                    rgb = pal.shadow;
+                    rgb = INK;
                 } else if (isTrickle) {
                     rgb = lx === 7 ? pal.glint : pal.shadow;
+                } else if (runeNotch) {
+                    // Crisp engraved rune bevel inside the crystal face.
+                    rgb = pal.shadow;
                 } else if (row === 0) {
                     rgb = lx <= 7 ? pal.glint : pal.light;
                 } else if (row === 4) {
-                    rgb = lx <= 6 ? pal.body : pal.shadow;
+                    rgb = lx <= 6 ? pal.shadow : INK;
                 } else if (lx === 4) {
                     rgb = pal.light;
                 } else if (lx === 5) {
                     // Crisp vertical crystal prism highlight down the left facet.
-                    rgb = row === 2 ? pal.glint : pal.light;
+                    rgb = (row === 1 || row === 2) ? pal.glint : pal.light;
                 } else if (lx === 6) {
-                    rgb = row === 1 || row === 2 ? pal.glint : pal.light;
-                } else if (lx === 7 || lx === 8) {
-                    // Vertical faceted rune core.
-                    rgb = row === 2 ? pal.body : pal.light;
+                    rgb = row === 2 ? pal.glint : pal.light;
+                } else if (lx === 7) {
+                    rgb = row === 2 ? pal.glint : pal.body;
                 } else if (lx === 11) {
                     rgb = pal.shadow;
                 } else {
                     rgb = pal.body;
                 }
+                // Low-alpha night emissive on lit crystal faces (steady across
+                // trickle phases so shimmer never churns the emissive channel).
+                if (!cornerCut && !(row === 4 && lx > 6)) {
+                    const prismCore = (lx === 5 || lx === 6 || lx === 7) && (row === 1 || row === 2);
+                    const shadeEdge = row === 4 || lx === 11 || runeNotch;
+                    emRgb = prismCore ? pal.glint : (shadeEdge ? pal.body : pal.light);
+                    emAlpha = prismCore ? 112 : (shadeEdge ? 60 : 88);
+                }
             }
             setStripPixel(png, cell, lx, ly, rgb);
+            if (emissivePng && emRgb && emAlpha > 0) {
+                setStripPixel(emissivePng, cell, lx, ly, emRgb, emAlpha);
+            }
         }
     }
     // Crisp dark horizontal stone course divider so all 5 courses count at z1.
@@ -659,71 +727,106 @@ function paintLitCourse(png, cell, yTop, pal, { peak = false, trickleRow = -1 } 
 }
 
 function paintShroud(png, cell) {
-    // Draped woven linen veil covering the gauge channel (lx = 2..13, ly = 6..38),
-    // leaving the provider crest bar at ly = 1..3 visible for identification.
-    // Uses SAND[0..3] (all Tier-B/C) so the veil stays muted woven cloth.
-    const y0 = 6;
-    const y1 = 38;
-    const cinch = 22;
-    const spanAt = (ly) => {
-        const gather = Math.max(0, 2 - (ly - y0));
-        const pinch = Math.abs(ly - cinch) <= 1 ? 1 : 0;
-        const inset = Math.max(gather, pinch);
-        return [2 + inset, 13 - inset];
-    };
+    // Dark shadowed slate/linen shroud strictly inset inside the carved stone
+    // recess (lx = 3..12, ly = 7..36 — never overflowing onto cheeks, lintel, or
+    // sill). Clearly darker than l1 lit courses so unknown never outshines live
+    // gauges or resembles the cream peak flash.
+    const y0 = 7;
+    const y1 = 36;
+    const cinch = 21;
     for (let ly = y0; ly <= y1; ly++) {
-        const [from, to] = spanAt(ly);
-        const [upFrom, upTo] = ly > y0 ? spanAt(ly - 1) : [99, -99];
-        const [dnFrom, dnTo] = ly < y1 ? spanAt(ly + 1) : [99, -99];
-        for (let lx = from; lx <= to; lx++) {
-            const edge = lx === from || lx === to || ly === y0 || ly === y1
-                || lx < upFrom || lx > upTo || lx < dnFrom || lx > dnTo;
-            let rgb = SAND[2];
-            if (edge) rgb = INK;
-            else if (ly === cinch) rgb = ASHLAR[2];
-            else if (ly === cinch - 1) rgb = SAND[0];
-            else if (lx === from + 1) rgb = SAND[3];
-            else if ((lx - 2) % 3 === 2 || lx === to - 1) rgb = SAND[0];
-            else if ((lx - 2) % 3 === 0) rgb = SAND[1];
+        const pinched = Math.abs(ly - cinch) <= 1;
+        const hem = ly >= y1 - 1;
+        const clothLeft = pinched ? 5 : 4;
+        const clothRight = pinched ? 10 : 11;
+        for (let lx = 3; lx <= 12; lx++) {
+            let rgb;
+            if (lx === 3 || lx === 12 || ly === y0 || ly === y1) {
+                // Dark recessed stone niche wall framing the inset cloth veil.
+                rgb = INK;
+            } else if (lx < clothLeft || lx > clothRight) {
+                // Shadowed stone recess visible at the cinched waist.
+                rgb = INK;
+            } else if (ly === cinch) {
+                // Dark tie cord with carved stone clasp catchlight at center.
+                rgb = (lx === 7 || lx === 8) ? ASHLAR[4] : INK;
+            } else if (ly === cinch - 1 || ly === cinch + 1) {
+                rgb = (lx === clothLeft || lx === 8) ? SLATE[2] : INK;
+            } else if (hem) {
+                rgb = (lx % 2 === 0) ? SLATE[1] : INK;
+            } else {
+                // Crisp vertical shadowed slate-linen pleats (deep ink troughs
+                // alternating with cool slate ridges; stays dark and clearly
+                // below l1 lit crystal brightness).
+                const pleat = (lx - 4) % 3;
+                if (lx === 4) rgb = ly < cinch ? SLATE[2] : SLATE[1];
+                else if (lx === 11) rgb = INK;
+                else if (pleat === 0) rgb = (ly % 4 === 0) ? ASHLAR[3] : SLATE[2];
+                else if (pleat === 1) rgb = SLATE[0];
+                else rgb = INK;
+            }
             setStripPixel(png, cell, lx, ly, rgb);
         }
     }
 }
 
-function paintLimitSeal(png, cell) {
-    // Spent recess already drawn; wrap calm lavender ribbon + stamped wax seal.
-    // Diagonal ribbon band across channel + horizontal cinch at center.
-    for (let lx = 2; lx <= 13; lx++) {
-        const diagY = 17 + Math.round(((lx - 2) / 11) * 8);
-        setStripPixel(png, cell, lx, diagY - 1, SEAL.glint);
-        setStripPixel(png, cell, lx, diagY, SEAL.body);
-        setStripPixel(png, cell, lx, diagY + 1, SEAL.shade);
-        setStripPixel(png, cell, lx, 21, SEAL.body);
-        setStripPixel(png, cell, lx, 22, SEAL.shade);
+function paintLimitSeal(png, cell, emissivePng = null) {
+    // Spent recess already drawn; stretch a crisp horizontal muted rose-crimson
+    // seal band strictly across the recess (lx = 3..12, ly = 19..24) with a
+    // centered round stamped wax seal — legible at z1 and z3 and distinct from
+    // Claude's lavender-plum courses.
+    for (let lx = 3; lx <= 12; lx++) {
+        setStripPixel(png, cell, lx, 19, INK);
+        setStripPixel(png, cell, lx, 20, lx <= 7 ? SEAL.glint : SEAL.body);
+        setStripPixel(png, cell, lx, 21, lx <= 9 ? SEAL.body : SEAL.mid);
+        setStripPixel(png, cell, lx, 22, lx <= 6 ? SEAL.mid : SEAL.shade);
+        setStripPixel(png, cell, lx, 23, SEAL.shade);
+        setStripPixel(png, cell, lx, 24, INK);
+        if (emissivePng) {
+            setStripPixel(emissivePng, cell, lx, 20, lx <= 7 ? SEAL.glint : SEAL.body, 84);
+            setStripPixel(emissivePng, cell, lx, 21, SEAL.body, 76);
+            setStripPixel(emissivePng, cell, lx, 22, SEAL.mid, 56);
+        }
     }
-    // Two hanging ribbon tails below the seal.
-    for (let i = 0; i < 7; i++) {
-        const ly = 25 + i;
-        setStripPixel(png, cell, 6 - Math.floor(i / 3), ly, i % 2 ? SEAL.shade : SEAL.mid);
-        setStripPixel(png, cell, 9 + Math.floor(i / 3), ly, i % 2 ? SEAL.shade : SEAL.mid);
-    }
-    // Stamped round wax-seal medallion centered at (7.5, 21.5).
-    for (let ly = 19; ly <= 24; ly++) {
-        for (let lx = 5; lx <= 10; lx++) {
+    // Centered round wax seal medallion at (7.5, 21.5) with crisp dark rim and
+    // upper-left specular glint.
+    for (let ly = 18; ly <= 25; ly++) {
+        for (let lx = 4; lx <= 11; lx++) {
             const d = Math.hypot(lx - 7.5, ly - 21.5);
-            if (d > 2.75) continue;
-            let rgb = SEAL.body;
-            if (d > 2.05) rgb = SEAL.shade;
-            else if (lx <= 7 && ly <= 21) rgb = SEAL.glint;
-            else if (lx === 8 && ly === 22) rgb = SEAL.mid;
+            if (d > 3.25) continue;
+            let rgb;
+            let emRgb = null;
+            let emAlpha = 0;
+            if (d > 2.55) {
+                rgb = INK;
+            } else if (d > 2.05) {
+                rgb = SEAL.shade;
+                emRgb = SEAL.mid;
+                emAlpha = 52;
+            } else if (lx <= 7 && ly <= 21) {
+                rgb = SEAL.glint;
+                emRgb = SEAL.glint;
+                emAlpha = 112;
+            } else if (lx === 8 && ly === 22) {
+                rgb = SEAL.shade; // embossed center stamp pip
+                emRgb = SEAL.mid;
+                emAlpha = 64;
+            } else {
+                rgb = SEAL.body;
+                emRgb = SEAL.body;
+                emAlpha = 88;
+            }
             setStripPixel(png, cell, lx, ly, rgb);
+            if (emissivePng && emRgb && emAlpha > 0) {
+                setStripPixel(emissivePng, cell, lx, ly, emRgb, emAlpha);
+            }
         }
     }
 }
 
-function paintCell(png, cell, provider, state, phase = null) {
+function paintCell(png, cell, provider, state, phase = null, emissivePng = null) {
     const pal = PROVIDER_PALETTES[provider] || PROVIDER_PALETTES.claude;
-    // Always paint the top provider identity crest so every pillar stays readable.
+    // Always paint the 10x2 top provider identity banner so every pillar stays readable.
     paintProviderCrest(png, cell, pal);
 
     if (state === 'unknown') {
@@ -740,38 +843,47 @@ function paintCell(png, cell, provider, state, phase = null) {
         if (c <= level) {
             // MB-5 active-spend trickle: 3-phase downward bead ripple across lit courses.
             const trickleRow = phase === null ? -1 : ((phase * 2 + (QUOTA_PILLAR_LEVELS - c)) % 5);
-            paintLitCourse(png, cell, yTop, pal, { peak, trickleRow });
+            paintLitCourse(png, cell, yTop, pal, { peak, trickleRow, emissivePng });
         } else {
             paintEmptyCourse(png, cell, yTop);
         }
     }
 
-    if (state === 'limit') paintLimitSeal(png, cell);
+    if (state === 'limit') paintLimitSeal(png, cell, emissivePng);
 }
 
-export function bakeStrip(providers = QUOTA_TERRACE_PROVIDERS) {
+export function bakeStripWithEmissive(providers = QUOTA_TERRACE_PROVIDERS) {
     const [fw, fh] = QUOTA_PILLAR_STRIP_FRAME;
     const totalCells = quotaPillarStripCellCount(providers);
     const strip = new PNG({ width: fw * totalCells, height: fh, colorType: 6 });
+    const emissive = new PNG({ width: fw * totalCells, height: fh, colorType: 6 });
 
     for (const provider of providers) {
         for (const state of QUOTA_PILLAR_STATES) {
-            paintCell(strip, quotaPillarStateCell(provider, state, providers), provider, state, null);
+            paintCell(strip, quotaPillarStateCell(provider, state, providers), provider, state, null, emissive);
         }
         for (let level = 1; level <= QUOTA_PILLAR_LEVELS; level++) {
             for (let phase = 0; phase < QUOTA_PILLAR_STREAM_PHASES; phase++) {
-                paintCell(strip, quotaPillarStreamCell(provider, level, phase, providers), provider, `l${level}`, phase);
+                paintCell(strip, quotaPillarStreamCell(provider, level, phase, providers), provider, `l${level}`, phase, emissive);
             }
         }
     }
 
-    return strip;
+    return { strip, emissive };
+}
+
+export function bakeStrip(providers = QUOTA_TERRACE_PROVIDERS) {
+    return bakeStripWithEmissive(providers).strip;
+}
+
+export function bakeStripEmissive(providers = QUOTA_TERRACE_PROVIDERS) {
+    return bakeStripWithEmissive(providers).emissive;
 }
 
 export function buildAllQuotaTerracePngs() {
     const apron = bakeApron();
     const pillar = bakePillar();
-    const strip = bakeStrip();
+    const { strip, emissive: stripEmissive } = bakeStripWithEmissive();
     return [
         { name: 'prop.quotaTerraceApron.png', png: apron.png },
         { name: 'prop.quotaTerraceApron.material.png', png: apron.material },
@@ -781,6 +893,7 @@ export function buildAllQuotaTerracePngs() {
         { name: 'prop.quotaPillar.material.png', png: pillar.material },
         { name: 'prop.quotaPillar.occluder.png', png: pillar.occluder },
         { name: 'prop.quotaPillarStrip.png', png: strip },
+        { name: 'prop.quotaPillarStrip.emissive.png', png: stripEmissive },
     ];
 }
 

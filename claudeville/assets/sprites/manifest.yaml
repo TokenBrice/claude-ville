@@ -3505,6 +3505,12 @@ props:
     frameW: 16
     frameH: 48
     anchor: [8, 24]
+    materialClass: stone
+    emissiveSidecar: true
+    emissive:
+      strength: 0.55
+      sources:
+        - { id: emissive.prop.quotaPillarStrip.runes, kind: lantern, geometry: authored-albedo, strength: 0.55 }
     provenance: { item: 'Runic Tide-Terrace', source: 'scripts/sprites/bake-quota-terrace.mjs', generations: 0, generatedAt: '2026-11-26' }
 
   - id: prop.signpost

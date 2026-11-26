@@ -79,12 +79,13 @@ const SAIL_CALM = 0.15; // knot wind below this is still air (pennants rest too)
 const LANDMARK_PROPS = Object.freeze(DISTRICT_PROPS.filter((prop) => prop.landmark));
 
 // W1-D 1.10 — night pools on the village lamp clock (`lamps` fixtures).
-// Windmill casts from its doorway; the Runic Tide-Terrace casts a soft warm
-// lantern pool across its stone apron from the terrace crown arc.
+// Windmill casts from its doorway; the Runic Tide-Terrace casts a wide warm
+// lantern wash across its full crescent apron from the front sundial axis so
+// all four pillars (including Claude and Antigravity on the wings) read cleanly.
 export const LANDMARK_LIGHT_RADIUS = 36;
 export const LANDMARK_LIGHTS = Object.freeze({
     'prop.windmill': Object.freeze({ foot: Object.freeze([-0.25, 0.5]), height: 16, intensity: 0.62 }),
-    'prop.quotaTerraceApron': Object.freeze({ foot: Object.freeze([0.0, 0.1]), height: 50, intensity: 0.44 }),
+    'prop.quotaTerraceApron': Object.freeze({ foot: Object.freeze([0.22, 0.22]), height: 44, radius: 74, intensity: 0.50 }),
 });
 const LANDMARK_LIGHT_COLOR = '#ffc95e';
 
@@ -94,6 +95,10 @@ function lampsLit(host) {
 
 function glowKey(host, id) {
     return host?.assets?.getCompanion?.(id, 'emissive') ? '1' : '0';
+}
+
+function companionKey(host, id, channel) {
+    return host?.assets?.getCompanion?.(id, channel) ? '1' : '0';
 }
 
 function boundsFor(assets, id, extraLeft = 0) {
@@ -231,7 +236,7 @@ export class QuotaPillarSprite extends StaticPropSprite {
             materialClass: 'stone',
             drawFn: (ctx, x, y) => this._paint(ctx, x, y),
             channels: {
-                emissive: (ctx, x, y) => host.sprites?.drawCompanion?.(ctx, prop.id, 'emissive', x, y),
+                emissive: (ctx, x, y) => this._paintEmissive(ctx, x, y),
                 material: (ctx, x, y) => host.sprites?.drawCompanion?.(ctx, prop.id, 'material', x, y),
                 occluder: (ctx, x, y) => host.sprites?.drawCompanion?.(ctx, prop.id, 'occluder', x, y),
             },
@@ -240,6 +245,10 @@ export class QuotaPillarSprite extends StaticPropSprite {
         this.provider = prop.provider;
         this.emitterGate = () => (lampsLit(host) ? 1 : 0);
         this._shownGlow = '';
+        this._shownStripGlow = '';
+        this._shownMaterial = '';
+        this._shownOccluder = '';
+        this._shownLamps = false;
         this._shownSnow = '';
         this._target = 'unknown';
         this._moment = null;
@@ -303,30 +312,89 @@ export class QuotaPillarSprite extends StaticPropSprite {
         ctx.restore();
     }
 
-    // Repaints the cached composite in place and bumps `_gpuCacheRevision`
-    // without touching `textureKey` (zero GPU texture-key churn).
+    // Zero-alloc in-place repaint: retains the color, emissive, material, and
+    // occluder canvases across shimmer ticks, level changes, snow buckets, and
+    // night transitions. Shimmer ticks (2 fps) repaint ONLY the color canvas in
+    // place; emissive rebuilds only when level/state/lampsLit/companion changes,
+    // and material/occluder stay static once their companions are loaded.
+    _repaintChannelCanvas(canvas, paintFn) {
+        if (!canvas || typeof paintFn !== 'function') return;
+        const ctx = canvas.getContext?.('2d', { willReadFrequently: true });
+        if (!ctx) return;
+        const originX = -(this.x + this.bounds.left - 8);
+        const originY = -(this.y + this.bounds.top - 8);
+        ctx.save?.();
+        ctx.setTransform?.(1, 0, 0, 1, 0, 0);
+        ctx.clearRect?.(0, 0, canvas.width, canvas.height);
+        SpriteRenderer.disableSmoothing(ctx);
+        ctx.translate?.(originX, originY);
+        paintFn(ctx, this.x, this.y);
+        ctx.restore?.();
+    }
+
     _getCachedCanvas(zoom) {
         if (!this.host.assets?.get?.(QUOTA_PILLAR_STRIP_ID)) return null;
-        let changed = false;
         const snowKey = this.host.propWinter?.key || '0';
-        if (snowKey !== this._shownSnow) {
-            this._shownSnow = snowKey;
-            changed = true;
-        }
         const glow = glowKey(this.host, this.id);
-        if (glow !== this._shownGlow) {
-            this._shownGlow = glow;
-            changed = true;
-        }
+        const stripGlow = glowKey(this.host, QUOTA_PILLAR_STRIP_ID);
+        const matKey = companionKey(this.host, this.id, 'material');
+        const occKey = companionKey(this.host, this.id, 'occluder');
+        const lampsNow = lampsLit(this.host);
         const key = this.pillarKey();
         const phase = this.streamPhase();
-        if (key !== this._shown || phase !== this._shownPhase) {
+
+        if (!this._cacheCanvas) {
+            this._shownSnow = snowKey;
+            this._shownGlow = glow;
+            this._shownStripGlow = stripGlow;
+            this._shownMaterial = matKey;
+            this._shownOccluder = occKey;
+            this._shownLamps = lampsNow;
             this._shown = key;
             this._shownPhase = phase;
-            changed = true;
+            return super._getCachedCanvas(zoom);
         }
-        if (changed && this._cacheCanvas) this.invalidateCache();
-        return super._getCachedCanvas(zoom);
+
+        const colorDirty = snowKey !== this._shownSnow || key !== this._shown || phase !== this._shownPhase;
+        const emissiveDirty = glow !== this._shownGlow || stripGlow !== this._shownStripGlow
+            || key !== this._shown || lampsNow !== this._shownLamps;
+        const materialDirty = matKey !== this._shownMaterial;
+        const occluderDirty = occKey !== this._shownOccluder;
+
+        if (!colorDirty && !emissiveDirty && !materialDirty && !occluderDirty) {
+            return this._cacheCanvas;
+        }
+
+        this._shownSnow = snowKey;
+        this._shownGlow = glow;
+        this._shownStripGlow = stripGlow;
+        this._shownMaterial = matKey;
+        this._shownOccluder = occKey;
+        this._shownLamps = lampsNow;
+        this._shown = key;
+        this._shownPhase = phase;
+
+        if (colorDirty) {
+            this._repaintChannelCanvas(this._cacheCanvas.canvas, (ctx, x, y) => this._paint(ctx, x, y));
+            this._alphaMask = null;
+        }
+        if (emissiveDirty && this._cacheCanvas.emissive) {
+            this._repaintChannelCanvas(this._cacheCanvas.emissive, (ctx, x, y) => this._paintEmissive(ctx, x, y));
+        }
+        if (materialDirty && this._cacheCanvas.material) {
+            this._repaintChannelCanvas(
+                this._cacheCanvas.material,
+                (ctx, x, y) => this.host.sprites?.drawCompanion?.(ctx, this.id, 'material', x, y),
+            );
+        }
+        if (occluderDirty && this._cacheCanvas.occluder) {
+            this._repaintChannelCanvas(
+                this._cacheCanvas.occluder,
+                (ctx, x, y) => this.host.sprites?.drawCompanion?.(ctx, this.id, 'occluder', x, y),
+            );
+        }
+        this._gpuCacheRevision++;
+        return this._cacheCanvas;
     }
 
     _paint(ctx, x, y) {
@@ -345,6 +413,23 @@ export class QuotaPillarSprite extends StaticPropSprite {
             ? quotaPillarStreamCell(this.provider, level, phase)
             : quotaPillarStateCell(this.provider, this._shown);
         ctx.drawImage(strip, cell * fw, 0, fw, fh, Math.round(x) - ax + ox, Math.round(y) - ay + oy, fw, fh);
+    }
+
+    _paintEmissive(ctx, x, y) {
+        const host = this.host;
+        // Crown lantern soffit glass (gated by emitterGate at night; daytime glass reflection).
+        host.sprites?.drawCompanion?.(ctx, this.id, 'emissive', x, y);
+        // Lit crystal courses / peak / LIMIT seal glow softly ONLY at night when
+        // village lamps are lit (keeping daytime crystal albedo free of unlit-glass
+        // sky tinting, and keeping l0 & unknown completely dark).
+        if (!lampsLit(host)) return;
+        const stripEmissive = host.assets?.getCompanion?.(QUOTA_PILLAR_STRIP_ID, 'emissive');
+        if (!stripEmissive) return;
+        const [ax, ay] = host.assets.getAnchor(this.id);
+        const [fw, fh] = QUOTA_PILLAR_STRIP_FRAME;
+        const [ox, oy] = QUOTA_PILLAR_STRIP_ORIGIN;
+        const cell = quotaPillarStateCell(this.provider, this._shown);
+        ctx.drawImage(stripEmissive, cell * fw, 0, fw, fh, Math.round(x) - ax + ox, Math.round(y) - ay + oy, fw, fh);
     }
 }
 
@@ -426,7 +511,7 @@ export class IsleLandmarks {
                 tileX: QUOTA_TERRACE_CENTER.tileX + terraceLight.foot[0],
                 tileY: QUOTA_TERRACE_CENTER.tileY + terraceLight.foot[1],
                 height: terraceLight.height,
-                radius: LANDMARK_LIGHT_RADIUS,
+                radius: terraceLight.radius ?? LANDMARK_LIGHT_RADIUS,
                 intensity: terraceLight.intensity,
                 color: LANDMARK_LIGHT_COLOR,
             });
@@ -494,12 +579,48 @@ export class IsleLandmarks {
         return { left, top, right: left + image.width, bottom: top + image.height };
     }
 
-    /** World anchor `{ x, y }` for positioning the Quota Ledger card beside a pillar (or terrace center). */
-    quotaTerraceAnchor(pillar = null) {
-        const sprite = typeof pillar === 'string' ? this.getQuotaPillar(pillar) : pillar;
-        if (sprite) return { x: sprite.x, y: sprite.y - 34 };
+    /** Full world bounding rect covering the terrace apron and all four quota pillars. */
+    quotaTerraceWorldBounds() {
+        const assets = this.host?.assets;
         const center = tileToWorld(QUOTA_TERRACE_CENTER.tileX, QUOTA_TERRACE_CENTER.tileY);
-        return { x: center.x, y: center.y - 24 };
+        const apronDims = assets?.getDims?.(QUOTA_TERRACE_APRON_ID) || { w: 144, h: 80 };
+        const [apronAx, apronAy] = assets?.getAnchor?.(QUOTA_TERRACE_APRON_ID) || [72, 46];
+        let left = Math.round(center.x) - apronAx;
+        let top = Math.round(center.y) - apronAy;
+        let right = left + apronDims.w;
+        let bottom = top + apronDims.h;
+        for (const sprite of this._terrace.pillars) {
+            const b = this.quotaPillarWorldBounds(sprite);
+            if (!b) continue;
+            if (b.left < left) left = b.left;
+            if (b.top < top) top = b.top;
+            if (b.right > right) right = b.right;
+            if (b.bottom > bottom) bottom = b.bottom;
+        }
+        return { left, top, right, bottom };
+    }
+
+    /**
+     * World anchor `{ x, y }` for positioning the Quota Ledger card beside the
+     * full 4-pillar terrace (never over the other 3 pillars when opened from Claude).
+     */
+    quotaTerraceAnchor(_pillar = null) {
+        const bounds = this.quotaTerraceWorldBounds();
+        const midY = Math.round((bounds.top + bounds.bottom) / 2);
+        const w2s = this.host?.camera?.worldToScreen;
+        if (typeof w2s === 'function') {
+            const tl = w2s.call(this.host.camera, bounds.left, bounds.top);
+            const br = w2s.call(this.host.camera, bounds.right, bounds.bottom);
+            if (tl && br) {
+                this.host?._quotaLedgerCard?.setAvoidBounds?.({
+                    left: Math.min(tl.x, br.x),
+                    top: Math.min(tl.y, br.y),
+                    right: Math.max(tl.x, br.x),
+                    bottom: Math.max(tl.y, br.y),
+                });
+            }
+        }
+        return { x: bounds.right, y: midY };
     }
 
     /** Crisp 2-line hover text for one specific pillar at `now`. */

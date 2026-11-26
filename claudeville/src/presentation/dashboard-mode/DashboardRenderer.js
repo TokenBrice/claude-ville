@@ -30,6 +30,7 @@ import { normalizeCostSource, TokenUsage } from '../../domain/value-objects/Toke
 import {
     antigravityQuotaFacts,
     claudeQuotaFacts,
+    codexQuotaFacts,
     collisionsForAgent,
     formatCost,
     formatCreditChange,
@@ -625,32 +626,6 @@ export function rowTokenCells(rawUsage) {
     };
 }
 
-/**
- * The Codex quota card's facts from `/api/usage.codex` (B1's contract), or
- * null when the field is absent or null. Unknown stays unknown: a null
- * percentage reads `—`, never 0 %. Q3: LIMIT is the account's (>= 100 % or
- * the window reports it reached); villagers keep their own status.
- */
-export function codexQuotaFacts(codex, now = Date.now()) {
-    if (!codex || typeof codex !== 'object') return null;
-    const known = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
-    const used = known(codex.usedPercent) ? Math.max(0, Number(codex.usedPercent)) : null;
-    const resetsAt = known(codex.resetsAt) && Number(codex.resetsAt) > now ? Number(codex.resetsAt) : null;
-    const credits = codex.credits || {};
-    const minutes = known(codex.windowMinutes) ? Number(codex.windowMinutes) : 0;
-    return {
-        usedText: used === null ? '—' : `${Math.round(used)}%`,
-        lit: used === null ? 0 : Math.min(GAUGE_SEGMENTS, Math.round((used / 100) * GAUGE_SEGMENTS)),
-        limit: codex.limitReached === true,
-        resetsAt,
-        credits: credits.unlimited === true ? 'unlimited credits'
-            : known(credits.balance) ? `${Number(credits.balance).toLocaleString('en-US', { maximumFractionDigits: 2 })} credits` : '',
-        observedAt: known(codex.observedAt) && Number(codex.observedAt) > 0 ? Number(codex.observedAt) : null,
-        creditChange: formatCreditChange(codex.creditChange, { short: true }),
-        windowLabel: minutes >= 7 * 24 * 60 ? 'weekly' : minutes >= 60 ? `${Math.round(minutes / 60)}h` : 'window',
-    };
-}
-
 // A quota-rail account card holds two lines: the reading on top, its facts
 // (joined by ` · ` in CSS) below.
 function quotaRows(part, head, facts) {
@@ -666,7 +641,7 @@ function quotaRows(part, head, facts) {
     return rows;
 }
 
-export { claudeQuotaFacts, glmQuotaFacts, antigravityQuotaFacts };
+export { claudeQuotaFacts, codexQuotaFacts, glmQuotaFacts, antigravityQuotaFacts };
 
 /** What the Quota Rail's 4 provider cards read from `/api/usage`: a change to any repaints the rail. */
 export function quotaCardsSignature(usage) {
@@ -2676,84 +2651,136 @@ export class DashboardRenderer {
             rail.hidden = true;
             return;
         }
-        replaceChildren(rail, cards);
+        const eyebrow = document.createElement('div');
+        eyebrow.className = 'dashboard-quota-rail__eyebrow';
+        eyebrow.textContent = 'WEEKLY LIMITS';
+        replaceChildren(rail, [eyebrow, ...cards]);
         rail.hidden = false;
     }
 
-    // The Codex account card in the Quota Rail: `CODEX WEEKLY ▮▮▮ 100% LIMIT` over
-    // `resets 5d12h · 2,510.33 credits · fell 31.83 in 1m · 3m ago`. Absent or null usage.codex
-    // (an older server, or no rollout with rate_limits) shows nothing.
+    // Build a compact Quota Rail card head that never clips at 1280px:
+    //   - Provider label (`CLAUDE` / `CODEX` / `GLM` / `ANTIGRAVITY`)
+    //   - Optional non-weekly window tag (e.g. `5H` fallback only; rail eyebrow carries `WEEKLY LIMITS`)
+    //   - Priority status badge (`LIMIT`, `WARNING`, or HTTP error code) placed prominently
+    //   - Crisp 12-segment `% left` gauge + explicit `<N>% left` reading
+    _quotaCardHead(part, { label, color, windowLabel, lit, leftText, limitWord = '', errorStatus = null, muted = false }) {
+        const provider = part('dashboard-quota__provider', label);
+        provider.style.color = color;
+        const head = [provider];
+        if (windowLabel && windowLabel !== 'weekly') {
+            head.push(part('dashboard-quota__window', windowLabel.toUpperCase()));
+        }
+        if (limitWord) {
+            head.push(part('dashboard-quota__word', limitWord));
+        } else if (muted && errorStatus) {
+            head.push(part('dashboard-quota__err-badge', String(errorStatus)));
+        }
+        const gauge = part('dashboard-quota__gauge');
+        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < lit ? 'on' : ''));
+        head.push(gauge);
+        // When LIMIT already sits on the head row, keep `0% left` as the leading
+        // subline fact so `ANTIGRAVITY LIMIT [gauge]` never overflows at 1280px.
+        if (!limitWord || label.length <= 6) {
+            head.push(part('dashboard-quota__used', leftText));
+        }
+        return head;
+    }
+
+    // The Codex account card in the Quota Rail: `CODEX [gauge] 56% left` over
+    // `Resets 4d 2h · 5h 82% left` (credits, credit delta, and age ride in the tooltip).
     _codexQuotaCard(usage = this._latestUsage) {
         const facts = codexQuotaFacts(usage?.codex);
         if (!facts) return null;
         const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
-        const muted = facts.usedText === '—';
-        const card = part(`dashboard-quota dashboard-quota--codex${facts.limit ? ' dashboard-quota--limit' : ''}${muted ? ' dashboard-quota--muted' : ''}`);
+        const card = part(`dashboard-quota dashboard-quota--codex${facts.limit ? ' dashboard-quota--limit' : ''}${facts.muted ? ' dashboard-quota--muted' : ''}`);
         card.dataset.provider = 'codex';
-        card.title = 'Codex account limits from the newest rollout\'s rate limits. LIMIT means the account is at its window\'s limit '
-            + '(spending credits when it has them); Codex villagers keep their own status.';
-        const provider = part('dashboard-quota__provider', providerPresentation('codex').badge.label.toUpperCase());
-        provider.style.color = providerPresentation('codex').badge.color;
-        const gauge = part('dashboard-quota__gauge');
-        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
-        const head = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
-        if (facts.limit) head.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        const tipParts = ['Codex Weekly'];
+        if (facts.leftPercent !== null) tipParts.push(`${facts.leftText} (${facts.usedText} used)`);
+        if (facts.fiveHourText) {
+            const reset = facts.fiveHourResetsAt ? ` (${formatResetCountdown(facts.fiveHourResetsAt)})` : '';
+            tipParts.push(`${facts.fiveHourText}${reset}`);
+        }
+        if (facts.credits) tipParts.push(facts.credits);
+        if (facts.creditChange) tipParts.push(facts.creditChange);
+        if (facts.observedAt) tipParts.push(`observed ${formatWaitAge(Math.max(0, Date.now() - facts.observedAt))} ago`);
+        tipParts.push('Codex villagers keep their own status.');
+        card.title = tipParts.join(' · ');
+
+        const label = providerPresentation('codex').badge.label.toUpperCase();
+        const head = this._quotaCardHead(part, {
+            label,
+            color: providerPresentation('codex').badge.color,
+            windowLabel: facts.windowLabel,
+            lit: facts.lit,
+            leftText: facts.leftText,
+            limitWord: facts.limit ? bucketWord('quota', 'upper') : '',
+            muted: facts.muted,
+        });
         const facts2 = [];
-        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
-        if (facts.credits) facts2.push(part('dashboard-quota__fact', facts.credits));
-        if (facts.creditChange) facts2.push(part('dashboard-quota__fact', facts.creditChange));
-        if (facts.observedAt) facts2.push(this._quotaAgeFact(part, facts.observedAt));
+        if (facts.muted) {
+            facts2.push(part('dashboard-quota__fact', 'Unavailable'));
+            if (facts.fiveHourText) facts2.push(part('dashboard-quota__fact', facts.fiveHourText));
+        } else {
+            if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
+            if (facts.fiveHourText) facts2.push(part('dashboard-quota__fact', facts.fiveHourText));
+            else if (facts.credits) facts2.push(part('dashboard-quota__fact', facts.credits));
+        }
         card.append(quotaRows(part, head, facts2));
         return card;
     }
 
-    // The Claude account card in the Quota Rail: prefers `highestActiveLimit`,
-    // and falls back to `sevenDay` + `sevenDayResetsAt` (labeled `CLAUDE WEEKLY`,
-    // with 5h in the secondary line and tooltip) so Claude stays visible whenever
-    // weekly usage is live. Handles 401/429 gracefully without faking 0%.
+    // The Claude account card in the Quota Rail: `CLAUDE [gauge] 62% left` over
+    // `Resets 3d 4h · 5h 82% left` (errors always lead FIRST so they never clip).
     _claudeLimitCard(usage = this._latestUsage) {
         const facts = claudeQuotaFacts(usage);
         if (!facts) return null;
         const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
         const card = part(`dashboard-quota dashboard-quota--claude${facts.warn ? ' dashboard-quota--limit' : ''}${facts.muted ? ' dashboard-quota--muted' : ''}`);
         card.dataset.provider = 'claude';
-        const tipParts = ['Claude account weekly usage'];
-        if (facts.used !== null) tipParts.push(`${facts.windowLabel} ${facts.usedText}`);
+        const tipParts = ['Claude Weekly'];
+        if (facts.leftPercent !== null) tipParts.push(`${facts.windowLabel} ${facts.leftText} (${facts.usedText} used)`);
         if (facts.fiveHourText) {
             const fiveHourReset = facts.fiveHourResetsAt ? ` (${formatResetCountdown(facts.fiveHourResetsAt)})` : '';
             tipParts.push(`${facts.fiveHourText}${fiveHourReset}`);
         }
         if (facts.errorStatus === 401) tipParts.push('stored token expired (401); run `claude` to refresh');
+        else if (facts.errorStatus === 403) tipParts.push('auth rejected (403)');
         else if (facts.errorStatus === 429) tipParts.push('check throttled (429); backing off');
         tipParts.push('Claude villagers keep their own status.');
         card.title = tipParts.join(' · ');
 
-        const provider = part('dashboard-quota__provider', providerPresentation('claude').badge.label.toUpperCase());
-        provider.style.color = providerPresentation('claude').badge.color;
-        const gauge = part('dashboard-quota__gauge');
-        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
-        const head = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
-        if (facts.badgeWord) head.push(part('dashboard-quota__word', facts.badgeWord));
+        const label = providerPresentation('claude').badge.label.toUpperCase();
+        const head = this._quotaCardHead(part, {
+            label,
+            color: providerPresentation('claude').badge.color,
+            windowLabel: facts.windowLabel,
+            lit: facts.lit,
+            leftText: facts.leftText,
+            limitWord: facts.badgeWord,
+            errorStatus: facts.errorStatus,
+            muted: facts.muted,
+        });
         const facts2 = [];
-        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
-        if (facts.fiveHourText) facts2.push(part('dashboard-quota__fact', facts.fiveHourText));
         const errorText = formatQuotaErrorStatus(facts.errorStatus);
         if (errorText) facts2.push(part('dashboard-quota__fact dashboard-quota__fact--error', errorText));
+        if (facts.muted && !errorText) facts2.push(part('dashboard-quota__fact', 'Unavailable'));
+        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
+        if (!errorText && facts.fiveHourText) facts2.push(part('dashboard-quota__fact', facts.fiveHourText));
         card.append(quotaRows(part, head, facts2));
         return card;
     }
 
-    // The GLM / z.AI account card in the Quota Rail: `GLM WEEKLY ▮▮▮ 42%` over
-    // `resets 3d4h · 5h 12% · max`. Styled with z.AI terracotta accent (#b36b51).
+    // The GLM / z.AI account card in the Quota Rail: `GLM [gauge] 59% left` over
+    // `Resets 3d 4h · 5h 91% left` (plan & credit allowance live in the tooltip).
     _glmQuotaCard(usage = this._latestUsage) {
         const facts = glmQuotaFacts(usage?.glm);
         if (!facts) return null;
         const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
         const card = part(`dashboard-quota dashboard-quota--glm${facts.limit ? ' dashboard-quota--limit' : ''}${facts.muted ? ' dashboard-quota--muted' : ''}`);
         card.dataset.provider = 'glm';
-        const tipParts = ['GLM (z.AI) Coding Plan limits'];
+        const tipParts = ['GLM Weekly (z.AI)'];
         if (facts.plan) tipParts.push(`plan ${facts.plan}`);
-        if (facts.used !== null) tipParts.push(`${facts.windowLabel} ${facts.usedText}`);
+        if (facts.leftPercent !== null) tipParts.push(`${facts.windowLabel} ${facts.leftText} (${facts.usedText} used)`);
         if (facts.usedCredits !== null && facts.limitCredits !== null) {
             tipParts.push(`${facts.usedCredits.toLocaleString('en-US', { maximumFractionDigits: 1 })} / ${facts.limitCredits.toLocaleString('en-US', { maximumFractionDigits: 1 })}`);
         }
@@ -2761,39 +2788,44 @@ export class DashboardRenderer {
             const fiveHourReset = facts.fiveHourResetsAt ? ` (${formatResetCountdown(facts.fiveHourResetsAt)})` : '';
             tipParts.push(`${facts.fiveHourText}${fiveHourReset}`);
         }
+        if (facts.observedAt) tipParts.push(`observed ${formatWaitAge(Math.max(0, Date.now() - facts.observedAt))} ago`);
         const errorText = formatQuotaErrorStatus(facts.errorStatus);
         if (errorText) tipParts.push(errorText);
         card.title = tipParts.join(' · ');
 
-        const provider = part('dashboard-quota__provider', 'GLM');
-        provider.style.color = providerPresentation('zai').badge.color;
-        const gauge = part('dashboard-quota__gauge');
-        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
-        const head = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
-        if (facts.limit) head.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        const head = this._quotaCardHead(part, {
+            label: 'GLM',
+            color: providerPresentation('zai').badge.color,
+            windowLabel: facts.windowLabel,
+            lit: facts.lit,
+            leftText: facts.leftText,
+            limitWord: facts.limit ? bucketWord('quota', 'upper') : '',
+            errorStatus: facts.errorStatus,
+            muted: facts.muted,
+        });
         const facts2 = [];
-        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
-        if (facts.fiveHourText) facts2.push(part('dashboard-quota__fact', facts.fiveHourText));
-        if (facts.plan) facts2.push(part('dashboard-quota__fact', facts.plan));
         if (errorText) facts2.push(part('dashboard-quota__fact dashboard-quota__fact--error', errorText));
+        if (facts.muted && !errorText) facts2.push(part('dashboard-quota__fact', 'Unavailable'));
+        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
+        if (!errorText && facts.fiveHourText) facts2.push(part('dashboard-quota__fact', facts.fiveHourText));
         card.append(quotaRows(part, head, facts2));
         return card;
     }
 
-    // The Antigravity account card in the Quota Rail: `ANTIGRAVITY WEEKLY ▮▮▮ 23%`
-    // (Gemini weekly primary) over `resets 6d9h · 3P shared 0% · 4m ago`, with
-    // both 5h windows in the hover tooltip. Styled with steel-indigo (#6c96c2).
+    // The Antigravity Weekly account card in the Quota Rail:
+    // `ANTIGRAVITY [gauge] 77% left` over `Resets 2d 5h · 3P 88% left`.
+    // Gemini models scope, both 5h windows, source, and observed age live in the tooltip.
     _antigravityQuotaCard(usage = this._latestUsage) {
         const facts = antigravityQuotaFacts(usage?.antigravity);
         if (!facts) return null;
         const part = (className, text = '') => Object.assign(document.createElement('span'), { className, textContent: text });
         const card = part(`dashboard-quota dashboard-quota--antigravity${facts.limit ? ' dashboard-quota--limit' : ''}${facts.muted ? ' dashboard-quota--muted' : ''}`);
         card.dataset.provider = 'antigravity';
-        const tipParts = ['Antigravity account limits'];
-        tipParts.push(`Gemini weekly ${facts.usedText}`);
+        const tipParts = ['Antigravity Weekly'];
+        tipParts.push(`Gemini models ${facts.leftText}`);
         if (facts.sharedWeeklyText) {
             const sharedReset = facts.sharedWeeklyResetsAt ? ` (${formatResetCountdown(facts.sharedWeeklyResetsAt)})` : '';
-            tipParts.push(`${facts.sharedWeeklyText}${sharedReset}`);
+            tipParts.push(`3P shared ${facts.sharedWeeklyLeft}% left${sharedReset}`);
         }
         if (facts.geminiFiveHourText) {
             const reset = facts.geminiFiveHourResetsAt ? ` (${formatResetCountdown(facts.geminiFiveHourResetsAt)})` : '';
@@ -2804,21 +2836,28 @@ export class DashboardRenderer {
             tipParts.push(`${facts.sharedFiveHourText}${reset}`);
         }
         if (facts.source) tipParts.push(`source ${facts.source}`);
+        if (facts.observedAt) tipParts.push(`observed ${formatWaitAge(Math.max(0, Date.now() - facts.observedAt))} ago`);
         const errorText = formatQuotaErrorStatus(facts.errorStatus);
         if (errorText) tipParts.push(errorText);
         card.title = tipParts.join(' · ');
 
-        const provider = part('dashboard-quota__provider', providerPresentation('antigravity').badge.label.toUpperCase());
-        provider.style.color = providerPresentation('antigravity').badge.color;
-        const gauge = part('dashboard-quota__gauge');
-        for (let index = 0; index < GAUGE_SEGMENTS; index++) gauge.appendChild(part(index < facts.lit ? 'on' : ''));
-        const head = [provider, part('dashboard-quota__window', facts.windowLabel.toUpperCase()), gauge, part('dashboard-quota__used', facts.usedText)];
-        if (facts.limit) head.push(part('dashboard-quota__word', bucketWord('quota', 'upper')));
+        const label = providerPresentation('antigravity').badge.label.toUpperCase();
+        const head = this._quotaCardHead(part, {
+            label,
+            color: providerPresentation('antigravity').badge.color,
+            windowLabel: facts.windowLabel,
+            lit: facts.lit,
+            leftText: facts.leftText,
+            limitWord: facts.limit ? bucketWord('quota', 'upper') : '',
+            errorStatus: facts.errorStatus,
+            muted: facts.muted,
+        });
         const facts2 = [];
-        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
-        if (facts.sharedWeeklyText) facts2.push(part('dashboard-quota__fact', facts.sharedWeeklyText));
         if (errorText) facts2.push(part('dashboard-quota__fact dashboard-quota__fact--error', errorText));
-        if (facts.observedAt) facts2.push(this._quotaAgeFact(part, facts.observedAt));
+        if (facts.muted && !errorText) facts2.push(part('dashboard-quota__fact', 'Unavailable'));
+        if (facts.resetsAt) facts2.push(this._quotaResetFact(part, facts.resetsAt));
+        if (!errorText && facts.sharedWeeklyText) facts2.push(part('dashboard-quota__fact', facts.sharedWeeklyText));
+        else if (!facts.muted && !facts.resetsAt && !errorText) facts2.push(part('dashboard-quota__fact', 'Gemini models'));
         card.append(quotaRows(part, head, facts2));
         return card;
     }

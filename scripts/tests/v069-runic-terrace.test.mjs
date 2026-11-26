@@ -16,6 +16,7 @@ import {
     QUOTA_PILLAR_STATES,
     QUOTA_PILLAR_STREAM_PHASES,
     QUOTA_PILLAR_STRIP_ORIGIN,
+    QUOTA_PROVIDER_META,
     quotaDrainStep,
     quotaDraining,
     quotaPillarKey,
@@ -28,6 +29,7 @@ import {
 } from '../../claudeville/src/presentation/character-mode/QuotaTerrace.js';
 import { IsleLandmarks, QUOTA_PILLAR_ID, QUOTA_PILLAR_STRIP_ID } from '../../claudeville/src/presentation/character-mode/IsleLandmarks.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+import { STATUS_VISUALS } from '../../claudeville/src/config/theme.js';
 import { hoverPlateLines } from '../../claudeville/src/presentation/shared/WorldHoverPlate.js';
 import {
     QUOTA_LEDGER_SEGMENTS,
@@ -35,7 +37,8 @@ import {
     buildQuotaLedgerModel,
     isInQuotaLedgerCard,
 } from '../../claudeville/src/presentation/shared/QuotaLedgerCard.js';
-import { bakeStrip, buildAllQuotaTerracePngs } from '../sprites/bake-quota-terrace.mjs';
+import { PROVIDER_PALETTES, bakeStrip, buildAllQuotaTerracePngs } from '../sprites/bake-quota-terrace.mjs';
+import { luminance, oklab } from '../sprites/art-analyze.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const PROPS_DIR = join(ROOT, 'claudeville', 'assets', 'sprites', 'props');
@@ -311,7 +314,13 @@ test('v0.69 E2: QuotaLedgerCard builds 4-provider model, opens/refreshes/closes 
     assert.equal(model.rows.length, 4);
     assert.equal(model.rows.find((r) => r.provider === 'glm').selected, true);
     assert.equal(model.rows.find((r) => r.provider === 'claude').segments, QUOTA_LEDGER_SEGMENTS);
-    assert.equal(model.rows.find((r) => r.provider === 'antigravity').subRows.some((s) => s.label === '3P Shared'), true);
+    assert.equal(model.rows.find((r) => r.provider === 'claude').accent, '#977bb5', 'Claude uses unified lavender-plum accent');
+    assert.equal(model.rows.find((r) => r.provider === 'antigravity').weeklyTitle, 'Antigravity Weekly');
+    assert.equal(model.rows.find((r) => r.provider === 'antigravity').subRows.some((s) => s.label === '3P shared'), true);
+
+    // Non-zero segment floor: 3% left still lights 1 of 12 segments.
+    const sliverModel = buildQuotaLedgerModel({ ...usage, glm: { weekly: { usedPercent: 97 } } }, { now });
+    assert.equal(sliverModel.rows.find((r) => r.provider === 'glm').lit, 1);
 
     const trigger = new FakeEl('button');
     trigger.isConnected = true;
@@ -331,10 +340,16 @@ test('v0.69 E2: QuotaLedgerCard builds 4-provider model, opens/refreshes/closes 
     assert.equal(gauges.length, 4);
     for (const g of gauges) assert.equal(g.children.length, 12);
 
-    // Desktop positioning sets inline left/top; mobile profile clears them for CSS bottom sheet.
-    card.position({ x: 200, y: 240 }, []);
-    assert.ok(card.el.style.left.endsWith('px'));
+    // Desktop positioning sets inline left/top and respects full-terrace avoidBounds;
+    // mobile profile clears them for CSS bottom sheet.
+    card.setAvoidBounds({ left: 100, top: 120, right: 360, bottom: 280 });
+    card.position({ x: 360, y: 200 }, []);
+    assert.ok(Number.parseInt(card.el.style.left, 10) >= 360, 'card sits clear to the right of the full 4-pillar terrace');
     assert.ok(card.el.style.top.endsWith('px'));
+    // When near the right viewport edge, flips cleanly to the left of the entire terrace.
+    card.setAvoidBounds({ left: 900, top: 120, right: 1160, bottom: 280 });
+    card.position({ x: 1160, y: 200 }, []);
+    assert.ok(Number.parseInt(card.el.style.left, 10) + card.el.offsetWidth <= 900, 'card flips left of full terrace when right edge is tight');
     doc.documentElement.dataset.cvProfile = 'mobile';
     card.position({ x: 200, y: 240 }, []);
     assert.equal(card.el.style.left, '');
@@ -439,6 +454,73 @@ test('v0.69 E2: bake-quota-terrace.mjs --check passes, zero semi-alpha, emissive
         }
     }
     assert.ok(lit >= 12 && lit <= 32, `crown lantern emissive pocket has ${lit} lit texels`);
+
+    // Strip emissive sidecar lights lit crystal courses, peak, and LIMIT seal,
+    // while keeping l0 and unknown completely dark (0 lit texels).
+    const strip = PNG.sync.read(readFileSync(join(PROPS_DIR, 'prop.quotaPillarStrip.png')));
+    const stripEm = PNG.sync.read(readFileSync(join(PROPS_DIR, 'prop.quotaPillarStrip.emissive.png')));
+    assert.deepEqual([stripEm.width, stripEm.height], [strip.width, strip.height]);
+    const cellEmissiveCount = (cell) => {
+        let count = 0;
+        for (let ly = 0; ly < 48; ly++) {
+            for (let lx = 0; lx < 16; lx++) {
+                const i = (ly * stripEm.width + cell * 16 + lx) * 4;
+                if (stripEm.data[i + 3] > 0) count++;
+            }
+        }
+        return count;
+    };
+    const cellMeanLuma = (cell, y0 = 7, y1 = 36) => {
+        let sum = 0;
+        let n = 0;
+        for (let ly = y0; ly <= y1; ly++) {
+            for (let lx = 4; lx <= 11; lx++) {
+                const i = (ly * strip.width + cell * 16 + lx) * 4;
+                if (strip.data[i + 3] === 0) continue;
+                sum += luminance(strip.data[i], strip.data[i + 1], strip.data[i + 2]);
+                n++;
+            }
+        }
+        return n ? sum / n : 0;
+    };
+    for (const provider of QUOTA_TERRACE_PROVIDERS) {
+        assert.equal(cellEmissiveCount(quotaPillarStateCell(provider, 'l0')), 0, `${provider} l0 stays dark at night`);
+        assert.equal(cellEmissiveCount(quotaPillarStateCell(provider, 'unknown')), 0, `${provider} unknown stays dark at night`);
+        assert.ok(cellEmissiveCount(quotaPillarStateCell(provider, 'l3')) > 60, `${provider} l3 crystals glow at night`);
+        assert.ok(cellEmissiveCount(quotaPillarStateCell(provider, 'limit')) > 20, `${provider} limit seal glows softly at night`);
+        // Unknown shroud must stay strictly inset inside recess (lx=3..12, ly=7..36) and darker than l1 lit course.
+        const unkCell = quotaPillarStateCell(provider, 'unknown');
+        for (let ly = 6; ly < 48; ly++) {
+            for (let lx = 0; lx < 16; lx++) {
+                if (lx >= 3 && lx <= 12 && ly >= 7 && ly <= 36) continue;
+                const i = (ly * strip.width + unkCell * 16 + lx) * 4;
+                assert.equal(strip.data[i + 3], 0, `${provider} unknown shroud must not overflow recess at (${lx},${ly})`);
+            }
+        }
+        const unkLuma = cellMeanLuma(unkCell, 8, 35);
+        const l1Luma = cellMeanLuma(quotaPillarStateCell(provider, 'l1'), 31, 35);
+        assert.ok(unkLuma < l1Luma * 0.65, `${provider} unknown shroud (${unkLuma.toFixed(3)}) must be clearly darker than l1 (${l1Luma.toFixed(3)})`);
+    }
+
+    // OKLab Tier-B contract: every stop of every provider palette has chroma <= 0.105
+    // and distance >= 0.07 from every Tier-A STATUS_VISUALS hue.
+    const statusLabs = ['working', 'waiting', 'waiting_on_user', 'errored', 'rate_limited', 'idle'].map((k) => {
+        const h = STATUS_VISUALS[k].color;
+        return [k, oklab(parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16))];
+    });
+    for (const [provider, pal] of Object.entries(PROVIDER_PALETTES)) {
+        for (const [stop, rgb] of Object.entries(pal)) {
+            const lab = oklab(rgb[0], rgb[1], rgb[2]);
+            const chroma = Math.hypot(lab[1], lab[2]);
+            assert.ok(chroma <= 0.105, `${provider}.${stop} OKLab chroma ${chroma.toFixed(4)} must be <= 0.105`);
+            for (const [statusName, slab] of statusLabs) {
+                const dist = Math.hypot(lab[0] - slab[0], lab[1] - slab[1], lab[2] - slab[2]);
+                assert.ok(dist >= 0.07, `${provider}.${stop} OKLab dE ${dist.toFixed(4)} from ${statusName} must be >= 0.07`);
+            }
+        }
+    }
+    assert.equal(QUOTA_PROVIDER_META.claude.accent, '#977bb5');
+    assert.equal(QUOTA_PROVIDER_META.antigravity.weeklyTitle, 'Antigravity Weekly');
 });
 
 // ─── 5. N-Provider Extensibility ─────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
     DashboardRenderer,
     antigravityQuotaFacts,
     claudeQuotaFacts,
+    codexQuotaFacts,
     glmQuotaFacts,
     quotaCardsSignature,
 } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
@@ -648,7 +649,7 @@ function createMiniDom() {
     return { root, attentionEl, gridEl, emptyEl, doc, MiniElement };
 }
 
-test('Claude weekly card visibility fix: falls back to quota.sevenDay when highestActiveLimit is absent', () => {
+test('Claude weekly card visibility fix: falls back to quota.sevenDay when highestActiveLimit is absent and lights by % left', () => {
     const usage = {
         quotaAvailable: true,
         quota: {
@@ -665,13 +666,21 @@ test('Claude weekly card visibility fix: falls back to quota.sevenDay when highe
     assert.equal(facts.source, 'seven-day');
     assert.equal(facts.windowLabel, 'weekly');
     assert.equal(facts.usedText, '64%');
+    assert.equal(facts.leftText, '36% left');
+    assert.equal(facts.lit, 4, '36% left lights 4 of 12 segments');
     assert.equal(facts.resetsAt, FUTURE_WEEK);
-    assert.equal(facts.fiveHourText, '5h 19%');
+    assert.equal(facts.fiveHourText, '5h 81% left');
     assert.equal(facts.muted, false);
+
+    // Non-zero segment floor: 3% left still lights 1 segment, never 0.
+    const sliver = claudeQuotaFacts({ quotaAvailable: true, quota: { sevenDay: 0.97, sevenDayResetsAt: FUTURE_WEEK } }, NOW);
+    assert.equal(sliver.leftText, '3% left');
+    assert.equal(sliver.lit, 1);
 
     // 401 renders muted unknown state (never fake 0%).
     const authErr = claudeQuotaFacts({ quotaAvailable: false, quota: { fiveHour: null, sevenDay: null }, quotaError: { status: 401, at: NOW } }, NOW);
     assert.equal(authErr.usedText, '—');
+    assert.equal(authErr.leftText, '—');
     assert.equal(authErr.lit, 0);
     assert.equal(authErr.muted, true);
     assert.equal(authErr.errorStatus, 401);
@@ -715,39 +724,43 @@ test('DashboardRenderer renders all 4 provider cards in .dashboard-quota-rail, h
     assert.equal(dom.root.children[1], dash.quotaRailEl, 'rail mounts right below .dashboard-attention');
     assert.equal(dom.root.children[2], dom.gridEl);
 
-    // 2. All 4 providers populated via usage:updated event.
+    // 2. All 4 providers populated via usage:updated event (anchored to live clock
+    // so 5h reset timestamps stay in the future regardless of when tests run).
+    const liveNow = Date.now();
+    const liveWeek = liveNow + 5 * 24 * 60 * 60_000;
+    const live5h = liveNow + 3 * 60 * 60_000;
     const fullUsage = {
         quotaAvailable: true,
         quota: {
             provider: 'claude',
             fiveHour: 0.15,
             sevenDay: 0.58,
-            fiveHourResetsAt: FUTURE_5H,
-            sevenDayResetsAt: FUTURE_WEEK,
+            fiveHourResetsAt: live5h,
+            sevenDayResetsAt: liveWeek,
         },
         quotaError: null,
         codex: {
             usedPercent: 72,
             windowMinutes: 10080,
-            resetsAt: FUTURE_WEEK,
+            resetsAt: liveWeek,
             credits: { balance: 120, hasCredits: true, unlimited: false },
             limitReached: false,
-            observedAt: NOW - 120_000,
+            observedAt: liveNow - 120_000,
         },
         glm: {
             plan: 'max',
-            weekly: { usedPercent: 41, used: 4100, limit: 10000, remaining: 5900, resetsAt: new Date(FUTURE_WEEK).toISOString() },
-            fiveHour: { usedPercent: 9, used: 180, limit: 2000, remaining: 1820, resetsAt: new Date(FUTURE_5H).toISOString() },
-            observedAt: new Date(NOW).toISOString(),
+            weekly: { usedPercent: 41, used: 4100, limit: 10000, remaining: 5900, resetsAt: new Date(liveWeek).toISOString() },
+            fiveHour: { usedPercent: 9, used: 180, limit: 2000, remaining: 1820, resetsAt: new Date(live5h).toISOString() },
+            observedAt: new Date(liveNow).toISOString(),
             error: null,
         },
         antigravity: {
             source: 't3-cache',
-            geminiWeekly: { usedPercent: 23.4, resetsAt: new Date(FUTURE_WEEK).toISOString(), windowMinutes: 10080, label: 'Gemini · Weekly' },
-            geminiFiveHour: { usedPercent: 30, resetsAt: new Date(FUTURE_5H).toISOString(), windowMinutes: 300, label: 'Gemini · 5-hour' },
+            geminiWeekly: { usedPercent: 23.4, resetsAt: new Date(liveWeek).toISOString(), windowMinutes: 10080, label: 'Gemini · Weekly' },
+            geminiFiveHour: { usedPercent: 30, resetsAt: new Date(live5h).toISOString(), windowMinutes: 300, label: 'Gemini · 5-hour' },
             sharedWeekly: { usedPercent: 12, resetsAt: null, windowMinutes: 10080, label: 'Claude & GPT (shared) · Weekly' },
             sharedFiveHour: { usedPercent: 4, resetsAt: null, windowMinutes: 300, label: 'Claude & GPT (shared) · 5-hour' },
-            observedAt: new Date(NOW - 180_000).toISOString(),
+            observedAt: new Date(liveNow - 180_000).toISOString(),
             error: null,
         },
     };
@@ -761,23 +774,41 @@ test('DashboardRenderer renders all 4 provider cards in .dashboard-quota-rail, h
     // Filter bar (.dashboard-attention) must hold zero quota cards so chips are never starved.
     assert.equal(dom.attentionEl.querySelectorAll('.dashboard-quota').length, 0);
 
-    // Inspect each card's content and provider accents.
+    // Inspect each card's content, % left fill direction, eyebrow, and provider accents.
+    const eyebrow = dash.quotaRailEl.querySelector('.dashboard-quota-rail__eyebrow');
+    assert.equal(eyebrow?.textContent, 'WEEKLY LIMITS');
     const [claudeCard, codexCard, glmCard, agCard] = cards;
-    assert.match(claudeCard.allText(), /CLAUDE.*WEEKLY.*58%.*5h 15%/);
-    assert.match(codexCard.allText(), /CODEX.*WEEKLY.*72%.*120 credits/);
-    assert.match(glmCard.allText(), /GLM.*WEEKLY.*41%.*5h 9%.*max/);
+    assert.match(claudeCard.allText(), /CLAUDE.*42% left.*5h 85% left/);
+    assert.match(codexCard.allText(), /CODEX.*28% left.*120 credits/);
+    assert.match(glmCard.allText(), /GLM.*59% left.*5h 91% left/);
     assert.equal(glmCard.querySelector('.dashboard-quota__provider').style.color, '#b36b51');
-    assert.match(agCard.allText(), /ANTIGRAVITY.*WEEKLY.*23%.*3P shared 12%/);
+    assert.match(glmCard.title, /plan max/, 'GLM plan rides in tooltip so subline stays concise at 1280px');
+    assert.match(agCard.allText(), /ANTIGRAVITY.*77% left.*3P 88% left/);
     assert.equal(agCard.querySelector('.dashboard-quota__provider').style.color, '#6c96c2');
-    assert.match(agCard.title, /Gemini 5h 30%.*3P 5h 4%/, 'Antigravity tooltip carries 5h details');
+    assert.match(agCard.title, /Antigravity Weekly.*Gemini models 77% left.*Gemini 5h 70% left.*3P 5h 96% left/, 'Antigravity tooltip carries unified naming and 5h % left details');
+
+    // Errors appear FIRST in subline (never ellipsized at the tail at 1280px).
+    eventBus.emit('usage:updated', {
+        ...fullUsage,
+        quotaError: { status: 429, at: liveNow },
+        antigravity: { ...fullUsage.antigravity, geminiWeekly: { usedPercent: 100, resetsAt: new Date(liveWeek).toISOString() } },
+    });
+    const stressedCards = dash.quotaRailEl.querySelectorAll('.dashboard-quota');
+    const claudeFactsFirst = stressedCards[0].querySelector('.dashboard-quota__facts')?.children?.[0];
+    assert.equal(claudeFactsFirst?.textContent, 'Throttled (429)', 'error status sits FIRST before reset/5h facts');
+    assert.match(stressedCards[3].allText(), /ANTIGRAVITY.*LIMIT.*3P 88% left/, 'Antigravity LIMIT badge sits cleanly on head with unclipped 3P fact');
+    assert.match(stressedCards[3].title, /Gemini models 0% left/, 'Antigravity LIMIT tooltip carries explicit 0% left reading');
+
+    // Restore fullUsage for countdown ticker & signature checks.
+    eventBus.emit('usage:updated', fullUsage);
 
     // 3. 1 Hz reset countdown ticker updates all 4 provider cards cleanly.
     const resetNodes = dash.quotaRailEl.querySelectorAll('[data-resets-at]');
     assert.equal(resetNodes.length, 4, 'all 4 cards carry a reset countdown');
-    dash._tickResetCountdowns(NOW);
-    for (const node of resetNodes) assert.equal(node.textContent, 'resets 5d');
-    dash._tickResetCountdowns(NOW + 24 * 60 * 60_000);
-    for (const node of resetNodes) assert.equal(node.textContent, 'resets 4d');
+    dash._tickResetCountdowns(liveNow);
+    for (const node of resetNodes) assert.equal(node.textContent, 'Resets 5d');
+    dash._tickResetCountdowns(liveNow + 24 * 60 * 60_000);
+    for (const node of resetNodes) assert.equal(node.textContent, 'Resets 4d');
 
     // 4. quotaCardsSignature detects changes across all 4 providers.
     const sigBase = JSON.stringify(quotaCardsSignature(fullUsage));
@@ -795,9 +826,10 @@ test('DashboardRenderer renders all 4 provider cards in .dashboard-quota-rail, h
     );
 });
 
-test('GLM and Antigravity fact normalizers handle 401/429 errors without faking 0%', () => {
+test('GLM, Antigravity, and Codex fact normalizers handle 401/429 errors, expired windows, and non-zero floor without faking 0%', () => {
     const glmErr = glmQuotaFacts({ plan: null, weekly: null, fiveHour: null, observedAt: null, error: { status: 401, at: NOW } }, NOW);
     assert.equal(glmErr.usedText, '—');
+    assert.equal(glmErr.leftText, '—');
     assert.equal(glmErr.lit, 0);
     assert.equal(glmErr.muted, true);
     assert.equal(glmErr.errorStatus, 401);
@@ -812,9 +844,38 @@ test('GLM and Antigravity fact normalizers handle 401/429 errors without faking 
         error: { status: 429, at: NOW },
     }, NOW);
     assert.equal(agErr.usedText, '—');
+    assert.equal(agErr.leftText, '—');
     assert.equal(agErr.lit, 0);
     assert.equal(agErr.muted, true);
     assert.equal(agErr.errorStatus, 429);
+
+    // Configured provider with expired windows renders a clean muted Unavailable card (never hidden or 0%).
+    const agExpired = antigravityQuotaFacts({
+        source: 't3-cache',
+        geminiWeekly: { usedPercent: 40, resetsAt: new Date(PAST_RESET).toISOString() },
+        error: null,
+    }, NOW);
+    assert.ok(agExpired, 'configured expired Antigravity keeps muted card');
+    assert.equal(agExpired.muted, true);
+    assert.equal(agExpired.leftText, '—');
+
+    // Non-zero segment floor + explicit Codex weekly vs 5h split.
+    const agSliver = antigravityQuotaFacts({
+        geminiWeekly: { usedPercent: 97, resetsAt: new Date(FUTURE_WEEK).toISOString() },
+    }, NOW);
+    assert.equal(agSliver.leftText, '3% left');
+    assert.equal(agSliver.lit, 1);
+
+    const codexSplit = codexQuotaFacts({
+        weekly: { usedPercent: 35, windowMinutes: 10080, resetsAt: FUTURE_WEEK },
+        fiveHour: { usedPercent: 12, windowMinutes: 300, resetsAt: FUTURE_5H },
+        usedPercent: 12,
+        windowMinutes: 300,
+        resetsAt: FUTURE_5H,
+    }, NOW);
+    assert.equal(codexSplit.leftText, '65% left');
+    assert.equal(codexSplit.fiveHourText, '5h 88% left');
+    assert.equal(codexSplit.lit, 8);
 });
 
 test('Quota Rail CSS obeys desktop-first rules in dashboard.css and scopes mobile wrap in mobile.css', async () => {

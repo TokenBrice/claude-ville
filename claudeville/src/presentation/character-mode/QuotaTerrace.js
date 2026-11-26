@@ -44,7 +44,7 @@ export const QUOTA_PROVIDER_META = Object.freeze({
         id: 'claude',
         label: 'Claude',
         weeklyTitle: 'Claude Weekly',
-        accent: '#d49b4b',
+        accent: '#977bb5',
     }),
     codex: Object.freeze({
         id: 'codex',
@@ -61,7 +61,7 @@ export const QUOTA_PROVIDER_META = Object.freeze({
     antigravity: Object.freeze({
         id: 'antigravity',
         label: 'Antigravity',
-        weeklyTitle: 'Gemini Weekly',
+        weeklyTitle: 'Antigravity Weekly',
         accent: '#6c96c2',
     }),
 });
@@ -161,6 +161,9 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
         const activeLimit = available ? quotaLimitFacts(quota?.highestActiveLimit) : null;
         const highestActiveLimit = activeLimit && !isExpired(activeLimit.resetsAt, now) ? activeLimit : null;
 
+        const fiveHourPercent = fiveHour !== null ? Math.round(fiveHour * 100) : null;
+        const fiveHourLeftPercent = fiveHourPercent !== null ? Math.max(0, 100 - fiveHourPercent) : null;
+
         if (errorStatus === 401 || errorStatus === 403 || !available || sevenDay === null) {
             return {
                 provider: 'claude',
@@ -170,7 +173,8 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
                 usedPercent: null,
                 leftPercent: null,
                 resetsAt: null,
-                fiveHourPercent: fiveHour !== null ? Math.round(fiveHour * 100) : null,
+                fiveHourPercent,
+                fiveHourLeftPercent,
                 fiveHourResetsAt: fiveHour !== null ? fiveHourResetsAt : null,
                 highestActiveLimit,
                 errorStatus,
@@ -187,7 +191,8 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
             usedPercent,
             leftPercent,
             resetsAt: sevenDayResetsAt,
-            fiveHourPercent: fiveHour !== null ? Math.round(fiveHour * 100) : null,
+            fiveHourPercent,
+            fiveHourLeftPercent,
             fiveHourResetsAt: fiveHour !== null ? fiveHourResetsAt : null,
             highestActiveLimit,
             errorStatus,
@@ -197,9 +202,19 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
 
     if (provider === 'codex') {
         const codex = usage?.codex && typeof usage.codex === 'object' ? usage.codex : null;
-        const resetsAt = parseResetTimestamp(codex?.resetsAt);
+        const legacyWindowMinutes = finiteOrNull(codex?.windowMinutes);
+        // Prefer explicit `usage.codex.weekly` (Fix Lane 1); fall back to legacy top-level
+        // `usage.codex` only when its window is weekly/multi-day (>= 1440m) or unspecified.
+        const weekly = codex?.weekly ?? (codex && (legacyWindowMinutes === null || legacyWindowMinutes >= 1440) ? codex : null);
+        const fiveHour = codex?.fiveHour ?? (codex && legacyWindowMinutes !== null && legacyWindowMinutes > 0 && legacyWindowMinutes < 1440 ? codex : null);
+
+        const resetsAt = parseResetTimestamp(weekly?.resetsAt);
         const observedAt = parseResetTimestamp(codex?.observedAt);
-        const windowMinutes = finiteOrNull(codex?.windowMinutes);
+        const windowMinutes = finiteOrNull(weekly?.windowMinutes ?? codex?.windowMinutes);
+        const fiveHourResetsAt = parseResetTimestamp(fiveHour?.resetsAt);
+        const fiveHourRawPct = !isExpired(fiveHourResetsAt, now) ? clampPercent(fiveHour?.usedPercent) : null;
+        const fiveHourPercent = fiveHourRawPct !== null ? Math.round(fiveHourRawPct) : null;
+        const fiveHourLeftPercent = fiveHourPercent !== null ? Math.max(0, 100 - fiveHourPercent) : null;
         const credits = codex?.credits && typeof codex.credits === 'object'
             ? {
                 unlimited: codex.credits.unlimited === true,
@@ -209,7 +224,7 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
             : null;
         const creditChange = codex?.creditChange || null;
 
-        if (codex?.limitReached === true) {
+        if (codex?.limitReached === true || weekly?.limitReached === true) {
             return {
                 provider: 'codex',
                 state: 'limit',
@@ -219,6 +234,9 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
                 leftPercent: 0,
                 resetsAt: !isExpired(resetsAt, now) ? resetsAt : null,
                 windowMinutes,
+                fiveHourPercent,
+                fiveHourLeftPercent,
+                fiveHourResetsAt: fiveHourPercent !== null ? fiveHourResetsAt : null,
                 credits,
                 creditChange,
                 observedAt,
@@ -228,7 +246,7 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
             };
         }
         const expired = isExpired(resetsAt, now);
-        const rawUsedPct = !expired ? clampPercent(codex?.usedPercent) : null;
+        const rawUsedPct = !expired ? clampPercent(weekly?.usedPercent) : null;
         if (rawUsedPct === null) {
             return {
                 provider: 'codex',
@@ -239,6 +257,9 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
                 leftPercent: null,
                 resetsAt: null,
                 windowMinutes,
+                fiveHourPercent,
+                fiveHourLeftPercent,
+                fiveHourResetsAt: fiveHourPercent !== null ? fiveHourResetsAt : null,
                 credits,
                 creditChange,
                 observedAt,
@@ -259,6 +280,9 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
             leftPercent,
             resetsAt,
             windowMinutes,
+            fiveHourPercent,
+            fiveHourLeftPercent,
+            fiveHourResetsAt: fiveHourPercent !== null ? fiveHourResetsAt : null,
             credits,
             creditChange,
             observedAt,
@@ -278,6 +302,8 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
         const weeklyPct = !isExpired(weeklyResetsAt, now) ? clampPercent(glm?.weekly?.usedPercent) : null;
         const fiveHourResetsAt = parseResetTimestamp(glm?.fiveHour?.resetsAt);
         const fiveHourPct = !isExpired(fiveHourResetsAt, now) ? clampPercent(glm?.fiveHour?.usedPercent) : null;
+        const fiveHourPercent = fiveHourPct !== null ? Math.round(fiveHourPct) : null;
+        const fiveHourLeftPercent = fiveHourPercent !== null ? Math.max(0, 100 - fiveHourPercent) : null;
 
         if (errorStatus === 401 || errorStatus === 403 || weeklyPct === null) {
             return {
@@ -288,8 +314,9 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
                 usedPercent: null,
                 leftPercent: null,
                 resetsAt: null,
-                fiveHourPercent: fiveHourPct !== null ? Math.round(fiveHourPct) : null,
-                fiveHourResetsAt: fiveHourPct !== null ? fiveHourResetsAt : null,
+                fiveHourPercent,
+                fiveHourLeftPercent,
+                fiveHourResetsAt: fiveHourPercent !== null ? fiveHourResetsAt : null,
                 plan,
                 usedCredits: finiteOrNull(glm?.weekly?.used),
                 limitCredits: finiteOrNull(glm?.weekly?.limit),
@@ -310,8 +337,9 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
             usedPercent,
             leftPercent,
             resetsAt: weeklyResetsAt,
-            fiveHourPercent: fiveHourPct !== null ? Math.round(fiveHourPct) : null,
-            fiveHourResetsAt: fiveHourPct !== null ? fiveHourResetsAt : null,
+            fiveHourPercent,
+            fiveHourLeftPercent,
+            fiveHourResetsAt: fiveHourPercent !== null ? fiveHourResetsAt : null,
             plan,
             usedCredits: finiteOrNull(glm?.weekly?.used),
             limitCredits: finiteOrNull(glm?.weekly?.limit),
@@ -336,6 +364,13 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
         const shared5hResetsAt = parseResetTimestamp(ag?.sharedFiveHour?.resetsAt);
         const shared5hPct = !isExpired(shared5hResetsAt, now) ? clampPercent(ag?.sharedFiveHour?.usedPercent) : null;
 
+        const sharedWeeklyUsedPercent = sharedWeeklyPct !== null ? Math.round(sharedWeeklyPct) : null;
+        const sharedWeeklyLeftPercent = sharedWeeklyUsedPercent !== null ? Math.max(0, 100 - sharedWeeklyUsedPercent) : null;
+        const geminiFiveHourPercent = gem5hPct !== null ? Math.round(gem5hPct) : null;
+        const geminiFiveHourLeftPercent = geminiFiveHourPercent !== null ? Math.max(0, 100 - geminiFiveHourPercent) : null;
+        const sharedFiveHourPercent = shared5hPct !== null ? Math.round(shared5hPct) : null;
+        const sharedFiveHourLeftPercent = sharedFiveHourPercent !== null ? Math.max(0, 100 - sharedFiveHourPercent) : null;
+
         if (errorStatus === 401 || errorStatus === 403 || gemWeeklyPct === null) {
             return {
                 provider: 'antigravity',
@@ -345,13 +380,15 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
                 usedPercent: null,
                 leftPercent: null,
                 resetsAt: null,
-                sharedWeeklyUsedPercent: sharedWeeklyPct !== null ? Math.round(sharedWeeklyPct) : null,
-                sharedWeeklyLeftPercent: sharedWeeklyPct !== null ? Math.max(0, 100 - Math.round(sharedWeeklyPct)) : null,
-                sharedWeeklyResetsAt: sharedWeeklyPct !== null ? sharedWeeklyResetsAt : null,
-                geminiFiveHourPercent: gem5hPct !== null ? Math.round(gem5hPct) : null,
-                geminiFiveHourResetsAt: gem5hPct !== null ? gem5hResetsAt : null,
-                sharedFiveHourPercent: shared5hPct !== null ? Math.round(shared5hPct) : null,
-                sharedFiveHourResetsAt: shared5hPct !== null ? shared5hResetsAt : null,
+                sharedWeeklyUsedPercent,
+                sharedWeeklyLeftPercent,
+                sharedWeeklyResetsAt: sharedWeeklyUsedPercent !== null ? sharedWeeklyResetsAt : null,
+                geminiFiveHourPercent,
+                geminiFiveHourLeftPercent,
+                geminiFiveHourResetsAt: geminiFiveHourPercent !== null ? gem5hResetsAt : null,
+                sharedFiveHourPercent,
+                sharedFiveHourLeftPercent,
+                sharedFiveHourResetsAt: sharedFiveHourPercent !== null ? shared5hResetsAt : null,
                 source,
                 observedAt,
                 errorStatus,
@@ -369,13 +406,15 @@ export function quotaPillarReading(provider, usage, now = Date.now()) {
             usedPercent,
             leftPercent,
             resetsAt: gemWeeklyResetsAt,
-            sharedWeeklyUsedPercent: sharedWeeklyPct !== null ? Math.round(sharedWeeklyPct) : null,
-            sharedWeeklyLeftPercent: sharedWeeklyPct !== null ? Math.max(0, 100 - Math.round(sharedWeeklyPct)) : null,
-            sharedWeeklyResetsAt: sharedWeeklyPct !== null ? sharedWeeklyResetsAt : null,
-            geminiFiveHourPercent: gem5hPct !== null ? Math.round(gem5hPct) : null,
-            geminiFiveHourResetsAt: gem5hPct !== null ? gem5hResetsAt : null,
-            sharedFiveHourPercent: shared5hPct !== null ? Math.round(shared5hPct) : null,
-            sharedFiveHourResetsAt: shared5hPct !== null ? shared5hResetsAt : null,
+            sharedWeeklyUsedPercent,
+            sharedWeeklyLeftPercent,
+            sharedWeeklyResetsAt: sharedWeeklyUsedPercent !== null ? sharedWeeklyResetsAt : null,
+            geminiFiveHourPercent,
+            geminiFiveHourLeftPercent,
+            geminiFiveHourResetsAt: geminiFiveHourPercent !== null ? gem5hResetsAt : null,
+            sharedFiveHourPercent,
+            sharedFiveHourLeftPercent,
+            sharedFiveHourResetsAt: sharedFiveHourPercent !== null ? shared5hResetsAt : null,
             source,
             observedAt,
             errorStatus,
@@ -467,11 +506,14 @@ export function quotaPillarTooltip(provider, usage, now = Date.now()) {
     if (r.state === 'unknown') {
         const reason = errorReasonText(r.errorStatus, { provider });
         if (reason) return `${title} · Unavailable\n${reason}`;
+        if (provider === 'codex' && r.fiveHourLeftPercent !== null) {
+            return `${title} · Unavailable\n5h: ${r.fiveHourLeftPercent}% left · no weekly reading yet`;
+        }
         if (provider === 'codex' && r.windowReset) {
             return `${title} · Unavailable\nWindow reset · no new reading yet`;
         }
-        if (provider === 'claude' && r.fiveHourPercent !== null) {
-            return `${title} · Unavailable\n5h: ${r.fiveHourPercent}% used · no weekly reading yet`;
+        if (provider === 'claude' && r.fiveHourLeftPercent !== null) {
+            return `${title} · Unavailable\n5h: ${r.fiveHourLeftPercent}% left · no weekly reading yet`;
         }
         return `${title} · Unavailable\nNo local quota observed yet`;
     }
@@ -484,34 +526,36 @@ export function quotaPillarTooltip(provider, usage, now = Date.now()) {
     const reset = formatQuotaCountdown(r.resetsAt, now);
 
     if (provider === 'claude') {
-        if (reset) parts.push(`Resets in ${reset}`);
-        if (r.fiveHourPercent !== null) parts.push(`5h: ${r.fiveHourPercent}% used`);
         if (r.errorStatus === 429) parts.push('Throttled (429)');
-        else if (!parts.length) parts.push(`${r.usedPercent}% used`);
+        if (reset) parts.push(`Resets in ${reset}`);
+        if (r.fiveHourLeftPercent !== null) parts.push(`5h: ${r.fiveHourLeftPercent}% left`);
+        if (!parts.length) parts.push(`${r.leftPercent}% left`);
     } else if (provider === 'codex') {
         if (reset) parts.push(`Resets in ${reset}`);
-        if (r.credits?.unlimited) parts.push('Unlimited credits');
+        if (r.fiveHourLeftPercent !== null) parts.push(`5h: ${r.fiveHourLeftPercent}% left`);
+        else if (r.credits?.unlimited) parts.push('Unlimited credits');
         else if (Number.isFinite(r.credits?.balance)) parts.push(`Credits ${formatNumber(Math.round(r.credits.balance))}`);
         else {
             const change = formatCreditChange(r.creditChange, { short: true });
             if (change) parts.push(change);
             else if (r.observedAt) parts.push(`Seen ${formatWaitAge(now - r.observedAt)} ago`);
-            else if (!parts.length) parts.push(`${r.usedPercent}% used`);
+            else if (!parts.length) parts.push(`${r.leftPercent}% left`);
         }
     } else if (provider === 'glm') {
+        if (r.errorStatus === 429) parts.push('Throttled (429)');
         if (reset) parts.push(`Resets in ${reset}`);
-        if (r.fiveHourPercent !== null) parts.push(`5h: ${r.fiveHourPercent}% used`);
+        if (r.fiveHourLeftPercent !== null) parts.push(`5h: ${r.fiveHourLeftPercent}% left`);
         else if (r.plan) parts.push(r.plan);
-        else if (!parts.length) parts.push(`${r.usedPercent}% used`);
-        if (r.errorStatus === 429) parts.push('Throttled');
+        if (!parts.length) parts.push(`${r.leftPercent}% left`);
     } else if (provider === 'antigravity') {
+        if (r.errorStatus === 429) parts.push('Throttled (429)');
+        parts.push('Gemini models');
         if (r.sharedWeeklyLeftPercent !== null) parts.push(`3P shared ${r.sharedWeeklyLeftPercent}% left`);
         if (reset) parts.push(`Resets in ${reset}`);
-        else if (r.geminiFiveHourPercent !== null) parts.push(`5h: ${r.geminiFiveHourPercent}% used`);
-        else if (!parts.length) parts.push(`${r.usedPercent}% used`);
+        else if (r.geminiFiveHourLeftPercent !== null) parts.push(`5h: ${r.geminiFiveHourLeftPercent}% left`);
     } else {
         if (reset) parts.push(`Resets in ${reset}`);
-        if (!parts.length) parts.push(`${r.usedPercent}% used`);
+        if (!parts.length) parts.push(`${r.leftPercent}% left`);
     }
 
     return `${line1}\n${parts.join(' · ')}`;

@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { PNG } from 'pngjs';
 import * as artPalette from '../../claudeville/src/config/artPalette.js';
 import { WeatherRenderer } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
-import { WINTER_PROPS } from '../../claudeville/src/presentation/character-mode/PropWinter.js';
+import { WINTER_PROPS, terraceApronSnowPixels } from '../../claudeville/src/presentation/character-mode/PropWinter.js';
 import { IsleLandmarks } from '../../claudeville/src/presentation/character-mode/IsleLandmarks.js';
 import { RAMP_LANDMARKS } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
 import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
@@ -133,18 +133,24 @@ test('C-05 landmarks: Runic Tide-Terrace pillar snow invalidates in-place withou
     assert.ok(WINTER_PROPS['prop.quotaTerraceApron'], 'prop.quotaTerraceApron must be in WINTER_PROPS');
     assert.ok(WINTER_PROPS['bridge.landmark.rustic.ns'], 'bridge.landmark.rustic.ns must be in WINTER_PROPS');
 
+    let createdCanvases = 0;
     globalThis.document = {
-        createElement: () => ({
-            width: 0,
-            height: 0,
-            getContext: () => ({
-                imageSmoothingEnabled: false,
-                translate() {},
-                drawImage() {},
-                save() {},
-                restore() {},
-            }),
-        }),
+        createElement: () => {
+            createdCanvases++;
+            return {
+                width: 0,
+                height: 0,
+                getContext: () => ({
+                    imageSmoothingEnabled: false,
+                    setTransform() {},
+                    clearRect() {},
+                    translate() {},
+                    drawImage() {},
+                    save() {},
+                    restore() {},
+                }),
+            };
+        },
     };
     t.after(() => { delete globalThis.document; });
 
@@ -152,17 +158,21 @@ test('C-05 landmarks: Runic Tide-Terrace pillar snow invalidates in-place withou
     const host = {
         motionScale: 1,
         motionTimeMs: 0,
+        lampsLit: false,
+        villageLampsLit() { return this.lampsLit; },
         propWinter: {
             key: 'winter:0',
             image: (id) => (host.propWinter.key === 'winter:4' ? { id, snow: true } : null),
         },
         assets: {
             get: () => ({ width: 32, height: 68 }),
+            getCompanion: () => ({ width: 32, height: 68 }),
             getAnchor: () => [16, 60],
             getEntry: () => ({ width: 32, height: 68, anchor: [16, 60] }),
         },
         sprites: {
             drawSprite(_ctx, id, _x, _y, opts) { winterImagesUsed.push({ id, snow: Boolean(opts?.image?.snow) }); },
+            drawCompanion() {},
         },
     };
     const landmarks = new IsleLandmarks(host);
@@ -171,24 +181,37 @@ test('C-05 landmarks: Runic Tide-Terrace pillar snow invalidates in-place withou
     const windmill = sprites.find(s => s.id === 'prop.windmill');
     assert.ok(pillar && windmill, 'expected QuotaPillar and Windmill sprites');
 
-    // Step pillar across stream phases and snow buckets: _gpuCacheRevision bumps, textureKey never churns.
+    // Step pillar across stream phases and snow buckets: zero-alloc in-place repaint!
     pillar.setReading({ state: 'level', level: 3, used: 0.4 });
     pillar.setDrain({ claude: { used: 0.4, roseAt: Date.now() } });
     const c0 = pillar._getCachedCanvas(1);
     const rev0 = pillar._gpuCacheRevision;
+    const allocsAfterInit = createdCanvases;
     assert.equal(c0.textureKey, undefined, 'QuotaPillar must use stable StaticPropSprite key, not a per-step textureKey');
 
     host.motionTimeMs = 500;
     const c1 = pillar._getCachedCanvas(1);
     assert.ok(pillar._gpuCacheRevision > rev0, 'QuotaPillar must bump _gpuCacheRevision on stream step');
     assert.equal(c1.textureKey, undefined, 'QuotaPillar textureKey must not churn on stream step');
+    assert.equal(createdCanvases, allocsAfterInit, 'stream shimmer step must allocate zero new canvases');
+    assert.equal(c1.canvas, c0.canvas, 'stream shimmer retains color canvas in-place');
+    assert.equal(c1.emissive, c0.emissive, 'stream shimmer retains emissive canvas');
+    assert.equal(c1.material, c0.material, 'stream shimmer retains material canvas');
+    assert.equal(c1.occluder, c0.occluder, 'stream shimmer retains occluder canvas');
 
     const revBeforeSnow = pillar._gpuCacheRevision;
     host.propWinter.key = 'winter:4';
     const c2 = pillar._getCachedCanvas(1);
-    assert.ok(pillar._gpuCacheRevision > revBeforeSnow, 'QuotaPillar must invalidate cache when propWinter.key changes');
+    assert.ok(pillar._gpuCacheRevision > revBeforeSnow, 'QuotaPillar must repaint cache when propWinter.key changes');
     assert.equal(c2.textureKey, undefined, 'QuotaPillar textureKey must remain stable on snow change');
+    assert.equal(createdCanvases, allocsAfterInit, 'snow bucket update must repaint in-place without reallocating canvases');
     assert.ok(winterImagesUsed.some(e => e.id === 'prop.quotaPillar' && e.snow), 'QuotaPillar must draw winter image');
+
+    // Terrace apron winter snow adds rim dusting and socket drifts cleanly.
+    const apronPng = PNG.sync.read(readFileSync(new URL('../../claudeville/assets/sprites/props/prop.quotaTerraceApron.png', import.meta.url)));
+    const apronCopy = Buffer.from(apronPng.data);
+    const dusted = terraceApronSnowPixels(apronCopy, apronPng.width, apronPng.height, 4);
+    assert.ok(dusted >= 250, `expected rich terrace apron rim + socket drift snow (>= 250 px), got ${dusted}`);
 
     // Windmill invalidates sail frames and bumps revision on snow bucket change without leaking keys.
     host.propWinter.key = 'winter:0';

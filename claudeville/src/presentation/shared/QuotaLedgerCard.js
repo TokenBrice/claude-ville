@@ -33,7 +33,10 @@ export function isInQuotaLedgerCard(element) {
 
 function segmentsForLeft(leftPercent) {
     if (leftPercent === null || leftPercent === undefined || !Number.isFinite(leftPercent)) return 0;
-    return Math.min(QUOTA_LEDGER_SEGMENTS, Math.max(0, Math.round((leftPercent / 100) * QUOTA_LEDGER_SEGMENTS)));
+    const clamped = Math.min(100, Math.max(0, leftPercent));
+    if (clamped <= 0) return 0;
+    if (clamped >= 100) return QUOTA_LEDGER_SEGMENTS;
+    return Math.min(QUOTA_LEDGER_SEGMENTS, Math.max(1, Math.round((clamped / 100) * QUOTA_LEDGER_SEGMENTS)));
 }
 
 function sourceLabel(source) {
@@ -57,27 +60,37 @@ function buildProviderRow(provider, usage, { now, activeProvider }) {
     const subRows = [];
 
     if (provider === 'claude') {
-        if (r.fiveHourPercent !== null) {
+        if (r.fiveHourLeftPercent !== null) {
             const fiveReset = r.fiveHourResetsAt ? ` · resets in ${formatQuotaCountdown(r.fiveHourResetsAt, now)}` : '';
             subRows.push({
                 kind: 'window',
                 label: '5-hour',
-                text: `${r.fiveHourPercent}% used${fiveReset}`,
+                text: `${r.fiveHourLeftPercent}% left${fiveReset}`,
                 resetsAt: r.fiveHourResetsAt,
-                prefix: `${r.fiveHourPercent}% used · resets in `,
+                prefix: `${r.fiveHourLeftPercent}% left · resets in `,
             });
         }
-        if (r.highestActiveLimit) {
+        if (r.highestActiveLimit?.warn) {
             const hl = r.highestActiveLimit;
-            const sev = hl.warn ? ` (${hl.severity})` : '';
+            const hlLeft = Math.max(0, 100 - Math.round(hl.used));
             subRows.push({
-                kind: hl.warn ? 'warn' : 'meta',
+                kind: 'warn',
                 label: 'Active limit',
-                text: `${hl.label} ${hl.usedText} used${sev}`,
+                text: `${hl.label} ${hlLeft}% left (${hl.severity})`,
                 resetsAt: null,
             });
         }
     } else if (provider === 'codex') {
+        if (r.fiveHourLeftPercent !== null) {
+            const fiveReset = r.fiveHourResetsAt ? ` · resets in ${formatQuotaCountdown(r.fiveHourResetsAt, now)}` : '';
+            subRows.push({
+                kind: 'window',
+                label: '5-hour',
+                text: `${r.fiveHourLeftPercent}% left${fiveReset}`,
+                resetsAt: r.fiveHourResetsAt,
+                prefix: `${r.fiveHourLeftPercent}% left · resets in `,
+            });
+        }
         if (r.credits?.unlimited) {
             subRows.push({ kind: 'meta', label: 'Credits', text: 'Unlimited', resetsAt: null });
         } else if (Number.isFinite(r.credits?.balance)) {
@@ -93,52 +106,48 @@ function buildProviderRow(provider, usage, { now, activeProvider }) {
             if (change) subRows.push({ kind: 'meta', label: 'Balance', text: change, resetsAt: null });
         }
     } else if (provider === 'glm') {
-        if (r.fiveHourPercent !== null) {
+        if (r.fiveHourLeftPercent !== null) {
             const fiveReset = r.fiveHourResetsAt ? ` · resets in ${formatQuotaCountdown(r.fiveHourResetsAt, now)}` : '';
             subRows.push({
                 kind: 'window',
                 label: '5-hour',
-                text: `${r.fiveHourPercent}% used${fiveReset}`,
+                text: `${r.fiveHourLeftPercent}% left${fiveReset}`,
                 resetsAt: r.fiveHourResetsAt,
-                prefix: `${r.fiveHourPercent}% used · resets in `,
+                prefix: `${r.fiveHourLeftPercent}% left · resets in `,
             });
         }
-        if (r.plan) {
-            subRows.push({ kind: 'meta', label: 'Plan', text: r.plan, resetsAt: null });
-        }
+        const metaParts = [];
+        if (r.plan) metaParts.push(r.plan);
         if (Number.isFinite(r.usedCredits) && Number.isFinite(r.limitCredits)) {
-            subRows.push({
-                kind: 'meta',
-                label: 'Allowance',
-                text: `${formatNumber(Math.round(r.usedCredits))} / ${formatNumber(Math.round(r.limitCredits))}`,
-                resetsAt: null,
-            });
+            metaParts.push(`${formatNumber(Math.round(r.usedCredits))} / ${formatNumber(Math.round(r.limitCredits))}`);
+        }
+        if (metaParts.length) {
+            subRows.push({ kind: 'meta', label: 'Plan', text: metaParts.join(' · '), resetsAt: null });
         }
     } else if (provider === 'antigravity') {
         if (r.sharedWeeklyLeftPercent !== null) {
             const shReset = r.sharedWeeklyResetsAt ? ` · resets in ${formatQuotaCountdown(r.sharedWeeklyResetsAt, now)}` : '';
             subRows.push({
                 kind: 'window',
-                label: '3P Shared',
-                text: `${r.sharedWeeklyLeftPercent}% left (${r.sharedWeeklyUsedPercent}% used)${shReset}`,
+                label: '3P shared',
+                text: `${r.sharedWeeklyLeftPercent}% left${shReset}`,
                 resetsAt: r.sharedWeeklyResetsAt,
-                prefix: `${r.sharedWeeklyLeftPercent}% left (${r.sharedWeeklyUsedPercent}% used) · resets in `,
+                prefix: `${r.sharedWeeklyLeftPercent}% left · resets in `,
             });
         }
         const fiveParts = [];
-        if (r.geminiFiveHourPercent !== null) fiveParts.push(`Gemini ${r.geminiFiveHourPercent}%`);
-        if (r.sharedFiveHourPercent !== null) fiveParts.push(`3P ${r.sharedFiveHourPercent}%`);
+        if (r.geminiFiveHourLeftPercent !== null) fiveParts.push(`Gemini ${r.geminiFiveHourLeftPercent}% left`);
+        if (r.sharedFiveHourLeftPercent !== null) fiveParts.push(`3P ${r.sharedFiveHourLeftPercent}% left`);
         if (fiveParts.length) {
-            subRows.push({ kind: 'window', label: '5-hour used', text: fiveParts.join(' · '), resetsAt: null });
-        }
-        if (r.source) {
-            subRows.push({ kind: 'meta', label: 'Source', text: sourceLabel(r.source), resetsAt: null });
+            subRows.push({ kind: 'window', label: '5-hour', text: fiveParts.join(' · '), resetsAt: null });
         }
     }
 
     const errorText = formatQuotaErrorStatus(r.errorStatus);
+    const sourceText = provider === 'antigravity' && r.source ? sourceLabel(r.source) : '';
     let freshnessText = '';
     let freshnessKind = 'muted';
+    let freshnessPrefix = '';
     if (errorText) {
         freshnessText = errorText;
         freshnessKind = 'error';
@@ -147,7 +156,13 @@ function buildProviderRow(provider, usage, { now, activeProvider }) {
             ? 'Window reset · awaiting next reading'
             : 'No local quota observed yet';
     } else if (r.observedAt) {
-        freshnessText = `Observed ${formatWaitAge(Math.max(0, now - r.observedAt))} ago`;
+        const prefixParts = [];
+        if (provider === 'antigravity') prefixParts.push('Gemini models');
+        if (sourceText) prefixParts.push(sourceText);
+        freshnessPrefix = prefixParts.length ? `${prefixParts.join(' · ')} · ` : '';
+        freshnessText = `${freshnessPrefix}Observed ${formatWaitAge(Math.max(0, now - r.observedAt))} ago`;
+    } else if (provider === 'antigravity') {
+        freshnessText = sourceText ? `Gemini models · ${sourceText}` : 'Gemini models';
     }
 
     return {
@@ -172,6 +187,7 @@ function buildProviderRow(provider, usage, { now, activeProvider }) {
         errorStatus: r.errorStatus,
         freshnessText,
         freshnessKind,
+        freshnessPrefix,
         subRows,
     };
 }
@@ -208,6 +224,7 @@ export class QuotaLedgerCard {
         this.el = null;
         this.model = null;
         this.activeProvider = null;
+        this._avoidBounds = null;
         this._returnFocus = null;
         this._elapsedUnsubs = [];
         this._onKeyDown = (event) => {
@@ -263,6 +280,7 @@ export class QuotaLedgerCard {
         this.el = null;
         this.model = null;
         this.activeProvider = null;
+        this._avoidBounds = null;
         if ((restoreFocus || hadFocus) && this._returnFocus?.isConnected) {
             this._returnFocus.focus?.({ preventScroll: true });
         }
@@ -270,7 +288,12 @@ export class QuotaLedgerCard {
         this.onClose();
     }
 
-    position(point, reserved = []) {
+    /** Screen rect of the full 4-pillar terrace to keep clear of when positioning. */
+    setAvoidBounds(rect) {
+        this._avoidBounds = rect && Number.isFinite(rect.left) && Number.isFinite(rect.right) ? rect : null;
+    }
+
+    position(point, reserved = [], avoidBounds = this._avoidBounds) {
         if (!this.el || !point) return;
         if (document.documentElement?.dataset?.cvProfile === 'mobile') {
             this.el.style.left = '';
@@ -278,15 +301,62 @@ export class QuotaLedgerCard {
             return;
         }
         const hostRect = this.host.getBoundingClientRect();
-        const width = this.el.offsetWidth || 340;
-        const height = this.el.offsetHeight || 280;
-        let x = point.x + 28;
-        if (x + width > hostRect.width - 12) x = point.x - width - 28;
-        x = Math.max(12, Math.min(hostRect.width - width - 12, x));
-        let y = Math.max(12, Math.min(hostRect.height - height - 12, point.y - height / 2));
-        for (const { left, right, top, bottom } of reserved) {
-            if (x < right && x + width > left && y < bottom && y + height > top) {
-                y = top - height - 8 >= 12 ? top - height - 8 : Math.min(hostRect.height - height - 12, bottom + 8);
+        const width = this.el.offsetWidth || 348;
+        const height = this.el.offsetHeight || 360;
+        const edge = 12;
+        const gap = 12;
+        const clampX = (val) => Math.max(edge, Math.min(hostRect.width - width - edge, val));
+        const clampY = (val) => Math.max(edge, Math.min(hostRect.height - height - edge, val));
+        const overlap = (a, b) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+            * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+
+        let x;
+        let y;
+        if (avoidBounds) {
+            const midY = (avoidBounds.top + avoidBounds.bottom) / 2;
+            const midX = (avoidBounds.left + avoidBounds.right) / 2;
+            const candidates = [
+                { x: avoidBounds.right + gap, y: clampY(midY - height / 2) },
+                { x: avoidBounds.left - width - gap, y: clampY(midY - height / 2) },
+                { x: clampX(midX - width / 2), y: avoidBounds.bottom + gap },
+                { x: clampX(midX - width / 2), y: avoidBounds.top - height - gap },
+            ];
+            let chosen = null;
+            for (const cand of candidates) {
+                const inside = cand.x >= edge && cand.y >= edge
+                    && cand.x + width <= hostRect.width - edge
+                    && cand.y + height <= hostRect.height - edge;
+                const rect = { left: cand.x, top: cand.y, right: cand.x + width, bottom: cand.y + height };
+                if (inside && overlap(rect, avoidBounds) === 0 && !reserved.some((r) => overlap(rect, r) > 0)) {
+                    chosen = cand;
+                    break;
+                }
+            }
+            if (!chosen) {
+                let bestScore = Infinity;
+                for (const cand of candidates) {
+                    const cx = clampX(cand.x);
+                    const cy = clampY(cand.y);
+                    const rect = { left: cx, top: cy, right: cx + width, bottom: cy + height };
+                    const score = overlap(rect, avoidBounds) * 10
+                        + reserved.reduce((sum, r) => sum + overlap(rect, r), 0);
+                    if (score < bestScore) {
+                        bestScore = score;
+                        chosen = { x: cx, y: cy };
+                    }
+                }
+            }
+            x = chosen.x;
+            y = chosen.y;
+        } else {
+            x = point.x + 20;
+            if (x + width > hostRect.width - edge) x = point.x - width - 20;
+            x = clampX(x);
+            y = clampY(point.y - height / 2);
+            for (const { left, right, top, bottom } of reserved) {
+                if (x < right && x + width > left && y < bottom && y + height > top) {
+                    y = top - height - 8 >= edge ? top - height - 8 : clampY(bottom + 8);
+                }
             }
         }
         this.el.style.left = `${Math.round(x)}px`;
@@ -388,7 +458,8 @@ export class QuotaLedgerCard {
                 if (row.freshnessText) {
                     const fresh = node('div', `quota-ledger-card__fresh quota-ledger-card__fresh--${row.freshnessKind}`, row.freshnessText);
                     if (row.observedAt && row.freshnessKind !== 'error' && !row.unknown) {
-                        this._subscribe(fresh, (now) => `Observed ${formatWaitAge(Math.max(0, now - row.observedAt))} ago`);
+                        const prefix = row.freshnessPrefix || '';
+                        this._subscribe(fresh, (now) => `${prefix}Observed ${formatWaitAge(Math.max(0, now - row.observedAt))} ago`);
                     }
                     sub.append(fresh);
                 }

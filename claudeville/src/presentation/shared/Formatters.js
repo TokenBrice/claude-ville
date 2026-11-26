@@ -160,14 +160,14 @@ export function parseResetTimestamp(value) {
     if (value === null || value === undefined || value === '') return null;
     if (typeof value === 'number') {
         if (!Number.isFinite(value) || value <= 0) return null;
-        return Math.round(value > 1e12 ? value : value * 1000);
+        return Math.round(value >= 1e9 && value < 1e12 ? value * 1000 : value);
     }
     if (typeof value === 'string') {
         const trimmed = value.trim();
         if (!trimmed) return null;
         const asNumber = Number(trimmed);
         if (Number.isFinite(asNumber)) {
-            return asNumber > 0 ? Math.round(asNumber > 1e12 ? asNumber : asNumber * 1000) : null;
+            return asNumber > 0 ? Math.round(asNumber >= 1e9 && asNumber < 1e12 ? asNumber * 1000 : asNumber) : null;
         }
         const parsed = Date.parse(trimmed.replace(/(\.\d{3})\d+/, '$1'));
         return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
@@ -178,14 +178,22 @@ export function parseResetTimestamp(value) {
 export function formatResetCountdown(resetsAt, now = Date.now()) {
     const ms = parseResetTimestamp(resetsAt);
     if (ms === null) return '';
-    return `resets ${formatWaitAge(Math.max(0, ms - now))}`;
+    const totalMinutes = Math.floor(Math.max(0, ms - now) / 60_000);
+    if (totalMinutes < 1) return 'Resets <1m';
+    if (totalMinutes < 60) return `Resets ${totalMinutes}m`;
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (hours < 24) return minutes ? `Resets ${hours}h ${minutes}m` : `Resets ${hours}h`;
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    return remHours ? `Resets ${days}d ${remHours}h` : `Resets ${days}d`;
 }
 
 export function formatQuotaErrorStatus(status) {
     const code = Number(status);
-    if (code === 401) return 'auth expired (401)';
-    if (code === 403) return 'auth rejected (403)';
-    if (code === 429) return 'throttled (429)';
+    if (code === 401) return 'Auth expired (401)';
+    if (code === 403) return 'Auth rejected (403)';
+    if (code === 429) return 'Throttled (429)';
     return '';
 }
 
@@ -201,9 +209,25 @@ function clampQuotaPercent(value) {
     return Math.min(100, Math.max(0, numeric));
 }
 
-function quotaGaugeLit(percent) {
-    if (percent === null) return 0;
-    return Math.min(QUOTA_GAUGE_SEGMENTS, Math.round((Math.max(0, percent) / 100) * QUOTA_GAUGE_SEGMENTS));
+function leftPercentFromUsed(usedPercent) {
+    if (usedPercent === null || usedPercent === undefined || !Number.isFinite(usedPercent)) return null;
+    const clamped = Math.min(100, Math.max(0, usedPercent));
+    if (clamped >= 100) return 0;
+    if (clamped <= 0) return 100;
+    return Math.max(1, Math.min(99, Math.round(100 - clamped)));
+}
+
+/**
+ * Segments lit for a remaining `% left` gauge (12 segments):
+ * 0 when spent or unknown, full at 100%, and at least 1 segment whenever
+ * 0 < leftPercent < 100 so `3% left` never renders as zero empty ticks.
+ */
+export function quotaGaugeLitLeft(leftPercent, segments = QUOTA_GAUGE_SEGMENTS) {
+    if (leftPercent === null || leftPercent === undefined || !Number.isFinite(leftPercent)) return 0;
+    const left = Math.min(100, Math.max(0, leftPercent));
+    if (left <= 0) return 0;
+    if (left >= 100) return segments;
+    return Math.min(segments, Math.max(1, Math.round((left / 100) * segments)));
 }
 
 function liveWindowFacts(window, now) {
@@ -214,6 +238,8 @@ function liveWindowFacts(window, now) {
     if (resetsAt !== null && resetsAt <= now) return null;
     return {
         usedPercent,
+        leftRaw: Math.max(0, 100 - usedPercent),
+        leftPercent: leftPercentFromUsed(usedPercent),
         resetsAt,
         used: finiteNumberOrNull(window.used),
         limit: finiteNumberOrNull(window.limit),
@@ -224,9 +250,7 @@ function liveWindowFacts(window, now) {
 
 /**
  * Normalize `/api/usage` Claude account limits for the Dashboard Quota Rail.
- * Prefers `quota.highestActiveLimit` when active and unexpired, and falls back
- * to `quota.sevenDay` (+ `sevenDayResetsAt`, with 5h in secondary facts) so
- * Claude's weekly usage stays visible even when no active limit entry is flagged.
+ * Lights segments by `% left` (unified with Runic Tide-Terrace and QuotaLedgerCard).
  */
 export function claudeQuotaFacts(usage, now = Date.now()) {
     if (!usage || typeof usage !== 'object') return null;
@@ -239,6 +263,7 @@ export function claudeQuotaFacts(usage, now = Date.now()) {
         ? finiteNumberOrNull(quota?.fiveHour)
         : null;
     const fiveHourPct = fiveHourRatio !== null ? Math.min(100, Math.max(0, fiveHourRatio * 100)) : null;
+    const fiveHourLeft = fiveHourPct !== null ? leftPercentFromUsed(fiveHourPct) : null;
 
     const sevenDayResetsAt = parseResetTimestamp(quota?.sevenDayResetsAt);
     const sevenDayRatio = available && !(sevenDayResetsAt !== null && sevenDayResetsAt <= now)
@@ -251,49 +276,70 @@ export function claudeQuotaFacts(usage, now = Date.now()) {
 
     if (active) {
         const isSession = quota?.highestActiveLimit?.kind === 'session';
+        const leftRaw = Math.max(0, 100 - active.used);
+        const leftPct = leftPercentFromUsed(active.used);
+        const limit = active.used >= 100;
         return {
             source: 'active-limit',
             windowLabel: active.label,
             used: active.used,
             usedText: active.usedText,
-            lit: quotaGaugeLit(active.used),
+            left: leftRaw,
+            leftPercent: leftPct,
+            leftText: `${leftPct}% left`,
+            lit: limit ? 0 : quotaGaugeLitLeft(leftRaw),
+            limit,
             resetsAt: active.resetsAt && active.resetsAt > now ? active.resetsAt : null,
-            warn: active.warn || active.used >= 100,
-            badgeWord: active.warn ? active.severity.toUpperCase() : (active.used >= 100 ? 'LIMIT' : ''),
-            fiveHourText: !isSession && fiveHourPct !== null ? `5h ${Math.round(fiveHourPct)}%` : '',
-            fiveHourResetsAt: !isSession && fiveHourPct !== null && fiveHourResetsAt > now ? fiveHourResetsAt : null,
+            warn: active.warn || limit,
+            badgeWord: active.warn ? active.severity.toUpperCase() : (limit ? 'LIMIT' : ''),
+            fiveHourText: !isSession && fiveHourLeft !== null ? `5h ${fiveHourLeft}% left` : '',
+            fiveHourResetsAt: !isSession && fiveHourLeft !== null && fiveHourResetsAt > now ? fiveHourResetsAt : null,
             errorStatus,
             muted: false,
         };
     }
 
     if (sevenDayPct !== null) {
+        const leftRaw = Math.max(0, 100 - sevenDayPct);
+        const leftPct = leftPercentFromUsed(sevenDayPct);
+        const limit = sevenDayPct >= 100;
         return {
             source: 'seven-day',
             windowLabel: 'weekly',
             used: sevenDayPct,
             usedText: `${Math.round(sevenDayPct)}%`,
-            lit: quotaGaugeLit(sevenDayPct),
+            left: leftRaw,
+            leftPercent: leftPct,
+            leftText: `${leftPct}% left`,
+            lit: limit ? 0 : quotaGaugeLitLeft(leftRaw),
+            limit,
             resetsAt: sevenDayResetsAt && sevenDayResetsAt > now ? sevenDayResetsAt : null,
-            warn: sevenDayPct >= 100,
-            badgeWord: sevenDayPct >= 100 ? 'LIMIT' : '',
-            fiveHourText: fiveHourPct !== null ? `5h ${Math.round(fiveHourPct)}%` : '',
-            fiveHourResetsAt: fiveHourPct !== null && fiveHourResetsAt > now ? fiveHourResetsAt : null,
+            warn: limit,
+            badgeWord: limit ? 'LIMIT' : '',
+            fiveHourText: fiveHourLeft !== null ? `5h ${fiveHourLeft}% left` : '',
+            fiveHourResetsAt: fiveHourLeft !== null && fiveHourResetsAt > now ? fiveHourResetsAt : null,
             errorStatus,
             muted: false,
         };
     }
 
     if (fiveHourPct !== null) {
+        const leftRaw = Math.max(0, 100 - fiveHourPct);
+        const leftPct = leftPercentFromUsed(fiveHourPct);
+        const limit = fiveHourPct >= 100;
         return {
             source: 'five-hour',
             windowLabel: '5h',
             used: fiveHourPct,
             usedText: `${Math.round(fiveHourPct)}%`,
-            lit: quotaGaugeLit(fiveHourPct),
+            left: leftRaw,
+            leftPercent: leftPct,
+            leftText: `${leftPct}% left`,
+            lit: limit ? 0 : quotaGaugeLitLeft(leftRaw),
+            limit,
             resetsAt: fiveHourResetsAt && fiveHourResetsAt > now ? fiveHourResetsAt : null,
-            warn: fiveHourPct >= 100,
-            badgeWord: fiveHourPct >= 100 ? 'LIMIT' : '',
+            warn: limit,
+            badgeWord: limit ? 'LIMIT' : '',
             fiveHourText: '',
             fiveHourResetsAt: null,
             errorStatus,
@@ -301,13 +347,21 @@ export function claudeQuotaFacts(usage, now = Date.now()) {
         };
     }
 
-    if (errorStatus === 401 || errorStatus === 403 || errorStatus === 429) {
+    const hasExpiredWindow = available && Boolean(
+        (sevenDayResetsAt !== null && sevenDayResetsAt <= now)
+        || (fiveHourResetsAt !== null && fiveHourResetsAt <= now),
+    );
+    if (errorStatus === 401 || errorStatus === 403 || errorStatus === 429 || hasExpiredWindow) {
         return {
-            source: 'error',
+            source: errorStatus ? 'error' : 'expired',
             windowLabel: 'weekly',
             used: null,
             usedText: '—',
+            left: null,
+            leftPercent: null,
+            leftText: '—',
             lit: 0,
+            limit: false,
             resetsAt: null,
             warn: false,
             badgeWord: '',
@@ -322,6 +376,55 @@ export function claudeQuotaFacts(usage, now = Date.now()) {
 }
 
 /**
+ * Normalize `/api/usage.codex` for the Dashboard Quota Rail.
+ * Reads explicit `codex.weekly` first (Fix Lane 1), falling back to legacy
+ * top-level `codex` only when `windowMinutes == null || windowMinutes >= 1440`,
+ * and surfaces `codex.fiveHour` as a secondary `% left` fact.
+ */
+export function codexQuotaFacts(codex, now = Date.now()) {
+    if (!codex || typeof codex !== 'object') return null;
+    const legacyMinutes = finiteNumberOrNull(codex.windowMinutes);
+    const weeklyRaw = codex.weekly ?? (legacyMinutes === null || legacyMinutes >= 1440 ? codex : null);
+    const fiveHourRaw = codex.fiveHour ?? (legacyMinutes !== null && legacyMinutes > 0 && legacyMinutes < 1440 ? codex : null);
+
+    const weekly = liveWindowFacts(weeklyRaw, now);
+    const fiveHour = liveWindowFacts(fiveHourRaw, now);
+    const limit = codex.limitReached === true || weeklyRaw?.limitReached === true || (weekly !== null && weekly.usedPercent >= 100);
+
+    const used = weekly ? weekly.usedPercent : null;
+    const leftRaw = limit ? 0 : (weekly ? weekly.leftRaw : null);
+    const leftPct = limit ? 0 : (weekly ? weekly.leftPercent : null);
+    const rawResetsAt = parseResetTimestamp(weeklyRaw?.resetsAt ?? (weekly ? null : codex.resetsAt));
+    const resetsAt = weekly?.resetsAt && weekly.resetsAt > now
+        ? weekly.resetsAt
+        : (limit && rawResetsAt && rawResetsAt > now ? rawResetsAt : null);
+
+    const credits = codex.credits || {};
+    const balance = finiteNumberOrNull(credits.balance);
+    const observedAt = parseResetTimestamp(codex.observedAt);
+    const minutes = finiteNumberOrNull(weeklyRaw?.windowMinutes ?? codex.windowMinutes) || 0;
+
+    return {
+        windowLabel: minutes === 0 || minutes >= 1440 ? 'weekly' : (minutes >= 60 ? `${Math.round(minutes / 60)}h` : 'window'),
+        used,
+        usedText: used === null ? '—' : `${Math.round(used)}%`,
+        left: leftRaw,
+        leftPercent: leftPct,
+        leftText: leftPct === null ? '—' : `${leftPct}% left`,
+        lit: limit ? 0 : quotaGaugeLitLeft(leftRaw),
+        limit,
+        resetsAt,
+        fiveHourText: fiveHour ? `5h ${fiveHour.leftPercent}% left` : '',
+        fiveHourResetsAt: fiveHour?.resetsAt && fiveHour.resetsAt > now ? fiveHour.resetsAt : null,
+        credits: credits.unlimited === true ? 'unlimited credits'
+            : balance !== null ? `${balance.toLocaleString('en-US', { maximumFractionDigits: 2 })} credits` : '',
+        observedAt,
+        creditChange: formatCreditChange(codex.creditChange, { short: true }),
+        muted: !limit && leftRaw === null,
+    };
+}
+
+/**
  * Normalize `/api/usage.glm` for the Dashboard Quota Rail.
  */
 export function glmQuotaFacts(glm, now = Date.now()) {
@@ -331,34 +434,42 @@ export function glmQuotaFacts(glm, now = Date.now()) {
     const errorStatus = Number(glm.error?.status) || null;
     const plan = typeof glm.plan === 'string' && glm.plan.trim() ? glm.plan.trim() : '';
     const observedAt = parseResetTimestamp(glm.observedAt);
+    const hasConfiguredShape = Boolean(glm.weekly || glm.fiveHour || errorStatus || observedAt || plan);
 
-    if (!weekly && !fiveHour && !errorStatus && !observedAt) return null;
+    if (!weekly && !fiveHour && !hasConfiguredShape) return null;
 
     const primary = weekly || fiveHour;
     const used = primary ? primary.usedPercent : null;
+    const leftRaw = primary ? primary.leftRaw : null;
+    const leftPct = primary ? primary.leftPercent : null;
+    const limit = used !== null && used >= 100;
+    const authCleared = errorStatus === 401 || errorStatus === 403;
     return {
         windowLabel: weekly ? 'weekly' : (fiveHour ? '5h' : 'weekly'),
-        used,
-        usedText: used === null ? '—' : `${Math.round(used)}%`,
-        lit: quotaGaugeLit(used),
-        limit: used !== null && used >= 100,
-        resetsAt: primary?.resetsAt && primary.resetsAt > now ? primary.resetsAt : null,
-        fiveHourText: weekly && fiveHour ? `5h ${Math.round(fiveHour.usedPercent)}%` : '',
-        fiveHourResetsAt: fiveHour?.resetsAt && fiveHour.resetsAt > now ? fiveHour.resetsAt : null,
+        used: authCleared ? null : used,
+        usedText: authCleared || used === null ? '—' : `${Math.round(used)}%`,
+        left: authCleared ? null : leftRaw,
+        leftPercent: authCleared ? null : leftPct,
+        leftText: authCleared || leftPct === null ? '—' : `${leftPct}% left`,
+        lit: authCleared || limit ? 0 : quotaGaugeLitLeft(leftRaw),
+        limit: !authCleared && limit,
+        resetsAt: !authCleared && primary?.resetsAt && primary.resetsAt > now ? primary.resetsAt : null,
+        fiveHourText: !authCleared && weekly && fiveHour ? `5h ${fiveHour.leftPercent}% left` : '',
+        fiveHourResetsAt: !authCleared && fiveHour?.resetsAt && fiveHour.resetsAt > now ? fiveHour.resetsAt : null,
         usedCredits: primary?.used ?? null,
         limitCredits: primary?.limit ?? null,
         remainingCredits: primary?.remaining ?? null,
         plan,
         observedAt,
         errorStatus,
-        muted: used === null || errorStatus === 401 || errorStatus === 403,
+        muted: authCleared || leftRaw === null,
     };
 }
 
 /**
  * Normalize `/api/usage.antigravity` for the Dashboard Quota Rail.
- * Primary gauge tracks Gemini Weekly; 3P shared Weekly rides in the subline,
- * and both 5h windows surface on hover.
+ * Primary gauge tracks Antigravity Weekly (Gemini models); 3P shared Weekly
+ * rides in the subline, and both 5h windows surface on hover.
  */
 export function antigravityQuotaFacts(antigravity, now = Date.now()) {
     if (!antigravity || typeof antigravity !== 'object') return null;
@@ -369,31 +480,45 @@ export function antigravityQuotaFacts(antigravity, now = Date.now()) {
     const errorStatus = Number(antigravity.error?.status) || null;
     const observedAt = parseResetTimestamp(antigravity.observedAt);
     const source = typeof antigravity.source === 'string' ? antigravity.source : '';
+    const hasConfiguredShape = Boolean(
+        antigravity.geminiWeekly || antigravity.geminiFiveHour
+        || antigravity.sharedWeekly || antigravity.sharedFiveHour
+        || errorStatus || observedAt || source,
+    );
 
-    if (!geminiWeekly && !geminiFiveHour && !sharedWeekly && !sharedFiveHour && !errorStatus && !observedAt) {
+    if (!geminiWeekly && !geminiFiveHour && !sharedWeekly && !sharedFiveHour && !hasConfiguredShape) {
         return null;
     }
 
-    const used = geminiWeekly ? geminiWeekly.usedPercent : null;
-    const sharedUsed = sharedWeekly ? sharedWeekly.usedPercent : null;
+    const authCleared = errorStatus === 401 || errorStatus === 403;
+    const used = !authCleared && geminiWeekly ? geminiWeekly.usedPercent : null;
+    const leftRaw = !authCleared && geminiWeekly ? geminiWeekly.leftRaw : null;
+    const leftPct = !authCleared && geminiWeekly ? geminiWeekly.leftPercent : null;
+    const sharedUsed = !authCleared && sharedWeekly ? sharedWeekly.usedPercent : null;
+    const sharedLeftPct = !authCleared && sharedWeekly ? sharedWeekly.leftPercent : null;
+    const limit = !authCleared && ((used !== null && used >= 100) || (sharedUsed !== null && sharedUsed >= 100));
     return {
         windowLabel: 'weekly',
         used,
         usedText: used === null ? '—' : `${Math.round(used)}%`,
-        lit: quotaGaugeLit(used),
-        limit: (used !== null && used >= 100) || (sharedUsed !== null && sharedUsed >= 100),
-        resetsAt: geminiWeekly?.resetsAt && geminiWeekly.resetsAt > now ? geminiWeekly.resetsAt : null,
+        left: leftRaw,
+        leftPercent: leftPct,
+        leftText: leftPct === null ? '—' : `${leftPct}% left`,
+        lit: limit ? 0 : quotaGaugeLitLeft(leftRaw),
+        limit,
+        resetsAt: !authCleared && geminiWeekly?.resetsAt && geminiWeekly.resetsAt > now ? geminiWeekly.resetsAt : null,
         sharedWeeklyUsed: sharedUsed,
-        sharedWeeklyText: sharedUsed !== null ? `3P shared ${Math.round(sharedUsed)}%` : '',
-        sharedWeeklyResetsAt: sharedWeekly?.resetsAt && sharedWeekly.resetsAt > now ? sharedWeekly.resetsAt : null,
-        geminiFiveHourText: geminiFiveHour ? `Gemini 5h ${Math.round(geminiFiveHour.usedPercent)}%` : '',
-        geminiFiveHourResetsAt: geminiFiveHour?.resetsAt && geminiFiveHour.resetsAt > now ? geminiFiveHour.resetsAt : null,
-        sharedFiveHourText: sharedFiveHour ? `3P 5h ${Math.round(sharedFiveHour.usedPercent)}%` : '',
-        sharedFiveHourResetsAt: sharedFiveHour?.resetsAt && sharedFiveHour.resetsAt > now ? sharedFiveHour.resetsAt : null,
+        sharedWeeklyLeft: sharedLeftPct,
+        sharedWeeklyText: sharedLeftPct !== null ? `3P ${sharedLeftPct}% left` : '',
+        sharedWeeklyResetsAt: !authCleared && sharedWeekly?.resetsAt && sharedWeekly.resetsAt > now ? sharedWeekly.resetsAt : null,
+        geminiFiveHourText: !authCleared && geminiFiveHour ? `Gemini 5h ${geminiFiveHour.leftPercent}% left` : '',
+        geminiFiveHourResetsAt: !authCleared && geminiFiveHour?.resetsAt && geminiFiveHour.resetsAt > now ? geminiFiveHour.resetsAt : null,
+        sharedFiveHourText: !authCleared && sharedFiveHour ? `3P 5h ${sharedFiveHour.leftPercent}% left` : '',
+        sharedFiveHourResetsAt: !authCleared && sharedFiveHour?.resetsAt && sharedFiveHour.resetsAt > now ? sharedFiveHour.resetsAt : null,
         source,
         observedAt,
         errorStatus,
-        muted: used === null || errorStatus === 401 || errorStatus === 403,
+        muted: authCleared || leftRaw === null,
     };
 }
 
