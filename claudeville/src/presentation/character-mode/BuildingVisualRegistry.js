@@ -58,6 +58,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.58, alpha: 0.9 },
         occupancyThresholds: { occupiedMax: 0.45, busyMax: 0.8 },
         labelPriority: 'landmark',
+        // Spec 04 §2.3 — the sign anchor (sprite-local): the left jamb of the hall door, the arm reaching over the leaf under the gilt crest. The
+        // compact chit column and the Carved Motif bracket hang here;
+        // `signBoxFor` is the 12 × 14 box world:validate-buildings checks.
+        sign: { at: [121, 122] },
         beaconBase: 0.85,
         // 6.2 — sprite-local lit-window spots. BL-3 — `at` is the glass
         // centre on every rect in this registry (`windowRectBounds`), and
@@ -156,6 +160,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.52, alpha: 0.86 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
+        // Spec 04 §2.3 — the sign anchor (sprite-local): the right post under its pennant, clear of the east lantern and the code-drawn slate. The
+        // compact chit column and the Carved Motif bracket hang here;
+        // `signBoxFor` is the 12 × 14 box world:validate-buildings checks.
+        sign: { at: [180, 136] },
         beaconBase: 0.8,
         // 6.2 — the two eave lanterns, not mid-wall blobs. 4.5 — glass
         // measured on the re-authored board (NW and SE ends of the roof beam).
@@ -189,6 +197,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.6, alpha: 0.88 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
+        // Spec 04 §2.3 — the sign anchor (sprite-local): the half-timbered gable wall over the furnace arch. The
+        // compact chit column and the Carved Motif bracket hang here;
+        // `signBoxFor` is the 12 × 14 box world:validate-buildings checks.
+        sign: { at: [73, 107] },
         beaconBase: 1,
         // 4.5 — the two warm windows over the tool rack. B3-04 (2026-10-24):
         // each leaded window of the re-authored art has an upper and a lower
@@ -245,6 +257,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.54, alpha: 0.86 },
         occupancyThresholds: { occupiedMax: 0.55, busyMax: 0.9 },
         labelPriority: 'landmark',
+        // Spec 04 §2.3 — the sign anchor (sprite-local): the timber lintel over the tunnel mouth, above the lantern-lit opening. The
+        // compact chit column and the Carved Motif bracket hang here;
+        // `signBoxFor` is the 12 × 14 box world:validate-buildings checks.
+        sign: { at: [76, 116] },
         beaconBase: 0.78,
         // 4.5 — the re-authored tunnel on the SW face: three columns of the
         // dark timber-framed opening, measured on base.png.
@@ -302,6 +318,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.5, alpha: 0.84 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.82 },
         labelPriority: 'landmark',
+        // Spec 04 §2.3 — the sign anchor (sprite-local): the SE gable stone over the lancet portal's arch. The
+        // compact chit column and the Carved Motif bracket hang here;
+        // `signBoxFor` is the 12 × 14 box world:validate-buildings checks.
+        sign: { at: [242, 97] },
         beaconBase: 0.82,
         // 4.5 — the re-authored hall's five ground-floor lancets (the reading
         // rooms), glass bounds measured on base.png. The clerestory row is
@@ -357,6 +377,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.56, alpha: 0.86 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.86 },
         labelPriority: 'landmark',
+        // Spec 04 §2.3 — the sign anchor (sprite-local): the open front's main beam over the centre arch. The
+        // compact chit column and the Carved Motif bracket hang here;
+        // `signBoxFor` is the 12 × 14 box world:validate-buildings checks.
+        sign: { at: [99, 178] },
         beaconBase: 0.7,
         // Glass centres of the five windows on base.png: the dormer, the
         // east gable's upper pair and the curtained ground-floor pair. Each is
@@ -391,6 +415,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.58, alpha: 0.9 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.86 },
         labelPriority: 'landmark',
+        // Spec 04 §2.3 — the sign anchor (sprite-local): the gilt keystone over the vortex arch, above the rune voussoirs. The
+        // compact chit column and the Carved Motif bracket hang here;
+        // `signBoxFor` is the 12 × 14 box world:validate-buildings checks.
+        sign: { at: [157, 40] },
         beaconBase: 0.92,
         // The vortex is no window and no room: its glass is the emissive
         // sidecar plus the `portalGlow` fixture overlay, so the Portal carries
@@ -434,6 +462,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.62, alpha: 0.92 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.9 },
         labelPriority: 'landmark',
+        // Spec 04 §2.3 — the sign anchor (sprite-local): the keeper's cottage gable over its door (the tower's own entrance tile lies outside the sprite). The
+        // compact chit column and the Carved Motif bracket hang here;
+        // `signBoxFor` is the 12 × 14 box world:validate-buildings checks.
+        sign: { at: [95, 284] },
         beaconBase: 1,
         // Glass centres of the two arched shaft windows (SW and SE faces)
         // and the keeper's cottage window, measured on the emissive sidecar.
@@ -469,6 +501,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.54, alpha: 0.86 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
+        // Spec 04 §2.3 — the sign anchor (sprite-local): the timber wall over the counting-house door, left of the lit bay. The
+        // compact chit column and the Carved Motif bracket hang here;
+        // `signBoxFor` is the 12 × 14 box world:validate-buildings checks.
+        sign: { at: [137, 122] },
         beaconBase: 0.9,
         // 5.A — pane centres on the re-authored house, each fitted to its
         // pane's lit texels: the counting-house bay first (room 1), then the
@@ -717,6 +753,26 @@ export function getBuildingPlanTabProfile(type) {
 export function getBuildingPennantAnchor(type) {
     const pennant = getBuildingVisual(type)?.pennant;
     return Array.isArray(pennant?.at) ? pennant : null;
+}
+
+// Spec 04 §2.3 — the sign anchor: one authored sprite-local point per
+// landmark on its own wall, over the door, where the Carved Motif bracket is
+// bolted and the compact chit column stands. Null when a type has none.
+export function getBuildingSignAnchor(type) {
+    const at = getBuildingVisual(type)?.sign?.at;
+    return Array.isArray(at) && at.length === 2 && at.every(Number.isFinite) ? at : null;
+}
+
+// The one footprint both the renderer (BuildingPlaques) and
+// `npm run world:validate-buildings` read: a 12 × 14 texel box hung from
+// `sign.at`, columns x - 6 .. x + 5 and rows y .. y + 13 — the bracket arm,
+// its rings and the 10 × 10 framed board with its ink rim. The validator
+// requires it >= 60 % on the building's own opaque texels, on no emissive
+// texel and outside every aperture cut.
+export const SIGN_BOX = Object.freeze({ dx: -6, dy: 0, w: 12, h: 14 });
+
+export function signBoxFor(at) {
+    return { left: at[0] + SIGN_BOX.dx, top: at[1] + SIGN_BOX.dy, w: SIGN_BOX.w, h: SIGN_BOX.h };
 }
 
 // W5.3 — optional attention banner geometry; only Command carries one.

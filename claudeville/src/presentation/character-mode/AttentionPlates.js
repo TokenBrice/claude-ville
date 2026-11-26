@@ -33,6 +33,23 @@
 // carved notch row per rung above the first. An unknown age claims no rung.
 // State changes only — nothing blinks, so reduced motion is identical.
 //
+// Crest chip (W4-A, Spec 04 §4.3). At rest the wide plate is one 17 px
+// chip: a 1 px rim, a status-colour motif cell (4 + 8 + 4) and a text cell
+// (w + 4 + 1) in plate ink — a single shows its age (`45s`, `4m`, `12m`,
+// `1h`, always 3 glyph cells: 43 px), a group its exact count (29 px for one
+// digit, 36 for two). Age notches, the notch to the beacon and the beacon
+// ladder are the shipped ones; every member keeps its own beacon. The full
+// plate (unchanged geometry) returns while the pointer is over the chip, its
+// beacon or its body, while the agent is selected, while `A` holds the
+// attention frame, in READ, inside The Glass, and for a wait of 5 minutes or
+// more — so an old wait reads louder than today, by contrast. Edge plates are
+// the same chip behind the arrow cell (54 px), under the same triggers.
+// Grouping is decided on the full plates' natural rects, so a chip expanding
+// under the pointer never regroups its knot. A plate keeps its full-plate
+// fields (`word`, `text`, `age`, `widths`); `compact` and `chip` describe
+// what is drawn. Layer 0 (Theatre) draws the beacons only; The Glass pass
+// draws each covered chip's full twin (`plate.glass`) under its clip.
+//
 // Off-frame tally (W5.6). When a live, silent (not action-needed) agent
 // stands wholly beyond the frame, one walnut tab docks on that side with a
 // stepped arrow and the exact per-status counts (`4 working · 2 idle`):
@@ -65,6 +82,8 @@ import { elapsedTickNow, formatElapsed } from '../shared/Formatters.js';
 import { statusWord } from '../shared/AgentPresentation.js';
 import { LABEL_INK, WALNUT, drawOutlinedMotif, fitLabelText, measureLabelText, outlinedMotifStamp, paintWalnutBoard } from './WorldLabelKit.js';
 import { GPU_RECORD_FLAGS } from './gpu/GpuWorldPolicy.js';
+import { inGlass } from './InspectionGlass.js';
+import { postcardFrame } from './Postcard.js';
 
 export const ATTENTION_STATUSES = Object.freeze([
     AgentStatus.WAITING_ON_USER,
@@ -131,6 +150,46 @@ const TALLY_SLIDE = 24;
 // as idle, exactly as the top bar's IDLE does.
 const TALLY_WORDS = Object.freeze([AgentStatus.WORKING, AgentStatus.WAITING, AgentStatus.IDLE]
     .map(status => statusWord(status, 'lower')));
+// W4-A (§4.3) — the crest chip: rim 1, motif cell 4 + 8 + 4, text w, pad 4,
+// rim 1. Departure Mono 11 px advances 7 px a glyph; a single always holds
+// three glyph cells so its width never jumps as the age ticks.
+const CHIP_MOTIF_CELL = 4 + 8 + 4;
+const CHIP_TEXT_PAD = 4;
+const CHIP_GLYPH_W = 7;
+const CHIP_SINGLE_GLYPHS = 3;
+const CHIP_FIXED_W = 1 + CHIP_MOTIF_CELL + CHIP_TEXT_PAD + 1;
+// A wait this old (or older) shows the full plate at rest.
+export const CREST_FULL_AGE_MS = 5 * 60_000;
+export const CREST_CHIP = Object.freeze({
+    height: PLATE_H,
+    fixed: CHIP_FIXED_W,
+    glyph: CHIP_GLYPH_W,
+    single: CHIP_FIXED_W + CHIP_SINGLE_GLYPHS * CHIP_GLYPH_W,
+    edgeArrow: EDGE_ARROW_CELL,
+});
+
+// The chip's width for `glyphs` text cells (22 + 7 per glyph).
+export function crestChipWidth(glyphs) {
+    return CHIP_FIXED_W + Math.max(0, glyphs | 0) * CHIP_GLYPH_W;
+}
+
+// The chip's age: whole seconds under a minute, then minutes, hours, days —
+// never more than three glyphs (`45s`, `4m`, `12m`, `1h`, `3d`).
+export function crestAgeText(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return '';
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+    return `${Math.min(99, Math.floor(hours / 24))}d`;
+}
+
+// A plate's identity for hover hand-back: its members' ids, sorted.
+export function attentionPlateKey(ids) {
+    return [...(ids || [])].map(String).sort().join('\0');
+}
 
 export function isAttentionStatus(status) {
     return status === AgentStatus.WAITING_ON_USER
@@ -198,6 +257,7 @@ function ensureState(state) {
     if (!state.componentGrouped) state.componentGrouped = new Map();
     if (!state.edgePair) state.edgePair = new Map();
     if (!state.plateSlots) state.plateSlots = new Map();
+    if (!state.hoverHold) state.hoverHold = new Map();
     return state;
 }
 
@@ -206,7 +266,7 @@ function pruneState(state, clock) {
     if (clock - (state._lastPrune || 0) < STATE_PRUNE_MS) return;
     state._lastPrune = clock;
     const cutoff = clock - STATE_PRUNE_MS;
-    for (const map of [state.sides, state.tallySides, state.pairNear, state.componentGrouped, state.edgePair, state.plateSlots]) {
+    for (const map of [state.sides, state.tallySides, state.pairNear, state.componentGrouped, state.edgePair, state.plateSlots, state.hoverHold]) {
         for (const [key, entry] of map) {
             if ((entry.seenAt ?? -Infinity) < cutoff) map.delete(key);
         }
@@ -314,8 +374,18 @@ export function layoutAttentionPlates(ctx, {
     state = null,
     dwellNow = null,
     now = elapsedTickNow(),
+    // W4-A (§4.3) — what returns the full plate. Hover and selection also
+    // read the sprites' own `hovered` / `selected` flags.
+    hoveredAgentId = null,
+    hoveredAttentionKey = null,
+    selectedAgentId = null,
+    attentionHold = false,
+    readMode = false,
+    theatreMode = false,
+    glassScreen = null,
+    compact = true,
 } = {}) {
-    const layout = { plates: [], beacons: [], tallies: [], count: 0, offscreen: 0 };
+    const layout = { plates: [], beacons: [], tallies: [], count: 0, offscreen: 0, theatre: Boolean(theatreMode) };
     if (!ctx || !camera?.worldToScreen || !viewport?.width) return layout;
     if (reserved?.length) viewport = { ...viewport, reserved };
     const mem = ensureState(state);
@@ -365,7 +435,10 @@ export function layoutAttentionPlates(ctx, {
             // 7.2 — holds a place in the Command queue (a line slot or, for the
             // 13th onward, the plaza overflow).
             queued: sprite.visitRole === 'queue',
+            hovered: sprite.hovered === true,
+            selected: sprite.selected === true,
         };
+        beacon.id = item.id;
         const side = offscreenSide(beacon, head.y, viewport, mem?.sides, item.id, clock);
         if (side) {
             item.side = side;
@@ -377,7 +450,7 @@ export function layoutAttentionPlates(ctx, {
     layout.count = items.length + edgeItems.length;
     layout.offscreen = edgeItems.length;
     if (!layout.count) {
-        layout.tallies = layoutTallies(ctx, silent, viewport, tallyAvoid);
+        layout.tallies = theatreMode ? [] : layoutTallies(ctx, silent, viewport, tallyAvoid);
         pruneState(mem, clock);
         return layout;
     }
@@ -387,10 +460,32 @@ export function layoutAttentionPlates(ctx, {
     items.sort(byAge);
     edgeItems.sort(byAge);
 
+    // §4.3 — the full plate returns for a hovered (pointer on chip, beacon or
+    // body), selected, `A`-held, READ or old (>= 5 min) wait; a hover holds
+    // it DWELL_MS after the pointer leaves so a widening plate cannot
+    // flicker under a resting pointer.
+    const hoverIds = new Set();
+    if (hoveredAgentId != null && hoveredAgentId !== '') hoverIds.add(String(hoveredAgentId));
+    if (hoveredAttentionKey != null && hoveredAttentionKey !== '') {
+        for (const id of String(hoveredAttentionKey).split('\0')) if (id) hoverIds.add(id);
+    }
+    const selectedId = selectedAgentId != null && selectedAgentId !== '' ? String(selectedAgentId) : null;
     for (const item of [...items, ...edgeItems]) {
         item.text = fitName(ctx, item.name);
         item.age = ageText(item.since, now);
         item.widths = plateWidths(ctx, item.kind.word, item.age ? `${item.text} ${item.age}` : item.text, item.tier);
+        let hovered = item.hovered || hoverIds.has(item.id);
+        if (mem && item.id) {
+            if (hovered) mem.hoverHold.set(item.id, { at: clock, seenAt: clock });
+            else {
+                const held = mem.hoverHold.get(item.id);
+                if (held && clock - held.at < DWELL_MS) hovered = true;
+            }
+        }
+        const old = item.since != null && now - item.since >= CREST_FULL_AGE_MS;
+        item.full = !compact || Boolean(attentionHold) || Boolean(readMode) || hovered
+            || item.selected || (selectedId !== null && item.id === selectedId) || old;
+        item.chipText = crestAgeText(item.since != null ? now - item.since : NaN);
     }
 
     // Edge plates are placed first: their slots are fixed by the frame, and
@@ -506,9 +601,69 @@ export function layoutAttentionPlates(ctx, {
         if (!changed) break;
     }
     for (const plate of placedPlates) layout.plates.push(plate);
-    layout.tallies = layoutTallies(ctx, silent, viewport, [...layout.plates, ...layout.beacons, ...tallyAvoid]);
+    layout.tallies = theatreMode ? [] : layoutTallies(ctx, silent, viewport, [...layout.plates, ...layout.beacons, ...tallyAvoid]);
+    if (glassScreen && Number.isFinite(glassScreen.cx) && Number.isFinite(glassScreen.cy)) {
+        markGlassTwins(layout, [...items, ...edgeItems], glassScreen, viewport);
+    }
     pruneState(mem, clock);
     return layout;
+}
+
+// §4.7 — a plate whose anchor The Glass covers carries `glass`: its full
+// plate on the drawn plate's rows (a chip's twin widened about its centre,
+// an edge chip's re-docked), which the clipped Glass pass draws. A plate
+// already drawn full in the resting pass needs no twin unless Layer 0 drew
+// only its beacon.
+function markGlassTwins(layout, items, glassScreen, viewport) {
+    const byId = new Map(items.map(item => [item.id, item]));
+    for (const plate of layout.plates) {
+        let covered;
+        if (plate.side) {
+            const r = plate.rect;
+            covered = inGlass(glassScreen.cx, glassScreen.cy, (r.left + r.right) / 2, (r.top + r.bottom) / 2);
+        } else {
+            covered = plate.ids.some(id => {
+                const item = byId.get(id);
+                return item && inGlass(glassScreen.cx, glassScreen.cy, item.x, item.y);
+            });
+        }
+        if (!covered) continue;
+        if (!plate.compact && !layout.theatre) continue;
+        plate.glass = fullTwin(plate, viewport);
+    }
+}
+
+function fullTwin(plate, viewport) {
+    const width = plate.widths.width;
+    const r = plate.rect;
+    let left;
+    if (plate.side === 'left') left = r.left;
+    else if (plate.side === 'right') left = r.right - width;
+    else left = Math.round((r.left + r.right) / 2 - width / 2);
+    left = clampNumber(left, EDGE_MARGIN, viewport.width - EDGE_MARGIN - width);
+    return { ...plate, compact: false, glass: null, rect: { left, top: r.top, right: left + width, bottom: r.bottom } };
+}
+
+// The plate drawn width: the chip's when compact, else the full plate's.
+function drawnWidth(plate) {
+    return plate.compact ? plate.chip.width : plate.widths.width;
+}
+
+/**
+ * The attention key under a screen point (CSS px): the plate (chip or full)
+ * whose rect holds it, else the beacon's agent, else null. Hand it back as
+ * `hoveredAttentionKey` on the next layout to bring the full plate.
+ */
+export function attentionKeyAt(layout, x, y) {
+    if (!layout || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    for (const plate of layout.plates || []) {
+        const r = plate.rect;
+        if (r && x >= r.left && x < r.right && y >= r.top && y < r.bottom + (plate.side ? 0 : NOTCH_ROWS)) return plate.key || attentionPlateKey(plate.ids);
+    }
+    for (const beacon of layout.beacons || []) {
+        if (beacon.id && x >= beacon.left && x < beacon.right && y >= beacon.top && y < beacon.bottom) return beacon.id;
+    }
+    return null;
 }
 
 // W5.6 — a silent agent wholly beyond the frame: the side it lies beyond
@@ -718,8 +873,10 @@ function edgePlate(ctx, members, side, viewport, now, byAge) {
         wordCell: base.widths.wordCell + EDGE_ARROW_CELL,
         width: base.widths.width + EDGE_ARROW_CELL,
     };
-    const rect = edgeRect(side, base.anchorX, anchorY, widths.width, viewport);
-    return { ...base, widths, side, anchorY, rect, wordOffset: EDGE_ARROW_CELL };
+    // §4.3 — an edge chip is the chip behind the arrow cell (54 px single).
+    const chip = base.compact ? { ...base.chip, width: base.chip.width + EDGE_ARROW_CELL } : null;
+    const rect = edgeRect(side, base.anchorX, anchorY, chip ? chip.width : widths.width, viewport);
+    return { ...base, widths, chip, side, anchorY, rect, wordOffset: EDGE_ARROW_CELL };
 }
 
 // Per side and kind, sweep along the edge: agents whose anchors lie within
@@ -799,9 +956,11 @@ function naturalRect(x, tip, width) {
 }
 
 function singlePlate(item) {
+    const compact = item.full === false;
     return {
         word: item.kind.word,
         color: item.kind.color,
+        motif: item.kind.motif,
         text: item.text,
         age: item.age,
         widths: item.widths,
@@ -811,6 +970,9 @@ function singlePlate(item) {
         since: item.since,
         tier: item.tier,
         ids: [item.id],
+        key: attentionPlateKey([item.id]),
+        compact,
+        chip: compact ? { text: item.chipText || '', width: crestChipWidth(CHIP_SINGLE_GLYPHS) } : null,
     };
 }
 
@@ -826,9 +988,14 @@ function groupPlate(ctx, members, now) {
         sumX += item.x;
         tip = Math.min(tip, item.tip);
     }
+    // §4.3 — a group chip shows the exact count; any member that calls for
+    // the full plate (hovered, selected, old, ...) brings the group's.
+    const compact = members.every(item => item.full === false);
+    const count = String(members.length);
     return {
         word: kind.word,
         color: kind.color,
+        motif: kind.motif,
         text,
         age,
         widths: plateWidths(ctx, kind.word, age ? `${text} ${age}` : text, oldest.tier),
@@ -838,11 +1005,14 @@ function groupPlate(ctx, members, now) {
         since: oldest.since,
         tier: oldest.tier,
         ids: members.map(item => item.id),
+        key: attentionPlateKey(members.map(item => item.id)),
+        compact,
+        chip: compact ? { text: count, width: crestChipWidth(count.length) } : null,
     };
 }
 
 function placePlate(request, placed, beacons, viewport, slotState = null, clock = 0) {
-    const width = request.widths.width;
+    const width = drawnWidth(request);
     const half = Math.round(width / 2) + 4;
     const candidates = [
         [0, 0], [0, -STACK_STEP], [-half, 0], [half, 0],
@@ -915,7 +1085,8 @@ function clampRect(rect, viewport) {
 // a visible building plaque (tallies yield to plaques instead).
 export function attentionScreenRects(layout, { includeTallies = false } = {}) {
     const out = [];
-    for (const plate of layout?.plates || []) out.push(plate.rect);
+    // Layer 0 draws no plate: only the beacons claim screen.
+    if (!layout?.theatre) for (const plate of layout?.plates || []) out.push(plate.rect);
     for (const beacon of layout?.beacons || []) out.push(beacon);
     if (includeTallies) {
         for (const tab of layout?.tallies || []) out.push(tab.rect);
@@ -931,9 +1102,23 @@ export function attentionScreenRects(layout, { includeTallies = false } = {}) {
  * off-frame tally tabs are overlay-only walnut and draw whole either way.
  * `beaconsOnly` (XP-5 postcards): the beacons alone — no leader, plate or
  * tally tab, so no word and no name.
+ * `theatreMode` (Layer 0, §4.2/§4.5; also a layout laid out with it): the
+ * beacons alone, by Theatre's own label-layer state, never the postcard
+ * guard. `glassPass` (§4.7): only the full twins of the plates The Glass
+ * covers, for a caller that has clipped `ctx` to the lens.
  */
-export function drawAttentionPlates(ctx, layout, { inkOnly = false, beaconsOnly = false } = {}) {
+export function drawAttentionPlates(ctx, layout, {
+    inkOnly = false,
+    beaconsOnly: beaconsOnlyOption = false,
+    theatreMode = false,
+    glassPass = false,
+} = {}) {
     if (!ctx || !(layout?.count || layout?.tallies?.length)) return;
+    if (glassPass) {
+        drawGlassTwins(ctx, layout);
+        return;
+    }
+    const beaconsOnly = beaconsOnlyOption || theatreMode || layout.theatre === true;
     ctx.save();
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
@@ -965,11 +1150,44 @@ export function drawAttentionPlates(ctx, layout, { inkOnly = false, beaconsOnly 
         ctx.restore();
         return;
     }
+    // A chip's motif is a graphic: the GPU records carry it on the resident
+    // path, so the ink-only overlay leaves it to them.
+    const stamp = inkOnly ? null : chipMotifPainter(ctx);
     for (const plate of layout.plates) {
-        plateFills(plate, fill);
+        plateFills(plate, fill, stamp);
         drawPlateText(ctx, plate);
     }
     for (const tab of layout.tallies || []) drawTallyTab(ctx, tab);
+    ctx.restore();
+}
+
+function chipMotifPainter(ctx) {
+    return (motif, x, y) => drawOutlinedMotif(ctx, motif, x, y, { color: LABEL_INK.plate, outline: 'transparent' });
+}
+
+// §4.7 — The Glass pass: each covered plate's full twin, whole (overlay
+// fills, above any GPU mark), under the caller's lens clip. Never on a
+// postcard.
+function drawGlassTwins(ctx, layout) {
+    if (postcardFrame()) return;
+    const twins = (layout.plates || []).filter(plate => plate.glass);
+    if (!twins.length) return;
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.shadowColor = 'transparent';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    const fill = (ink, left, top, width, height) => {
+        ctx.fillStyle = ink;
+        ctx.fillRect(left, top, width, height);
+    };
+    const stamp = chipMotifPainter(ctx);
+    for (const plate of twins) {
+        leaderFills(plate.glass, fill);
+        plateFills(plate.glass, fill, stamp);
+        drawPlateText(ctx, plate.glass);
+    }
     ctx.restore();
 }
 
@@ -1047,14 +1265,36 @@ function markRecord(index, source, textureKey, pool = MARK_RECORD_POOL) {
  * flag `screenSpace` (+ `actionMark` for role 2). Returns `out` (emptied
  * first), or null when the layout cannot be expressed exactly (no DOM, an
  * ink or motif without a texel), in which case the overlay draws the plates.
- * `beaconsOnly` (XP-5 postcards): the beacons' records alone.
+ * `beaconsOnly` (XP-5 postcards; also a Layer 0 layout): the beacons'
+ * records alone. A crest chip's motif rides a plate-ink stamp record.
  */
-export function attentionMarkRecords(layout, { scale = 1, out = [], beaconsOnly = false } = {}) {
+export function attentionMarkRecords(layout, { scale = 1, out = [], beaconsOnly: beaconsOnlyOption = false } = {}) {
     out.length = 0;
     if (!layout?.count) return out;
+    const beaconsOnly = beaconsOnlyOption || layout.theatre === true;
     const inks = markInks();
     if (!inks) return null;
     let complete = true;
+    const stamp = (motif, x, y) => {
+        const chipStamp = outlinedMotifStamp(motif, { step: 1, color: LABEL_INK.plate, outline: 'transparent', scale });
+        if (!chipStamp) {
+            complete = false;
+            return;
+        }
+        const record = markRecord(out.length, chipStamp.canvas, `mark:chip:${chipStamp.key}`);
+        record.sx = 0;
+        record.sy = 0;
+        record.sw = chipStamp.canvas.width;
+        record.sh = chipStamp.canvas.height;
+        // drawOutlinedMotif's device origin: one pixel up-left of the motif.
+        record.x = Math.round((x - 1) * scale);
+        record.y = Math.round((y - 1) * scale);
+        record.width = chipStamp.canvas.width;
+        record.height = chipStamp.canvas.height;
+        record.role = ROLE_RIM;
+        record.flags = GPU_RECORD_FLAGS.screenSpace;
+        out.push(record);
+    };
     const fill = (ink, left, top, width, height, role) => {
         const sx = inks.texel.get(ink);
         if (sx === undefined) {
@@ -1104,7 +1344,7 @@ export function attentionMarkRecords(layout, { scale = 1, out = [], beaconsOnly 
             out.push(record);
         }
     }
-    if (!beaconsOnly) for (const plate of layout.plates) plateFills(plate, fill);
+    if (!beaconsOnly) for (const plate of layout.plates) plateFills(plate, fill, stamp);
     return complete ? out : null;
 }
 
@@ -1173,7 +1413,30 @@ export function elbowLeaderFills(fill, x, fromY, anchorX, toY, ink) {
     }
 }
 
-function plateFills(plate, fill) {
+// §4.3 — the crest chip: rim, one status-colour field, the motif in plate
+// ink (an edge chip's behind its arrow cell), the age notches at the right
+// pad, then the same notch to the beacon (or the edge arrow) as the plate.
+function chipFills(plate, fill, stamp) {
+    const { rect } = plate;
+    const left = rect.left;
+    const top = rect.top;
+    const width = rect.right - rect.left;
+    const offset = plate.wordOffset || 0;
+    fill(LABEL_INK.plateOutline, left, top, width, PLATE_H, ROLE_RIM);
+    fill(plate.color, left + 1, top + 1, width - 2, PLATE_H - 2, ROLE_MARK);
+    if (stamp && plate.motif) stamp(plate.motif, left + 1 + offset + 4, top + 4);
+    const notchLeft = left + width - 1 - CHIP_TEXT_PAD;
+    for (let row = 0; row < notchRows(plate.tier); row++) {
+        fill(LABEL_INK.plate, notchLeft, top + 11 - row * 3, AGE_NOTCH_W, 2, ROLE_RIM);
+    }
+    plateTailFills(plate, fill);
+}
+
+function plateFills(plate, fill, stamp = null) {
+    if (plate.compact) {
+        chipFills(plate, fill, stamp);
+        return;
+    }
     const { rect, widths } = plate;
     const left = rect.left;
     const top = rect.top;
@@ -1188,7 +1451,14 @@ function plateFills(plate, fill) {
     for (let row = 0; row < notchRows(plate.tier); row++) {
         fill(LABEL_INK.plate, notchLeft, top + 11 - row * 3, AGE_NOTCH_W, 2, ROLE_RIM);
     }
+    plateTailFills(plate, fill);
+}
 
+// The edge arrow in front of the status cell, or the three-row notch under
+// the plate pointing at the beacon.
+function plateTailFills(plate, fill) {
+    const { rect } = plate;
+    const top = rect.top;
     if (plate.side) {
         arrowFills(plate.side, rect.left + 1 + WORD_PAD, rect.top + 5, LABEL_INK.plate, fill);
     } else {
@@ -1209,6 +1479,14 @@ function drawPlateText(ctx, plate) {
     const { rect, widths } = plate;
     const left = rect.left;
     const top = rect.top;
+    if (plate.compact) {
+        // §4.3 — the chip's one word: a single's age, a group's exact count.
+        if (!plate.chip?.text) return;
+        ctx.font = WORLD_BODY_FONT_11;
+        ctx.fillStyle = LABEL_INK.plate;
+        ctx.fillText(plate.chip.text, left + 1 + (plate.wordOffset || 0) + CHIP_MOTIF_CELL, top + 12);
+        return;
+    }
     ctx.font = WORLD_DISPLAY_FONT_8;
     ctx.fillStyle = LABEL_INK.plate;
     ctx.fillText(plate.word, left + 1 + WORD_PAD + (plate.wordOffset || 0), top + 13);

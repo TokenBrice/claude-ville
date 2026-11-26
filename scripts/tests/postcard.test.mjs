@@ -43,7 +43,7 @@ const SITES = {
     'ArrivalDeparture.js _drawCompactionRite': { flag: true, why: 'compaction token chit' },
     'AttentionPlates.js drawPlateText': { beacons: true, why: 'T1 plate: name, waiting reason' },
     'AttentionPlates.js drawTallyTab': { beacons: true, why: 'T1 tally' },
-    'BuildingSprite.js _paintPlaque': { tier: 'if (!postcard) renderer.buildingRenderer?.drawLabels(', why: 'building plaques: patron names, counts, squads' },
+    'BuildingPlaques.js paintPlaque': { tier: 'if (!postcard) renderer.buildingRenderer?.drawLabels(', why: 'building plaques (W4-A extraction from BuildingSprite): patron names, counts, squads' },
     'BuildingSprite.js _drawInstrumentPlate': { flag: true, why: 'instrument plates: workloads, ritual labels, belfry and mine rows' },
     'BuildingSprite.js _drawAttentionBannerBoard': { flag: true, why: 'attention banner board' },
     'BuildingSprite.js _paintTaskboardChalk': { flag: '_drawTaskboardBoard', why: 'taskboard chalk: tasks and agents (a cached raster, so gated before the blit)' },

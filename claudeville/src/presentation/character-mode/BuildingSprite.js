@@ -10,11 +10,9 @@ import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { REST_SEATS } from '../../config/townPlan.js';
 import { STATUS_VISUALS, WORLD_BODY_FONT_11, WORLD_BODY_FONT_22, WORLD_DISPLAY_FONT_8, WORLD_DISPLAY_FONT_16 } from '../../config/theme.js';
-import { EVENT_SHAPES } from '../shared/EventShapes.js';
 import {
     LABEL_INK,
     WALNUT,
-    drawOutlinedMotif,
     fitLabelText,
     measureLabelText,
     paintWalnutBoard,
@@ -104,6 +102,27 @@ import { resolveObservation } from './ObservationCertainty.js';
 import { VillagePhase } from '../../application/VillageState.js';
 import { GOLD, GOLD_RAMP, dottedCurve, fillConvex, gradeTone, ringDots, snap } from './EffectStamps.js';
 import { postcardFrame } from './Postcard.js';
+import {
+    PLAQUE_ATTENTION,
+    PLAQUE_MUSTER_MAX_ROWS,
+    PLAQUE_PAD,
+    WORLD_ASH_ID,
+    alphaMaskFromImage,
+    carvedBracketBounds,
+    drawCarvedMotifBracket,
+    isDistrictZoom,
+    isForeignRect,
+    measurePlaque,
+    normalizeSignageMode,
+    paintPlaque,
+    plaqueShowsCounts,
+    roofRowFor,
+    signChitRungs,
+    signWorldPoint,
+    worldAshOrigin,
+    worldMaskEntry,
+    CARVED_MOTIF_SHEET_ID,
+} from './BuildingPlaques.js';
 
 // READ translates canonical classifier reasons, never tool names or input text.
 export const READ_VERBS = Object.freeze({
@@ -136,37 +155,14 @@ const LANDMARK_LABEL_TYPES = new Set(
 );
 const LABEL_VISIBLE_ZOOM = 1;
 const LABEL_DETAIL_ZOOM = 3;
-// T3 plaque geometry (screen pixels): 5 px pads, a 17-row head band holding
-// the motif, 8 px Press Start 2P name and 11 px Departure Mono count, and
-// 12-row ledger lines (harbor commits, READ verbs, Command muster lines).
-const PLAQUE_PAD = 5;
-const PLAQUE_HEAD_H = 17;
-const PLAQUE_ROW_H = 12;
-// W7.5 — the muster line's carved ▸ (3 px, a space either side) and its row
-// budget: up to three squads, else two and one exact `+N squads` line.
-const PLAQUE_MUSTER_ARROW_W = 3;
-const PLAQUE_MUSTER_MAX_ROWS = 3;
-const DISTRICT_MOTIFS = Object.freeze(Object.fromEntries(
-    BUILDING_DEFS
-        .map((building) => [building.type, `district-${building.type}`])
-        .filter(([, motif]) => Boolean(EVENT_SHAPES[motif])),
-));
-// W5.5a — the Command plaque's attention cell takes the lead actionable
-// bucket (SignalLedger precedence: needs-you, error, limit) in the T1 plate's
-// status hue and motif, so it reads as the same mark the plates carry.
-const PLAQUE_ATTENTION = Object.freeze({
-    needsYou: Object.freeze({ motif: 'needs-you', color: STATUS_VISUALS.waiting_on_user.color }),
-    errors: Object.freeze({ motif: 'alert', color: STATUS_VISUALS.errored.color }),
-    quota: Object.freeze({ motif: 'limit-gate', color: STATUS_VISUALS.rate_limited.color }),
-});
-const PLAQUE_ATTENTION_GAP = 4;
+// T3 plaque geometry, paint, sign siting and Carved Motifs live in
+// BuildingPlaques (W4-A); BuildingSprite orchestrates the label pass.
 // AG-1 (B3-07, G7-4) — the Tavern's tally: a patron cell after the head band,
 // `│ ⊔5 · 14m`, the district's own tankard motif, the exact patron count and
 // the oldest wait on a lead's subagents (minute grain, Formatters
 // `formatWaitAge`). Patrons are no visitors (V8): the cell never joins the
 // work count. At seat capacity the cell fills with the district accent, the
 // one "full" state. Static; it changes only when a count or a minute does.
-const PATRON_MOTIF = 'district-tavern';
 const PATRON_SEATS_BY_TYPE = REST_SEATS.reduce((seats, seat) => {
     if (seat.building) seats.set(seat.building, (seats.get(seat.building) || 0) + 1);
     return seats;
@@ -559,6 +555,14 @@ export class BuildingSprite {
         this._drawablesCache = null;
         this._lightSourcesCache = null;
         this._labelMetricsCache = new Map();
+        // W4-A (§4.2) — the Settings signage value (`compact` | `motifs`),
+        // the types whose chit or bracket tally painted last frame (T5 exact
+        // `+N` subtraction) and each counted agent's plaque building.
+        this._signageMode = 'compact';
+        this.plaqueDrawnTypes = new Set();
+        this.plaqueBuildingByAgentId = new Map();
+        this._bracketTallyTypes = new Set();
+        this._theatreMode = false;
         this._visitorCountByType = new Map();
         this._visitorStatusByType = new Map();
         this.lightingState = null;
@@ -963,6 +967,15 @@ export class BuildingSprite {
                 splitPass,
                 drawable.horizonY ?? null,
             );
+            this._drawCarvedMotif(
+                ctx,
+                drawable.building,
+                drawable.entry,
+                drawable.wx,
+                drawable.wy,
+                splitPass,
+                drawable.horizonY ?? null,
+            );
         }
         this._ungradedOverlay = false;
     }
@@ -1191,12 +1204,38 @@ export class BuildingSprite {
     // board per building: a lit top row, a shaded bottom row, a 1 px outline
     // and nail heads; the authored EventShapes district motif; the name in
     // 8 px Press Start 2P; and, when anyone is there, the exact occupant count
-    // in 11 px Departure Mono behind a 1 px divider (`FORGE │ 8`). A 1 px post
-    // runs into the roof. Screen-fixed and snapped to whole pixels; drawn on
-    // the overlay after the depth pass so plaques stay readable over roofs.
-    // Hover and selection are the plaque's own lit/gold states (5.5): there is
-    // no second pill above it. If the name does not fit, the plaque falls back
-    // to a shorter name, then to the motif alone — never to a smaller font.
+    // in 11 px Departure Mono behind a 1 px divider (`FORGE │ 8`). Screen-fixed
+    // and snapped to whole pixels; drawn on the overlay after the depth pass
+    // so plaques stay readable over roofs. Hover and selection are the
+    // plaque's own lit/gold states (5.5): there is no second pill above it.
+    // If the name does not fit, the plaque falls back to a shorter name, then
+    // to the motif alone — never to a smaller font.
+    //
+    // W4-A (Spec 04 §2.3, §4.2) — the signage diet:
+    //   - Occupied-only. A landmark with no count, no patrons and no failed
+    //     push has no chit at rest; hover, selection, READ and The Glass
+    //     bring it. The dimmed `quiet` board is retired.
+    //   - Zoom tiers on the camera's rest tier (`restZoom`, R1): OVERVIEW
+    //     (< 1.6) is the 17 px head band alone; DISTRICT (>= 1.6) adds the
+    //     Harbor ledger and Command muster rows. Reveals keep full rows.
+    //   - Layer 0 (`theatreMode`): no resting chit; READ, hover, selection
+    //     and The Glass still read the village.
+    //   - `signageMode: 'motifs'`: the Carved Motif bracket carries the tally
+    //     at rest (world pass); the walnut chit comes only on a reveal.
+    //   - Placement on the authored `sign.at` column: P0 crown, P1 eave, P2
+    //     lintel, the first whose board misses every foreign mask (another
+    //     landmark's alpha, the World Ash), then the shipped micro-offsets
+    //     and SM-7 hard boxes. The attempt ladder ends motif-only, so a board
+    //     that fits nowhere falls back to the motif chit before it is dropped.
+    //   - R4: Command's attention cell is not drawn while its cloth banner is
+    //     raised.
+    //   - T5: `plaqueDrawnTypes` records each type whose chit (showing its
+    //     counts) or bracket tally painted; `plaqueBuildingByAgentId` maps each
+    //     counted agent to its plaque building, for the next frame's exact
+    //     `+N` subtraction (CrowdClusterOverlay).
+    // `glassPass` (§4.7) is the second, clipped pass: READ-equivalent plaques
+    // for the buildings whose sign anchor satisfies `inGlass(worldX, worldY)`,
+    // leaving the resting pass's records untouched.
     drawLabels(ctx, {
         zoom = 1,
         occupiedBoxes = [],
@@ -1206,13 +1245,27 @@ export class BuildingSprite {
         readMode = false,
         selectedType = null,
         reserved = getReservedRects(),
+        signageMode = this._signageMode || 'compact',
+        theatreMode = false,
+        restZoom = this._restZoom ?? zoom,
+        glassPass = false,
+        inGlass = null,
+        hoveredType = this.hovered?.type || null,
+        worldAsh = undefined,
+        worldAshBox = undefined,
     } = {}) {
+        const mode = normalizeSignageMode(signageMode);
         const labelScale = 1 / Math.max(0.01, zoom);
         const occupied = [];
         // 8.1 — the painted plaque boards (world rects), read by the next
         // frame's moment stage: a moment never stands under a plaque.
         const plaqueRects = [];
-        this.plaqueWorldRects = plaqueRects;
+        const drawnTypes = new Set();
+        if (!glassPass) {
+            this.plaqueWorldRects = plaqueRects;
+            this._theatreMode = Boolean(theatreMode);
+        }
+        const district = isDistrictZoom(restZoom);
         const normalizedOccupiedBoxes = this._normalizeBoxes(occupiedBoxes);
         const harborLedgerRows = this._harborLedgerRows(harborPendingRepos);
         const musterRows = this._musterRows(squads);
@@ -1228,6 +1281,8 @@ export class BuildingSprite {
         // plaque whose board or post would land under it flips below it (or
         // steps left of it), else that candidate is dropped.
         const chromeBoxes = this._reservedWorldBoxes(ctx, reserved);
+        const foreignMasks = this._signForeignMasks(worldAsh !== undefined ? worldAsh : this._worldAshFromBox(worldAshBox));
+        const bannerRaised = Boolean(this.attentionBanner?.count);
         const buildingList = [...this.buildings].sort((a, b) => {
             const ac = this._buildingScreenCenter(a);
             const bc = this._buildingScreenCenter(b);
@@ -1240,81 +1295,80 @@ export class BuildingSprite {
             const center = this._buildingScreenCenter(b);
             const dims = this.assets.getDims(`building.${b.type}`);
             if (!dims) continue;
-            const isHovered = this.hovered === b;
+            const isHovered = this.hovered === b || (Boolean(hoveredType) && b.type === hoveredType);
             const isSelected = Boolean(selectedType) && b.type === selectedType;
             const registryLabelPriority = getBuildingLabelPriority(b.type, b.labelPriority);
             const isLandmark = registryLabelPriority === 'landmark' || b.labelPriority === 'landmark' || LANDMARK_LABEL_TYPES.has(b.type);
-            const localLabelDensity = this._estimateLocalLabelDensity(occupied, center.x, center.y);
             const failedPushAlert = b.type === 'watchtower' && this.harborStatus?.failedPushActive;
             // S2 — the plaque number is exactly the distinct live agents whose
             // district this is: folded inside, queued on the apron, or routed
             // here. Bodies merely crossing the footprint on the way elsewhere
             // are not this district's (they count at their destination).
             const count = plaqueCounts.get(b.type) || 0;
-            const anchorY = this.assets.getAnchor(`building.${b.type}`)?.[1] ?? dims.h;
+            const patrons = this.plaquePatrons?.get(b.type) || null;
+            const patronCount = patrons?.count || 0;
+            const anchor = this.assets.getAnchor(`building.${b.type}`);
+            const anchorY = anchor?.[1] ?? dims.h;
+            const sign = signWorldPoint(b.type, center, anchor);
+            const inLens = typeof inGlass === 'function'
+                && Boolean(inGlass(sign ? sign.x : center.x, sign ? sign.y : center.y));
+            if (glassPass && !inLens) continue;
+            const reveal = isHovered || isSelected || readMode || glassPass;
+            if (!reveal) {
+                if (theatreMode || mode === 'motifs') continue;
+                if (!(count > 0 || patronCount > 0 || failedPushAlert)) continue;
+            }
+            const localLabelDensity = this._estimateLocalLabelDensity(occupied, center.x, center.y);
             const firstOpaque = this.assets.getMask?.(`building.${b.type}`)?.indexOf(1) ?? 0;
             const spriteTop = Math.round(center.y - anchorY) + Math.floor(Math.max(0, firstOpaque) / dims.w);
-            const baseY = spriteTop - (isHovered || isSelected ? 30 : 24) * labelScale;
-            const baseX = center.x;
-
+            const roofY = sign ? this._signRoofY(b.type, sign, Math.round(center.y - anchorY), dims) ?? spriteTop : null;
+            const fullRows = district || reveal;
             const labelAttempts = this._labelRenderAttempts(b, {
                 isHovered: isHovered || isSelected,
                 isLandmark,
                 zoom,
                 localLabelDensity,
-                harborLedgerRows,
-                musterRows,
-                readRows: readMode ? this._readPlaques?.get(b.type) : null,
+                harborLedgerRows: fullRows ? harborLedgerRows : [],
+                musterRows: fullRows ? musterRows : [],
+                readRows: readMode || glassPass ? this._readPlaques?.get(b.type) : null,
             });
+            const attention = b.type === 'command' && !bannerRaised ? this.plaqueAttention : null;
             let chosen = null;
+            let offView = false;
             for (const attempt of labelAttempts) {
                 const plaque = this._measurePlaque(ctx, b, attempt, {
                     count, zoom, isHovered, isLandmark, scaleMode,
-                    attention: b.type === 'command' ? this.plaqueAttention : null,
-                    patrons: this.plaquePatrons?.get(b.type) || null,
+                    attention,
+                    patrons,
                 });
                 if (!plaque.title && !plaque.motif) continue;
-                const layout = this._resolveLabelLayout({
-                    candidates: this._labelLayoutCandidates(isLandmark, isHovered || isSelected).map(({ dx, dy }) => ({ dx: dx * labelScale, dy: dy * labelScale })),
-                    occupied,
-                    occupiedExternal: normalizedOccupiedBoxes,
-                    hardBoxes: nameBoxes,
-                    hardPad: labelScale,
-                    centerX: baseX,
-                    centerY: baseY,
-                    tagW: plaque.width * labelScale,
-                    tagH: plaque.height * labelScale,
-                    maxOverlap: attempt.overlapTolerance,
-                    localLabelDensity,
-                });
-                if (!layout) continue;
-                const labelOverlap = layout.overlap != null ? layout.overlap : this._boxesOverlapRatio(layout.box, occupied);
-                if (labelOverlap > attempt.overlapTolerance) continue;
-                if (attempt.blockAgents && this._boxesOverlapRatio(layout.box, normalizedOccupiedBoxes) > attempt.overlapTolerance) continue;
-                const candidate = { plaque, layout };
-                // S13 — a plaque stays inside the visible world: shifted in
-                // whole while its building stands in view, hidden when the
-                // building is off-frame (a bare count cell at the edge would be
-                // an orphan). The shift must not land it on a name either.
-                if (view && !this._placePlaqueInView(candidate, view, {
-                    buildingLeft: center.x - dims.w / 2,
-                    buildingRight: center.x + dims.w / 2,
-                    buildingTop: spriteTop,
-                    buildingBottom: center.y,
-                    tagW: plaque.width * labelScale,
-                    tagH: plaque.height * labelScale,
-                })) break;
                 const tagW = plaque.width * labelScale;
                 const tagH = plaque.height * labelScale;
-                const poleBottom = spriteTop + 2 * labelScale;
-                if (chromeBoxes.length && !this._clearPlaqueOfChrome(layout, {
-                    tagW, tagH, pad: 2 * labelScale, poleBottom, chromeBoxes, view,
-                })) continue;
-                // The post counts as much as the board: a walker's name
-                // crossing the post reads as a plaque drawn over the name.
-                if (this._plaqueHitsBoxes(layout.x, layout.y, tagW, tagH, labelScale, nameBoxes, poleBottom, labelScale)) continue;
-                chosen = candidate;
-                break;
+                const rungs = sign
+                    ? signChitRungs({ signX: sign.x, signY: sign.y, roofY, boardH: tagH, labelScale })
+                    : [{ level: 'legacy', x: center.x, y: spriteTop - (isHovered || isSelected ? 30 : 24) * labelScale, poleBottom: spriteTop + 2 * labelScale }];
+                for (const rung of rungs) {
+                    // §2.3 — the rung itself must miss every foreign mask.
+                    if (sign && this._chitIsForeign(rung.x, rung.y, tagW, tagH, b.type, foreignMasks, zoom)) continue;
+                    const placed = this._placeChit({
+                        plaque, attempt, rung, tagW, tagH, labelScale,
+                        occupied, normalizedOccupiedBoxes, nameBoxes, chromeBoxes, view,
+                        localLabelDensity, isLandmark, isHovered: isHovered || isSelected,
+                        building: { left: center.x - dims.w / 2, right: center.x + dims.w / 2, top: spriteTop, bottom: center.y },
+                        reject: sign
+                            ? (x, y) => this._chitIsForeign(x, y, tagW, tagH, b.type, foreignMasks, zoom)
+                            : null,
+                    });
+                    if (placed === 'off-view') {
+                        offView = true;
+                        break;
+                    }
+                    if (placed) {
+                        chosen = placed;
+                        break;
+                    }
+                }
+                if (chosen || offView) break;
             }
             if (!chosen) continue;
             occupied.push(chosen.layout.box);
@@ -1325,20 +1379,270 @@ export class BuildingSprite {
                 top: chosen.layout.y - boardH / 2,
                 right: chosen.layout.x + boardW / 2,
                 bottom: chosen.layout.y + boardH / 2,
+                // W4-A — which building and which §2.3 rung (P0 | P1 | P2,
+                // or 'legacy' without a sign anchor): diagnostics only.
+                type: b.type,
+                level: chosen.level,
             });
             this._paintPlaque(ctx, chosen.plaque, {
                 x: chosen.layout.x,
                 y: chosen.layout.y,
                 labelScale,
-                poleBottom: spriteTop + 2 * labelScale,
+                poleBottom: chosen.poleBottom,
                 isHovered,
                 isSelected,
                 isLandmark,
                 alert: failedPushAlert,
                 accent: getBuildingLabelAccent(b.type, WALNUT.text),
-                quiet: !count && !readMode,
             });
+            if ((count > 0 || patronCount > 0) && plaqueShowsCounts(chosen.plaque, { count, patrons: patronCount })) {
+                drawnTypes.add(b.type);
+            }
         }
+        if (!glassPass) {
+            // Brackets whose tally the world pass painted this frame own their
+            // members too; the set is consumed here, once per label frame.
+            for (const type of this._bracketTallyTypes || []) drawnTypes.add(type);
+            this._bracketTallyTypes?.clear();
+            this.plaqueDrawnTypes = drawnTypes;
+        }
+    }
+
+    // One chit rung through the shipped micro-offsets, view clamp, chrome
+    // flip and SM-7 name check. Returns `{ plaque, layout, poleBottom }`,
+    // null when this rung fails, or 'off-view' when the building is out of
+    // the frame (no rung can show it then).
+    _placeChit({
+        plaque, attempt, rung, tagW, tagH, labelScale,
+        occupied, normalizedOccupiedBoxes, nameBoxes, chromeBoxes, view,
+        localLabelDensity, isLandmark, isHovered, building, reject,
+    }) {
+        const layout = this._resolveLabelLayout({
+            candidates: this._labelLayoutCandidates(isLandmark, isHovered).map(({ dx, dy }) => ({ dx: dx * labelScale, dy: dy * labelScale })),
+            occupied,
+            occupiedExternal: normalizedOccupiedBoxes,
+            hardBoxes: nameBoxes,
+            hardPad: labelScale,
+            centerX: rung.x,
+            centerY: rung.y,
+            tagW,
+            tagH,
+            maxOverlap: attempt.overlapTolerance,
+            localLabelDensity,
+            reject,
+        });
+        if (!layout) return null;
+        const labelOverlap = layout.overlap != null ? layout.overlap : this._boxesOverlapRatio(layout.box, occupied);
+        if (labelOverlap > attempt.overlapTolerance) return null;
+        if (attempt.blockAgents && this._boxesOverlapRatio(layout.box, normalizedOccupiedBoxes) > attempt.overlapTolerance) return null;
+        const candidate = { plaque, layout, poleBottom: rung.poleBottom, level: rung.level };
+        // S13 — a plaque stays inside the visible world: shifted in whole
+        // while its building stands in view, hidden when the building is
+        // off-frame (a bare count cell at the edge would be an orphan). The
+        // shift must not land it on a name either.
+        if (view && !this._placePlaqueInView(candidate, view, {
+            buildingLeft: building.left,
+            buildingRight: building.right,
+            buildingTop: building.top,
+            buildingBottom: building.bottom,
+            tagW,
+            tagH,
+        })) return 'off-view';
+        const poleBottom = rung.poleBottom;
+        if (chromeBoxes.length && !this._clearPlaqueOfChrome(layout, {
+            tagW, tagH, pad: 2 * labelScale, poleBottom, chromeBoxes, view,
+        })) return null;
+        // The post counts as much as the board: a walker's name crossing the
+        // post reads as a plaque drawn over the name.
+        if (this._plaqueHitsBoxes(layout.x, layout.y, tagW, tagH, labelScale, nameBoxes, poleBottom, labelScale)) return null;
+        // A view clamp or chrome flip may have moved the board: it must still
+        // miss every foreign mask.
+        if (reject && reject(layout.x, layout.y)) return null;
+        return candidate;
+    }
+
+    // §2.3 — foreign(rect) for a board centred on (x, y): >= 12 px² of another
+    // landmark's or the World Ash's mask.
+    _chitIsForeign(x, y, tagW, tagH, ownType, foreignMasks, zoom) {
+        if (!foreignMasks?.length) return false;
+        return isForeignRect({ left: x - tagW / 2, top: y - tagH / 2, right: x + tagW / 2, bottom: y + tagH / 2 }, foreignMasks, ownType, zoom);
+    }
+
+    // §2.3 — roofY: the first opaque row of the building's own mask inside
+    // the sign column's ± 16 band, in world rows; cached per mask and column.
+    // Null until the mask is resident.
+    _signRoofY(type, sign, spriteTopWorld, dims) {
+        const mask = this.assets.getMask?.(`building.${type}`) || null;
+        if (!mask || mask.length < dims.w * dims.h) return null;
+        const cache = this._signRoofCache || (this._signRoofCache = new Map());
+        let entry = cache.get(type);
+        if (!entry || entry.mask !== mask || entry.x !== sign.at[0]) {
+            entry = { mask, x: sign.at[0], row: roofRowFor(mask, dims.w, dims.h, sign.at[0]) };
+            cache.set(type, entry);
+        }
+        return entry.row == null ? null : spriteTopWorld + entry.row;
+    }
+
+    // The foreign masks every chit is checked against: each building's
+    // alpha mask placed in world space, plus the World Ash. Rebuilt only when
+    // the building list, a mask or the ash changes. `worldAsh`: undefined
+    // derives the ash from its resident sheet (`setWorldAshMask` overrides),
+    // false leaves it out, or an explicit `{ mask, w, h, left?, top? }`.
+    _signForeignMasks(worldAsh = undefined) {
+        const ash = worldAsh === false ? null : worldAsh || this._resolveWorldAshMask();
+        const buildings = this.buildings || [];
+        let key = '';
+        const masks = [];
+        for (const b of buildings) {
+            const mask = this.assets.getMask?.(`building.${b.type}`) || null;
+            masks.push(mask);
+            key += `${b.type}:${mask ? 1 : 0}|`;
+        }
+        // Landmark integrals and the ash's are cached apart: a caller handing
+        // a fresh ash object never rebuilds the nine landmark tables.
+        let landmarks = this._foreignLandmarkCache;
+        if (!landmarks || landmarks.buildings !== buildings || landmarks.key !== key) {
+            const entries = [];
+            buildings.forEach((b, index) => {
+                const mask = masks[index];
+                const id = `building.${b.type}`;
+                const dims = this.assets.getDims?.(id);
+                const anchor = this.assets.getAnchor?.(id);
+                if (!mask || !dims || !Array.isArray(anchor)) return;
+                const center = this._buildingScreenCenter(b);
+                const entry = worldMaskEntry(b.type, mask, dims.w, dims.h, Math.round(center.x - anchor[0]), Math.round(center.y - anchor[1]));
+                if (entry) entries.push(entry);
+            });
+            landmarks = this._foreignLandmarkCache = { buildings, key, entries };
+            this._foreignMaskCache = null;
+        }
+        let ashCache = this._foreignAshCache;
+        if (!ashCache || ashCache.ash !== ash || ashCache.mask !== ash?.mask) {
+            let entry = null;
+            if (ash?.mask && ash.w > 0 && ash.h > 0) {
+                const origin = Number.isFinite(ash.left) && Number.isFinite(ash.top) ? ash : worldAshOrigin();
+                entry = worldMaskEntry('world-ash', ash.mask, ash.w, ash.h, origin.left, origin.top);
+            }
+            ashCache = this._foreignAshCache = { ash, mask: ash?.mask || null, entry };
+            this._foreignMaskCache = null;
+        }
+        if (!this._foreignMaskCache) {
+            this._foreignMaskCache = ashCache.entry ? [...landmarks.entries, ashCache.entry] : landmarks.entries;
+        }
+        return this._foreignMaskCache;
+    }
+
+    // `worldAshBox` (the integrator's World Ash prop, when it has no mask to
+    // hand): a world box `{ left, top, right, bottom }` or `{ x, y, w, h }`
+    // is taken as solid, a `{ mask, w, h, left, top }` as is. Cached by its
+    // coordinates, so a fresh object each frame costs nothing.
+    _worldAshFromBox(box) {
+        if (box === undefined) return undefined;
+        if (!box) return false;
+        if (box.mask) return box;
+        const left = Math.round(box.left ?? box.x);
+        const top = Math.round(box.top ?? box.y);
+        const w = Math.round(box.w ?? ((box.right ?? NaN) - left));
+        const h = Math.round(box.h ?? ((box.bottom ?? NaN) - top));
+        if (![left, top, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return undefined;
+        const key = `${left},${top},${w},${h}`;
+        if (this._worldAshBoxCache?.key !== key) {
+            this._worldAshBoxCache = { key, ash: { mask: new Uint8Array(w * h).fill(1), w, h, left, top } };
+        }
+        return this._worldAshBoxCache.ash;
+    }
+
+    // The World Ash crown as a foreign mask: an explicit `setWorldAshMask`,
+    // else read once from the resident `veg.tree.ash.world` sheet.
+    _resolveWorldAshMask() {
+        if (this._worldAshMask !== undefined) return this._worldAshMask;
+        const image = this.assets?.has?.(WORLD_ASH_ID, { request: false }) ? this.assets.get(WORLD_ASH_ID, { request: false }) : null;
+        if (!image) return null;
+        if (this._worldAshSource === image) return this._worldAshDerived || null;
+        this._worldAshSource = image;
+        const mask = alphaMaskFromImage(image);
+        const anchor = this.assets.getAnchor?.(WORLD_ASH_ID);
+        const origin = worldAshOrigin(Array.isArray(anchor) && (anchor[0] || anchor[1]) ? anchor : undefined);
+        this._worldAshDerived = mask ? { mask, w: image.width, h: image.height, left: origin.left, top: origin.top } : null;
+        return this._worldAshDerived;
+    }
+
+    // Overrides the World Ash mask (`{ mask, w, h, left?, top? }`, null for
+    // none); `undefined` returns to deriving it from the resident sheet.
+    setWorldAshMask(entry) {
+        this._worldAshMask = entry === undefined ? undefined : (entry || null);
+        this._foreignAshCache = null;
+        this._foreignMaskCache = null;
+    }
+
+    // §4.2 — the Settings signage value: `compact` (the walnut chit at rest)
+    // or `motifs` (the Carved Motif bracket at rest, the chit on a reveal).
+    setSignageMode(mode) {
+        const next = normalizeSignageMode(mode);
+        const changed = next !== this._signageMode;
+        this._signageMode = next;
+        return changed;
+    }
+
+    getSignageMode() {
+        return normalizeSignageMode(this._signageMode);
+    }
+
+    // §4.5 — Layer 0 (Theatre): the world pass hangs the bracket without its
+    // tally. `drawLabels({ theatreMode })` also sets it for the next frame.
+    setTheatreMode(flag) {
+        this._theatreMode = Boolean(flag);
+    }
+
+    // §4.2 Carved Motifs — the bracket bolted at `sign.at`, in the building's
+    // own depth slot (Canvas: graded with the depth pass, clipped to each
+    // column it spans; GPU: the ungraded functional overlay takes the C2
+    // grade per ink). The tally is the district's live count plus patrons,
+    // from the last label pass; Layer 0 (Theatre, postcards) hangs the sign
+    // without it. A painted tally is recorded for T5.
+    _drawCarvedMotif(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
+        if (this._signageMode !== 'motifs') return;
+        const baseAnchor = this.assets.getAnchor?.(entry.id);
+        const sign = signWorldPoint(building.type, { x: wx, y: wy }, baseAnchor);
+        if (!sign) return;
+        if (splitPass !== 'whole' && splitPass !== 'column' && Number.isFinite(horizonY)
+            && (splitPass === 'back' ? sign.at[1] >= horizonY : sign.at[1] < horizonY)) return;
+        const stage = postcardFrame() || this._theatreMode === true;
+        const tally = stage ? 0 : this._signTally(building.type);
+        const bounds = carvedBracketBounds(sign.x, sign.y, tally);
+        const clip = splitPass === 'column' && column ? column : null;
+        if (clip && (bounds.right <= clip.worldLeft || bounds.left >= clip.worldRight)) return;
+        ctx.save();
+        if (clip) {
+            ctx.beginPath();
+            ctx.rect(clip.worldLeft, bounds.top, clip.worldRight - clip.worldLeft, bounds.bottom - bounds.top);
+            ctx.clip();
+        }
+        const painted = drawCarvedMotifBracket(ctx, {
+            x: sign.x,
+            y: sign.y,
+            type: building.type,
+            tally,
+            grade: this._overlayLightGrade(),
+            image: this._carvedMotifSheet(),
+        });
+        ctx.restore();
+        if (painted) (this._bracketTallyTypes || (this._bracketTallyTypes = new Set())).add(building.type);
+    }
+
+    // The live tally a bracket shows: the district's plaque count plus its
+    // patrons, from the last label pass (one frame, like plaqueWorldRects).
+    _signTally(type) {
+        const work = this._plaqueCounts?.get(type) || 0;
+        const patrons = this.plaquePatrons?.get(type)?.count || 0;
+        return work + patrons;
+    }
+
+    // The baked `prop.carvedMotifs` sheet when resident, else null (the
+    // bracket then draws the identical pixels itself).
+    _carvedMotifSheet() {
+        if (!this.assets?.has?.(CARVED_MOTIF_SHEET_ID, { request: false })) return null;
+        return this.assets.get(CARVED_MOTIF_SHEET_ID, { request: false }) || null;
     }
 
     // World rect of the visible canvas (inset by a screen margin), read from
@@ -1486,6 +1790,14 @@ export class BuildingSprite {
         const actionable = this._plaqueActionable || (this._plaqueActionable = Object.fromEntries(ACTIONABLE_BUCKETS.map(name => [name, 0])));
         for (const name of ACTIONABLE_BUCKETS) actionable[name] = 0;
         let actionableTotal = 0;
+        // W4-A (§4.2 T5) — each counted body's plaque building, by the same
+        // fold/route/target derivation (patrons at their patron building),
+        // so CrowdClusterOverlay subtracts exactly the members a painted chit
+        // or bracket tally already shows.
+        const owners = this.plaqueBuildingByAgentId instanceof Map
+            ? this.plaqueBuildingByAgentId
+            : (this.plaqueBuildingByAgentId = new Map());
+        owners.clear();
         for (const sprite of this.agentSprites || []) {
             const agent = sprite?.agent;
             if (!agent || agent.isDeparted || sprite._archiveAnim || sprite.isArrivalPending?.()) continue;
@@ -1505,13 +1817,17 @@ export class BuildingSprite {
                 let tally = patrons.get(at);
                 if (!tally) patrons.set(at, tally = { count: 0, oldestSince: 0 });
                 tally.count++;
+                if (agent.id != null) owners.set(agent.id, at);
                 const wait = sprite._subagentWait;
                 if (wait?.pint && wait.since > 0 && (!tally.oldestSince || wait.since < tally.oldestSince)) tally.oldestSince = wait.since;
                 continue;
             }
             if (sprite.visitRole === 'queue') {
                 const own = String(agent.targetBuildingType || agent.lastKnownBuildingType || '').trim();
-                if (own && own !== 'command') counts.set(own, (counts.get(own) || 0) + 1);
+                if (own && own !== 'command') {
+                    counts.set(own, (counts.get(own) || 0) + 1);
+                    if (agent.id != null) owners.set(agent.id, own);
+                }
                 continue;
             }
             const fold = sprite._foldBuildingType || null;
@@ -1523,6 +1839,7 @@ export class BuildingSprite {
                 || null;
             if (!type) continue;
             counts.set(type, (counts.get(type) || 0) + 1);
+            if (agent.id != null) owners.set(agent.id, type);
         }
         const lead = actionableTotal ? ACTIONABLE_BUCKETS.find(name => actionable[name] > 0) : null;
         this.plaqueAttention = lead ? { count: actionableTotal, bucket: lead, ...PLAQUE_ATTENTION[lead] } : null;
@@ -1540,227 +1857,15 @@ export class BuildingSprite {
         return counts;
     }
 
-    // Plaque geometry in screen pixels (before the 1/zoom counter-scale).
-    _measurePlaque(ctx, building, attempt, { count, zoom, isHovered, isLandmark, scaleMode, attention = null, patrons = null }) {
-        const motif = attempt.motif ? DISTRICT_MOTIFS[building.type] || null : null;
-        ctx.save();
-        ctx.font = WORLD_DISPLAY_FONT_8;
-        const title = attempt.text
-            ? this._labelMetrics(ctx, building, {
-                text: attempt.text,
-                labelFont: WORLD_DISPLAY_FONT_8,
-                maxTextWidth: attempt.maxTextWidth,
-                zoom,
-                isHovered,
-                isLandmark,
-                scaleMode,
-            })
-            : { displayText: '', width: 0 };
-        ctx.font = WORLD_BODY_FONT_11;
-        const countText = count > 0 && !attempt.hideCount ? String(count) : '';
-        const countWidth = countText ? measureLabelText(ctx, countText) : 0;
-        // W7.5 — a muster row keeps its exact `· out ▸ returned` tail whole
-        // and shortens only the parent's name to make room.
-        const rowMaxWidth = attempt.rowMaxWidth || 180;
-        const rows = (attempt.rows || []).map(row => {
-            // U-P4 — a ledger row's count is a tail that never truncates:
-            // only the name shrinks to make room for it.
-            if (row.tail) {
-                const tailText = ` ${row.tail}`;
-                const tailWidth = Math.round(measureLabelText(ctx, tailText));
-                const label = fitLabelText(ctx, row.label, Math.max(0, rowMaxWidth - (row.profile ? 8 : 0) - tailWidth));
-                return { ...row, label, tailText, tailWidth };
-            }
-            if (!row.muster) return { ...row, label: fitLabelText(ctx, row.label, rowMaxWidth) };
-            const musterLeft = ` · ${row.muster.out} `;
-            const musterRight = ` ${row.muster.returned}`;
-            const leftWidth = Math.round(measureLabelText(ctx, musterLeft));
-            const tailWidth = leftWidth + PLAQUE_MUSTER_ARROW_W + Math.round(measureLabelText(ctx, musterRight));
-            const label = fitLabelText(ctx, row.label, Math.max(0, rowMaxWidth - (row.profile ? 8 : 0) - tailWidth));
-            return { ...row, label, musterLeft, musterRight, leftWidth, tailWidth };
-        });
-        const rowsWidth = rows.reduce((max, row) => Math.max(max, Math.round(measureLabelText(ctx, row.label)) + (row.profile ? 8 : 0) + (row.tailWidth || 0)), 0);
-        const attentionText = attention?.count > 0 ? String(attention.count) : '';
-        const attentionWidth = attentionText ? measureLabelText(ctx, attentionText) : 0;
-        const patronText = patrons?.count > 0 ? String(patrons.count) : '';
-        const patronAge = patronText && patrons.age ? ` · ${patrons.age}` : '';
-        const patronWidth = patronText ? Math.round(measureLabelText(ctx, patronText)) : 0;
-        const patronAgeWidth = patronAge ? Math.round(measureLabelText(ctx, patronAge)) : 0;
-        ctx.restore();
-        const titleWidth = Math.round(title.width);
-        const motifWidth = motif ? 8 + 5 : 0;
-        let headWidth = PLAQUE_PAD + motifWidth + titleWidth + (titleWidth ? PLAQUE_PAD : 0);
-        if (!titleWidth && motif) headWidth = PLAQUE_PAD + 8 + PLAQUE_PAD;
-        const countCell = countText ? 1 + PLAQUE_PAD + countWidth + PLAQUE_PAD : 0;
-        // W5.5a — `COMMAND │ 7 │ ⟡3`: a status-hue cell at the head band's
-        // right end, the lead bucket's motif and the exact actionable count in
-        // plate ink. Absent at zero, so the plaque is then unchanged.
-        const attentionCell = attentionText ? PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP + attentionWidth + PLAQUE_PAD : 0;
-        const patronCell = patronText ? 1 + PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP + patronWidth + patronAgeWidth + PLAQUE_PAD : 0;
-        const width = Math.max(headWidth + countCell + patronCell + attentionCell, rowsWidth + PLAQUE_PAD * 2) + 2;
-        const height = PLAQUE_HEAD_H + (rows.length ? rows.length * PLAQUE_ROW_H + 3 : 0);
-        const plaque = {
-            motif,
-            title: title.displayText,
-            titleWidth,
-            countText,
-            headWidth,
-            rows,
-            width,
-            height,
-        };
-        if (attentionText) {
-            plaque.attention = attention;
-            plaque.attentionText = attentionText;
-            plaque.attentionCell = attentionCell;
-        }
-        if (patronText) {
-            plaque.patronText = patronText;
-            plaque.patronAge = patronAge;
-            plaque.patronWidth = patronWidth;
-            plaque.patronCell = patronCell;
-            plaque.patronCellLeft = headWidth + countCell;
-            plaque.patronFull = Boolean(patrons.full);
-        }
-        return plaque;
+    // Plaque geometry in screen pixels (before the 1/zoom counter-scale);
+    // BuildingPlaques owns it, with this renderer's cached title fit.
+    _measurePlaque(ctx, building, attempt, options = {}) {
+        return measurePlaque(ctx, building, attempt, options, (c, b, o) => this._labelMetrics(c, b, o));
     }
 
-    _paintPlaque(ctx, plaque, { x, y, labelScale, poleBottom, isHovered, isSelected, isLandmark, alert, accent, quiet = false }) {
-        const { width, height } = plaque;
-        const lit = isHovered || isSelected;
-        // G7-2 — a board with nobody in it steps back: no work count, no
-        // patrons, no ledger or attention, not hovered, selected, alerted or
-        // in READ. Its motif and name take the dim ink and it drops its nails,
-        // so the occupied boards carry the weight. The overlay is ungraded,
-        // so the step reads the same by night.
-        const dim = quiet && !lit && !alert && !plaque.countText && !plaque.rows.length
-            && !plaque.patronCell && !plaque.attention;
-        // The post: one screen pixel from the board's foot into the roof.
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.scale(labelScale, labelScale);
-        snapScreenOrigin(ctx);
-        const left = -Math.round(width / 2);
-        const top = -Math.round(height / 2);
-        const postTop = top + height;
-        const postBottom = Math.round((poleBottom - y) / labelScale);
-        if (postBottom > postTop) {
-            ctx.fillStyle = WALNUT.outline;
-            ctx.fillRect(-1, postTop, 3, postBottom - postTop);
-            ctx.fillStyle = WALNUT.bevel;
-            ctx.fillRect(0, postTop, 1, postBottom - postTop);
-        }
-        if (isSelected) {
-            ctx.fillStyle = LABEL_INK.gold;
-            ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
-        }
-        paintWalnutBoard(ctx, left, top, width, height, { nails: (isLandmark && !dim) || lit, lit });
-        // A verified failed push on the watchtower carries a red left rail;
-        // nothing else on a plaque claims an outcome.
-        if (alert) {
-            ctx.fillStyle = '#e06c5b';
-            ctx.fillRect(left + 1, top + 1, 2, height - 2);
-        }
-        let cursor = left + 1 + PLAQUE_PAD;
-        if (plaque.motif) {
-            drawOutlinedMotif(ctx, plaque.motif, cursor, top + 4, {
-                color: lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : accent,
-                outline: WALNUT.outline,
-            });
-            cursor += 8 + 5;
-        }
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'alphabetic';
-        if (plaque.title) {
-            ctx.font = WORLD_DISPLAY_FONT_8;
-            ctx.fillStyle = lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : WALNUT.text;
-            ctx.fillText(plaque.title, cursor, top + 13);
-        }
-        if (plaque.countText) {
-            const dividerX = left + 1 + plaque.headWidth;
-            ctx.fillStyle = WALNUT.divider;
-            ctx.fillRect(dividerX, top + 2, 1, PLAQUE_HEAD_H - 4);
-            ctx.font = WORLD_BODY_FONT_11;
-            ctx.fillStyle = WALNUT.count;
-            ctx.fillText(plaque.countText, dividerX + 1 + PLAQUE_PAD, top + 12);
-        }
-        if (plaque.patronCell) {
-            // AG-1 — after the head band and any work count: a divider, the
-            // tankard in the district accent, the count in count ink and the
-            // oldest wait in dim ink; at seat capacity the cell fills with the
-            // accent and its marks take plate ink.
-            const cellLeft = left + 1 + plaque.patronCellLeft;
-            const full = plaque.patronFull;
-            if (full) {
-                ctx.fillStyle = accent;
-                ctx.fillRect(cellLeft + 1, top + 1, plaque.patronCell - 1, PLAQUE_HEAD_H - 2);
-            } else {
-                ctx.fillStyle = WALNUT.divider;
-                ctx.fillRect(cellLeft, top + 2, 1, PLAQUE_HEAD_H - 4);
-            }
-            const motifX = cellLeft + 1 + PLAQUE_PAD;
-            drawOutlinedMotif(ctx, PATRON_MOTIF, motifX, top + 4, {
-                color: full ? LABEL_INK.plate : accent,
-                outline: full ? 'transparent' : WALNUT.outline,
-            });
-            const textX = motifX + 8 + PLAQUE_ATTENTION_GAP;
-            ctx.font = WORLD_BODY_FONT_11;
-            ctx.fillStyle = full ? LABEL_INK.plate : WALNUT.count;
-            ctx.fillText(plaque.patronText, textX, top + 12);
-            if (plaque.patronAge) {
-                ctx.fillStyle = full ? LABEL_INK.plate : LABEL_INK.textDim;
-                ctx.fillText(plaque.patronAge, textX + plaque.patronWidth, top + 12);
-            }
-        }
-        if (plaque.attention) {
-            // Right-aligned inside the outline, over the head band's bevel
-            // and shade rows like the T1 plate's status cell.
-            const cellLeft = left + width - 1 - plaque.attentionCell;
-            ctx.fillStyle = plaque.attention.color;
-            ctx.fillRect(cellLeft, top + 1, plaque.attentionCell, PLAQUE_HEAD_H - 2);
-            drawOutlinedMotif(ctx, plaque.attention.motif, cellLeft + PLAQUE_PAD, top + 4, {
-                color: LABEL_INK.plate,
-                outline: 'transparent',
-            });
-            ctx.font = WORLD_BODY_FONT_11;
-            ctx.fillStyle = LABEL_INK.plate;
-            ctx.fillText(plaque.attentionText, cellLeft + PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP, top + 12);
-        }
-        if (plaque.rows.length) {
-            ctx.fillStyle = WALNUT.shade;
-            ctx.fillRect(left + 2, top + PLAQUE_HEAD_H - 1, width - 4, 1);
-            ctx.font = WORLD_BODY_FONT_11;
-            plaque.rows.forEach((row, index) => {
-                const baseline = top + PLAQUE_HEAD_H + 1 + index * PLAQUE_ROW_H + 9;
-                let rowX = left + 1 + PLAQUE_PAD;
-                if (row.profile) {
-                    // Repo swatch: a 3×3 pixel diamond in the repo accent.
-                    ctx.fillStyle = row.profile.accent || WALNUT.text;
-                    ctx.fillRect(rowX + 1, baseline - 6, 1, 3);
-                    ctx.fillRect(rowX, baseline - 5, 3, 1);
-                    rowX += 8;
-                }
-                ctx.fillStyle = row.color || WALNUT.count;
-                ctx.fillText(row.label, rowX, baseline);
-                if (row.tailText) {
-                    ctx.fillStyle = row.tailColor || WALNUT.count;
-                    ctx.fillText(row.tailText, rowX + Math.round(measureLabelText(ctx, row.label)), baseline);
-                }
-                if (row.musterLeft) {
-                    // `· 6 ▸ 2` in count ink; the ▸ is a 3×5 carved
-                    // triangle (Departure Mono has no U+25B8).
-                    let tailX = rowX + Math.round(measureLabelText(ctx, row.label));
-                    ctx.fillStyle = WALNUT.count;
-                    ctx.fillText(row.musterLeft, tailX, baseline);
-                    tailX += row.leftWidth;
-                    ctx.fillRect(tailX, baseline - 6, 1, 5);
-                    ctx.fillRect(tailX + 1, baseline - 5, 1, 3);
-                    ctx.fillRect(tailX + 2, baseline - 4, 1, 1);
-                    ctx.fillText(row.musterRight, tailX + PLAQUE_MUSTER_ARROW_W, baseline);
-                }
-            });
-        }
-        ctx.restore();
+    // Paints a measured plaque (BuildingPlaques `paintPlaque`).
+    _paintPlaque(ctx, plaque, options) {
+        paintPlaque(ctx, plaque, options);
     }
 
     _labelLayoutCandidates(isLandmark, isHovered) {
@@ -1856,6 +1961,7 @@ export class BuildingSprite {
         tagH,
         maxOverlap = LABEL_OVERLAP_TOLERANCE,
         localLabelDensity = 0,
+        reject = null,
     }) {
         let best = null;
         let bestOverlap = Number.POSITIVE_INFINITY;
@@ -1866,6 +1972,8 @@ export class BuildingSprite {
             const labelX = centerX + dx;
             const labelY = centerY + dy;
             if (hardBoxes.length && this._plaqueHitsBoxes(labelX, labelY, tagW, tagH, hardPad, hardBoxes)) continue;
+            // §2.3 — a micro-offset never moves a chit onto a foreign mask.
+            if (reject && reject(labelX, labelY)) continue;
             const tagLeft = labelX - tagW / 2;
             const tagTop = labelY - tagH / 2;
             const box = {
@@ -2883,6 +2991,7 @@ export class BuildingSprite {
             }
             this._drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass, horizonY, column);
             this._drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass, horizonY, column);
+            this._drawCarvedMotif(ctx, building, entry, wx, wy, splitPass, horizonY, column);
         }
     }
 

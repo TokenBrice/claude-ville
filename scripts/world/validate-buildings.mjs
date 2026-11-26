@@ -1,8 +1,14 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import { APPROACH_FILES } from '../../claudeville/src/config/townPlan.js';
-import { BUILDING_VISUAL_REGISTRY } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
+import {
+    BUILDING_VISUAL_REGISTRY,
+    signBoxFor,
+    windowRectBounds,
+} from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
+import { apertureCutContains } from '../../claudeville/src/presentation/character-mode/BuildingApertureModel.js';
 import { buildingCenterToWorld, tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { createWalkClearance, FOOTPRINT_CLEARANCE_PAD } from '../../claudeville/src/presentation/character-mode/WalkClearance.js';
 import { collectSpriteEntries, loadSpriteManifest, pathForEntry, spritesRoot } from '../sprites/manifest-utils.mjs';
@@ -450,6 +456,75 @@ function validateSlotSpriteOcclusion(reporter, buildings, overflowTiles, approac
     }
 }
 
+// Spec 04 §2.3 — every landmark's authored `sign.at` (sprite-local, the
+// bracket bolt over the door) hangs the one `signBoxFor` box: >= 60 % on the
+// building's own opaque texels (alpha > 16, the runtime mask threshold), on no
+// emissive texel (raw `base.emissive.png` alpha and the registry
+// `windowRects` glass alike) and outside every aperture cut. The renderer
+// reads the same box (BuildingPlaques), so a green run is the runtime truth.
+const SIGN_MIN_OPAQUE = 0.6;
+const SIGN_ALPHA_THRESHOLD = 16;
+
+function readSpritePng(type, name) {
+    const fullPath = join(spritesRoot, 'buildings', `building.${type}`, name);
+    return existsSync(fullPath) ? PNG.sync.read(readFileSync(fullPath)) : null;
+}
+
+export function signAnchorReport(type, visual, base, emissive) {
+    const at = visual?.sign?.at;
+    if (!Array.isArray(at) || at.length !== 2 || !at.every(Number.isFinite)) return { error: '`sign.at` must be a finite sprite-local [x, y]' };
+    const box = signBoxFor(at);
+    const cut = visual?.aperture?.cut || null;
+    const windows = (visual?.windowRects || []).map((rect) => windowRectBounds(rect));
+    let opaque = 0;
+    let emissiveTexels = 0;
+    let windowTexels = 0;
+    let cutTexels = 0;
+    let outside = 0;
+    for (let y = box.top; y < box.top + box.h; y++) {
+        for (let x = box.left; x < box.left + box.w; x++) {
+            if (x < 0 || y < 0 || x >= base.width || y >= base.height) {
+                outside++;
+                continue;
+            }
+            const index = (y * base.width + x) * 4;
+            if (base.data[index + 3] > SIGN_ALPHA_THRESHOLD) opaque++;
+            if (emissive && x < emissive.width && y < emissive.height
+                && emissive.data[(y * emissive.width + x) * 4 + 3] > 0) emissiveTexels++;
+            if (windows.some((w) => x >= w.left && x < w.left + w.w && y >= w.top && y < w.top + w.h)) windowTexels++;
+            if (cut && apertureCutContains(cut, x + 0.5, y + 0.5)) cutTexels++;
+        }
+    }
+    return { box, opaque: opaque / (box.w * box.h), emissiveTexels, windowTexels, cutTexels, outside };
+}
+
+export function validateSignAnchors(reporter, buildings, registry) {
+    for (const building of buildings) {
+        if (building.labelPriority !== 'landmark') continue;
+        const path = `registry.${building.type}.sign.at`;
+        const visual = registry[building.type];
+        const base = readSpritePng(building.type, 'base.png');
+        if (!base) {
+            reporter.error(path, 'no base.png to measure the sign box against');
+            continue;
+        }
+        const report = signAnchorReport(building.type, visual, base, readSpritePng(building.type, 'base.emissive.png'));
+        if (report.error) {
+            reporter.error(path, report.error);
+            continue;
+        }
+        const { box } = report;
+        const where = `box ${box.left},${box.top} ${box.w}x${box.h}`;
+        if (report.outside) reporter.error(path, `${where} leaves the sprite by ${report.outside} texel(s)`);
+        if (report.opaque < SIGN_MIN_OPAQUE) {
+            reporter.error(path, `${where} lies ${(report.opaque * 100).toFixed(1)}% on own opaque texels; expected >= ${SIGN_MIN_OPAQUE * 100}%`);
+        }
+        if (report.emissiveTexels) reporter.error(path, `${where} covers ${report.emissiveTexels} emissive texel(s)`);
+        if (report.windowTexels) reporter.error(path, `${where} covers ${report.windowTexels} windowRects glass texel(s)`);
+        if (report.cutTexels) reporter.error(path, `${where} enters the aperture cut on ${report.cutTexels} texel(s)`);
+    }
+}
+
 function validateSpriteManifest(reporter, buildings, manifestIds) {
     const expectedIds = new Set(buildings.map((building) => `building.${building.type}`));
     for (const id of expectedIds) {
@@ -464,59 +539,65 @@ function validateSpriteManifest(reporter, buildings, manifestIds) {
     }
 }
 
-const reporter = createReporter('world building validation');
-const {
-    BUILDING_DEFS,
-    VISIT_OVERFLOW_TILES,
-} = await loadConfigExports(
-    'claudeville/src/config/buildings.js',
-    ['BUILDING_DEFS', 'VISIT_OVERFLOW_TILES'],
-);
-const {
-    MAP_SIZE,
-} = await loadConfigExports('claudeville/src/config/constants.js', ['MAP_SIZE']);
-const manifest = loadSpriteManifest();
-const manifestIds = await loadManifestIds();
-const groundingConfig = await loadConfigExports(
-    'claudeville/src/config/buildingGrounding.js',
-    [
-        'BUILDING_GROUNDING_MODES',
-        'BUILDING_GROUNDING_MATERIALS',
-        'BUILDING_GROUNDING_EDGE_TREATMENTS',
-        'BUILDING_GROUNDING_SHADOWS',
-        'BUILDING_GROUNDING_PROFILES',
-    ],
-);
+async function main() {
+    const reporter = createReporter('world building validation');
+    const {
+        BUILDING_DEFS,
+        VISIT_OVERFLOW_TILES,
+    } = await loadConfigExports(
+        'claudeville/src/config/buildings.js',
+        ['BUILDING_DEFS', 'VISIT_OVERFLOW_TILES'],
+    );
+    const {
+        MAP_SIZE,
+    } = await loadConfigExports('claudeville/src/config/constants.js', ['MAP_SIZE']);
+    const manifest = loadSpriteManifest();
+    const manifestIds = await loadManifestIds();
+    const groundingConfig = await loadConfigExports(
+        'claudeville/src/config/buildingGrounding.js',
+        [
+            'BUILDING_GROUNDING_MODES',
+            'BUILDING_GROUNDING_MATERIALS',
+            'BUILDING_GROUNDING_EDGE_TREATMENTS',
+            'BUILDING_GROUNDING_SHADOWS',
+            'BUILDING_GROUNDING_PROFILES',
+        ],
+    );
 
-if (!Array.isArray(BUILDING_DEFS) || BUILDING_DEFS.length === 0) {
-    reporter.error('BUILDING_DEFS', 'must be a non-empty array');
-} else {
-    const seenTypes = new Set();
-    const globalVisitTiles = new Map();
-    for (const building of BUILDING_DEFS) {
-        validateRequiredFields(reporter, building);
-        if (seenTypes.has(building.type)) {
-            reporter.error(pathFor(building), `duplicate building type "${building.type}"`);
+    if (!Array.isArray(BUILDING_DEFS) || BUILDING_DEFS.length === 0) {
+        reporter.error('BUILDING_DEFS', 'must be a non-empty array');
+    } else {
+        const seenTypes = new Set();
+        const globalVisitTiles = new Map();
+        for (const building of BUILDING_DEFS) {
+            validateRequiredFields(reporter, building);
+            if (seenTypes.has(building.type)) {
+                reporter.error(pathFor(building), `duplicate building type "${building.type}"`);
+            }
+            seenTypes.add(building.type);
+            validateScalarFields(reporter, building, MAP_SIZE);
+            validateCapacity(reporter, building, APPROACH_FILES);
+            validateEntrance(reporter, building, MAP_SIZE);
+            validateVisitTiles(reporter, building, MAP_SIZE, globalVisitTiles);
+            validateWalkExclusions(reporter, building, MAP_SIZE);
         }
-        seenTypes.add(building.type);
-        validateScalarFields(reporter, building, MAP_SIZE);
-        validateCapacity(reporter, building, APPROACH_FILES);
-        validateEntrance(reporter, building, MAP_SIZE);
-        validateVisitTiles(reporter, building, MAP_SIZE, globalVisitTiles);
-        validateWalkExclusions(reporter, building, MAP_SIZE);
+        validateCombinedVisitTiles(reporter, BUILDING_DEFS, VISIT_OVERFLOW_TILES, APPROACH_FILES, MAP_SIZE);
+        validateSlotSpriteOcclusion(reporter, BUILDING_DEFS, VISIT_OVERFLOW_TILES, APPROACH_FILES, manifest);
+        validateSpriteManifest(reporter, BUILDING_DEFS, manifestIds);
+        validateGroundingProfiles(reporter, BUILDING_DEFS, groundingConfig);
+        validateSignAnchors(reporter, BUILDING_DEFS, BUILDING_VISUAL_REGISTRY);
     }
-    validateCombinedVisitTiles(reporter, BUILDING_DEFS, VISIT_OVERFLOW_TILES, APPROACH_FILES, MAP_SIZE);
-    validateSlotSpriteOcclusion(reporter, BUILDING_DEFS, VISIT_OVERFLOW_TILES, APPROACH_FILES, manifest);
-    validateSpriteManifest(reporter, BUILDING_DEFS, manifestIds);
-    validateGroundingProfiles(reporter, BUILDING_DEFS, groundingConfig);
-}
-// BL-6 — art geometry: window/room rects on the sidecar glass, room masks
-// (plan 6.3), frame-strip parts well-formed (plan 6.1).
-validateWindowGeometry(reporter, { registry: BUILDING_VISUAL_REGISTRY, spritesRoot });
-validateRoomMasks(reporter, { registry: BUILDING_VISUAL_REGISTRY, spritesRoot });
-validateFrameStripParts(reporter, {
-    entries: collectSpriteEntries(manifest, ['buildings']),
-    spritesRoot,
-});
+    // BL-6 — art geometry: window/room rects on the sidecar glass, room masks
+    // (plan 6.3), frame-strip parts well-formed (plan 6.1).
+    validateWindowGeometry(reporter, { registry: BUILDING_VISUAL_REGISTRY, spritesRoot });
+    validateRoomMasks(reporter, { registry: BUILDING_VISUAL_REGISTRY, spritesRoot });
+    validateFrameStripParts(reporter, {
+        entries: collectSpriteEntries(manifest, ['buildings']),
+        spritesRoot,
+    });
 
-reporter.finish(`${BUILDING_DEFS.length} building definition(s) checked against ${manifestIds.size} manifest id(s).`);
+    reporter.finish(`${BUILDING_DEFS.length} building definition(s) checked against ${manifestIds.size} manifest id(s).`);
+}
+
+// Run as a script; tests import the sign-anchor checks without running it.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) await main();

@@ -207,6 +207,7 @@ export function drawCrowdClusterAuras(ctx, { crowdStats, lighting = null } = {})
 // so the prefers-reduced-motion rendering is identical.
 const _namedPerCell = new Map();
 const _cohortOfAgent = new Map();
+const _ownedPerCell = new Map();
 // A body's head-chip column: its drawn body plus the screen-fixed chip slot
 // above the head (chat bubble, TALK scroll, status emote, …), in world px.
 const CHIP_SLOT_SCREEN_H = 30;
@@ -258,7 +259,24 @@ function badgeClearX(cx, cy, bw, bh, s, reach, agentSprites) {
     return cx;
 }
 
-export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1, agentSprites, cellSize = 4 } = {}) {
+// W4-A (Spec 04 §4.2 T5) — `plaqueDrawnTypes` (the building types whose
+// walnut chit or Carved Motif tally painted last frame) and
+// `plaqueBuildingByAgentId` (each counted agent's plaque building, the
+// fold/route/target derivation of `_plaqueCountsByType`) come from the
+// building renderer's last label pass. A member already shown by such a
+// count is owned there: `hidden = count - named - owned`, and the tab draws
+// only while hidden > 0. A named member is never also owned. Layer 0
+// (`theatreMode`) draws no `+N` tab at all.
+export function drawCrowdClusterBadges(ctx, {
+    crowdStats,
+    zoom = 1,
+    agentSprites,
+    cellSize = 4,
+    plaqueDrawnTypes = null,
+    plaqueBuildingByAgentId = null,
+    theatreMode = false,
+} = {}) {
+    if (theatreMode) return;
     // At dense load remembered residents share one exact building count.
     const staleGroups = new Map();
     for (const sprite of agentSprites?.values?.() || []) {
@@ -308,15 +326,24 @@ export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1, agentSprites
         const ids = clusters[i].kind === 'cohort' ? clusters[i].agentIds : null;
         if (ids) for (let j = 0; j < ids.length; j++) cohortOf.set(ids[j], clusters[i].id);
     }
+    const owned = _ownedPerCell;
+    owned.clear();
+    const ownership = plaqueDrawnTypes?.size > 0 && typeof plaqueBuildingByAgentId?.get === 'function';
     for (const sprite of agentSprites?.values?.() || []) {
+        if (!Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
         const shown = sprite.overlaySlot != null || sprite.selected || isAttentionStatus(sprite.agent?.status);
-        if (!shown || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
+        // Exact subtraction: a member the world already names is counted
+        // once, as named; else its plaque building's painted count owns it.
+        const building = !shown && ownership ? plaqueBuildingByAgentId.get(sprite.agent?.id) : null;
+        const isOwned = Boolean(building) && plaqueDrawnTypes.has(building);
+        if (!shown && !isOwned) continue;
         let key = cohortOf.get(sprite.agent?.id);
         if (!key) {
             const tile = worldToTile(sprite.x, sprite.y);
             key = `${Math.floor(tile.tileX / cellSize)},${Math.floor(tile.tileY / cellSize)}`;
         }
-        named.set(key, (named.get(key) || 0) + 1);
+        if (shown) named.set(key, (named.get(key) || 0) + 1);
+        else owned.set(key, (owned.get(key) || 0) + 1);
     }
     const s = 1 / (zoom || 1);
     ctx.save();
@@ -325,7 +352,7 @@ export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1, agentSprites
     ctx.textBaseline = 'middle';
     for (let i = 0; i < clusters.length; i++) {
         const cluster = clusters[i];
-        const hidden = (cluster.count || 0) - (named.get(cluster.id) || 0);
+        const hidden = (cluster.count || 0) - (named.get(cluster.id) || 0) - (owned.get(cluster.id) || 0);
         if (hidden <= 0) continue;
         const text = badgeText(hidden);
         const pips = topStatusPips(cluster.statuses);

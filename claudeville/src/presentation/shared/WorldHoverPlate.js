@@ -7,6 +7,13 @@
 // nothing to drop). Leaving a target keeps the plate for one short grace so
 // a sweep across neighbouring targets swaps text instead of blinking.
 // `villagerHoverLine` and `hoverPlateLines` are pure (node-tested).
+//
+// W4-A (Spec 04 §4.2, §4.6) — with the signage diet a landmark at rest may
+// show only its Carved Motif (or nothing, when empty): `buildingHoverLine`
+// names it with its exact live count and patrons on hover. On the Village
+// Strip (`data-cv-profile="strip"`, or `compact: true`) the plate is one
+// line, keeps a 4 px edge and never outgrows its host, so a villager click
+// reads inside a 240 px strip.
 
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { formatElapsed } from './Formatters.js';
@@ -18,6 +25,7 @@ const HIDE_GRACE_MS = 120;
 const POINTER_GAP = 16;
 const TARGET_GAP = 8;
 const EDGE = 8;
+const COMPACT_EDGE = 4;
 
 const BUILDING_NAMES = new Map(BUILDING_DEFS.map((def) => {
     const label = String(def.shortLabel || def.label || def.type);
@@ -26,9 +34,28 @@ const BUILDING_NAMES = new Map(BUILDING_DEFS.map((def) => {
 
 // Lore text as at most two plate lines: the first line stays the head, any
 // further lines fold into the second, joined by ' · '.
-export function hoverPlateLines(text) {
+export function hoverPlateLines(text, { maxLines = 2 } = {}) {
     const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
+    if (maxLines <= 1) return lines.length ? [lines.join(' · ')] : [];
     return lines.length > 2 ? [lines[0], lines.slice(1).join(' · ')] : lines;
+}
+
+// A landmark's hover line: its name, then the exact live count its plaque
+// or carved tally shows, then its resting patrons. Absent counts drop out.
+export function buildingHoverLine(buildingType, { count = 0, patrons = 0 } = {}) {
+    const name = BUILDING_NAMES.get(buildingType) || '';
+    if (!name) return '';
+    const parts = [name];
+    const live = Math.max(0, Math.floor(Number(count) || 0));
+    const resting = Math.max(0, Math.floor(Number(patrons) || 0));
+    if (live) parts.push(`${live} ${live === 1 ? 'villager' : 'villagers'}`);
+    if (resting) parts.push(`${resting} resting`);
+    return parts.join(' · ');
+}
+
+// True on the Village Strip profile (`/strip/`).
+export function isStripProfile(root = globalThis.document?.documentElement) {
+    return root?.dataset?.cvProfile === 'strip';
 }
 
 // A villager's line, from fields the sidebar and panel already show:
@@ -55,7 +82,8 @@ function overlapArea(a, b) {
 // fits the host and clears the target and every reserved rect wins; else each
 // spot is clamped into the host and judged again, and the one covering the
 // least of the target (then of the chrome) wins.
-export function placeHoverPlate({ point, target = null, width, height, hostWidth, hostHeight, reserved = [] }) {
+export function placeHoverPlate({ point, target = null, width, height, hostWidth, hostHeight, reserved = [], edge = EDGE }) {
+    const EDGE = edge;
     const candidates = target
         ? [
             [target.right + TARGET_GAP, point.y - height / 2],
@@ -69,6 +97,8 @@ export function placeHoverPlate({ point, target = null, width, height, hostWidth
             [point.x + POINTER_GAP, point.y - POINTER_GAP - height],
             [point.x - POINTER_GAP - width, point.y - POINTER_GAP - height],
         ];
+    // A plate larger than its host (a 240 px strip) pins to the top-left
+    // edge instead of leaving it.
     const clamp = ([x, y]) => ({
         x: Math.round(Math.max(EDGE, Math.min(hostWidth - width - EDGE, x))),
         y: Math.round(Math.max(EDGE, Math.min(hostHeight - height - EDGE, y))),
@@ -100,8 +130,10 @@ export function placeHoverPlate({ point, target = null, width, height, hostWidth
 export class WorldHoverPlate {
     // `resample()` returns what is under the pointer now (`{ text, target }`),
     // read again when a delayed plate reveals.
-    constructor({ host, reservedRects = () => [], resample = null } = {}) {
+    constructor({ host, reservedRects = () => [], resample = null, compact = null } = {}) {
         this.host = host;
+        // null: follow the page profile (the Strip is compact).
+        this.compact = compact;
         this.reservedRects = reservedRects;
         this.resample = resample;
         this._held = false;
@@ -230,9 +262,26 @@ export class WorldHoverPlate {
         this._place();
     }
 
+    get isCompact() {
+        return this.compact == null ? isStripProfile() : Boolean(this.compact);
+    }
+
     _render(text) {
         this.text = text;
-        this.el.replaceChildren(...hoverPlateLines(text).map((line) => {
+        const compact = this.isCompact;
+        this.el.classList?.toggle?.('world-hover-plate--compact', compact);
+        // A compact plate never outgrows its host: one line, ellipsed by
+        // width (the style is inline, so no profile stylesheet is needed).
+        const style = this.el.style;
+        if (style && (compact || this._compactStyled)) {
+            const maxWidth = compact && this.host?.clientWidth ? Math.max(0, this.host.clientWidth - COMPACT_EDGE * 2) : 0;
+            style.maxWidth = maxWidth ? `${maxWidth}px` : '';
+            style.overflow = compact ? 'hidden' : '';
+            style.whiteSpace = compact ? 'nowrap' : '';
+            style.textOverflow = compact ? 'ellipsis' : '';
+            this._compactStyled = compact;
+        }
+        this.el.replaceChildren(...hoverPlateLines(text, { maxLines: compact ? 1 : 2 }).map((line) => {
             const row = document.createElement('span');
             row.className = 'world-hover-plate__line';
             row.textContent = line;
@@ -250,6 +299,7 @@ export class WorldHoverPlate {
             hostWidth: this.host.clientWidth,
             hostHeight: this.host.clientHeight,
             reserved: this.reservedRects(),
+            edge: this.isCompact ? COMPACT_EDGE : EDGE,
         });
         this.el.style.left = `${x}px`;
         this.el.style.top = `${y}px`;
