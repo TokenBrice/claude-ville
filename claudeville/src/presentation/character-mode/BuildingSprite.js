@@ -5482,9 +5482,11 @@ export class BuildingSprite {
             return { paper, completed, flutter };
         });
         // A fluttering paper repaints every frame; a still board is cached.
+        // Papers draw zero text; tag the cache key on postcard frames so the
+        // postcard cached-text check never confuses it with chalk text.
         const signature = pinned.some(item => item.flutter > 0)
             ? null
-            : `papers|${pinned.map(({ paper, completed }) => `${paper.slotSeed}:${completed ? 1 : 0}`).join(',')}`;
+            : `papers|${pinned.map(({ paper, completed }) => `${paper.slotSeed}:${completed ? 1 : 0}`).join(',')}${postcardFrame() ? '|postcard' : ''}`;
         this._drawOnTaskboardSlate(ctx, localPoint, signature, (slateCtx, origin) => {
             pinned.forEach(({ paper, completed, flutter }, index) => {
                 const col = index % 2;
