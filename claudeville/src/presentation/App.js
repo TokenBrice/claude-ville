@@ -44,7 +44,7 @@ import { sessionDetailsService } from './shared/SessionDetailsService.js';
 import { ClientPerfMetrics } from './shared/ClientPerfMetrics.js';
 import { getModelVisualIdentity } from './shared/ModelVisualIdentity.js';
 import { installChromeTooltip } from './shared/ChromeTooltip.js';
-import { publishReservedRect } from './shared/ReservedRects.js';
+import { publishReservedBox, publishReservedRect } from './shared/ReservedRects.js';
 import { overlayContextAttributes } from './shared/DisplaySettings.js';
 import { isKeyboardEditTarget } from './dashboard-mode/DashboardKeyboardNavigation.js';
 
@@ -313,6 +313,7 @@ export class App {
                     this._bootState = 'ready';
                     return this;
                 }
+                this.retoldDay = recordedDay;
                 this.agentSimulator = new mod.default({
                     world: this.world, agentManager: this.agentManager, eventBus,
                     recordedDay, timelapse: params.get('timelapse') === '1',
@@ -548,6 +549,9 @@ export class App {
                 onAudioReady: audio => onVisualBeatChange(audio?.getVisualBeat?.() ?? null),
                 frameAttention: () => {
                     if (this.modeManager?.getCurrentMode() === 'dashboard') return false;
+                    if (this.renderer?.theatreMode || this.renderer?.stripProfile) {
+                        return this.renderer.frameWorldAgent(this.attentionService.list()[0]?.id);
+                    }
                     this.renderer?.cameraDirector?.frameAttention(this.renderer.agentSprites);
                     return true;
                 },
@@ -1136,7 +1140,10 @@ export class App {
     _initReadControl() {
         const button = document.getElementById('worldRead');
         if (!button || this._readControlCleanup) return;
+        let pressed = false;
         const set = on => {
+            if (pressed === on) return;
+            pressed = on;
             this.renderer?.setReadMode(on);
             button.setAttribute('aria-pressed', String(on));
         };
@@ -1602,7 +1609,13 @@ export class App {
     _bindGlobalKeyboardNavigation() {
         if (this._onGlobalKeydown) return;
         this._onGlobalKeydown = (event) => {
-            if (event.defaultPrevented || isKeyboardEditTarget(event.target)) return;
+            if (event.defaultPrevented) return;
+            if (event.key === 'Escape' && this.sidebar?.clearFilter()) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                return;
+            }
+            if (isKeyboardEditTarget(event.target)) return;
             const searchShortcut = (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey)
                 || (event.key.toLowerCase() === 'k'
                     && (event.ctrlKey || event.metaKey)
@@ -1615,12 +1628,13 @@ export class App {
                 this.sidebar?.focusSearch();
                 return;
             }
-            if (event.key === 'Escape' && this.sidebar?.clearFilter()) {
-                event.preventDefault();
-                event.stopImmediatePropagation();
+            const renderer = this.renderer;
+            if (event.key === 'Escape' && (renderer?.postcardStudio?.isOpen() || renderer?.focusedSquadIds || renderer?._readLocked)) {
+                renderer._handleWorldKeyboardCommand(event);
+                if (event.defaultPrevented) event.stopImmediatePropagation();
             }
         };
-        document.addEventListener('keydown', this._onGlobalKeydown);
+        window.addEventListener('keydown', this._onGlobalKeydown, true);
     }
 
     _bindDeferredActivityPanel() {
@@ -1731,6 +1745,7 @@ export class App {
                     usageGetter: () => this.latestUsage,
                     toast: this.toast,
                     liveHistory: !this.simMode,
+                    onExportTapestry: data => this._exportTapestry(data),
                 });
                 this.chroniclePanel = panel;
                 return panel;
@@ -1741,6 +1756,87 @@ export class App {
         }
         const panel = await this._chroniclePanelLoadPromise;
         return panel?.open?.();
+    }
+
+    async _exportTapestry(data) {
+        const { renderChronicleTapestry, tapestryFileName } = await import('./shared/ChronicleTapestry.js');
+        const fromDashboard = this.modeManager.getCurrentMode() === 'dashboard';
+        if (fromDashboard) this.modeManager.switchMode('character');
+        let diorama, cast;
+        try {
+            if (fromDashboard) {
+                await this.renderer?._worldResumePromise;
+                this._resizeWorldCanvas?.();
+            }
+            const card = await this.renderer?.strikePostcard({ save: false, crop: '16:9' });
+            if (!card?.ok) throw new Error('The World could not draw the tapestry diorama');
+            // The postcard's caption is outside the cropped scene.
+            diorama = document.createElement('canvas');
+            diorama.width = card.canvas.width;
+            diorama.height = Math.round(diorama.width * 9 / 16);
+            diorama.getContext('2d').drawImage(card.canvas, 0, 0);
+            cast = [...this.renderer.agentSprites.values()].map(sprite => sprite._poseCell).filter(cell => cell?.canvas);
+        } finally {
+            if (fromDashboard && !this._destroyed) this.modeManager.switchMode('dashboard');
+        }
+        const { canvas } = renderChronicleTapestry({ ...data, diorama, cast });
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        if (!blob) throw new Error('Tapestry PNG encoding failed');
+        const url = URL.createObjectURL(blob);
+        try {
+            const link = document.createElement('a');
+            link.download = tapestryFileName(data.dateKey);
+            link.href = url;
+            link.click();
+        } finally {
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+    }
+
+    async _mountWorldTools(renderer) {
+        const frame = document.getElementById('characterMode');
+        let studioLoad;
+        renderer.togglePostcardStudio = () => {
+            if (renderer.postcardStudio) return renderer.postcardStudio.toggle();
+            studioLoad ??= Promise.all([import('./shared/PostcardStudio.js'), this._ensureStylesheet('modal')])
+                .then(([{ PostcardStudio }]) => {
+                    if (this.renderer !== renderer || !renderer._worldModeActive || this._destroyed) return;
+                    renderer.postcardStudio = new PostcardStudio({
+                        container: frame, getRenderer: () => renderer,
+                        hasActionNeeded: () => Boolean(this.world.getStats().attention),
+                    });
+                    renderer.postcardStudio.open();
+                }).catch(() => this.toast?.show('Postcard Studio could not open.', 'error'))
+                .finally(() => { studioLoad = null; });
+            return studioLoad;
+        };
+        if (renderer._worldModeActive && new URLSearchParams(location.search).get('theatre') === '1') {
+            renderer.setTheatreMode(true);
+        }
+        const day = this.retoldDay;
+        if (!day) return;
+        const [{ RetoldScrubber }, { RETOLD_SCRUBBER_RESERVED_NAME }] = await Promise.all([
+            import('./shared/RetoldScrubber.js'), import('./character-mode/CouncilRibbon.js'), this._ensureStylesheet('modal'),
+        ]);
+        if (this.renderer !== renderer || this._destroyed) return;
+        const replay = this.agentSimulator;
+        const clock = replay.replayClock;
+        renderer.retoldScrubber = new RetoldScrubber({
+            container: frame, dateKey: day.dateKey, lower: day.lower, upper: day.upper,
+            chapters: day.chapters, pins: day.pins, theatreMode: renderer.theatreMode,
+            isShortcutBlocked: event => shortcutBlocked(event) || !renderer._worldModeActive
+                || (document.activeElement !== document.body && document.activeElement !== renderer.canvas),
+            onSeek: ({ progress }) => {
+                const elapsed = progress * clock.duration;
+                if (elapsed < clock.elapsed) {
+                    replay.stop();
+                    replay.start();
+                }
+                replay.advanceReplay(elapsed - clock.elapsed, false);
+                renderer._invalidateIdleFrame();
+            },
+            onReserveRect: rect => publishReservedBox(RETOLD_SCRUBBER_RESERVED_NAME, rect),
+        });
     }
 
     async _loadRenderer(rendererModule = null) {
@@ -1812,6 +1908,8 @@ export class App {
             this.renderer = candidate;
             candidate.setVisualBeat?.(this.topBar?.audio?.getVisualBeat?.() ?? null);
             previous?.hide?.();
+            await this._mountWorldTools(candidate);
+            if (this._destroyed || this.renderer !== candidate) return;
             this._installPerfDebugHelper();
             // Framing waits one frame so the first update has placed the agent
             // sprites the content box is built from. That frame never reveals:
@@ -1842,6 +1940,10 @@ export class App {
     // keeps a deterministic first frame); otherwise it settles on live work.
     // 0.3 — only then may a presented frame report `world:first-frame`.
     _openWorld(renderer, scenarioMetadata = null) {
+        if (renderer.stripProfile) {
+            renderer.cameraDirector.setAmbient(true);
+            return;
+        }
         const cameraMeta = scenarioMetadata?.camera || null;
         if (cameraMeta) {
             if (cameraMeta.opening !== false) {
@@ -1871,7 +1973,21 @@ export class App {
             ]);
             if (this._destroyed) return;
             if (module.DashboardRenderer) {
-                candidate = new module.DashboardRenderer(this.world, { toast: this.toast });
+                const locate = agent => {
+                    if (!agent?.id || this._destroyed) return;
+                    this.modeManager.switchMode('character');
+                    // The button both emits and calls back. Frame once after the canvas has resized.
+                    cancelAnimationFrame(this._locateFrame);
+                    this._locateFrame = requestAnimationFrame(async () => {
+                        this._locateFrame = null;
+                        const renderer = this.renderer;
+                        await renderer?._worldResumePromise;
+                        if (!this._destroyed && renderer?._worldModeActive) renderer.frameWorldAgent(agent.id);
+                    });
+                };
+                candidate = new module.DashboardRenderer(this.world, { toast: this.toast, onLocateInWorld: locate });
+                this._eventUnsubscribers.push(eventBus.on(module.DASHBOARD_LOCATE_IN_WORLD_EVENT,
+                    ({ agentId }) => locate(this.world.agents.get(agentId))));
                 if (this._destroyed) {
                     candidate.destroy?.();
                     return;
@@ -2213,6 +2329,7 @@ export class App {
     destroy() {
         if (this._destroyPromise) return this._destroyPromise;
         this._destroyed = true;
+        if (this._locateFrame != null) cancelAnimationFrame(this._locateFrame);
         this._destroyPromise = (async () => {
             await this._cleanupOwned();
             if (this._bootState !== 'failed') this._bootState = 'destroyed';
@@ -2257,7 +2374,7 @@ export class App {
             unsubscribe?.();
         }
         if (this._onGlobalKeydown) {
-            document.removeEventListener('keydown', this._onGlobalKeydown);
+            window.removeEventListener('keydown', this._onGlobalKeydown, true);
             this._onGlobalKeydown = null;
         }
         if (this._onDashboardIntent) {

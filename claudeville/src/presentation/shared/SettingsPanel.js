@@ -29,6 +29,7 @@ import {
     writeTownBandVoice,
 } from './SoundSettings.js';
 import {
+    SIGNAGE_LABELS, SIGNAGE_EVENT, normalizeSignageMode, writeSignageMode,
     HDR_HIGHLIGHT_LABELS,
     HDR_HIGHLIGHT_MODES,
     normalizeHdrHighlights,
@@ -36,6 +37,7 @@ import {
     readDisplayStatus,
     writeHdrHighlights,
 } from './DisplaySettings.js';
+import { GLASS_EVENT, normalizeGlassSetting, writeGlassSetting } from '../character-mode/InspectionGlass.js';
 
 export const REDUCED_MOTION_OVERRIDE_KEY = 'claudeville.motion.reduce';
 const HOOK_LIVE_WINDOW_MS = 15_000;
@@ -525,6 +527,18 @@ export class SettingsPanel {
             this._checkbox('sidebarCollapsed', 'Collapse sidebar', 'Keep the agent roster folded.', settings.sidebarCollapsed, this.onSidebarCollapsed),
             this._checkbox('reducedMotion', 'Reduce motion', 'Override the system preference for this browser.', settings.reducedMotion, this.onReducedMotion),
             hdrRow,
+            this._select('signage', 'Signage', 'Choose how landmarks show their occupants.',
+                Object.entries(SIGNAGE_LABELS), normalizeSignageMode(settings.signage), value => {
+                    const mode = writeSignageMode(value, this._storage);
+                    eventBus.emit(SIGNAGE_EVENT, { mode });
+                    return mode;
+                }),
+            this._select('glass', 'The Glass', 'Hold G or arm the dock tool to inspect the village.',
+                [['off', 'Off'], ['on', 'On']], normalizeGlassSetting(settings.glass), value => {
+                    const mode = writeGlassSetting(value, this._storage);
+                    eventBus.emit(GLASS_EVENT, { mode });
+                    return mode;
+                }),
             weatherRow,
         );
         return this._section('CONTROLS', 'settings-section--controls', [grid]);
@@ -878,6 +892,10 @@ export class SettingsPanel {
             if (input) input.checked = Boolean(settings[key]);
         }
         const hdrSelect = this.controls.get('hdrHighlights');
+        for (const [key, mode] of [['signage', normalizeSignageMode(settings.signage)], ['glass', normalizeGlassSetting(settings.glass)]]) {
+            const input = this.controls.get(key);
+            if (input) input.value = mode;
+        }
         const hdrMode = normalizeHdrHighlights(settings.hdrHighlights);
         if (hdrSelect && hdrSelect.value !== hdrMode) hdrSelect.value = hdrMode;
         const weatherSelect = this.controls.get('villageWeather');

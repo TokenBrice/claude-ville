@@ -134,6 +134,8 @@ test('settings review reads every operator preference, sound levels as steps', (
         desktopAlerts: true,
         sidebarCollapsed: true,
         hdrHighlights: 'full',
+        signage: 'compact',
+        glass: 'off',
         villageWeather: 'real-sky',
     });
 });

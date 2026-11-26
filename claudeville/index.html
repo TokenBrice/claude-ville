@@ -23,6 +23,9 @@
                 history.replaceState(history.state, '', `${location.pathname}?${params}${location.hash}`);
             }
             document.querySelector('link[rel="manifest"]').href = 'm.webmanifest';
+        } else if (/^\/strip\/?$/.test(location.pathname)) {
+            document.documentElement.dataset.cvProfile = 'strip';
+            document.querySelector('link[rel="manifest"]').href = 'strip.webmanifest';
         }
     }</script>
     <meta name="theme-color" content="#1b120d">
@@ -49,6 +52,7 @@
     <link rel="stylesheet" href="css/character.css">
     <link rel="stylesheet" href="css/frame-kit.css">
     <link rel="stylesheet" href="css/mobile.css">
+    <link rel="stylesheet" href="css/strip.css">
 </head>
 <body>
     <!-- Top bar -->
@@ -224,11 +228,21 @@
                             <button class="world-grammar__close" type="button" popovertarget="worldGrammar" popovertargetaction="hide" aria-label="Close World controls">×</button>
                         </div>
                         <div class="world-grammar__body"><b>/ or Ctrl/Cmd+K</b> search agents · <b>↑/↓/Home/End</b> move · <b>Enter</b> select and follow · <b>Esc</b> clear search / close panel · <b>A</b> frame attention · <b>F</b> frame village · <b>drag / arrows</b> pan · <b>wheel / +/-</b> zoom · <b>R</b> replay · <b>P</b> postcard (a PNG of this view with no names, speech or labels) · <b>M</b> sound on/off</div>
-                        <div class="world-grammar__body"><b>Hold B / READ</b> reveal work labels; release to restore names.</div>
+                        <div class="world-grammar__body"><b>Hold B / READ</b> reveal work labels · <b>Shift+B</b> lock READ · <b>H</b> Theatre · <b>Hold G</b> inspect with The Glass · <b>C</b> Council Focus · <b>Shift+P</b> Postcard Studio.</div>
                         <div class="world-grammar__body"><b>Touch</b> drag to pan · pinch to zoom · tap to select · long-press for details.</div>
                         <div class="world-grammar__body"><b>FREE · AUTO · AMBIENT</b> who moves the camera: only you, the idle auto-framer, or the working-village broadcast. Any pan, zoom, key, or selection hands Ambient straight back; it waits as a lit pip on AMBIENT.</div>
                     </div>
                     <div id="worldSemanticSummary" class="world-semantic-summary" role="status" aria-live="polite"></div>
+                    <div id="theatreWhisper"><span></span></div>
+                    <button id="theatreWake" type="button" hidden></button>
+                    <div id="stripRail" hidden>
+                        <span class="strip-rail__live"><i class="strip-rail__dot"></i><b class="strip-rail__label" id="stripLive">SYNCING</b></span>
+                        <span class="strip-rail__working"><span class="strip-rail__count" id="stripWorking">–</span><b class="strip-rail__label">WORKING</b></span>
+                        <button class="strip-rail__attention" id="stripAttention" type="button" hidden></button>
+                        <span class="strip-rail__spacer"></span>
+                        <button class="strip-rail__sound" id="stripSound" type="button" aria-pressed="false">SOUND</button>
+                        <a class="strip-rail__open" href="/" target="_blank" rel="noopener">OPEN FULL ↗</a>
+                    </div>
                     <div id="worldDock" class="world-dock cv-frame" role="group" aria-label="World camera">
                         <div class="topbar__well world-dock__camera cv-frame cv-frame--well" role="group" aria-label="Camera">
                             <button id="worldCameraFree" class="topbar__sound-btn world-camera" type="button" aria-pressed="false" data-camera-mode="free" data-tip="Free camera · it moves only when you move it">FREE</button>
@@ -236,6 +250,8 @@
                             <button id="worldAmbient" class="topbar__sound-btn world-camera world-ambient" type="button" aria-pressed="false" data-camera-mode="ambient" data-state="off" data-tip="Ambient camera · a patient broadcast of the work that is actually happening. Any camera input or selection hands the frame back.">AMBIENT</button>
                         </div>
                         <button id="worldRead" class="topbar__sound-btn world-read" type="button" aria-label="Hold to read the village (B)" aria-pressed="false" data-tip="Hold to read work labels" data-tip-key="B">READ <kbd>B</kbd></button>
+                        <button id="worldReadLock" class="topbar__sound-btn" type="button" aria-label="Unlock READ" hidden>READ LOCK</button>
+                        <button id="worldGlass" class="topbar__sound-btn" type="button" aria-pressed="false" aria-label="Arm The Glass for touch or pen" hidden>GLASS</button>
                         <button id="topbarWorldControls" class="topbar__sound-btn topbar__icon-btn topbar__icon-btn--action" type="button" popovertarget="worldGrammar" aria-label="Open World controls" data-tip="World controls and keyboard shortcuts">
                             <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                                 <path fill="currentColor" d="M6 1h4v3h3v2h2v4h-2v2h-3v3H6v-3H3v-2H1V6h2V4h3V1Zm1 2v3H4v4h3v3h2v-3h3V6H9V3H7Zm0 4h2v2H7V7Z"/>

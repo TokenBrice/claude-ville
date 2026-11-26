@@ -220,3 +220,57 @@ body:has(#btnModeDashboard.topbar__mode-btn--active) .toast[data-cue-kind="summo
         animation: none;
     }
 }
+
+:root { --cv-step-theatre: 120ms steps(2, end); }
+
+:root[data-cv-theatre] #topbar,
+:root[data-cv-theatre] .sidebar,
+:root[data-cv-theatre] #worldDock { transition: transform var(--cv-step-theatre); }
+
+:root[data-cv-theatre] #topbar { transform: translateY(-48px); }
+:root[data-cv-theatre] .sidebar { transform: translateX(-240px); }
+:root[data-cv-theatre] #worldDock { transform: translateY(-36px); }
+
+:root[data-cv-theatre="returning"] :is(#topbar, .sidebar, #worldDock) { transform: none; }
+:root[data-cv-theatre="settled"] :is(#topbar, .sidebar, #worldDock, #activityPanel, #firstRunHint) {
+    display: none !important;
+}
+:root[data-cv-theatre="settled"] #characterMode {
+    width: 100vw;
+    height: 100vh;
+}
+
+#theatreWhisper, #theatreWake, #worldDock [hidden] { display: none; }
+:root[data-cv-theatre="settled"] #theatreWhisper {
+    display: block;
+    position: absolute;
+    z-index: 12;
+    top: 0;
+    right: 0;
+    width: 80px;
+    height: 40px;
+}
+#theatreWhisper span, #theatreWake {
+    background: var(--bg-1);
+    color: var(--gold);
+    border: 1px solid var(--brass);
+    padding: 0 6px;
+    font: var(--fs-body)/16px var(--font-body);
+    white-space: nowrap;
+}
+#theatreWhisper span { position: absolute; top: 0; right: 0; visibility: hidden; pointer-events: none; }
+#theatreWhisper[data-visible] span { visibility: visible; }
+:root[data-cv-theatre="settled"] #theatreWake:not([hidden]) {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    position: absolute;
+    z-index: 12;
+    bottom: 8px;
+    right: 8px;
+}
+#worldReadLock, #worldGlass[aria-pressed="true"] { color: var(--gold); background: var(--bg-3); }
+
+@media (prefers-reduced-motion: reduce) {
+    :root { --cv-step-theatre: 0s; }
+}

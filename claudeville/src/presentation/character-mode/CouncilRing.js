@@ -594,6 +594,7 @@ export function drawFamilyTethers(ctx, {
     motionScale = 1,
     lighting = null,
     grade = null,
+    focusedSquadIds = null, readMode = false,
     projectIsoToScreen = null, // reserved; world transform already applied by caller
 } = {}) {
     void projectIsoToScreen;
@@ -621,7 +622,9 @@ export function drawFamilyTethers(ctx, {
         const parent = agentSprites.get(parentId);
         if (!parent || parent.isArrivalPending?.()) continue;
         const squad = squadByParent.get(parentId) || null;
-        const trim = squad
+        const focused = focusedSquadIds?.has(parentId);
+        const promoted = focused || readMode;
+        const trim = focused ? '#e0b66b' : squad
             ? gradeColor(squadAccent(parent), grade)
             : gradeColor(parent._providerTrimColor?.() || parent.providerTrimColor || '#8b8b9e', grade);
         const keyline = squad ? gradeColor('#1c130d', grade) : null;
@@ -632,12 +635,12 @@ export function drawFamilyTethers(ctx, {
         // FK-3 — a squad is one mark: admitted once at the leader's feet, so
         // the region counter limits squads, never one squad's own cords.
         const corded = squad ? squadCordChildIds(parent, squad.childIds, agentSprites) : null;
-        let squadGate = squad && governor
+        let squadGate = squad && governor && !promoted
             ? governor.admit(MarkTier.SECONDARY, squadFoot(parent).x, squadFoot(parent).y)
             : { draw: true, alpha: 1 };
         // The selected or hovered leader's squad always draws, at the
         // secondary cap, however full its region already is.
-        if (squad && governor && (parent.selected || parent.hovered)) {
+        if (squad && governor && !promoted && (parent.selected || parent.hovered)) {
             const cap = markPolicyFor(MarkTier.SECONDARY, governor.pressureLevel).alphaCap;
             if (!squadGate.draw || squadGate.alpha < cap) squadGate = { draw: true, alpha: cap };
         }
@@ -649,11 +652,11 @@ export function drawFamilyTethers(ctx, {
             if (!child || child.isArrivalPending?.()) continue;
 
             if (squad) {
-                if (!squadGate.draw || !corded.has(childId)) continue;
+                if (!squadGate.draw || (!promoted && !corded.has(childId))) continue;
                 const start = squadFoot(parent);
                 const end = squadFoot(child);
                 ctx.save();
-                ctx.globalAlpha = steppedAlpha(SQUAD_TETHER_ALPHA * Math.min(1.2, boost) * squadGate.alpha);
+                ctx.globalAlpha = focused ? 1 : steppedAlpha(SQUAD_TETHER_ALPHA * Math.min(1.2, boost) * squadGate.alpha);
                 patternLine(ctx, start.x, start.y, end.x, end.y, SQUAD_TETHER_PATTERNS[squad.shape], trim, keyline, feet);
                 ctx.restore();
                 continue;
@@ -665,7 +668,7 @@ export function drawFamilyTethers(ctx, {
             const dy = end.y - start.y;
             const dist = Math.hypot(dx, dy);
             if (dist < 1) continue;
-            const gate = governor
+            const gate = !promoted && governor
                 ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
                 : { draw: true, alpha: 1 };
             if (!gate.draw) continue;
@@ -675,7 +678,7 @@ export function drawFamilyTethers(ctx, {
             };
 
             ctx.save();
-            ctx.globalAlpha = steppedAlpha(alpha * gate.alpha);
+            ctx.globalAlpha = focused ? 1 : steppedAlpha(alpha * gate.alpha);
             dottedCurve(ctx, start.x, start.y, control.x, control.y, end.x, end.y, { step: 4, phase, color: trim });
             ctx.restore();
         }

@@ -341,3 +341,24 @@ export function thoughtLeader(out, column, shiftX, slotShift, toY) {
     out.toY = toY;
     return out;
 }
+
+export function usesScribeLine(restZoom, readMode, theatreMode) {
+    return !readMode && (restZoom < 1.6 || theatreMode);
+}
+
+/** The overview speaks one line, using the same focus/freshness order as thought placement. */
+export function scribeSpeaker(speakers) {
+    return speakers?.find(sprite => sprite.bubbleSlot != null && !sprite.bubbleMergedInto
+        && !sprite._statusClock && sprite._statusThread?.[0]?.text) || null;
+}
+
+export function drawQuillPip(ctx, sprite, zoom) {
+    ctx.save();
+    ctx.translate(sprite._thoughtAnchorX ?? sprite.x, sprite.bubbleBaseY);
+    ctx.scale(1 / zoom, 1 / zoom);
+    ctx.fillStyle = sprite.thoughtRepoAccent?.() || '#e9cc90';
+    ctx.fillRect(-4, -4, 2, 2);
+    ctx.fillRect(-1, -5, 2, 2);
+    ctx.fillRect(2, -6, 2, 2);
+    ctx.restore();
+}

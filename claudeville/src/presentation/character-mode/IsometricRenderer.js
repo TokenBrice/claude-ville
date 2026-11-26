@@ -34,7 +34,7 @@ import { WorldHoverPlate, villagerHoverLine } from '../shared/WorldHoverPlate.js
 import { dialogueSourceLabel } from '../../config/dialogue.js';
 import { emitAgentSelected } from '../shared/AgentSelection.js';
 import { shortcutBlocked } from '../shared/ShortcutGuard.js';
-import { HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, readHdrHighlights } from '../shared/DisplaySettings.js';
+import { readSignageMode, SIGNAGE_EVENT, HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, readHdrHighlights } from '../shared/DisplaySettings.js';
 import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
 import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem } from './ParticleSystem.js';
@@ -88,7 +88,10 @@ import VisitTileAllocator, { standsOnFixture } from './VisitTileAllocator.js';
 import { scenicScoreBias } from './DayRoutine.js';
 import { getPulsePriority } from './PulsePolicy.js';
 import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
-import { strikePostcard } from './Postcard.js';
+import { CouncilRibbon } from './CouncilRibbon.js';
+import { getBuildingApertureProfile } from './BuildingVisualRegistry.js';
+import { InspectionGlass, GLASS_EVENT, readGlassSetting } from './InspectionGlass.js';
+import { postcardFrame, strikePostcard } from './Postcard.js';
 import { fireBreath, fireBreathDepth, fixturePoolReach, groundCourseHeight, HEARTH_FIXTURES, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import { lampRoundFor } from './LamplighterRound.js';
 import { applyTeamPlazaPreferences, getCouncilRingDiagnostics, releaseCouncilRingState } from './CouncilRing.js';
@@ -740,6 +743,16 @@ class FountainWaterSprite extends StaticPropSprite {
         this._frames.length = 0;
         this._cacheCanvas = null;
         this._alphaMask = null;
+    }
+}
+
+class WorldAgentSprite extends AgentSprite {
+    _thoughtOwnsHead() {
+        return this.theatreMode || super._thoughtOwnsHead();
+    }
+
+    _drawToolGlyphBadge(ctx, top) {
+        return !this.theatreMode && super._drawToolGlyphBadge(ctx, top);
     }
 }
 
@@ -2237,7 +2250,12 @@ export class IsometricRenderer {
         // #21 — cinematic director listens for VillageDirector camera cues and
         // drives time-boxed glides on the camera (abort-on-input is in Camera).
         this.cameraDirector?.dispose?.();
-        this.cameraDirector = new CameraDirector(this.camera, { motionScale: this.motionScale });
+        this.stripProfile = document.documentElement?.dataset?.cvProfile === 'strip';
+        this.cameraDirector = new CameraDirector(this.camera, { motionScale: this.motionScale, stripProfile: this.stripProfile });
+        this.inspectionGlass = new InspectionGlass({ enabled: readGlassSetting() === 'on' });
+        this.councilRibbon = new CouncilRibbon();
+        this.signageMode = readSignageMode();
+        this.buildingRenderer?.setSignageMode?.(this.signageMode);
         // #attract — idle attract camera defaults on; honor the persisted toggle.
         let autoCam = true;
         try { autoCam = window.localStorage?.getItem('cv-auto-camera') !== '0'; } catch (_) { /* storage unavailable */ }
@@ -2377,6 +2395,18 @@ export class IsometricRenderer {
             eventBus.on('camera:auto-camera', (payload) => this.cameraDirector?.setAutoMode?.(payload?.enabled !== false)),
             // 10.2 / 10.3 — SET's HDR highlights and the screen's media
             // queries (a window moved to or from an HDR / P3 screen).
+            eventBus.on(SIGNAGE_EVENT, ({ mode }) => {
+                this.signageMode = mode;
+                this.buildingRenderer?.setSignageMode?.(mode);
+                this._invalidateIdleFrame();
+            }),
+            eventBus.on(GLASS_EVENT, ({ mode }) => {
+                this.inspectionGlass.setEnabled(mode === 'on');
+                eventBus.emit('world:glass-armed', this.inspectionGlass.armed);
+                this._invalidateIdleFrame();
+            }),
+            eventBus.on('world:read-unlock', () => this.setReadLock(false)),
+            eventBus.on('world:glass-arm', () => eventBus.emit('world:glass-armed', this.inspectionGlass.toggleArmed())),
             eventBus.on(HDR_HIGHLIGHTS_EVENT, () => this._applyDisplayColor()),
             watchDisplayMedia(() => this._applyDisplayColor()),
             // 4.8 — earned nicknames & W3-D earned patina garnish agent sprites/benches.
@@ -2418,6 +2448,8 @@ export class IsometricRenderer {
             const screenX = e.clientX - rect.left;
             const screenY = e.clientY - rect.top;
             const worldPos = this.camera.screenToWorld(screenX, screenY);
+            if (this.councilRibbon?.onClick(screenX, screenY, id => this.frameWorldAgent(id))) return;
+            if (this.stripProfile && this._showTouchInfo(e.clientX, e.clientY)) return;
             this._handleClick(worldPos.x, worldPos.y, e.pointerType
                 ? e.pointerType !== 'mouse'
                 : e.sourceCapabilities?.firesTouchEvents === true);
@@ -2445,8 +2477,26 @@ export class IsometricRenderer {
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
         // FP-1b — any pointer input holds 60 fps for a second.
-        this._onPointerInputMain = () => { this._pointerInputAt = performance.now(); };
-        for (const type of ['pointerdown', 'pointermove', 'wheel']) {
+        this._onPointerInputMain = event => {
+            this._pointerInputAt = performance.now();
+            const glass = this.inspectionGlass;
+            if (!glass.enabled || event.type === 'wheel') return;
+            const rect = canvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            if (event.type === 'pointerdown') glass.onPointerDown(x, y, event);
+            if (event.type === 'pointermove' && glass.onPointerMove(x, y, event)) {
+                // Keep Camera's contact current for a second finger, without panning on the first.
+                const contact = this.camera._touchPointers.get(event.pointerId);
+                if (contact) Object.assign(contact, { x: event.clientX, y: event.clientY });
+                this.camera._clearTouchHold();
+                if (this.camera._touchGesture) this.camera._touchGesture.consumed = true;
+                event.stopImmediatePropagation();
+            }
+            if (event.type === 'pointerup' || event.type === 'pointercancel') glass.onPointerUp(x, y, event);
+            this._invalidateIdleFrame();
+        };
+        for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'wheel']) {
             canvas.addEventListener(type, this._onPointerInputMain, { passive: true, capture: true });
         }
         this._onMouseLeaveMain = () => {
@@ -2472,15 +2522,22 @@ export class IsometricRenderer {
             this._handleWorldKeyboardCommand(e);
         };
         window.addEventListener('keydown', this._onKeyDown);
-        this._onReadKeyUp = (event) => {
-            if (event.code === 'KeyB') this.setReadMode(false);
-        };
-        this._onReadBlur = () => this.setReadMode(false);
+        this._onReadKeyUp = event => this._releaseWorldKeys(event);
+        this._onReadBlur = () => this._releaseWorldKeys();
         window.addEventListener('keyup', this._onReadKeyUp);
         window.addEventListener('blur', this._onReadBlur);
         this._onModeChanged = (mode) => this.setWorldModeActive(mode !== 'dashboard');
         this._unsubscribers.push(eventBus.on('mode:changed', this._onModeChanged));
 
+        const whisper = document.getElementById('theatreWhisper');
+        const enter = () => this._scheduleWhisper(true, 150);
+        const leave = () => this._scheduleWhisper(false, 1500);
+        whisper?.addEventListener('pointerenter', enter);
+        whisper?.addEventListener('pointerleave', leave);
+        this._unsubscribers.push(() => {
+            whisper?.removeEventListener('pointerenter', enter);
+            whisper?.removeEventListener('pointerleave', leave);
+        });
         this.running = true;
         this._startLoop();
         return true;
@@ -2509,7 +2566,148 @@ export class IsometricRenderer {
     }
 
     getReadMode() {
-        return Boolean(this._readMode);
+        return !postcardFrame() && Boolean(this._readMode || this._readLocked);
+    }
+
+    _releaseWorldKeys(event) {
+        if (!event || event.code === 'KeyB') this.setReadMode(false);
+        if (!event) this.inspectionGlass?.onBlur();
+        else if (!this.inspectionGlass?.onKeyUp(event)) return;
+        this._invalidateIdleFrame();
+    }
+
+    setReadLock(locked) {
+        this._readLocked = Boolean(locked);
+        this.setReadMode(false);
+        eventBus.emit('world:read-lock', this._readLocked);
+        this._invalidateIdleFrame();
+    }
+
+    _scheduleWhisper(visible, delay) {
+        clearTimeout(this._whisperTimer);
+        this._whisperTimer = setTimeout(() => {
+            document.getElementById('theatreWhisper')?.toggleAttribute('data-visible', visible);
+        }, delay);
+    }
+
+    setTheatreMode(active, instant = false) {
+        const root = globalThis.document?.documentElement;
+        if (!root || (!active && !root.dataset.cvTheatre && !this.theatreMode)) return;
+        this._endTheatreTransition?.();
+        this.theatreMode = Boolean(active);
+        const whisper = document.getElementById('theatreWhisper');
+        clearTimeout(this._whisperTimer);
+        whisper?.toggleAttribute('data-visible', active);
+        if (active) {
+            this.setReadLock(false);
+            this._scheduleWhisper(false, 4000);
+        }
+        const bar = document.getElementById('topbar');
+        const settle = () => {
+            this._endTheatreTransition?.();
+            if (active) root.dataset.cvTheatre = 'settled';
+            else delete root.dataset.cvTheatre;
+        };
+        if (instant || this.motionScale === 0) settle();
+        else {
+            root.dataset.cvTheatre = 'leaving';
+            if (!active) {
+                bar?.getBoundingClientRect();
+                root.dataset.cvTheatre = 'returning';
+            }
+            const ended = event => {
+                if (event.target === bar && event.propertyName === 'transform') settle();
+            };
+            const timer = setTimeout(settle, 140);
+            bar?.addEventListener('transitionend', ended);
+            this._endTheatreTransition = () => {
+                clearTimeout(timer);
+                bar?.removeEventListener('transitionend', ended);
+                this._endTheatreTransition = null;
+            };
+        }
+        this.retoldScrubber?.setTheatreMode(active);
+        eventBus.emit('world:theatre', active);
+        this._invalidateIdleFrame();
+    }
+
+    get restZoom() {
+        return this.camera?._directorGlide?.toZoom ?? this.camera?.restZoomTarget ?? this.camera?.zoom;
+    }
+
+    frameWorldAgent(id) {
+        const sprite = this.agentSprites.get(id);
+        if (!sprite || sprite.agent?.isDeparted) return false;
+        if (isAttentionStatus(sprite.agent?.status) && this.cameraDirector?.frameAttention([sprite])) return true;
+        this.camera.noteUserInput?.();
+        return this.camera.glideToWorld({ minX: sprite.x, maxX: sprite.x, minY: sprite.y - 60, maxY: sprite.y },
+            { owner: 'user', maxZoom: this.camera.shotTier?.('medium') || 2, userAdjustedOnComplete: true });
+    }
+
+    _clearCouncilFocus() {
+        this.focusedSquadIds = null;
+        this.councilRibbon?.clear();
+        this._invalidateIdleFrame();
+    }
+
+    _refreshCouncilFocus() {
+        const selected = this.selectedAgent;
+        const sprites = this.agentSprites;
+        let lead = sprites.get(selected?.id);
+        const ancestors = new Set();
+        while (lead && !ancestors.has(lead.agent.id)) {
+            ancestors.add(lead.agent.id);
+            const parent = sprites.get(lead.agent.rootSessionId) || sprites.get(lead.agent.parentSessionId);
+            if (!parent || parent === lead || parent.agent.isDeparted) break;
+            lead = parent;
+        }
+        if (!lead || lead.agent.isDeparted) return this._clearCouncilFocus();
+        const members = new Set([lead.agent.id]);
+        const children = [];
+        // Some providers only supply a parent. Walk until nested children have all joined.
+        let previous;
+        do {
+            previous = members.size;
+            for (const sprite of sprites.values()) {
+                const a = sprite.agent;
+                if (a.isDeparted || members.has(a.id)) continue;
+                if (!members.has(a.parentSessionId) && !members.has(a.rootSessionId)) continue;
+                members.add(a.id);
+                children.push(sprite);
+            }
+        } while (members.size > previous);
+        if (!children.length || !members.has(selected?.id)) return this._clearCouncilFocus();
+        this.focusedSquadIds = members;
+        this.councilRibbon.setSquad({ lead, children, selectedId: selected.id });
+        this._invalidateIdleFrame();
+    }
+
+    _updateGlassCutaway() {
+        const glass = this.inspectionGlass;
+        const buildings = this.buildingRenderer;
+        if (!buildings || !glass?.enabled || postcardFrame()) return;
+        const zoom = this.restZoom;
+        const center = glass.getCenter();
+        const point = center && zoom >= 2 && this.camera.screenToWorld(center.x, center.y);
+        const type = point && buildings.hitTest(point.x, point.y)?.type;
+        const cut = glass.updateCutaway({
+            buildingId: type && getBuildingApertureProfile(type) ? type : null,
+            zoom, selectionCutawayActive: Boolean(buildings.getApertureModel()),
+        });
+        if (!cut.buildingId) return;
+        // The existing inspection builder reads the selection synchronously. Keep real selection intact.
+        const selected = buildings._selectedBuildingType;
+        const currentZoom = buildings._zoom;
+        try {
+            buildings._zoom = zoom;
+            buildings._selectedBuildingType = cut.buildingId;
+            buildings._updateInspection();
+            const model = buildings.getApertureModel();
+            if (model) model.source = cut.source;
+        } finally {
+            buildings._selectedBuildingType = selected;
+            buildings._zoom = currentZoom;
+        }
     }
 
     // 10.2 / 10.3 — the world renderer's display path from the stored HDR
@@ -2595,7 +2793,7 @@ export class IsometricRenderer {
         if (this.canvas) {
             this.canvas.removeEventListener('click', this._onClick);
             this.canvas.removeEventListener('mousemove', this._onMouseMoveMain);
-            for (const type of ['pointerdown', 'pointermove', 'wheel']) {
+            for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'wheel']) {
                 this.canvas.removeEventListener(type, this._onPointerInputMain, { capture: true });
             }
             this.canvas.removeEventListener('mouseleave', this._onMouseLeaveMain);
@@ -2618,6 +2816,11 @@ export class IsometricRenderer {
             this.chronicleStore.channel.removeEventListener('message', this._chronicleChannelListener);
         }
         this._chronicleChannelListener = null;
+        this.setTheatreMode(false, true);
+        this._clearCouncilFocus();
+        this.setReadLock(false);
+        this.postcardStudio?.destroy();
+        this.retoldScrubber?.destroy();
         this._onModeChanged = null;
         this.chronicler?.destroy?.();
         this._sortedSprites = [];
@@ -2732,6 +2935,15 @@ export class IsometricRenderer {
             if (!nextActive) this._suspendWorldModeResources({ deferShade: true });
             else void this._beginWorldModeResume();
             return;
+        }
+        if (!nextActive) {
+            this.setTheatreMode(false, true);
+            this.setReadLock(false);
+            this._clearCouncilFocus();
+            this.inspectionGlass?.onBlur();
+            this.inspectionGlass?.setArmed(false);
+            eventBus.emit('world:glass-armed', false);
+            this.postcardStudio?.close();
         }
         this._worldModeActive = nextActive;
         this._lastFrameTime = performance.now();
@@ -4100,12 +4312,41 @@ export class IsometricRenderer {
         if (this._isModalOpen()) return;
         // #7 — inside the fleet card the keyboard belongs to the card.
         if (isInFleetCard(activeElement)) return;
+        if (event.defaultPrevented) return;
+        const blocked = shortcutBlocked(event);
         if (event.code === 'KeyB') {
-            this.setReadMode(true);
+            if (blocked) return;
+            if (event.shiftKey) this.setReadLock(!this._readLocked);
+            else this.setReadMode(true);
             event.preventDefault();
             return;
         }
 
+        if (!blocked && event.code === 'KeyH') {
+            this.setTheatreMode(!this.theatreMode);
+        } else if (!blocked && event.code === 'KeyG' && this.inspectionGlass?.onKeyDown(event)) {
+            this._invalidateIdleFrame();
+        } else if (!blocked && event.code === 'KeyC') {
+            if (this.focusedSquadIds) this._clearCouncilFocus();
+            else this._refreshCouncilFocus();
+        } else if (!blocked && event.code === 'KeyP' && event.shiftKey) {
+            this.togglePostcardStudio?.();
+        } else if (event.code === 'Escape') {
+            if (this.postcardStudio?.isOpen()) this.postcardStudio.close();
+            else if (this.focusedSquadIds) this._clearCouncilFocus();
+            else if (this._readLocked) this.setReadLock(false);
+            else if (this.selectedAgent) {
+                this.selectAgentById(null);
+                this.onAgentSelect?.(null);
+            } else if (this.theatreMode) this.setTheatreMode(false);
+            else return;
+        } else {
+            return this._handleCameraKeyboardCommand(event, activeElement);
+        }
+        event.preventDefault();
+    }
+
+    _handleCameraKeyboardCommand(event, activeElement) {
         // Tab cycles agents only while focus rests on the World itself; from
         // the top bar or any other control it moves focus as usual (7.6).
         if (event.code === 'Tab') {
@@ -4159,11 +4400,6 @@ export class IsometricRenderer {
             this.strikePostcard();
             event.preventDefault();
             return;
-        }
-        if (event.code === 'Escape') {
-            this.selectAgentById(null);
-            this.onAgentSelect?.(null);
-            event.preventDefault();
         }
     }
 
@@ -4321,7 +4557,7 @@ export class IsometricRenderer {
             return;
         }
         if (!this.agentSprites.has(agent.id)) {
-            const sprite = new AgentSprite(agent, {
+            const sprite = new WorldAgentSprite(agent, {
                 pathfinder: this.pathfinder,
                 bridgeTiles: this.bridgeTiles,
                 assets: this.assets,
@@ -5580,6 +5816,7 @@ export class IsometricRenderer {
         // still changing. Every changed input renders and re-confirms.
         if (this.gpuWorld?.isActive?.() && this.gpuWorld.lastFrameReused !== true) return false;
         return this.motionScale <= 0
+            && !this.inspectionGlass?.isActive() && !this.inspectionGlass?.cutawayBuildingId
             && !this._idleFrameDirty
             && this._cameraIdleStable()
             && !this._hasTimedIdleTransition(now)
@@ -5718,7 +5955,14 @@ export class IsometricRenderer {
             advanceMotionClock(this._motionClock, dt, this.motionScale ?? 1);
             // Keep the film at real playback speed across a missed frame.
             // Scene motion still uses its short, clamped stride delta.
-            if (this._worldFramePresented) this.replay?.advanceReplay(frameGapMs || dt, this.motionScale <= 0);
+            if (this._worldFramePresented && this.replay && !this.retoldScrubber?.paused) {
+                this.replay.advanceReplay((frameGapMs || dt) * (this.retoldScrubber?.speed || 1), this.motionScale <= 0);
+                const clock = this.replay.replayClock;
+                if (this.retoldScrubber && clock && clock.now !== this._scrubClockMs) {
+                    this._scrubClockMs = clock.now;
+                    this.retoldScrubber.update({ progress: clock.playhead / clock.duration, clockMs: clock.now });
+                }
+            }
             stage = 'idle';
             const skipIdlePaint = this._canSkipIdleFrame(Date.now());
             this.waterFrame = virtualFramesFor(this.motionTimeMs) * WATER_FRAME_STEP;
@@ -6236,6 +6480,7 @@ export class IsometricRenderer {
     }
 
     selectAgentById(agentId) {
+        if (this.focusedSquadIds && !this.focusedSquadIds.has(agentId)) this._clearCouncilFocus();
         this._invalidateIdleFrame();
         if (agentId && !this.selectedAgent) this._inspectionPose = this.camera.capturePose();
         for (const sprite of this.agentSprites.values()) {
@@ -6432,11 +6677,13 @@ export class IsometricRenderer {
         if (slowSystemsTick) this.landmarkActivity?.reconcile?.(agents, allSpritesSnapshot, chronicleNow);
         const updateNow = Date.now();
         this.villageDirector?.update?.(this, dt, updateNow);
-        this.buildingRenderer?.setZoom?.(this.camera?.zoom, this.camera?.restZoomTarget ?? this.camera?.zoom);
+        this.buildingRenderer?.setZoom?.(this.camera?.zoom, this.restZoom);
 
         // Update building renderer (pass agent sprite positions)
         this.buildingRenderer?.setAgentSprites(allSpritesSnapshot);
         this.buildingRenderer?.update(dt);
+        this._updateGlassCutaway();
+        if (slowSystemsTick && this.focusedSquadIds) this._refreshCouncilFocus();
         this._updateAmbientEffects(dt);
         this._updateChimneySmoke();
         // 6.5 — every pennant and flag steps from this frame's wind and clock.
@@ -7818,6 +8065,13 @@ export class IsometricRenderer {
             motionScale: this.motionScale,
         });
         this._syncSemanticSummary();
+        const buildings = this.buildingRenderer;
+        const glassCut = buildings?.getApertureModel?.();
+        if (postcardFrame() && glassCut?.source === 'glass') {
+            buildings._apertureModel = null;
+            try { return renderWorldFrame(this, dt, allowTerrainArtifactWait); }
+            finally { buildings._apertureModel = glassCut; }
+        }
         return renderWorldFrame(this, dt, allowTerrainArtifactWait);
     }
 
@@ -8124,6 +8378,7 @@ export class IsometricRenderer {
                 });
             }
         }
+        const lens = this.inspectionGlass?.getCenter();
         this._attentionLayout = layoutAttentionPlates(this.overlayCtx, {
             // Every agent, not the visible snapshot: off-view action-needed
             // agents get an edge plate instead of vanishing (T1 truth).
@@ -8135,6 +8390,16 @@ export class IsometricRenderer {
             avoid: plaqueAvoid,
             state: this._attentionState || (this._attentionState = {}),
             dwellNow: now,
+            hoveredAgentId: this._hoveredAgentSprite?.agent.id,
+            hoveredAttentionKey: this._attentionLayout?.plates?.find(p => {
+                const r = p.rect, pt = this._hoverPoint;
+                return pt && r && pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom;
+            })?.key,
+            selectedAgentId: this.selectedAgent?.id,
+            attentionHold: Boolean(this.cameraDirector?.attentionFrame?.hold && !this.cameraDirector.attentionFrame.hold.done),
+            readMode: this.getReadMode(),
+            theatreMode: Boolean(this.theatreMode),
+            glassScreen: lens ? { cx: lens.x, cy: lens.y } : null,
             // Ages default to the shared 1 Hz tick (`elapsedTickNow`), so a
             // plate and the card beside it always print the same second.
         });
@@ -8152,7 +8417,7 @@ export class IsometricRenderer {
 
         const focusId = this.selectedAgent?.id || this.cameraDirector?.attentionFrame?.focusedAgentId;
         const readMode = this.getReadMode();
-        const routineZoom = zoom >= ROUTINE_NAME_MIN_ZOOM;
+        const routineZoom = (this.restZoom ?? zoom) >= ROUTINE_NAME_MIN_ZOOM;
         const perRegion = zoom >= ROUTINE_NAME_DETAIL_ZOOM ? ROUTINE_NAMES_PER_REGION_DETAIL : ROUTINE_NAMES_PER_REGION;
         const regionCounts = this._overlayRegionCounts;
         regionCounts.clear();
@@ -8160,6 +8425,7 @@ export class IsometricRenderer {
             const attention = isAttentionStatus(sprite.agent.status);
             const focused = sprite.selected || sprite.agent.id === focusId;
             const primary = focused || attention;
+            sprite.theatreMode = Boolean(this.theatreMode && !readMode);
             sprite.decisionFocusMuted = Boolean(focusId && sprite.agent.id !== focusId);
             sprite.decisionFocusRoutine = sprite.decisionFocusMuted && !primary;
             sprite.readVerb = readMode && !primary ? sprite.readToolVerb || 'OTHER' : null;
@@ -8193,7 +8459,7 @@ export class IsometricRenderer {
                 continue;
             }
             // T1 owns the identity of every action-needed agent.
-            if (attention) continue;
+            if (attention || (this.theatreMode && !readMode)) continue;
             // A name the operator gave the session (Claude Code `/rename`)
             // always shows: past decision focus, the zoom gate, the region
             // cap and the crowd fold, offset rather than dropped on overlap.

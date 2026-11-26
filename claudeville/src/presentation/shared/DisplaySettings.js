@@ -30,6 +30,27 @@ export function writeHdrHighlights(value, storage = globalThis.window?.localStor
     return mode;
 }
 
+export const SIGNAGE_STORAGE_KEY = 'claudeville.world.signage';
+export const SIGNAGE_MODES = Object.freeze(['compact', 'motifs']);
+export const SIGNAGE_DEFAULT_MODE = 'compact';
+export const SIGNAGE_EVENT = 'world:signage-setting';
+export const SIGNAGE_LABELS = Object.freeze({ compact: 'Compact', motifs: 'Carved motifs' });
+
+export function normalizeSignageMode(value) {
+    return SIGNAGE_MODES.includes(value) ? value : SIGNAGE_DEFAULT_MODE;
+}
+
+export function readSignageMode(storage = globalThis.window?.localStorage) {
+    try { return normalizeSignageMode(storage?.getItem(SIGNAGE_STORAGE_KEY)); }
+    catch { return SIGNAGE_DEFAULT_MODE; }
+}
+
+export function writeSignageMode(value, storage = globalThis.window?.localStorage) {
+    const mode = normalizeSignageMode(value);
+    try { storage?.setItem(SIGNAGE_STORAGE_KEY, mode); } catch { /* optional persistence */ }
+    return mode;
+}
+
 // 10.3 — the World overlay's 2D context attributes. Context attributes are
 // fixed by the first getContext call, so every site that creates it (App's
 // resize and the renderer) passes these: display-p3 on a P3 screen, where

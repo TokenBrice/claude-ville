@@ -39,12 +39,14 @@ import {
     writeSoundChipSeen,
 } from './SoundSettings.js';
 import {
+    SIGNAGE_STORAGE_KEY, SIGNAGE_DEFAULT_MODE, SIGNAGE_EVENT, readSignageMode,
     HDR_HIGHLIGHTS_DEFAULT,
     HDR_HIGHLIGHTS_EVENT,
     HDR_HIGHLIGHTS_STORAGE_KEY,
     readHdrHighlights,
     writeHdrHighlights,
 } from './DisplaySettings.js';
+import { GLASS_STORAGE_KEY, GLASS_DEFAULT_MODE, GLASS_EVENT, readGlassSetting } from '../character-mode/InspectionGlass.js';
 
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
 const UNKNOWN_MODEL_DATE_KEY = 'claudeville.pricing.unknownModelDate';
@@ -107,6 +109,8 @@ export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
     'claudeville.alerts.desktop': '0',
     'claudeville.sidebarCollapsed': 'false',
     [HDR_HIGHLIGHTS_STORAGE_KEY]: HDR_HIGHLIGHTS_DEFAULT,
+    [SIGNAGE_STORAGE_KEY]: SIGNAGE_DEFAULT_MODE,
+    [GLASS_STORAGE_KEY]: GLASS_DEFAULT_MODE,
     [VILLAGE_WEATHER_KEY]: 'modeled',
 });
 
@@ -126,6 +130,8 @@ export function readPersistedSettings(storage = globalThis.window?.localStorage)
         desktopAlerts: storageValue(storage, 'claudeville.alerts.desktop') === '1',
         sidebarCollapsed: storageValue(storage, 'claudeville.sidebarCollapsed') === 'true',
         hdrHighlights: readHdrHighlights(storage),
+        signage: readSignageMode(storage),
+        glass: readGlassSetting(storage),
         villageWeather: readVillageWeather(storage),
     };
 }
@@ -411,7 +417,9 @@ export class TopBar {
         this._audioIdleHandle = null;
         this._audioIdleTimer = null;
         this._initSound();
-        this._scheduleAudioRoute();
+        this.stripProfile = document.documentElement?.dataset?.cvProfile === 'strip';
+        if (!this.stripProfile) this._scheduleAudioRoute();
+        this._bindWorldTools();
         this._initAttentionControls();
         this._initChronicleButton();
         this._initSpendBreakdown();
@@ -548,6 +556,59 @@ export class TopBar {
             setAttr(node, 'tabindex', '0');
         }
         node.dataset.tip = `${sourceLine} · ${weather}${override ? ` · ${override.toLowerCase()} timeline` : ''}`;
+    }
+
+    _bindWorldTools() {
+        const lock = document.getElementById('worldReadLock');
+        const glass = document.getElementById('worldGlass');
+        const controller = new AbortController();
+        this._worldToolsController = controller;
+        const on = (id, fn) => document.getElementById(id)?.addEventListener('click', fn, { signal: controller.signal });
+        on('worldReadLock', () => eventBus.emit('world:read-unlock'));
+        on('worldGlass', () => eventBus.emit('world:glass-arm'));
+        on('theatreWake', () => this.frameAttention?.());
+        if (this.stripProfile) {
+            const rail = document.getElementById('stripRail');
+            if (rail) rail.hidden = false;
+            on('stripSound', () => this._toggleSound());
+            on('stripAttention', () => this.frameAttention?.());
+        }
+        if (glass) glass.hidden = readGlassSetting() !== 'on';
+        this._worldToolOff = [
+            eventBus.on('world:read-lock', locked => { if (lock) lock.hidden = !locked; }),
+            eventBus.on('world:glass-armed', armed => glass?.setAttribute('aria-pressed', String(armed))),
+            eventBus.on(GLASS_EVENT, ({ mode }) => { if (glass) glass.hidden = mode !== 'on'; }),
+            eventBus.on('world:theatre', () => this._renderWorldRail()),
+        ];
+    }
+
+    _renderWorldRail(stats) {
+        if (!this.stripProfile && !globalThis.document?.documentElement?.dataset?.cvTheatre) return;
+        stats ??= this.world.getStats();
+        const oldest = this.attention?.list?.()[0] || oldestActionable(this.world.agents);
+        const name = oldest && String(oldest.displayName || oldest.name || 'Agent').toUpperCase();
+        const wake = document.getElementById(this.stripProfile ? 'stripAttention' : 'theatreWake');
+        if (wake) {
+            wake.hidden = !oldest;
+            if (oldest) {
+                const age = waitAnchor(oldest);
+                const detail = this.stripProfile && age ? ' ' + formatWaitAge(Date.now() - age) : '';
+                const motif = ATTENTION_PARTS.find(part => part.key === bucketForStatus(oldest.status))?.motif || 'needs-you';
+                if (wake.dataset.motif !== motif) {
+                    const glyph = attentionGlyph(motif);
+                    glyph.setAttribute('class', this.stripProfile ? 'strip-rail__attention-icon' : 'topbar__attn-glyph');
+                    wake.replaceChildren(glyph, el('span', { className: 'strip-rail__attention-detail' }));
+                    wake.dataset.motif = motif;
+                }
+                setText(wake.lastElementChild, `${stats.attention} NEEDS YOU · ${name}${detail}${this.stripProfile ? '' : ' · [A] VIEW'}`);
+            }
+        }
+        if (this.stripProfile) {
+            setText(document.getElementById('stripWorking'), String(stats.working));
+        } else {
+            const clock = clockLabel(Date.now());
+            setText(document.querySelector('#theatreWhisper span'), `${clock} · ${stats.working} WORKING · PRESS H TO RESTORE`);
+        }
     }
 
     // The `A` hotkey jumps to the longest-waiting actionable agent, and ALERTS
@@ -711,6 +772,8 @@ export class TopBar {
         eventBus.emit('sound:town-band-voice', { voice: DEFAULT_TOWN_BAND_VOICE });
         eventBus.emit('camera:auto-camera', { enabled: true });
         eventBus.emit(HDR_HIGHLIGHTS_EVENT, { mode: HDR_HIGHLIGHTS_DEFAULT });
+        eventBus.emit(SIGNAGE_EVENT, { mode: SIGNAGE_DEFAULT_MODE });
+        eventBus.emit(GLASS_EVENT, { mode: GLASS_DEFAULT_MODE });
         if (this.attention) {
             void this.attention.setDesktopAlerts(false).then((on) => this._applyAlertsState(on));
         }
@@ -918,6 +981,7 @@ export class TopBar {
     _applySoundView(view) {
         if (!view || this._destroyed) return;
         this._soundView = view;
+        if (this.stripProfile) document.getElementById('stripSound')?.setAttribute('aria-pressed', String(view.soundState === 'playing'));
         this._renderSoundChip();
         if (this._soundPanelOpen()) this._renderSoundPanel();
     }
@@ -1307,6 +1371,7 @@ export class TopBar {
         this._renderCount(this.els.idle, stats.idle, pending);
         this._renderCount(this.els.waiting, stats.waiting, pending);
         this._renderAttention(stats, pending);
+        this._renderWorldRail(stats);
 
         this._renderActivityRail(stats);
         this._fitCenterIfChanged();
@@ -1740,6 +1805,13 @@ export class TopBar {
         if (!chip) return;
         const { label, state, stale } = connectionChip(this._villageState, now);
         setText(chip, label);
+        if (this.stripProfile) {
+            const live = document.getElementById('stripLive');
+            if (live) {
+                setText(live, label);
+                live.parentElement.className = `strip-rail__live strip-rail__live--${stale ? 'stale' : state}`;
+            }
+        }
         chip.classList.toggle('topbar__conn--connected', state === LinkState.LIVE);
         chip.classList.toggle('topbar__conn--disconnected', state === LinkState.RECONNECTING);
         chip.classList.toggle('topbar__conn--syncing', state === LinkState.SYNCING);
@@ -1891,6 +1963,7 @@ export class TopBar {
     _startTimer() {
         let dashboardMinute = null;
         this.timeInterval = setInterval(() => {
+            this._renderWorldRail();
             const seconds = this.world.activeTime;
             const h = String(Math.floor(seconds / 3600)).padStart(2, '0');
             const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0');
@@ -2000,6 +2073,8 @@ export class TopBar {
     destroy() {
         if (this._destroyed) return this._destroyPromise;
         this._destroyed = true;
+        this._worldToolsController?.abort();
+        for (const off of this._worldToolOff || []) off();
         this._villageWeather?.destroy();
         this._cancelReactiveFrame();
         eventBus.off('atmosphere:updated', this._onAtmosphere);

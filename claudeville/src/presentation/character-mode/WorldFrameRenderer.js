@@ -43,8 +43,9 @@ import { sourceEnergyFor } from './AtmosphereState.js';
 import { groundOptionsFor, groundStateAt, liquidPrecipitation } from './GroundState.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { PEAK, armPeakMarks, drawMomentEdgePlates, setMomentStage, takePeakMarks } from './EffectStamps.js';
-import { THOUGHT_PAINT } from './ThoughtColumn.js';
-import { getReservedRects, publishReservedBox } from '../shared/ReservedRects.js';
+import { drawCouncilScrim, RETOLD_SCRUBBER_RESERVED_NAME, COUNCIL_RIBBON_RESERVED_NAME } from './CouncilRibbon.js';
+import { drawQuillPip, scribeSpeaker, usesScribeLine, THOUGHT_PAINT } from './ThoughtColumn.js';
+import { getReservedRect, getReservedRects, publishReservedBox } from '../shared/ReservedRects.js';
 import { postcardFrame } from './Postcard.js';
 
 const FRAME_TIMING_RING_CAPACITY = 90;
@@ -532,6 +533,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // XP-5 — a postcard frame (Postcard.js): every label tier below stands
     // down; weather, light and marks draw as on any frame.
     const postcard = postcardFrame();
+    const theatreMode = Boolean(!postcard && renderer.theatreMode && !renderer.getReadMode());
+    const restZoom = renderer.restZoom ?? renderer.camera.zoom;
     const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
     const viewport = renderer._screenViewport();
     // V8 — the frame's moment stage: every C4 moment (and the building chits)
@@ -974,6 +977,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // overlay's antialiased fill, which the plates keep drawing).
         const markScale = renderer._screenDpr();
         gpuRenderContext.marks = renderer._attentionLayout?.count
+            && !theatreMode
             && Number.isInteger(markScale)
             && overlayCtx.canvas?.width === renderer.gpuWorld.width
             && overlayCtx.canvas?.height === renderer.gpuWorld.height
@@ -1048,6 +1052,12 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         profileMark: frameTimer ? label => markFrameTiming(frameTimer, label) : null,
         gpuRainShare: gpuWorldRendered ? renderer.gpuWorld?.rainShare || 0 : 0,
     });
+    const council = !postcard && renderer.councilRibbon?.isActive();
+    if (council) {
+        const members = sortedSprites.filter(sprite => renderer.focusedSquadIds.has(sprite.agent.id));
+        drawCouncilScrim(overlayCtx, viewport, members, renderer._lanternNightFactor?.(atmosphere) >= 0.5,
+            { camera: renderer.camera, zoom });
+    }
     renderer.camera.applyTransform(overlayCtx);
     if (gpuWorldRendered) {
         // 6.7 — under reduced motion the live chimneys show a static wisp
@@ -1069,11 +1079,16 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         lighting: atmosphere?.lighting,
         grade: atmosphere?.grade,
     });
-    if (!postcard) drawCrowdClusterBadges(overlayCtx, {
-        crowdStats: renderer._crowdStats,
-        agentSprites: renderer.agentSprites,
-        zoom,
-    });
+    if (!theatreMode) {
+        if (!postcard) drawCrowdClusterBadges(overlayCtx, {
+            plaqueDrawnTypes: renderer.buildingRenderer?.plaqueDrawnTypes || null,
+            plaqueBuildingByAgentId: renderer.buildingRenderer?.plaqueBuildingByAgentId || null,
+            theatreMode, cellSize: 4,
+            crowdStats: renderer._crowdStats,
+            agentSprites: renderer.agentSprites,
+            zoom,
+        });
+    }
     renderer.arrivalDeparture?.draw?.(overlayCtx, {
         zoom,
         now: perfNow,
@@ -1114,7 +1129,14 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     if (!gpuWorldRendered) {
         for (const sprite of sortedSprites) sprite.drawDeferredNameTag?.(overlayCtx);
     }
-    if (!postcard) drawThoughtLayer(overlayCtx, sortedSprites, zoom);
+    renderer._scribeSpeaker = null;
+    if (!postcard && usesScribeLine(restZoom, renderer.getReadMode(), theatreMode)) {
+        const speaker = scribeSpeaker(renderer._overlayBubbleOrder);
+        if (speaker) {
+            renderer._scribeSpeaker = speaker;
+            drawQuillPip(overlayCtx, speaker, zoom);
+        }
+    } else if (!postcard) drawThoughtLayer(overlayCtx, sortedSprites, zoom);
     // 4.5 — the shared-file overlap plate. The thread and knot live in the
     // occluded ground texture; the exact counts belong here, once, in both
     // backends, so dense load keeps the numbers when the lines are dropped.
@@ -1132,6 +1154,12 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // plaques treat its strip as occupied and step aside instead of colliding
     // with it. Screen rect converted to world space: the label pass runs under
     // the world transform.
+    if (council) {
+        overlayCtx.save();
+        renderer._resetScreenTransform(overlayCtx);
+        renderer.councilRibbon.draw(overlayCtx, viewport, { reservedBottomRect: getReservedRect(RETOLD_SCRUBBER_RESERVED_NAME) });
+        overlayCtx.restore();
+    }
     const ambientCaption = ambientCaptionLayout(overlayCtx, renderer, viewport, villageSnapshot);
     // V8 — the caption band is reserved screen for the next frame's moments
     // and plates (the painter publishes it; it is not a DOM element).
@@ -1143,8 +1171,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             return { left: topLeft.x, top: topLeft.y, right: bottomRight.x, bottom: bottomRight.y };
         })()
         : null;
-    if (!postcard) renderer.buildingRenderer?.drawLabels(overlayCtx, {
-        zoom,
+    const labelOptions = !postcard && {
+        zoom, restZoom, theatreMode, signageMode: renderer.signageMode,
+        camera: renderer.camera, hoveredType: renderer.buildingRenderer?.hovered?.type,
         scaleMode: 'screen-fixed',
         occupiedBoxes: captionWorldBox
             ? [...renderer._collectAgentLabelHitRects(sortedSprites), captionWorldBox]
@@ -1153,6 +1182,12 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         squads: villageSnapshot?.squads || [],
         readMode: renderer.getReadMode(),
         selectedType: villageSnapshot?.selectedBuildingSignal?.type || null,
+    };
+    if (theatreMode && renderer.buildingRenderer) {
+        renderer.buildingRenderer.plaqueWorldRects = [];
+        renderer.buildingRenderer.plaqueDrawnTypes?.clear();
+    } else if (!postcard) renderer.buildingRenderer?.drawLabels(overlayCtx, {
+        ...labelOptions,
     });
     if (collectStructuralDiagnostics) {
         renderer._lastRenderStats = buildRenderStats(renderer, {
@@ -1203,7 +1238,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // so no bar, focus or Ambient state can hide an agent that needs you.
     // When the GPU drew the marks' graphics this frame, the overlay clears
     // their footprint here and prints only the ink (Wave 10 S5).
-    drawAttentionPlates(overlayCtx, renderer._attentionLayout, { inkOnly: gpuMarksDrawn });
+    drawAttentionPlates(overlayCtx, renderer._attentionLayout, { inkOnly: gpuMarksDrawn, theatreMode, beaconsOnly: theatreMode });
+    if (renderer.inspectionGlass?.isActive()) drawGlassPass(overlayCtx, renderer, sortedSprites, labelOptions);
     // 5.1/5.2/5.5 — the lower-third caption, drawn after the bars so they
     // never cover it. Static text, no motion of its own.
     drawAmbientCaption(overlayCtx, ambientCaption);
@@ -1327,6 +1363,8 @@ function drawGroundSemantics(renderer, groundCtx, { villageSnapshot, renderNow, 
         grade: atmosphere?.grade,
     });
     drawFamilyTethers(groundCtx, {
+        focusedSquadIds: !postcardFrame() && renderer.focusedSquadIds || null,
+        readMode: renderer.getReadMode?.(),
         relationship: renderer.relationshipState,
         agentSprites: renderer.agentSprites,
         zoom: renderer.camera.zoom,
@@ -1656,6 +1694,7 @@ const CAPTION_STYLES = Object.freeze({
     incident: { eyebrow: 'INCIDENT', accent: '#e06c5b', text: '#ffd9d3' },
     release: { eyebrow: 'RELEASE', accent: '#6db3a5', text: '#f3e2bd' },
     milestone: { eyebrow: 'MILESTONE', accent: '#b9ad96', text: '#f3e2bd' },
+    spoken: { eyebrow: 'SPOKEN', accent: '#b8893f', text: '#f3e2bd' },
     returned: { eyebrow: 'RETURNED', accent: '#b9ad96', text: '#f3e2bd' },
 });
 
@@ -1684,10 +1723,12 @@ function captionSource(renderer, villageSnapshot) {
         const agent = parade.agentId ? renderer?.world?.agents?.get?.(parade.agentId) : null;
         if (!agent?.isSubagent) return { style: CAPTION_STYLES.milestone, text: paradeText };
     }
+    const speaker = renderer?._scribeSpeaker;
+    if (speaker) return { style: CAPTION_STYLES.spoken, text: speaker._statusThread[0].text, chip: speaker.thoughtRepoAccent?.() };
     return null;
 }
 
-function ambientCaptionLayout(ctx, renderer, viewport, villageSnapshot = null) {
+export function ambientCaptionLayout(ctx, renderer, viewport, villageSnapshot = null) {
     const source = captionSource(renderer, villageSnapshot);
     if (!source || !viewport?.width || !viewport?.height) return null;
     const bars = renderer.camera?.getLetterboxState?.();
@@ -1706,11 +1747,17 @@ function ambientCaptionLayout(ctx, renderer, viewport, villageSnapshot = null) {
     // when the 60 s replay badge holds the corner.
     const bottomInset = Math.max(barH > CAPTION_HEIGHT ? Math.round((barH - CAPTION_HEIGHT) / 2) : CAPTION_BOTTOM,
         villageSnapshot?.replayActive ? CAPTION_BOTTOM + CAPTION_REPLAY_RESERVE : 0);
-    const bottom = viewport.height - bottomInset;
+    let bottom = viewport.height - bottomInset;
     const left = CAPTION_LEFT;
+    for (const name of [RETOLD_SCRUBBER_RESERVED_NAME, COUNCIL_RIBBON_RESERVED_NAME]) {
+        const r = getReservedRect(name);
+        if (r && left < r.right && left + width > r.left && bottom > r.top && bottom - CAPTION_HEIGHT < r.bottom) {
+            bottom = r.top - 4;
+        }
+    }
     return {
         text,
-        style: source.style,
+        style: source.style, chip: source.chip,
         rect: { left, top: bottom - CAPTION_HEIGHT, right: left + width, bottom },
     };
 }
@@ -1729,6 +1776,11 @@ function drawAmbientCaption(ctx, layout) {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
     ctx.font = WORLD_DISPLAY_FONT_8;
+    if (layout.chip) {
+        ctx.fillStyle = layout.chip;
+        ctx.fillRect(rect.left + 3, rect.top + 6, 3, 7);
+        ctx.fillStyle = style.accent;
+    }
     ctx.fillText(style.eyebrow, rect.left + CAPTION_PAD_X, rect.top + 15);
     ctx.font = WORLD_BODY_FONT_11;
     ctx.fillStyle = style.text;
@@ -2238,6 +2290,59 @@ function drawBuildingLightReflections(renderer, ctx, atmosphere) {
 function drawThoughtLayer(ctx, sprites, zoom) {
     for (const sprite of sprites) sprite.drawThought?.(ctx, zoom, THOUGHT_PAINT.LEADER);
     for (const sprite of sprites) sprite.drawThought?.(ctx, zoom, THOUGHT_PAINT.COLUMN);
+}
+
+function drawGlassPass(ctx, renderer, sprites, labelOptions) {
+    const glass = renderer.inspectionGlass;
+    ctx.save();
+    try {
+        glass.applyClip(ctx);
+        renderer.camera.applyTransform(ctx);
+        drawFamilyTethers(ctx, {
+            relationship: renderer.relationshipState, agentSprites: renderer.agentSprites,
+            zoom: labelOptions.zoom, motionScale: renderer.motionScale, readMode: true,
+            focusedSquadIds: renderer.focusedSquadIds,
+        });
+        const buildings = renderer.buildingRenderer;
+        if (buildings) {
+            // Only resting plaques own the next frame's crowd counts and collision boxes.
+            const { plaqueWorldRects, plaqueDrawnTypes, plaqueBuildingByAgentId } = buildings;
+            try {
+                buildings.plaqueWorldRects = [];
+                buildings.plaqueDrawnTypes = new Set();
+                buildings.plaqueBuildingByAgentId = new Map();
+                buildings.drawLabels(ctx, { ...labelOptions, theatreMode: false, readMode: true, glassPass: true,
+                    inGlass: (x, y) => glass.inLens(x, y) });
+            } finally {
+                Object.assign(buildings, { plaqueWorldRects, plaqueDrawnTypes, plaqueBuildingByAgentId });
+            }
+        }
+        for (const sprite of sprites) {
+            const point = renderer.camera.worldToScreen(sprite.x, sprite.y);
+            if (!glass.inLens(point.x, point.y) || sprite.isArrivalPending?.() || sprite.agent.isDeparted) continue;
+            sprite.drawThought?.(ctx, labelOptions.zoom, THOUGHT_PAINT.COLUMN);
+            const slot = sprite.overlaySlot, verb = sprite.readVerb;
+            try {
+                const lines = [null, sprite.readToolVerb || 'OTHER', sprite.carriedArtifact?.kind,
+                    sprite.workflowRibbon?.label || sprite.agent.workflowName, sprite._cairnSpec?.label];
+                sprite.overlaySlot = 0;
+                for (const line of lines) {
+                    if (line !== null && !line) continue;
+                    sprite.readVerb = line;
+                    sprite._drawRoutineName(ctx);
+                    sprite.overlaySlot++;
+                }
+            } finally {
+                sprite.overlaySlot = slot;
+                sprite.readVerb = verb;
+            }
+        }
+        renderer._resetScreenTransform(ctx);
+        drawAttentionPlates(ctx, renderer._attentionLayout, { glassPass: true });
+    } finally {
+        ctx.restore();
+    }
+    glass.drawRim(ctx, renderer.assets);
 }
 
 function drawSelectedAgentXray(renderer, ctx, sprites = null, zoom = 1) {
