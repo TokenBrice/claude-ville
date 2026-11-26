@@ -1417,6 +1417,27 @@ function markCell(coast, x, y, { water = false, reflect = 0, land = false } = {}
 
 // 3.7 — the water stop a mirror texel (coast buffer index `at`, `w` texels a
 // row) was painted over, + 1 (0: not a mirror), for the storm fade.
+function recordContact(coast, at, src, alpha) {
+    const coverage = Math.round(alpha * 255);
+    if (coverage > 0) coast.contactSamples.set(at, (src[0] | (src[1] << 8) | (src[2] << 16) | (coverage << 24)) >>> 0);
+}
+
+// Fine coverage is finalized after the opaque bridge decks and foundations land.
+export function packCoastContacts(samples, exposure, cols) {
+    const stride = cols * 2;
+    const indices = Array.from(samples.keys()).filter(at => {
+        const x = at % stride, y = Math.floor(at / stride);
+        return exposure[(y >> 1) * cols + (x >> 1)] & (1 << ((x & 1) + 2 * (y & 1)));
+    }).sort((a, b) => a - b);
+    const bytes = new Uint8Array(indices.length * 8);
+    const view = new DataView(bytes.buffer);
+    for (const [i, at] of indices.entries()) {
+        view.setUint32(i * 8, at, true);
+        view.setUint32(i * 8 + 4, samples.get(at), true);
+    }
+    return bytes;
+}
+
 function markMirrorBase(coast, w, at, stop) {
     coast.mirrorBase ||= new Uint8Array(w * coast.rows * 2);
     coast.mirrorBase[at] = Math.max(0, stop) + 1;
@@ -1846,6 +1867,11 @@ function paintStratifiedCliff(buf, coast, field, renderer) {
                 const course = Math.min(REFLECTION_ALPHAS.length - 1, Math.floor((k * REFLECTION_ALPHAS.length) / Math.max(1, length)));
                 const alpha = REFLECTION_ALPHAS[course] * (end ? 0.45 + 0.55 * endSmooth : 1);
                 const base = buf.role[at] === TEXEL_OPEN ? COAST_WATER_STOPS[stop] : readRgb(data, at * 4);
+                if (coast.contactSamples) {
+                    recordContact(coast, at, src, alpha);
+                    if (buf.role[at] === TEXEL_OPEN) set(x, ty, base, CLASS_WATER + stop);
+                    continue;
+                }
                 set(x, ty, mirrorRgb(base, src, alpha), TEXEL_MIRROR);
                 markCell(coast, x, ty, { water: true, reflect: course + 1 });
                 markMirrorBase(coast, buf.w, at, stop);
@@ -2148,6 +2174,10 @@ function paintBanks(buf, coast, field, renderer) {
             const stop = texelStop(buf, at, x, foot + k);
             if (stop < 0 || k % 3 === 2 || role[from] !== TEXEL_LAND) continue;
             const course = Math.min(2, Math.floor(3 * k / (foot - y)));
+            if (coast.contactSamples) {
+                recordContact(coast, at, readRgb(data, from * 4), REFLECTION_ALPHAS[course]);
+                continue;
+            }
             const rgb = mirrorRgb(readRgb(data, at * 4), readRgb(data, from * 4), REFLECTION_ALPHAS[course]);
             putRgb(data, at * 4, rgb);
             role[at] = TEXEL_MIRROR;
@@ -2759,6 +2789,15 @@ function staticReflections(ctx, renderer) {
     // A dock, pier, bridge or foundation the terrain bake painted over it.
     const covered = at => structure[at] === 1 || (structure[at] !== 2 && role[at] !== TEXEL_MIRROR
         && (role0[at] === TEXEL_OPEN ? data[at * 4 + 3] !== 0 : coveredBy(data, bakedData, at * 4)));
+    if (coast.contactSamples) {
+        const exposure = bake.exposure = new Uint8Array(coast.classes.length);
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+            const at = y * w + x;
+            if (role0[at] >= CLASS_WATER && role0[at] <= TEXEL_OPEN && !covered(at)) {
+                exposure[(y >> 1) * cols + (x >> 1)] |= 1 << ((x & 1) + 2 * (y & 1));
+            }
+        }
+    }
     // Lit accents: `accentAt[at]` is the index of the accent a texel holds
     // (-1 none), so a nearer mirror written over it retires it.
     const accents = [];
@@ -2771,6 +2810,16 @@ function staticReflections(ctx, renderer) {
             : role0[at] === TEXEL_MIRROR ? Math.max(0, (coast.mirrorBase?.[at] || 1) - 1) : Math.max(0, role0[at] - CLASS_WATER);
         const base = open ? COAST_WATER_STOPS[stop] : readRgb(bakedData, at * 4);
         const alpha = STATIC_REFLECTION_ALPHAS[course] * alphaScale;
+        if (coast.contactSamples) {
+            recordContact(coast, at, src, alpha);
+            if (open) {
+                putRgb(data, at * 4, base);
+                role[at] = TEXEL_MIRROR;
+                markCell(coast, x, y, { water: true });
+            }
+            accentAt[at] = -1;
+            return base;
+        }
         let rgb = staticMirrorRgb(base, src, alpha, glowing);
         if (!glowing) rgb = mirrorFloor(rgb, base, stop, drop, alpha);
         putRgb(data, at * 4, rgb);
@@ -2969,7 +3018,7 @@ function staticReflections(ctx, renderer) {
             const drop = core || wet < reach * MIRROR_NEAR_SHARE ? MIRROR_STOP_DROP.near : MIRROR_STOP_DROP.far;
             const base = write(x, y, at, hit[0], hit[1] && !glow && !lamp, core ? Math.min(course, MIRROR_CORE_COURSE) : course,
                 core ? colCoreScale : colAlphaScale, drop);
-            if (hit[3]) {
+            if (hit[3] && !coast.contactSamples) {
                 const stop = Math.max(0, coast.mirrorBase[at] - 1);
                 putRgb(data, at * 4, COAST_WATER_STOPS[Math.min(5, stop + 2)]);
             }
@@ -3075,6 +3124,10 @@ function staticReflections(ctx, renderer) {
         const y = coast.y + Math.floor(at / w);
         coast.covered ||= new Uint8Array(coast.classes.length);
         coast.covered[((y - coast.y) >> 1) * cols + ((x - coast.x) >> 1)] = 1;
+    }
+    if (coast.contactSamples) {
+        bake.contacts = packCoastContacts(coast.contactSamples, bake.exposure, cols);
+        delete coast.contactSamples;
     }
     ctx.putImageData(image, px, py);
 }
@@ -3301,18 +3354,25 @@ export function mirrorAccentRainCut(layer, drop, share = 1) {
  * the 'finish' pass (after bridges, foundations and ground props) bakes the
  * static reflections and the resident water fields.
  */
+export function coastSubstrateRevision(renderer) {
+    return renderer.substrateRevision ?? renderer.gpuWorld?.substrateRevision ?? 0;
+}
+
 export function registerCoastBake(renderer) {
     const offCoast = renderer.registerTerrainBakePass({
         id: 'coast-field',
         stage: 'coast',
         // The snow bucket keys the outer spits' winter sand (outerSpitSandRgb).
-        revision: r => `e0:${coastFieldKey(r)}|s${snowBucketOf(r._groundState?.snowCover)}`,
+        revision: r => `e0:${coastFieldKey(r)}|s${snowBucketOf(r._groundState?.snowCover)}${coastSubstrateRevision(r) === 1 ? "|bed1" : ""}`,
         draw(ctx, r) {
             const started = performance.now();
             const field = getCoastField(r);
             const coast = classifyCoast(r, field);
+            const clean = coastSubstrateRevision(r) === 1;
+            if (clean && coast) coast.contactSamples = new Map();
             if (coast) paintCoast(ctx, coast, field, r);
             r._coastBake = {
+                ...(clean ? { exposure: new Uint8Array(0), contacts: new Uint8Array(0) } : {}),
                 coast,
                 fieldMs: field.buildMs,
                 bakeMs: performance.now() - started,

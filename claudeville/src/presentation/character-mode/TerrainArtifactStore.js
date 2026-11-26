@@ -222,7 +222,7 @@ export function captureTerrainArtifactFields(renderer) {
     return { ground, coast };
 }
 
-export function captureTerrainArtifact(canvas, bounds, dpr, fields, manifest = terrainArtifactManifest()) {
+export function captureTerrainArtifact(canvas, bounds, dpr, fields, manifest = terrainArtifactManifest({ substrateRevision: fields?.coast?.bake?.exposure ? 1 : 0 })) {
     if (!fields || !canvas?.width || !canvas.height) return null;
     return { schema: SCHEMA, manifest: { ...manifest }, bounds: { ...bounds }, dpr, width: canvas.width, height: canvas.height,
         rgba: canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data, ...fields };
@@ -251,6 +251,7 @@ export function validTerrainSubstrate(manifest, coastArtifact) {
     const cells = coast ? coast.cols * coast.rows : 0;
     if (!(exposure instanceof Uint8Array) || exposure.length !== cells
         || !(contacts instanceof Uint8Array) || contacts.length % 8 !== 0) return false;
+    if (exposure.some(byte => byte > 15)) return false;
     if (!coast) return contacts.length === 0;
     const stride = coast.cols * 2;
     const limit = stride * coast.rows * 2;

@@ -200,7 +200,10 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     ['hazeStart', 'f32'],
     ['dawnShare', 'f32'], ['crestFlash', 'f32'],
     ['skyFar', 'vec4f'], ['skyNear', 'vec4f'], ['faceKey', 'vec4f'], ['faceExtra', 'vec4f'],
+    ['planarRect', 'vec4f'], ['basinParams', 'vec4f'], ['depthRange', 'vec4f'], ['frontier', 'vec4u'],
 ]);
+
+export const FRAME_UNIFORM_BYTES = FRAME_UNIFORM_LAYOUT.size;
 
 // §2.6 — the per-batch block, one 256-byte slot per batch in a frame ring
 // bound with a dynamic offset.
@@ -210,6 +213,7 @@ export const BATCH_UNIFORM_LAYOUT = uniformLayout('BatchUniforms', [
     ['albedoPaged', 'u32'], ['fatPixels', 'u32'],
     ['additive', 'u32'], ['terrainBatch', 'u32'], ['puddleGround', 'u32'], ['hasMaterialMap', 'u32'],
     ['hasEmissiveMap', 'u32'], ['hasOccluderMap', 'u32'], ['cueRuns', 'u32'], ['writesDepth', 'u32'],
+    ['trimColumn', 'i32'], ['supportH', 'f32'], ['surfaceOffset', 'vec2i'],
 ]);
 if (BATCH_UNIFORM_LAYOUT.size > BATCH_UNIFORM_STRIDE) throw new Error('BatchUniforms exceeds its dynamic-offset slot');
 
@@ -269,6 +273,8 @@ export const RECORD_CONSTANTS_WGSL = [
     ...Object.entries(GPU_RECORD_FLAGS).map(([name, bit]) => (
         `const RECORD_FLAG_${name.replace(/[A-Z]/g, letter => `_${letter}`).toUpperCase()}: u32 = ${bit}u;`
     )),
+    `const RECORD_FLAG_RELIEF: u32 = ${GPU_RECORD_FLAGS.reliefMaterial}u;`,
+    `const RECORD_FLAG_SURFACE_DEPTH: u32 = ${GPU_RECORD_FLAGS.surfacePage}u;`,
     `const RECEIVER_BIAS: f32 = ${RECEIVER_BIAS}.0;`,
 ].join('\n');
 

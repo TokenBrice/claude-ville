@@ -37,6 +37,7 @@ import {
     resolveCamera,
     resolveFatPixels,
     resolveFrameGrade,
+    resolveFrontierFrame,
     resolveDiurnalFrame,
     resolveLights,
     resolveMist,
@@ -84,6 +85,8 @@ import {
     SCENE_DEPTH_FORMAT,
     SCENE_EMISSION_FORMAT,
     prepareWorldPipelines,
+    prepareSurfacePipelines,
+    prepareWorldWaterResolve,
 } from './wgpu/GpuWgpuPipelines.js';
 import {
     copySourceToTexture,
@@ -92,7 +95,13 @@ import {
     WGPU_TEXTURE_FORMATS,
     writeTextureRows,
 } from './wgpu/GpuWgpuTextures.js';
+import { PlanarWaterPass, isMirrorAdmittedRecord, srgb8ToLinear16 } from './wgpu/PlanarWaterPass.js';
+import { WaterRippleCompute, RIPPLE_GRID_WIDTH, RIPPLE_GRID_HEIGHT } from './wgpu/WaterRippleCompute.js';
+import { WindFieldCompute } from './wgpu/WindFieldCompute.js';
+import { VolumetricShaftsPass } from './wgpu/VolumetricShaftsPass.js';
+import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../../config/constants.js';
 import { GpuWgpuTimer } from './wgpu/GpuWgpuTimestamps.js';
+import { waterMaxSaturation } from '../GradeEvaluator.js';
 import { resolveFirelight } from './Firelight.js';
 import { resolveSunShade } from './SunShade.js';
 import { GpuFrameReuse, stageGpuFrameBindings } from './GpuFrameReuse.js';
@@ -123,6 +132,55 @@ const ZERO4 = Object.freeze([0, 0, 0, 0]);
 // Bytes per texel of the colour formats this renderer allocates or presents.
 const TEXEL_BYTES = Object.freeze({ rgba8unorm: 4, bgra8unorm: 4, 'rgba8unorm-srgb': 4, 'bgra8unorm-srgb': 4, rgba16float: 8, rgba32float: 16 });
 const texelBytes = format => TEXEL_BYTES[format] ?? 4;
+
+const FRONTIER_BITS = Object.freeze({ mirror: 1, ripples: 2, surfaceDepth: 4, wind: 8, shafts: 16, gi: 32 });
+const FRONTIER_PASSES = { mirror: PlanarWaterPass, ripples: WaterRippleCompute, wind: WindFieldCompute, shafts: VolumetricShaftsPass };
+
+function defaultFrontier(canvas, option) {
+    const query = new URLSearchParams(globalThis.location?.search);
+    if (query.get('frontier') === '0' || query.has('debugCaptureTargets')) return false;
+    if (globalThis.document?.documentElement?.dataset?.cvProfile === 'mobile') return false;
+    return option ?? (query.get('frontier') === '1' || (Boolean(canvas?.ownerDocument) && !query.has('sim')));
+}
+
+// Upload the sparse records verbatim; padded keys sort after every coast index.
+function waterInputs(terrain) {
+    const { coast, contacts } = terrain.frontierCoast;
+    const count = contacts.byteLength / 8;
+    const width = Math.min(1024, Math.max(2, count * 2));
+    const height = Math.max(1, Math.ceil(count * 2 / width));
+    const packed = new Uint8Array(width * height * 4).fill(255);
+    packed.set(contacts);
+    const basin = new Uint16Array(coast.cols * coast.rows);
+    let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+    for (let ty = 0; ty < MAP_SIZE; ty++) for (let tx = 0; tx < MAP_SIZE; tx++) {
+        const key = tx + ',' + ty;
+        if (!terrain.harborTiles?.has(key) && terrain.waterMeta?.get(key)?.region !== 'harbor') continue;
+        const cx = (tx - ty) * TILE_WIDTH / 2, cy = (tx + ty) * TILE_HEIGHT / 2;
+        for (let y = cy - TILE_HEIGHT / 2; y < cy + TILE_HEIGHT / 2; y += 2) {
+            for (let x = cx - TILE_WIDTH / 2; x < cx + TILE_WIDTH / 2; x += 2) {
+                if (Math.abs((x + 1 - cx) / (TILE_WIDTH / 2)) + Math.abs((y + 1 - cy) / (TILE_HEIGHT / 2)) > 1) continue;
+                const col = (x - coast.x) >> 1, row = (y - coast.y) >> 1;
+                if (col < 0 || col >= coast.cols || row < 0 || row >= coast.rows) continue;
+                basin[row * coast.cols + col] = 1;
+            }
+        }
+        left = Math.min(left, cx - TILE_WIDTH / 2); right = Math.max(right, cx + TILE_WIDTH / 2);
+        top = Math.min(top, cy - TILE_HEIGHT / 2); bottom = Math.max(bottom, cy + TILE_HEIGHT / 2);
+    }
+    const rect = right < left ? [0, 0, 0, 0] : [left - 10, top - 10, Math.min(1024, right - left + 20), Math.min(512, bottom - top + 20)];
+    const rippleScale = RIPPLE_GRID_WIDTH / Math.max(1, rect[2], rect[3]);
+    const boundary = new Uint8Array(RIPPLE_GRID_WIDTH * RIPPLE_GRID_HEIGHT * 4);
+    for (let y = 0; y < RIPPLE_GRID_HEIGHT; y++) for (let x = 0; x < RIPPLE_GRID_WIDTH; x++) {
+        const px = Math.floor(rect[0] + (x + 0.5) / rippleScale) - coast.x;
+        const py = Math.floor(rect[1] + (y + 0.5) / rippleScale) - coast.y;
+        if (px < 0 || py < 0 || px >= coast.cols * 2 || py >= coast.rows * 2) continue;
+        const cell = (py >> 1) * coast.cols + (px >> 1);
+        const wet = terrain.frontierCoast.exposure[cell] & (1 << ((px & 1) + 2 * (py & 1)));
+        if (wet && basin[cell]) boundary.set([255, 128, 128, 255], (y * RIPPLE_GRID_WIDTH + x) * 4);
+    }
+    return { bake: terrain.frontierCoast, packed, width, height, basin, planarRect: rect, rippleScale, boundary };
+}
 
 function finite(value, fallback = 0) {
     const number = Number(value);
@@ -171,8 +229,14 @@ function halfFloatsToFloat32(halves) {
 }
 
 export class GpuWorldRendererWebGPU {
-    constructor(canvas, { enabled = true, device = null, adapter = null, pipelines = null } = {}) {
+    constructor(canvas, { enabled = true, device = null, adapter = null, pipelines = null, frontierEnabled } = {}) {
         this.backend = 'webgpu';
+        this._frontierAllowed = defaultFrontier(canvas, true);
+        this.frontierConfig = { enabled: defaultFrontier(canvas, frontierEnabled), mirror: true, ripples: true, surfaceDepth: true, wind: true, shafts: true, gi: false };
+        this._frontierPasses = new Map();
+        this._frontierMask = 0;
+        this._surfaceGroups = new Map();
+        this._surfacePages = new Set();
         this.canvas = canvas || null;
         this.enabled = Boolean(enabled);
         this.supported = false;
@@ -238,6 +302,7 @@ export class GpuWorldRendererWebGPU {
         this._displayScreenWidth = 0;
         this._displayScreenHeight = 0;
         this._onVisibilityChange = () => {
+            this._frontierVisibilityReset = true;
             this._pendingPresentIntervalMs = null;
             this.qualityLadder.clearPacing();
         };
@@ -659,6 +724,7 @@ export class GpuWorldRendererWebGPU {
         this._frameBindGroup = null;
         this._attributionPipelines = null;
         this._frameBindKey = '';
+        this._frameDescriptor = null;
         this.sceneTarget = null;
         this.bloomA = null;
         this.bloomB = null;
@@ -683,6 +749,8 @@ export class GpuWorldRendererWebGPU {
     }
 
     _abandonGpuResources() {
+        this._releaseFrontier();
+        this._frameDescriptor = null;
         this.sceneTarget = null;
         this.bloomA = null;
         this.bloomB = null;
@@ -756,7 +824,9 @@ export class GpuWorldRendererWebGPU {
         const bloomWidth = Math.max(1, Math.floor(this.width * BLOOM_SCALE));
         const bloomHeight = Math.max(1, Math.floor(this.height * BLOOM_SCALE));
         const emissionFormat = this._display?.emissionFormat || SCENE_EMISSION_FORMAT;
-        const sameSize = this.sceneTarget?.width === this.width && this.sceneTarget?.height === this.height;
+        const depthFormat = this._frontierMask & 4 ? 'depth32float' : SCENE_DEPTH_FORMAT;
+        const splitWater = Boolean(this._frontierMask & 1);
+        const sameSize = this.sceneTarget?.splitWater === splitWater && this.sceneTarget?.depthFormat === depthFormat && this.sceneTarget?.width === this.width && this.sceneTarget?.height === this.height;
         const keepEmission = needsEmission || (sameSize && this.sceneTarget?.emission
             && now - this._lastEmissionUseAt < TARGET_RETENTION_MS);
         const keepBloom = needsBloom || (sameSize && this.bloomA
@@ -767,8 +837,8 @@ export class GpuWorldRendererWebGPU {
         if (!sameSize) {
             for (const texture of this.sceneTarget?.textures || []) texture.destroy();
             const color = this._createTarget(this.width, this.height, SCENE_COLOR_FORMAT, { label: 'scene-color' });
-            const depth = this._createTarget(this.width, this.height, SCENE_DEPTH_FORMAT, { transient: true, label: 'scene-depth' });
-            this.sceneTarget = { width: this.width, height: this.height, emissionFormat, color, emission: null, depth, textures: [color.texture, depth.texture] };
+            const depth = this._createTarget(this.width, this.height, depthFormat, { transient: !(this._frontierMask & 1), label: 'scene-depth' });
+            this.sceneTarget = { width: this.width, height: this.height, emissionFormat, depthFormat, splitWater, color, emission: null, depth, textures: [color.texture, depth.texture] };
             changed = true;
         }
         const target = this.sceneTarget;
@@ -850,7 +920,7 @@ export class GpuWorldRendererWebGPU {
 
     _updateTextureBytes() {
         const target = this.sceneTarget;
-        const sceneBytes = target ? target.width * target.height * (4 + SCENE_DEPTH_BYTES_PER_PIXEL) : 0;
+        const sceneBytes = target ? target.width * target.height * (4 + (target.depthFormat === 'depth32float' ? 4 : SCENE_DEPTH_BYTES_PER_PIXEL)) : 0;
         const emissionBytes = target?.emission ? target.width * target.height * texelBytes(target.emissionFormat) : 0;
         const bloomBytes = (this.bloomA ? this.bloomA.width * this.bloomA.height * 4 : 0)
             + (this.bloomB ? this.bloomB.width * this.bloomB.height * 4 : 0);
@@ -890,6 +960,111 @@ export class GpuWorldRendererWebGPU {
 
     setEnabled(enabled) {
         this.enabled = Boolean(enabled);
+    }
+
+    get frontierEnabled() { return this.frontierConfig.enabled; }
+
+    get substrateRevision() {
+        return this.frontierEnabled && this._frontierPasses.get('mirror')?.ready ? 1 : 0;
+    }
+
+    setFrontierConfig(options = {}) {
+        let changed = false;
+        for (const key of Object.keys(this.frontierConfig)) {
+            if (typeof options[key] !== 'boolean') continue;
+            const value = key === 'enabled' ? this._frontierAllowed && options[key] : options[key];
+            if (this.frontierConfig[key] === value) continue;
+            this.frontierConfig[key] = value;
+            changed = true;
+        }
+        if (!changed) return;
+        this._releaseFrontier();
+        this._frameReuse?.invalidate();
+    }
+
+    _releaseFrontier() {
+        for (const entry of this._frontierPasses.values()) entry.pass?.release();
+        this._frontierPasses.clear();
+        this._surfaceGroups.clear();
+        this._surfacePages = new Set();
+        this._mirrorBuffer?.destroy();
+        this._mirrorBuffer = null;
+        this._mirrorBufferBytes = 0;
+        this._waterBed?.destroy();
+        this._waterBed = null;
+        this._waterInputs = null;
+        this._hullPositions = new Map();
+        for (const [key, entry] of this._textureEntries || []) {
+            if (!key.startsWith('frontier:')) continue;
+            entry.texture.destroy();
+            this._cachedTextureBytes -= entry.bytes;
+            this._textureEntries.delete(key);
+        }
+        this._frontierMask = 0;
+        this._frontierRevision = 0;
+    }
+
+    _prepareFrontier(terrain) {
+        if (!this.frontierEnabled) return;
+        const device = this.device;
+        const roles = this._display?.emissionFormat || null;
+        const format = roles || SCENE_EMISSION_FORMAT;
+        if (this._frontierFormat !== roles) {
+            this._releaseFrontier();
+            this._frontierFormat = roles;
+        }
+        for (const name of ['surfaceDepth', 'mirror', 'ripples', 'wind', 'shafts']) {
+            if (!this.frontierConfig[name] || this._frontierPasses.has(name)) continue;
+            if (name === 'shafts' && !this.frontierConfig.surfaceDepth) continue;
+            const pass = FRONTIER_PASSES[name] ? new FRONTIER_PASSES[name]() : null;
+            const entry = { pass, ready: false, error: null };
+            this._frontierPasses.set(name, entry);
+            const prepare = async () => {
+                if (pass) {
+                    await pass.prepare(device, { emissionFormat: format });
+                    if (name === 'mirror' && this._frontierPasses.get(name) === entry) await prepareWorldWaterResolve(device, pass, this.pipelines.layouts, roles);
+                } else {
+                    entry.pipelines = await prepareSurfacePipelines(device, this.pipelines.layouts, roles);
+                }
+            };
+            // The synchronous GPU allocations belong to this optional pass's validation scope.
+            device.pushErrorScope('validation');
+            const preparation = prepare();
+            const validation = device.popErrorScope();
+            Promise.all([preparation, validation]).then(([, error]) => {
+                if (error) throw error;
+                if (this._frontierPasses.get(name) === entry) entry.ready = true;
+                else pass?.release();
+            }).catch(error => {
+                entry.error = String(error?.message || error);
+                pass?.release();
+            });
+        }
+        if (terrain?.frontierCoast?.coast && this._waterInputs?.bake !== terrain.frontierCoast) this._waterInputs = waterInputs(terrain);
+        let mask = 0;
+        for (const [name, entry] of this._frontierPasses) if (entry.ready) mask |= FRONTIER_BITS[name];
+        if (!terrain?.frontierCoast?.coast) mask &= ~FRONTIER_BITS.mirror;
+        if (!(mask & FRONTIER_BITS.surfaceDepth)) mask &= ~FRONTIER_BITS.shafts;
+        this._frontierMask = mask;
+    }
+
+    _frontierDiagnostics() {
+        const passes = {};
+        let logicalBytes = this._mirrorBufferBytes || 0;
+        if (this._waterBed) logicalBytes += this._waterBed.width * this._waterBed.height * 4;
+        if (this.sceneTarget?.depthFormat === 'depth32float') logicalBytes += this.width * this.height * 4;
+        for (const [key, entry] of this._textureEntries) if (key.startsWith('frontier:')) logicalBytes += entry.bytes;
+        for (const name of Object.keys(FRONTIER_BITS)) {
+            const entry = this._frontierPasses.get(name);
+            const diag = entry?.pass?.getDiagnostics();
+            passes[name] = { ...diag, ready: entry?.ready === true, error: entry?.error ?? null };
+            if (entry?.ready) {
+                logicalBytes += diag?.allocatedBytes ?? diag?.memoryBytes?.total ?? 0;
+                if (name === 'mirror') logicalBytes += entry.pass.mirrorUniformBuffer.size + entry.pass.resolveUniformBuffer.size;
+                if (name === 'ripples') logicalBytes += entry.pass.paramsBuffer.size + entry.pass.impulseBuffer.size;
+            }
+        }
+        return { enabled: this.frontierEnabled, featureMask: this._frontierMask, passes, logicalBytes };
     }
 
     setLightClusterOverride(value = null) {
@@ -1235,7 +1410,10 @@ export class GpuWorldRendererWebGPU {
         s.cameraScale = view.scale;
         s.resolution = [this.width, this.height];
         s.packedGeometry = !this._occluderChannelSkipped;
-        Object.assign(s, resolveDiurnalFrame(feed, grade));
+        Object.assign(s, resolveDiurnalFrame(feed, grade), resolveFrontierFrame(this._frontierMask, {
+            planarRect: this._waterInputs?.planarRect, basinHandle: this._frontierMask & 1,
+            fieldRevision: this._frontierRevision ?? 0,
+        }));
         s.gradeExposure = grade.exposure;
         s.gradeSaturation = grade.saturation;
         s.gradeGain = grade.gain;
@@ -1463,7 +1641,7 @@ export class GpuWorldRendererWebGPU {
         const key = resources.map(([, view]) => gpuId(view)).join(',');
         if (key === this._frameBindKey && this._frameBindGroup) return;
         this._frameBindKey = key;
-        this._frameBindGroup = this.device.createBindGroup({
+        const descriptor = {
             label: 'world-frame',
             layout: this.pipelines.layouts.frame,
             entries: [
@@ -1476,7 +1654,35 @@ export class GpuWorldRendererWebGPU {
                 { binding: F.radianceSampler, resource: this._samplers.linear },
                 { binding: F.linearSampler, resource: this._samplers.linear },
             ],
-        });
+        };
+        this._frameBindGroup = this.device.createBindGroup(descriptor);
+        this._frameDescriptor = descriptor;
+        this._surfaceGroups.clear();
+    }
+
+    _surfaceGroup(record) {
+        const source = (record.flags & GPU_RECORD_FLAGS.surfacePage) && record.surfaceSource;
+        if (!source) return this._frameBindGroup;
+        const key = 'frontier:surface:' + record.textureKey;
+        if (!this._surfacePages.has(key)) {
+            if (source.width > 512 || source.height > 512 || this._surfacePages.size >= 2) return this._surfaceViewGroup(this.emptyMaterialView);
+            this._surfacePages.add(key);
+        }
+        const surface = source.data
+            ? this.uploadTypedTexture(key, { ...source, format: 'rgba8', revision: record.sidecarRevision })
+            : this._textureFor(key, source, record.sidecarRevision);
+        return this._surfaceViewGroup(surface || this.emptyMaterialView);
+    }
+
+    _surfaceViewGroup(surface) {
+        let group = this._surfaceGroups.get(surface);
+        if (!group) {
+            group = this.device.createBindGroup({ ...this._frameDescriptor, label: 'world-surface-v1',
+                entries: this._frameDescriptor.entries.map(entry => entry.binding === FRAME_BINDING.motifs
+                    ? { binding: entry.binding, resource: surface } : entry) });
+            this._surfaceGroups.set(surface, group);
+        }
+        return group;
     }
 
     // The light records (common.js `lightData`): the floats WebGL2 uploads as
@@ -1550,6 +1756,9 @@ export class GpuWorldRendererWebGPU {
         const optOut = ((first?.flags || 0) & GPU_RECORD_FLAGS.fatOptOut) !== 0;
         const size = batch.page ? [ALBEDO_PAGE_SIZE, ALBEDO_PAGE_SIZE] : (batch.albedoSize || [1, 1]);
         s.albedoSize = size;
+        s.trimColumn = -1;
+        s.supportH = finite(first?.supportH);
+        s.surfaceOffset = first?.surfaceOffset || ZERO4;
         s.albedoPaged = Boolean(batch.page);
         s.fatPixels = !mark && this.fatPixelsFrame && !optOut;
         s.additive = !mark && batch.blend === 'add';
@@ -1680,6 +1889,86 @@ export class GpuWorldRendererWebGPU {
         return this._rainBindGroup;
     }
 
+    _encodeRipples(encoder, records, feed, motion, dtSec) {
+        const ripple = this._frontierPasses.get('ripples').pass;
+        const water = this._waterInputs;
+        if (water) {
+            if (!water.boundaryUploaded) {
+                ripple.uploadBoundaryField(water.boundary);
+                water.boundaryUploaded = true;
+            }
+            const hulls = new Map();
+            for (const r of records) {
+                if (!r.mirrorSource || !r.id?.startsWith('harbor:hull:')) continue;
+                const x = Math.floor((r.frontCornerX - water.planarRect[0]) * water.rippleScale);
+                const y = Math.floor((r.footY - water.planarRect[1]) * water.rippleScale);
+                if (x < 0 || y < 0 || x >= RIPPLE_GRID_WIDTH || y >= RIPPLE_GRID_HEIGHT) continue;
+                const at = y * RIPPLE_GRID_WIDTH + x;
+                hulls.set(r.id, at);
+                const previous = this._hullPositions.get(r.id);
+                if (!motion.reducedMotion && previous != null && previous !== at && water.boundary[4 * at]) {
+                    ripple.queueImpulse({ x, y, kind: 'boat', radius: 3, strength: 1 });
+                }
+            }
+            this._hullPositions = hulls;
+        }
+        for (const impulse of feed.waterImpulses || []) ripple.queueImpulse(impulse);
+        return ripple.encode(encoder, { ...motion, dtSec });
+    }
+
+    _encodeFrontierWater(encoder, records, target, emission, feed) {
+        const { bake, width, height, packed, basin, planarRect } = this._waterInputs;
+        const { coast } = bake;
+        const pass = this._frontierPasses.get('mirror').pass;
+        const admitted = records.filter(record => isMirrorAdmittedRecord(record));
+        const mirrorBatches = [];
+        // The underside wins equal-depth hits on the pier; the warehouse still reflects through its cutouts.
+        const sources = admitted.flatMap(r => r.mirrorProxy ? [r.mirrorProxy, r] : [r]);
+        const staging = new Float32Array(sources.length * 12);
+        const usage = globalThis.GPUBufferUsage;
+        this._ensureBuffer('_mirrorBuffer', '_mirrorBufferBytes', staging.byteLength, usage.VERTEX | usage.COPY_DST, 'harbor-mirror-quads');
+        for (const r of sources) {
+            const view = this._textureFor(r.textureKey, r.source, r.textureRevision);
+            if (!view) continue;
+            const i = mirrorBatches.length;
+            const foot = r.mirrorFootY ?? r.footY ?? r.y + r.height;
+            const u0 = (r.sx || 0) / r.sourceWidth, v0 = (r.sy || 0) / r.sourceHeight;
+            const u1 = u0 + (r.sw || r.sourceWidth) / r.sourceWidth;
+            const v1 = v0 + (r.sh || r.sourceHeight) / r.sourceHeight;
+            staging.set([r.x, r.y, r.width, r.height, r.flipX ? u1 : u0, v0, r.flipX ? u0 : u1, v1,
+                foot - r.y - r.height, foot - r.y, 2 * foot, 0], i * 12);
+            const bindGroup = this.device.createBindGroup({ layout: pass.mirrorBindGroupLayout, entries: [
+                { binding: 0, resource: { buffer: pass.mirrorUniformBuffer } },
+                { binding: 1, resource: view }, { binding: 2, resource: pass.mirrorSampler },
+            ] });
+            mirrorBatches.push({ bindGroup, instanceBuffer: this._mirrorBuffer, instanceOffset: i * 48, instanceCount: 1 });
+        }
+        if (mirrorBatches.length) this.device.queue.writeBuffer(this._mirrorBuffer, 0, staging);
+        if (!this._waterBed || this._waterBed.width !== this.width || this._waterBed.height !== this.height) {
+            this._waterBed?.destroy();
+            this._waterBed = createWgpuTexture(this.device, this.width, this.height, 'rgba8', { label: 'frontier-clean-bed' });
+        }
+        encoder.copyTextureToTexture({ texture: target.color.texture }, { texture: this._waterBed }, [this.width, this.height]);
+        const upload = (key, data, format, w = coast.cols, h = coast.rows) =>
+            this.uploadTypedTexture('frontier:' + key, { data, format, width: w, height: h, revision: bake.key });
+        const empty = this.emptyMaterialView;
+        const ripple = this._frontierPasses.get('ripples');
+        const group = pass.createResolveTextureBindGroup({
+            bed: this._waterBed.createView(), occupancy: upload('exposure', bake.exposure, 'r8'),
+            contacts: upload('contacts', packed, 'rgba8', width, height), basinMap: upload('basin', basin, 'r16ui'),
+            cycle: empty, coast: empty, gust: empty, rippleState: ripple?.ready ? ripple.pass.getReadView() : empty,
+        });
+        const state = this._frameState;
+        const linearSky = row => [...row.slice(0, 3).map(c => srgb8ToLinear16(Math.round(255 * c)) / 65535), row[3]];
+        pass.encode(encoder, { ...state, planarRect, basinId: 1, records: admitted, mirrorBatches,
+            featureMask: this._frontierMask, maxSat: waterMaxSaturation({ night: state.waterMood[0], storm: state.waterMood[1] }),
+            resolveTargetView: target.color.view, resolveEmissionView: emission && target.emission.view,
+            resolveTextureBindGroup: group, reducedMotion: feed.reducedMotion, skyFar: linearSky(state.skyFar),
+            skyNear: linearSky(state.skyNear), coastOrigin: [coast.x, coast.y, planarRect[0], planarRect[1]],
+            rippleSize: [RIPPLE_GRID_WIDTH, RIPPLE_GRID_HEIGHT, this._waterInputs.rippleScale, planarRect[1]],
+            revision: state.frontier[2] });
+    }
+
     render(input = {}, repeatOutput = false) {
         const { records = [], camera = null, feed = {}, particles = null, marks = null, forceFreshOutput = false } = input;
         this._freshOutputThisTask = false;
@@ -1710,6 +1999,7 @@ export class GpuWorldRendererWebGPU {
         this.fatPixelsFrame = resolveFatPixels(camera, this.fatPixelsOverride);
         this._openFrameScope(device);
         try {
+            this._prepareFrontier(records[0]?.id === 'terrain:static' ? records[0] : null);
             const page = this._albedoPage;
             page?.beginFrame(this.frames);
             let batches = buildStableGpuBatches(records, this._batchScratch, this._normalizedRecordScratch, this._pageRecord);
@@ -1790,7 +2080,7 @@ export class GpuWorldRendererWebGPU {
             reuse.bytes(this._markStaging.f32, this._markByteLength);
             reuse.bytes(this._bloomParams.buffer);
             stageGpuFrameBindings(reuse, this, batches, markBatches);
-            const fresh = forceFreshOutput || timerWasPending || this.hasPendingGpuQueries()
+            const fresh = this._frontierMask !== 0 || forceFreshOutput || timerWasPending || this.hasPendingGpuQueries()
                 || this._readbackPending || this._debugLoad || this.passSamplingEnabled;
             if (!fresh && reuse.unchanged()) {
                 this.skippedFrames = (this.skippedFrames || 0) + 1;
@@ -1819,7 +2109,22 @@ export class GpuWorldRendererWebGPU {
             // [scene] — MRT colour + emission, painter depth, then particles.
             mark = performance.now();
             const target = this.sceneTarget;
-            const scene = encoder.beginRenderPass({
+            const mask = this._frontierMask;
+            const surface = mask & 4 ? this._frontierPasses.get('surfaceDepth').pipelines : null;
+            const motion = { reducedMotion: feed.reducedMotion, visibilityReturned: Boolean(this._frontierVisibilityReset) };
+            const wind = mask & 8 ? this._frontierPasses.get('wind').pass.encode(encoder, { ...motion,
+                dtSeconds: frameGapMs / 1000, forcing: { weather: feed.weather || feed.atmosphere?.weather },
+                documentHidden: globalThis.document?.hidden }) : null;
+            const ripple = mask & 2 ? this._encodeRipples(encoder, records, feed, motion, frameGapMs / 1000) : null;
+            this._frontierVisibilityReset = false;
+            const revision = ripple?.revision ?? wind?.revision ?? this._frontierRevision ?? 0;
+            if (mask && revision !== this._frameState.frontier[2]) {
+                this._frontierRevision = this._frameState.frontier[2] = revision;
+                const offset = FRAME_UNIFORM_LAYOUT.byName.frontier.offset + 8;
+                this._frameViews.u32[offset / 4] = revision;
+                device.queue.writeBuffer(this._frameBuffer, offset, this._frameViews.buffer, offset, 4);
+            }
+            const sceneDescriptor = {
                 label: 'world-scene',
                 colorAttachments: [
                     { view: target.color.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
@@ -1827,9 +2132,10 @@ export class GpuWorldRendererWebGPU {
                         { view: target.emission.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
                     ] : []),
                 ],
-                depthStencilAttachment: { view: target.depth.view, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
+                depthStencilAttachment: { view: target.depth.view, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: mask & 1 ? 'store' : 'discard' },
                 timestampWrites: timer?.writes(slot, 'scene'),
-            });
+            };
+            let scene = encoder.beginRenderPass(sceneDescriptor);
             scene.setBindGroup(0, this._frameBindGroup);
             let bound = null;
             let boundRole = 0;
@@ -1840,7 +2146,12 @@ export class GpuWorldRendererWebGPU {
                 if (!batch.albedoTexture) continue;
                 const cue = Boolean(batch.cueRuns);
                 const emitterRoles = roles && batch.emissiveTexture && batch.blend !== 'add' && !cue;
-                const pipeline = emitterRoles ? display.emitterRoles[Number(batch.writesDepth === true)]
+                const cleanBed = Boolean(mask & 1) && batch.records[0]?.id === 'terrain:static';
+                const waterPass = cleanBed && this._frontierPasses.get('mirror').pass;
+                const pipeline = surface ? surface.get([writeEmission, batch.writesDepth === true, cue, batch.blend === 'add', Boolean(emitterRoles),
+                    batch.writesDepth === true && Boolean(batch.records[0]?.flags & GPU_RECORD_FLAGS.surfacePage)].join())
+                    : waterPass ? (writeEmission ? waterPass.bedPipeline : waterPass.bedColorPipeline)
+                    : emitterRoles ? display.emitterRoles[Number(batch.writesDepth === true)]
                     : this.pipelines.scene(batch.blend === 'add', batch.writesDepth === true, writeEmission, cue, roles, writeEmission);
                 if (pipeline !== bound) {
                     scene.setPipeline(pipeline);
@@ -1853,9 +2164,20 @@ export class GpuWorldRendererWebGPU {
                         boundRole = role;
                     }
                 }
+                if (surface) scene.setBindGroup(0, this._surfaceGroup(batch.records[0]));
                 scene.setBindGroup(1, this._batchBindGroup(this._recordBuffer, batch), [index * BATCH_UNIFORM_STRIDE]);
                 scene.draw(cue ? CUE_RUN_VERTICES : 4, batch.count, 0, batch.instanceOffset / RECORD_INSTANCE_BYTES);
                 draws++;
+                if (cleanBed) {
+                    scene.end();
+                    this._encodeFrontierWater(encoder, records, target, writeEmission, feed);
+                    scene = encoder.beginRenderPass({ label: 'world-over-water',
+                        colorAttachments: sceneDescriptor.colorAttachments.map(a => ({ ...a, loadOp: 'load' })),
+                        depthStencilAttachment: { ...sceneDescriptor.depthStencilAttachment, depthLoadOp: 'load', depthStoreOp: 'discard' } });
+                    scene.setBindGroup(0, this._frameBindGroup);
+                    bound = null;
+                    boundRole = 0;
+                }
                 if (batch.page) bindingRecords.albedoPage += batch.count;
                 else if (batch.textureKey === 'agent-frame-atlas') bindingRecords.agentAtlas += batch.count;
                 else if (batch.textureKey === 'world-pilot') bindingRecords.pilotAtlas += batch.count;
@@ -1863,16 +2185,26 @@ export class GpuWorldRendererWebGPU {
                 else bindingRecords.other += batch.count;
             }
             this._sceneTextureBindings = { groupsBound: draws, records: bindingRecords };
+            if (mask & 16) {
+                const forge = records.find(r => r.shaftReceiver && r.id?.startsWith('building.forge'));
+                this._frontierPasses.get('shafts').pass.encode(scene, { ...this._frameState,
+                    sceneState: { atmosphere: feed.atmosphere, hour: feed.atmosphere?.clock?.minuteOfDay / 60,
+                        weather: feed.weather, forgeActive: forge?.daytimeEmitter, forgeEnabled: Boolean(forge),
+                        archiveEnabled: records.some(r => r.shaftReceiver && r.id?.startsWith('building.archive')) },
+                    reducedMotion: feed.reducedMotion, timeSec: feed.timeMs / 1000, windFieldView: wind?.fieldView,
+                    hasEmissionAttachment: writeEmission });
+            }
+            if (surface) scene.setBindGroup(0, this._frameBindGroup);
             if (this._particleCount > 0 && this._particleMotifTexture) {
                 if (boundRole) scene.setBlendConstant({ r: 0, g: 0, b: 0, a: 0 });
-                scene.setPipeline(this.pipelines.particles(writeEmission, roles, writeEmission));
+                scene.setPipeline(surface ? surface.get('particle' + writeEmission) : this.pipelines.particles(writeEmission, roles, writeEmission));
                 scene.setVertexBuffer(0, this._particleBuffer);
                 scene.draw(4, this._particleCount, 0, 0);
             }
             // RN-1 — the world rain, after the particles, on the same depth.
             if (this.rainInstances > 0) {
                 if (boundRole) scene.setBlendConstant({ r: 0, g: 0, b: 0, a: 0 });
-                scene.setPipeline(this.pipelines.rain(writeEmission, roles, writeEmission));
+                scene.setPipeline(surface ? surface.get('rain' + writeEmission) : this.pipelines.rain(writeEmission, roles, writeEmission));
                 scene.setBindGroup(1, this._rainGroup());
                 scene.draw(12, this.rainInstances, 0, 0);
             }
@@ -2320,6 +2652,7 @@ export class GpuWorldRendererWebGPU {
         const renderer = this;
         const quality = this.qualityLadder.getState();
         return {
+            frontier: this._frontierDiagnostics(),
             backend: 'webgpu',
             adapter: this.adapterInfo,
             recordStride: this.pipelines?.recordStride ?? null,
@@ -2476,7 +2809,7 @@ export class GpuWorldRendererWebGPU {
         const bloomBBytes = targetBytes(this.bloomB, BLOOM_FORMAT);
         // The configured canvas (rgba16float while HDR presents).
         const presentationBytes = this.sceneTarget ? this.width * this.height * texelBytes(this.presentFormat) : 0;
-        const depthBytes = this.sceneTarget ? this.width * this.height * SCENE_DEPTH_BYTES_PER_PIXEL : 0;
+        const depthBytes = this.sceneTarget ? this.width * this.height * (this.sceneTarget.depthFormat === 'depth32float' ? 4 : SCENE_DEPTH_BYTES_PER_PIXEL) : 0;
         const attachmentBytes = colorBytes + emissionBytes + depthBytes + bloomABytes + bloomBBytes + presentationBytes;
         const particleBytes = this._particleBuffer ? this._particleBytes.byteLength : 0;
         const lightBytes = this._lightRecordBuffer ? LIGHT_RECORD_BUFFER_BYTES : 0;
@@ -2526,9 +2859,9 @@ export class GpuWorldRendererWebGPU {
  * set) it is active at once; otherwise it builds them and `renderer.ready`
  * resolves true once active.
  */
-export function createGpuWorldRendererWebGPU({ canvas, enabled = true, device = null, adapter = null, pipelines = null } = {}) {
+export function createGpuWorldRendererWebGPU({ canvas, enabled = true, device = null, adapter = null, pipelines = null, frontierEnabled } = {}) {
     if (!canvas?.getContext) return null;
-    const renderer = new GpuWorldRendererWebGPU(canvas, { enabled, device, adapter, pipelines });
+    const renderer = new GpuWorldRendererWebGPU(canvas, { enabled, device, adapter, pipelines, frontierEnabled });
     return renderer.supported ? renderer : null;
 }
 

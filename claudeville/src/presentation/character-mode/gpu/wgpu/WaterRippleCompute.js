@@ -80,7 +80,7 @@ ${RIPPLE_PARAMS_LAYOUT.wgsl}
 
 struct RippleImpulse {
   posRadiusStrength: vec4f, // x, y (grid px), radius, strength
-  meta: vec4f,              // kind, vx, vy, reserved
+  impulseInfo: vec4f,              // kind, vx, vy, reserved
 }
 
 @group(0) @binding(${RIPPLE_COMPUTE_BINDING.params}) var<uniform> params: RippleParams;

@@ -1,6 +1,7 @@
 import { agentPaletteLut, canvasOverflowRecord, finishAgentLayerFrame } from '../AgentLayerRecords.js';
 import {
     DAYLIGHT_PASSIVE_CORE_SCALE,
+    GPU_RECORD_FLAGS,
     effectBudgetMode,
     isDaytimeHighEnergyBuilding,
     materialClassId,
@@ -368,6 +369,9 @@ function recordForTerrain(renderer) {
     return {
         id: 'terrain:static',
         stableKey: 'terrain:static',
+        frontierCoast: renderer._coastBake?.exposure ? renderer._coastBake : null,
+        harborTiles: renderer.harborWaterApronTiles,
+        waterMeta: renderer.waterMeta,
         textureKey,
         source: canvas,
         materialSource,
@@ -614,7 +618,13 @@ function recordForBuilding(renderer, drawable, sequence) {
     const front = drawable.kind === 'building-front';
     const atlasFrame = assets.getAtlasFrame?.(id);
     const atlasAlbedo = atlasFrame?.atlas ? assets.getAtlas?.(atlasFrame.atlas, 'albedo') : null;
-    const useAtlas = Boolean(renderer._gpuAtlasDecision?.building && atlasAlbedo && atlasFrame?.rect);
+    const frontier = renderer.gpuWorld?.frontierEnabled;
+    const surface = frontier && sidecarFor(assets, id, 'surface');
+    const page = surface?.source ?? surface;
+    const dx = surface?.offsetX || 0, dy = surface?.offsetY || 0;
+    const surfaceDepth = page && page.complete !== false && dx >= 0 && dy >= 0
+        && page.width >= dx + dims.w && page.height >= dy + dims.h && page.width <= 512 && page.height <= 512;
+    const useAtlas = Boolean(!surfaceDepth && renderer._gpuAtlasDecision?.building && atlasAlbedo && atlasFrame?.rect);
     let source;
     let sourceWidth;
     let sourceHeight;
@@ -736,6 +746,33 @@ function recordForBuilding(renderer, drawable, sequence) {
     const roof = roofWeatherRecords(renderer, drawable, record, spriteLeft, col, split ? horizon : null, front, sequence);
     const parts = buildingPartRecords(renderer, drawable, record, sequence);
     const forgeOverlay = forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, split ? horizon : null, front, sequence);
+    if (frontier) {
+        if (surfaceDepth) {
+            record.surfacePage = true;
+            record.surfaceSource = page;
+            record.supportH = finite(drawable.supportH);
+            record.surfaceOffset = [dx, dy];
+            record.sidecarKey += `:surface:${record.supportH}:${dx},${dy}`;
+            record.pageable = false;
+        }
+        record.shaftReceiver = buildingType === 'archive' || buildingType === 'forge';
+        if (buildingType === 'harbor') {
+            record.mirrorSource = true;
+            record.mirrorFootY = Math.round(drawable.wy);
+            let underside = sidecarFor(assets, id, 'underside');
+            if (!underside && typeof Image !== 'undefined') {
+                if (!renderer._harborUnderside) {
+                    renderer._harborUnderside = new Image();
+                    renderer._harborUnderside.src = new URL('../../../../assets/sprites/buildings/building.harbor/underside.png', import.meta.url).href;
+                }
+                underside = renderer._harborUnderside;
+            }
+            if (underside?.width === dims.w && underside?.height === dims.h && underside.complete !== false) {
+                record.mirrorProxy = { ...record, mirrorOnly: true, source: underside, textureKey: id + ':underside',
+                    sourceWidth: dims.w, sourceHeight: dims.h, sx: col?.sx || 0, sy: front ? horizon : 0 };
+            }
+        }
+    }
     if (!shadows.length && !glass && !roof.length && !parts.length && !forgeOverlay) return record;
     const out = glass ? [...shadows, record, glass] : [...shadows, record];
     for (let index = 0; index < roof.length; index++) out.push(roof[index]);
@@ -2000,6 +2037,23 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
         }
         else if (next) records.push(next);
         stampPainterDepth(records, from, drawable);
+        if (renderer.gpuWorld?.frontierEnabled && /^(?:prop|agent|harbor-hulls)/.test(drawable.kind)) {
+            for (let i = from; i < records.length; i++) {
+                const r = records[i];
+                if (r.reflect || r.screenSpace || r.cueRun || r.actionMark || r.blend === 'add'
+                    || (r.flags & (GPU_RECORD_FLAGS.reflect | GPU_RECORD_FLAGS.screenSpace | GPU_RECORD_FLAGS.cueRun | GPU_RECORD_FLAGS.actionMark))) continue;
+                if (r.id?.startsWith('harbor:hull:')) {
+                    r.mirrorSource = true;
+                    continue;
+                }
+                if (!r.writesDepth || String(r.id).startsWith('ground:')) continue;
+                const x = r.x + r.width / 2, y = r.footY ?? r.depthSortY;
+                const tile = Math.round(y / (2 * TILE_HALF_HEIGHT) + x / (2 * TILE_HALF_WIDTH)) + ',' + Math.round(y / (2 * TILE_HALF_HEIGHT) - x / (2 * TILE_HALF_WIDTH));
+                if (renderer.harborWaterApronTiles?.has(tile) || renderer.waterMeta?.get(tile)?.region === 'harbor') {
+                    r.mirrorSource = true;
+                }
+            }
+        }
         sequence++;
     }
     packGpuAgentFrameAtlas(renderer, records);

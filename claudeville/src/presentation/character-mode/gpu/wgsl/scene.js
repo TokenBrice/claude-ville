@@ -73,7 +73,7 @@ const LIGHT_ROLE_ATTENTION = LIGHT_ROLE_CODES.attention;
 const wgslRgb = (rgb) => `vec3f(${rgb.map(channel => (channel / 255).toFixed(6)).join(', ')})`;
 const grassGustRgb = (side) => `array<vec3f, ${GRASS_GUST_STOPS.length}>(${GRASS_GUST_STOPS.map(pair => wgslRgb(pair[side])).join(', ')})`;
 
-export const sceneWgsl = (capture = false) => /* wgsl */ `
+export const sceneWgsl = (capture = false, cleanBed = false) => /* wgsl */ `
 // NE P3.3b — named moon-path night lift constants (shared with openSea.js and GLSL twins).
 const MOON_PATH_UNGRADE_MIX: f32 = ${MOON_PATH_UNGRADE_MIX.toFixed(2)};
 const MOON_PATH_SILVER_TINT: vec3f = vec3f(${MOON_PATH_SILVER_TINT.map(v => v.toFixed(2)).join(', ')});
@@ -773,7 +773,7 @@ fn sceneSurface() -> SurfaceSample {
         color = capSaturation(mix(color, poolAlbedo * MOON_PATH_SILVER_TINT, MOON_PATH_UNGRADE_MIX * frame.waterMood.x), waterMaxSat());
       }
       color = seaPathCap(color);
-    } else {
+    } else${cleanBed ? ' if ((frame.frontier.x & 1u) == 0u || batch.terrainBatch == 0u || frame.skyFar.w == 0.0)' : ''} {
       color = capSaturation(applyWaterSky(color, skyCourse), waterMaxSat());
       // SEA-2 / SEA-3 — open water's share of the cool sky (applyWaterState).
       if (skyCourse == 3 && seaSkyTake > 0.0) { color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), waterMaxSat()); }
@@ -1515,3 +1515,45 @@ var<private> captureCastOnWater: bool;
 `;
 
 export const SCENE_WGSL = sceneWgsl();
+
+// Binding 15 is the sprite's registered surface-v1 page on this pipeline.
+export const SURFACE_DEPTH_WGSL = /* wgsl */ `
+struct SurfaceOut {
+  @location(0) color: vec4f,
+  @location(1) emission: vec4f,
+  @builtin(frag_depth) depth: f32,
+}
+
+fn oct64Normal(id: u32) -> vec3f {
+  let p = vec2f(f32(id & 7u), f32(id >> 3u)) * (2.0 / 7.0) - 1.0;
+  let z = 1.0 - abs(p.x) - abs(p.y);
+  let folded = (vec2f(1.0) - abs(p.yx)) * select(vec2f(-1.0), vec2f(1.0), p >= vec2f(0.0));
+  return normalize(vec3f(select(p, folded, z < 0.0), z));
+}
+
+fn surfaceFragment(in: VsOut, roles: bool) -> SurfaceOut {
+  let shaded = renderScene(in, roles);
+  if (shaded.color.a <= 0.0 || (batch.writesDepth != 0u && shaded.color.a < 0.5)) { discard; }
+  var color = shaded.color;
+  var h = max(0.0, in.receiver.x - in.world.y);
+  if ((v_flags & RECORD_FLAG_SURFACE_DEPTH) != 0u && (frame.frontier.x & 4u) != 0u) {
+    let uv = clamp(in.uv, in.uvClamp.xy, in.uvClamp.zw);
+    let coord = vec2i(uv * batch.albedoSize) + batch.surfaceOffset;
+    let raw = vec4u(round(textureLoad(surfacePage, coord, 0) * 255.0));
+    if ((raw.a & 128u) != 0u && raw.b < 64u) {
+      h = batch.supportH + f32(raw.r | (raw.g << 8u)) / 16.0;
+      if ((raw.a & 64u) == 0u) {
+        let normal = oct64Normal(raw.b);
+        let light = dot(normal, normalize(vec3f(frame.sun.xy, 1.0)));
+        let ao = f32(raw.a & 15u) / 15.0;
+        color = vec4f(color.rgb * (1.0 + 0.08 * light * frame.sun.w - 0.12 * ao), color.a);
+      }
+    }
+  }
+  let Y = 2.0 * (in.world.y + h);
+  let D = Y + h / 2.0;
+  return SurfaceOut(color, shaded.emission, clamp((6144.0 - D) / 8192.0, 0.000001, 0.999999));
+}
+@fragment fn surfaceFs(in: VsOut) -> SurfaceOut { return surfaceFragment(in, false); }
+@fragment fn surfaceRolesFs(in: VsOut) -> SurfaceOut { return surfaceFragment(in, true); }
+`;

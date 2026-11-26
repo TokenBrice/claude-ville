@@ -26,6 +26,8 @@ import {
     assembleScene,
 } from '../wgsl/index.js';
 import { COMPOSITE_ROLES_BINDING, HDR_READOUT_WGSL } from '../wgsl/composite.js';
+import { PLANAR_WATER_RESOLVE_WGSL } from './PlanarWaterPass.js';
+import { SCENE_WGSL, sceneWgsl, SURFACE_DEPTH_WGSL } from '../wgsl/scene.js';
 import { assembleRain, RAIN_BINDING, RAIN_UNIFORM_BYTES } from '../wgsl/rain.js';
 
 export const SCENE_COLOR_FORMAT = 'rgba8unorm';
@@ -238,6 +240,86 @@ function rainDescriptor(layouts, module, { roles = null, attachment = true } = {
             ],
         },
     };
+}
+
+// Adapt the planar pass's source lookups to GL-row scene targets and the
+// persisted sparse contact stream. The integer resolve and collar stay shared.
+export async function prepareWorldWaterResolve(device, pass, layouts, roles) {
+    const emissionFormat = roles || SCENE_EMISSION_FORMAT;
+    const sparseLookup = /* wgsl */ `
+fn contactAt(local: vec2i) -> vec4f {
+  let stride = textureDimensions(occupancyTex).x * 2u;
+  let at = u32(local.y) * stride + u32(local.x);
+  let dims = textureDimensions(contactTex);
+  var lo = 0u;
+  var hi = dims.x / 2u * dims.y;
+  while (lo < hi) {
+    let mid = (lo + hi) >> 1u;
+    let offset = 2u * mid;
+    let pos = vec2i(i32(offset % dims.x), i32(offset / dims.x));
+    let bytes = vec4u(round(textureLoad(contactTex, pos, 0) * 255.0));
+    let key = bytes.r | (bytes.g << 8u) | (bytes.b << 16u) | (bytes.a << 24u);
+    if (key == at) { return textureLoad(contactTex, pos + vec2i(1, 0), 0); }
+    if (key < at) { lo = mid + 1u; } else { hi = mid; }
+  }
+  return vec4f(0.0);
+}
+`;
+    const code = PLANAR_WATER_RESOLVE_WGSL
+        .replace('fn resolveWaterAt(', sparseLookup + '\nfn resolveWaterAt(')
+        .replaceAll('resolveWaterAt(in.position.xy)', 'resolveWaterAt(vec2f(in.position.x, params.resolution.y - in.position.y))')
+        .replace('if (!isWaterExposed(p)) {\n    return bedSample;', 'if (!isWaterExposed(p) || bedSample.a == 0.0) { discard;')
+        .replace('let cDims = vec2i(textureDimensions(contactTex));', 'let cDims = vec2i(textureDimensions(occupancyTex)) * 2;')
+        .replace('textureLoad(contactTex, cLocal, 0)', 'contactAt(cLocal)');
+    const module = await compileModule(device, code, 'world-water-resolve.wgsl');
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [pass.resolveParamsLayout, pass.resolveTexturesLayout] });
+    const pipeline = (entryPoint, targets) => device.createRenderPipelineAsync({
+        label: entryPoint, layout, vertex: { module, entryPoint: 'fullscreenVs' },
+        fragment: { module, entryPoint, targets }, primitive: { topology: 'triangle-list' },
+    });
+    const bed = await compileModule(device, assembleScene().replace(SCENE_WGSL, () => sceneWgsl(false, true)), 'clean-bed.wgsl');
+    [pass.resolveColorOnlyPipeline, pass.resolvePipeline, pass.bedColorPipeline, pass.bedPipeline] = await Promise.all([
+        pipeline('planarWaterResolveColorFs', [{ format: SCENE_COLOR_FORMAT }]),
+        pipeline('planarWaterResolveFs', [{ format: SCENE_COLOR_FORMAT }, { format: emissionFormat }]),
+        device.createRenderPipelineAsync(sceneDescriptor(layouts, bed, { attachment: false })),
+        device.createRenderPipelineAsync(sceneDescriptor(layouts, bed, { roles })),
+    ]);
+}
+
+// All consumers of the geometric attachment use the same art-space projection.
+export async function prepareSurfacePipelines(device, layouts, roles = null) {
+    const shader = assembleScene().replace(SCENE_WGSL, () => sceneWgsl(false, true)).replace('var motifs: texture_2d<f32>', 'var surfacePage: texture_2d<f32>');
+    const depthFor = (sy, foot) => `clamp((6144.0 - (2.0 * ${sy} + 2.5 * max(0.0, ${foot} - ${sy}))) / 8192.0, 0.000001, 0.999999)`;
+    const [scene, particle, rain] = await Promise.all([
+        compileModule(device, shader + SURFACE_DEPTH_WGSL, 'surface-v1.wgsl'),
+        compileModule(device, assembleParticle().replace('1.0 - f32(depth.x) / 65535.0',
+            depthFor('world.y', '(f32(depth.x) / 8.0 - 2048.0)')), 'surface-particles.wgsl'),
+        compileModule(device, assembleRain().replace('1.0 - key / 65535.0', depthFor('world.y', 'ground.y')), 'surface-rain.wgsl'),
+    ]);
+    const variants = new Map();
+    const tasks = [];
+    const prepare = (key, descriptor, compare, entryPoint) => {
+        descriptor.depthStencil = { ...descriptor.depthStencil, format: 'depth32float', depthCompare: compare };
+        if (entryPoint) descriptor.fragment.entryPoint = entryPoint;
+        tasks.push(device.createRenderPipelineAsync(descriptor).then(pipeline => variants.set(key, pipeline)));
+    };
+    for (const attachment of roles ? [true] : [false, true]) {
+        for (const depth of [false, true]) for (const cue of [false, true]) for (const add of [false, true]) {
+            for (const emitter of roles && !cue && !add ? [false, true] : [false]) {
+                for (const registered of depth ? [false, true] : [false]) {
+                    const desc = sceneDescriptor(layouts, scene, { attachment, roles, depth, cue, add });
+                    if (emitter) desc.fragment.targets[1].blend = BLEND_NORMAL;
+                    // Flat sprite layers share a foot plane and retain their authored paint order.
+                    prepare([attachment, depth, cue, add, emitter, registered].join(), desc,
+                        registered ? 'less' : 'less-equal', emitter ? 'surfaceRolesFs' : 'surfaceFs');
+                }
+            }
+        }
+        prepare('particle' + attachment, particleDescriptor(layouts, particle, { roles, attachment }), 'less-equal');
+        prepare('rain' + attachment, rainDescriptor(layouts, rain, { roles, attachment }), 'less-equal');
+    }
+    await Promise.all(tasks);
+    return variants;
 }
 
 /**

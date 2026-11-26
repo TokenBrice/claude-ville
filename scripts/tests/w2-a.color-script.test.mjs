@@ -165,9 +165,9 @@ test('Fresnel seams wrap at 1280 world pixels and use the three authored bend ba
 
 test('both record halves and all four diurnal vectors fit the published ABI', () => {
     const state = resolveDiurnalFrame({}, gradeAt(1080));
-    const views = createUniformViews(896);
+    const views = createUniformViews(FRAME_UNIFORM_LAYOUT.size);
     writeFrameUniforms(views, state);
-    assert.equal(FRAME_UNIFORM_LAYOUT.size, 896);
+    assert.equal(FRAME_UNIFORM_LAYOUT.size, 960);
     for (const [i, name] of ['skyFar', 'skyNear', 'faceKey', 'faceExtra'].entries()) {
         const offset = 832 + i * 16;
         assert.equal(FRAME_UNIFORM_LAYOUT.byName[name].offset, offset);

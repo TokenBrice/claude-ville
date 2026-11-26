@@ -109,6 +109,17 @@ function cloudThreshold(coveredShare) {
     return sorted[index];
 }
 
+const NO_FRONTIER_ROW = Object.freeze([0, 0, 0, 0]);
+
+export function resolveFrontierFrame(featureMask = 0, { planarRect, waterH = 0, basinHandle = 0, fieldRevision = 0 } = {}) {
+    return {
+        planarRect: featureMask & 1 && planarRect ? planarRect : NO_FRONTIER_ROW,
+        basinParams: featureMask ? [waterH, 2, 8, 2] : NO_FRONTIER_ROW,
+        depthRange: featureMask ? [-2048, 6144, 1 / 8192, 8] : NO_FRONTIER_ROW,
+        frontier: featureMask ? [featureMask, basinHandle, fieldRevision, 0] : NO_FRONTIER_ROW,
+    };
+}
+
 /** The frame's light grade (C2), or the neutral grade. */
 export function resolveFrameGrade(feed = {}) {
     return feed.atmosphere?.lightGrade || feed.lightGrade || NEUTRAL_GRADE;
