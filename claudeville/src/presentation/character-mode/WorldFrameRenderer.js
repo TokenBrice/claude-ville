@@ -633,7 +633,12 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // S12 — albedo marks agents paint on the ungraded overlay (the signature
     // clasp) take the frame's C2 grade.
     const overlayLightGrade = atmosphere?.lightGrade || null;
-    for (const sprite of renderer.agentSprites?.values?.() || []) sprite.overlayLightGrade = overlayLightGrade;
+    const motionTimeMs = renderer.motionTimeMs;
+    for (const sprite of renderer.agentSprites?.values?.() || []) {
+        sprite.overlayLightGrade = overlayLightGrade;
+        sprite._lightGrade = overlayLightGrade;
+        sprite._motionTimeMs = motionTimeMs;
+    }
     // #3 — grade authority: harbor anchorage glows lerp toward the time-of-day tint.
     renderer.harborTraffic?.setGradeState?.(atmosphere?.grade);
     // 5.3 — ship lamps burn on the village lamp clock.
@@ -811,6 +816,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // Assign overlay slots after depth sorting & world occlusion so hidden
     // villagers suppress names and glyphs on the same frame with zero lag.
     renderer._assignAgentOverlaySlots(sortedSprites, zoom, { agentRenderMode: annotationMode });
+    // W3-C — admit standing lead report cairns in the live render frame after
+    // primary MarkGovernor reservations and before Canvas/GPU agent emission.
+    renderer._admitFrameReportCairns?.(sortedSprites, zoom);
     const cullingStats = cullDepthSortedDrawables(
         drawables,
         renderer.camera,
@@ -1072,7 +1080,6 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         now: perfNow,
         lighting: atmosphere?.lighting,
     });
-    renderer._drawReportCairns?.(overlayCtx, zoom);
     renderer.chronicleMonuments?.drawMoments?.(overlayCtx, zoom, renderNow);
     renderer.harborTraffic?.drawMoments?.(overlayCtx, zoom, renderNow);
     drawVillageDirectorOverlays(overlayCtx, villageSnapshot, perfNow, atmosphere?.grade);
