@@ -32,6 +32,15 @@
 //   one repaint of the cache; reduced motion keeps today's static stream.
 //   Hovering it reads out both accounts' windows (`belfryTooltip`). It never
 //   reads a villager.
+// - W1-D 1.10 — both keep a light in at night, on the village lamp clock
+//   only (`villageLampsLit`, BuildingSprite.lampsLitAt; never occupancy or
+//   quota): each sprite carries its `.emissive.png` sidecar
+//   (scripts/sprites/emissive-sidecars.mjs: the miller's doorway and two
+//   windows; the belfry's lantern chamber round each glass) as its emissive
+//   channel, gated by `emitterGate`, the windmill's cut back wherever its
+//   sails cross a pane. `lightFixtures()` gives one warm `lamps` pool each
+//   (LANDMARK_LIGHTS, radius 36) as hearth rows for the renderer's
+//   `_hearthLightSources` extras.
 
 import { StaticPropSprite } from './StaticPropDrawables.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
@@ -69,6 +78,29 @@ const SAIL_CALM = 0.15; // knot wind below this is still air (pennants rest too)
 
 const LANDMARK_PROPS = Object.freeze(DISTRICT_PROPS.filter((prop) => prop.landmark));
 
+// W1-D 1.10 — each landmark's night pool, a `lamps` fixture: `foot` the
+// ground point in tiles from the placement (the windmill's door step; the
+// belfry's lawn under its two arches), `height` world px up to the source
+// (the doorway's fanlight; the lantern chamber's middle).
+export const LANDMARK_LIGHT_RADIUS = 36;
+export const LANDMARK_LIGHTS = Object.freeze({
+    'prop.windmill': Object.freeze({ foot: Object.freeze([-0.25, 0.5]), height: 16, intensity: 0.62 }),
+    'prop.hourglassBelfry': Object.freeze({ foot: Object.freeze([0.4, 0.4]), height: 62, intensity: 0.5 }),
+});
+const LANDMARK_LIGHT_COLOR = '#ffc95e';
+
+// The landmark sprites' shared lamp-clock gate (IsometricRenderer
+// `villageLampsLit`: emission, pools and the glass all stand down by day).
+function lampsLit(host) {
+    return host?.villageLampsLit?.() === true;
+}
+
+// The sidecar companion once resident (it can land after the first paint:
+// a change repaints the cache, as a snow change does).
+function glowKey(host, id) {
+    return host?.assets?.getCompanion?.(id, 'emissive') ? '1' : '0';
+}
+
 function boundsFor(assets, id, extraLeft = 0) {
     const dims = assets?.getDims?.(id) || { w: 64, h: 64 };
     const [ax, ay] = assets?.getAnchor?.(id) || [dims.w / 2, dims.h];
@@ -93,8 +125,11 @@ class WindmillSprite extends StaticPropSprite {
             splitForOcclusion: false,
             materialClass: 'stone',
             drawFn: (ctx, x, y) => this._paint(ctx, x, y, this._paintFrame),
+            channels: { emissive: (ctx, x, y) => this._paintGlow(ctx, x, y, this._paintFrame) },
         });
         this.host = host;
+        this.emitterGate = () => (lampsLit(host) ? 1 : 0);
+        this._glowKey = '';
         this._paintFrame = 0;
         this._sailFrame = 0;
         this._sailStepAt = -Infinity;
@@ -134,8 +169,10 @@ class WindmillSprite extends StaticPropSprite {
 
     _getCachedCanvas(zoom) {
         const snowKey = this.host.propWinter?.key || '0';
-        if (snowKey !== this._snowKey) {
+        const glow = glowKey(this.host, this.id);
+        if (snowKey !== this._snowKey || glow !== this._glowKey) {
             this._snowKey = snowKey;
+            this._glowKey = glow;
             this._frames = new Array(SAIL_FRAMES).fill(null);
             this._gpuCacheRevision++;
         }
@@ -163,6 +200,22 @@ class WindmillSprite extends StaticPropSprite {
         const ox = Math.round(x) - ax + WINDMILL_SAIL_HUB[0] - SAIL_FRAME_PX / 2;
         const oy = Math.round(y) - ay + WINDMILL_SAIL_HUB[1] - SAIL_FRAME_PX / 2;
         ctx.drawImage(sails, frame * SAIL_FRAME_PX, 0, SAIL_FRAME_PX, SAIL_FRAME_PX, ox, oy, SAIL_FRAME_PX, SAIL_FRAME_PX);
+    }
+
+    // The emissive channel: the sidecar's doorway and windows, cut back
+    // wherever this frame's sails cross a pane (the sails are timber).
+    _paintGlow(ctx, x, y, frame) {
+        const host = this.host;
+        if (!host.sprites?.drawCompanion?.(ctx, this.id, 'emissive', x, y)) return;
+        const sails = host.assets?.get?.('prop.windmillSails');
+        if (!sails) return;
+        const [ax, ay] = host.assets.getAnchor(this.id);
+        const ox = Math.round(x) - ax + WINDMILL_SAIL_HUB[0] - SAIL_FRAME_PX / 2;
+        const oy = Math.round(y) - ay + WINDMILL_SAIL_HUB[1] - SAIL_FRAME_PX / 2;
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.drawImage(sails, frame * SAIL_FRAME_PX, 0, SAIL_FRAME_PX, SAIL_FRAME_PX, ox, oy, SAIL_FRAME_PX, SAIL_FRAME_PX);
+        ctx.restore();
     }
 
     releaseCache() {
@@ -194,8 +247,13 @@ class BelfrySprite extends StaticPropSprite {
             splitForOcclusion: false,
             materialClass: 'stone',
             drawFn: (ctx, x, y) => this._paint(ctx, x, y),
+            // The lantern chamber's sidecar: every lit texel lies outside
+            // every glass cell, so no cell ever needs cutting from it.
+            channels: { emissive: (ctx, x, y) => host.sprites?.drawCompanion?.(ctx, prop.id, 'emissive', x, y) },
         });
         this.host = host;
+        this.emitterGate = () => (lampsLit(host) ? 1 : 0);
+        this._shownGlow = '';
         this._targets = { claude: 'unknown', codex: 'unknown' };
         this._moments = { claude: null, codex: null };
         this._shown = { claude: 'unknown', codex: 'unknown' };
@@ -277,6 +335,11 @@ class BelfrySprite extends StaticPropSprite {
             this._shownSnow = snowKey;
             changed = true;
         }
+        const glow = glowKey(this.host, this.id);
+        if (glow !== this._shownGlow) {
+            this._shownGlow = glow;
+            changed = true;
+        }
         for (const account of BELFRY_ACCOUNTS) {
             const key = this.glassKey(account);
             const phase = this.streamPhase(account);
@@ -341,6 +404,32 @@ export class IsleLandmarks {
                 this._belfry.sprite.setDrain(this._belfry.drain);
                 out.push(this._belfry.sprite);
             } else out.push(plainSprite(this.host, prop));
+        }
+        return out;
+    }
+
+    /**
+     * W1-D 1.10 — the landmarks' night pools while the village lamps are lit
+     * (else none): hearth rows `{ id, tileX, tileY, height, radius, intensity,
+     * color }` for the renderer's `_hearthLightSources` extras
+     * (LightSourceRegistry.hearthLightSources), each at its landmark's
+     * placement (LANDMARK_LIGHTS). Clock and geography only.
+     */
+    lightFixtures() {
+        if (!lampsLit(this.host)) return [];
+        const out = [];
+        for (const prop of LANDMARK_PROPS) {
+            const light = LANDMARK_LIGHTS[prop.id];
+            if (!light) continue;
+            out.push({
+                id: `landmark.${prop.id}`,
+                tileX: prop.tileX + light.foot[0],
+                tileY: prop.tileY + light.foot[1],
+                height: light.height,
+                radius: LANDMARK_LIGHT_RADIUS,
+                intensity: light.intensity,
+                color: LANDMARK_LIGHT_COLOR,
+            });
         }
         return out;
     }

@@ -19,7 +19,9 @@ import {
     WATCHTOWER_GULL_ORBIT,
     WORLD_TREE,
 } from '../../config/scenery.js';
+import { ART_RAMPS } from '../../config/artPalette.js';
 import { fireflyGroundTiles } from './AmbientGround.js';
+import { ungradeRgb } from './CanvasGrade.js';
 import { applyGradeToRgb } from './GradeEvaluator.js';
 import { ornamentPlan, readCalmGateOverride, sampleFramePressure } from './MarkGovernor.js';
 import { DRAGONFLY_POOL_MAX } from './ParticleSystem.js';
@@ -248,6 +250,19 @@ const DAWN_WAVE_SPAN_MS = 3 * DAWN_WAVE_STAGGER_MS + DAWN_WAVE_JITTER_MS + DAWN_
 // when the bucket moves. A bucket is the grade's response to three probe
 // colours at 1/32 steps, so it follows every term of the grade that shows.
 const GRADE_PROBES = Object.freeze([[0.92, 0.94, 0.95], [0.5, 0.5, 0.5], [0.45, 0.62, 0.8]]);
+// W1-D — the livestock night key. Graded white wool (sheep, cow, goat, hen,
+// dog, cat, deer) is the brightest albedo in the moonlit meadow, so by night
+// it would pop over the village's own lit stone. Through the night share
+// (the lighting's beacon intensity, 0 by day, 1 at night, in 1/8 steps) a
+// fauna body's graded value above the graded ashlar[6] knee compresses so
+// that graded white lands on graded ashlar[8] (the brightest dressed stone
+// under the same grade): wool reads soft moonlit silver-blue, its shading
+// kept, hue untouched. The overlay draws the held colour; the Canvas world
+// pass (graded after the fact) draws its preimage (CanvasGrade.ungradeRgb),
+// so both backends land on the same texel. By day nothing changes.
+const FAUNA_NIGHT_STEPS = 8;
+const FAUNA_NIGHT_KNEE = ART_RAMPS.ashlar[6];
+const FAUNA_NIGHT_CEILING = ART_RAMPS.ashlar[8];
 const GULL_SHADOW = 'rgba(7, 18, 30, 0.22)';
 const SONGBIRD_SHADOW = 'rgba(0, 0, 0, 0.16)';
 // W8.4a (AD-P11 / AW-P15) — the livestock region: cow, sheep and goat in
@@ -325,6 +340,9 @@ export class WildlifeRenderer {
         this._tintGrade = null;
         this._tintKey = '';
         this._tintCache = new Map();
+        // W1-D — the livestock night key (null by day) and its frames.
+        this._faunaNight = null;
+        this._faunaNightCache = new Map();
         // Last frame's gull budget, for diagnostics and capture tooling.
         this.lastGullStats = { pool: GULL_POPULATION, active: 0, visible: 0, cap: 0, roosting: 0, rising: 0, lighthouse: 0, mode: 'idle', band: [0, 0], fishing: 0 };
         // W6.4 — the flying band now ([always-flying lanes, flying lanes]),
@@ -389,6 +407,7 @@ export class WildlifeRenderer {
         // the overlay after the grade instead).
         const overlay = ctx === this.host.overlayCtx;
         this._prepareTint(overlay ? this.host._lastAtmosphere?.lightGrade : null);
+        this._prepareFaunaNight(this.host._lastAtmosphere, overlay);
         this.drawFishSchools(ctx);
         this.drawWaterfowl(ctx);
         this.drawLivestock(ctx);
@@ -840,7 +859,7 @@ export class WildlifeRenderer {
         ctx.fillStyle = LIVESTOCK_SHADOW;
         ctx.fillRect(x - (w >> 1), y, w, 1);
         ctx.fillRect(x - (w >> 1) + 2, y + 1, w - 4, 1);
-        const src = this._tinted(id, img);
+        const src = this._faunaFrame(id, img);
         if (cell.mirror) {
             ctx.save();
             ctx.translate(x, 0);
@@ -2003,6 +2022,78 @@ export class WildlifeRenderer {
         this._gradedColors.clear();
     }
 
+    /**
+     * W1-D — the livestock night key for this frame: null by day (or with no
+     * grade), else `{ grade, share, knee, ceiling, white, overlay, key }`
+     * (graded lumas of the ashlar knee and ceiling and of white).
+     */
+    _prepareFaunaNight(atmosphere, overlay) {
+        const grade = atmosphere?.lightGrade;
+        const share = faunaNightShare(atmosphere?.lighting);
+        if (!grade?.gain || !grade?.purkinje || share <= 0) {
+            this._faunaNight = null;
+            return null;
+        }
+        const key = `${overlay ? 'o' : 'c'}|${Math.round(share * FAUNA_NIGHT_STEPS)}|${grade.cacheKey ?? this._tintKey}`;
+        if (this._faunaNight?.key === key) return this._faunaNight;
+        if (this._faunaNightCache.size > 64) this._faunaNightCache.clear();
+        const gradedLuma = (hex) => rgbLuma(applyGradeToRgb(hexUnit(hex), grade));
+        this._faunaNight = {
+            grade,
+            share,
+            overlay,
+            knee: gradedLuma(FAUNA_NIGHT_KNEE),
+            ceiling: gradedLuma(FAUNA_NIGHT_CEILING),
+            white: rgbLuma(applyGradeToRgb([1, 1, 1], grade)),
+            key,
+        };
+        return this._faunaNight;
+    }
+
+    // A livestock sheet as this pass draws it: by day the overlay's tinted
+    // frame (or the authored art on the Canvas pass); by night the held
+    // colours (`faunaNightHold`), as their preimage on the Canvas pass.
+    _faunaFrame(id, img) {
+        const night = this._faunaNight;
+        if (!night || typeof document === 'undefined') return this._tinted(id, img);
+        const cacheKey = `${id}|${night.key}`;
+        const cached = this._faunaNightCache.get(cacheKey);
+        if (cached && cached.source === img) return cached.canvas;
+        const w = img.width | 0;
+        const h = img.height | 0;
+        if (!w || !h) return img;
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const tctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!tctx) return this._tinted(id, img);
+        tctx.drawImage(img, 0, 0);
+        const data = tctx.getImageData(0, 0, w, h);
+        const px = data.data;
+        const memo = new Map();
+        for (let i = 0; i < px.length; i += 4) {
+            if (px[i + 3] === 0) continue;
+            const packed = (px[i] << 16) | (px[i + 1] << 8) | px[i + 2];
+            let out = memo.get(packed);
+            if (out === undefined) {
+                const rgb = [px[i] / 255, px[i + 1] / 255, px[i + 2] / 255];
+                const graded = applyGradeToRgb(rgb, night.grade);
+                const held = faunaNightHold(graded, night);
+                // Canvas: only a held texel takes the preimage, so every
+                // other texel stays its authored colour byte for byte.
+                const drawn = night.overlay ? held : (held === graded ? rgb : ungradeRgb(held, night.grade));
+                out = (Math.round(clamp(drawn[0], 0, 1) * 255) << 16) | (Math.round(clamp(drawn[1], 0, 1) * 255) << 8) | Math.round(clamp(drawn[2], 0, 1) * 255);
+                memo.set(packed, out);
+            }
+            px[i] = (out >> 16) & 0xff;
+            px[i + 1] = (out >> 8) & 0xff;
+            px[i + 2] = out & 0xff;
+        }
+        tctx.putImageData(data, 0, 0);
+        this._faunaNightCache.set(cacheKey, { source: img, canvas });
+        return canvas;
+    }
+
     _tinted(id, img) {
         const grade = this._tintGrade;
         if (!grade || typeof document === 'undefined') return img;
@@ -2550,4 +2641,36 @@ export function heronPose(index, event, clockMs, out = {}, windX = 0) {
     // Airborne it faces its heading; at a hop's ground ends it still stands.
     if (out.flying) out.facing = (b.tileX - b.tileY) - (a.tileX - a.tileY) > 0 ? 1 : -1;
     return out;
+}
+
+// W1-D — the livestock night key helpers.
+function hexUnit(hex) {
+    const n = parseInt(String(hex).slice(1), 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+function rgbLuma(rgb) {
+    return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+}
+
+/** The night share (0 day .. 1 night) in 1/8 steps: the lighting's beacon intensity, else 1 - ambient. */
+export function faunaNightShare(lighting) {
+    if (!lighting) return 0;
+    const beacon = Number(lighting.beaconIntensity);
+    const ambient = Number(lighting.ambientLight);
+    const raw = Number.isFinite(beacon) ? beacon : Number.isFinite(ambient) ? 1 - ambient : 0;
+    return Math.round(clamp(raw, 0, 1) * FAUNA_NIGHT_STEPS) / FAUNA_NIGHT_STEPS;
+}
+
+/**
+ * A graded fauna colour under the night key `{ share, knee, ceiling, white }`:
+ * returned as is at or under the knee; above it the value compresses so that
+ * graded white lands on the ceiling, by `share`. Hue and order are kept.
+ */
+export function faunaNightHold(graded, { share, knee, ceiling, white }) {
+    const l = rgbLuma(graded);
+    if (!(share > 0) || l <= knee || white <= knee || ceiling >= white) return graded;
+    const held = knee + (l - knee) * Math.max(0, ceiling - knee) / (white - knee);
+    const scale = 1 + (held / l - 1) * share;
+    return [graded[0] * scale, graded[1] * scale, graded[2] * scale];
 }

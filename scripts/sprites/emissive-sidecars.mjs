@@ -101,7 +101,80 @@ export const PROP_SIDECAR_RULES = Object.freeze({
         alpha: 144,
         accept: ({ h, s, v }) => h >= 25 && h <= 45 && s >= 0.2 && s <= 0.7 && v >= 0.8,
     },
+    // W1-D 1.10 — the windmill keeps a light in: the miller's doorway (the
+    // fanlight pocket under the door's arch head and the 1-px gap down the
+    // latch-side jamb), the tower's slit window and the cap drum's east
+    // window, rim stop 0, body 1, a 2 core low in each pane. Reviewed exact
+    // masks (`masks`), so the stone, timber and the sails' hub stay albedo.
+    'prop.windmill': {
+        masks: [
+            { at: [34, 149], rows: [
+                '.....00',
+                '...0010',
+                '.01121.',
+                '01110..',
+                '0000...',
+            ] },
+            maskColumn(34, 154, 163, () => '0'),
+            { at: [44, 111], rows: [
+                '.00.',
+                ...Array(6).fill('0110'),
+                ...Array(3).fill('0220'),
+            ] },
+            { at: [77, 80], rows: [
+                '000',
+                ...Array(5).fill('010'),
+                ...Array(3).fill('020'),
+            ] },
+        ],
+    },
+    // W1-D 1.10 — the Hourglass Belfry's lantern chamber behind each glass:
+    // the dark pocket of each arch head over the glass's top cap, and the
+    // 1-px reveal slit down both jambs (brighter across the glass's waist),
+    // every texel outside every cell of `prop.hourglassBelfryGlass` (no
+    // reading's shroud, peak or limit cord ever lies over a lit texel).
+    'prop.hourglassBelfry': {
+        masks: [
+            { at: [37, 84], rows: [
+                '..........1......1....',
+                '..1111.....1.......1..',
+                '11...1111...11......11',
+                '1...11.111...1.......1',
+                '1.11...1.11...11.....1',
+                '1.1....111111..1.....1',
+            ] },
+            { at: [69, 84], rows: [
+                '....1......1..........',
+                '..11......1....11111..',
+                '11......11...1111..11.',
+                '1...........111111...1',
+                '1.....1....1111...11.1',
+                '1.....1..111111...11.1',
+            ] },
+            ...[37, 58, 69, 90].map((x) => maskColumn(x, 90, 130, (y) => (y >= 104 && y <= 116 ? '1' : '0'))),
+        ],
+    },
 });
+
+// A 1-texel-wide mask from (x, y0) down to (x, y1), its stop per row.
+function maskColumn(x, y0, y1, stopAt) {
+    const rows = [];
+    for (let y = y0; y <= y1; y++) rows.push(stopAt(y));
+    return { at: [x, y0], rows };
+}
+
+// W1-D 1.10 — a mask texel's contribution alpha by its emissive stop: the
+// rim burns lowest, the core highest (all within 160–200).
+export const MASK_ALPHA = Object.freeze([160, 180, 200]);
+
+// Emitter families the manifest does not (yet) declare: the Portal's vortex,
+// runes and night step bounce are violet light (`cool`), never ramped warm.
+const COOL_FAMILY_IDS = new Set(['building.portal']);
+
+// Sidecars held as authored until their own re-author pass: the Harbor
+// Master house was restored whole from v0.57 (407c1e74, operator decision),
+// sidecar and all, so the ramp rule never rewrites it here.
+const HELD_SIDECAR_IDS = new Set(['building.harbor']);
 
 export const LIGHT_RAMP = Object.freeze([...ART_RAMPS.emissive, ...EFFECT_COLORS.work]);
 const RAMP_RGB = LIGHT_RAMP.map(hexToRgb);
@@ -189,6 +262,27 @@ function samePixels(a, b) {
 
 function derivePropSidecar(albedo, rule, entry) {
     const out = new PNG({ width: albedo.width, height: albedo.height, colorType: 6 });
+    if (rule.masks) {
+        // Authored masks: each texel takes its own ART_RAMPS.emissive stop
+        // and that stop's alpha, only where the albedo is opaque.
+        for (const { at: [mx, my], rows } of rule.masks) {
+            rows.forEach((row, dy) => [...row].forEach((code, dx) => {
+                if (code === '.') return;
+                const x = mx + dx;
+                const y = my + dy;
+                if (x < 0 || y < 0 || x >= albedo.width || y >= albedo.height) return;
+                const i = (y * albedo.width + x) * 4;
+                if (albedo.data[i + 3] === 0) return;
+                const stop = Number(code);
+                const emitted = RAMP_RGB[stop];
+                out.data[i] = emitted[0];
+                out.data[i + 1] = emitted[1];
+                out.data[i + 2] = emitted[2];
+                out.data[i + 3] = MASK_ALPHA[stop];
+            }));
+        }
+        return out;
+    }
     for (const [rx, ry, rw, rh] of rule.rects ? rule.rects(entry) : [rule.rect]) {
         for (let y = Math.max(0, ry); y < Math.min(albedo.height, ry + rh); y++) {
             for (let x = Math.max(0, rx); x < Math.min(albedo.width, rx + rw); x++) {
@@ -261,14 +355,19 @@ function run() {
         const sidecarPath = albedoPath.replace(/\.png$/, '.emissive.png');
         const albedo = readPng(albedoPath);
         const rule = PROP_SIDECAR_RULES[entry.id];
-        const cool = entry.emissiveFamily === 'cool';
+        const cool = entry.emissiveFamily === 'cool' || COOL_FAMILY_IDS.has(entry.id);
+        if (HELD_SIDECAR_IDS.has(entry.id)) {
+            console.log(`[emissive-sidecars] ${entry.id}: held as authored`);
+            continue;
+        }
         let ramped;
         if (rule) {
             // Re-derived from the albedo's own colours on every run (or from
-            // authored ramp stops when `rule.stops` is set, keeping albedo
-            // untouched). A lime albedo pixel snaps first, then the sidecar is
-            // derived again from the snapped albedo, so a second run is a no-op.
-            const keepAlbedo = Boolean(rule.stops);
+            // authored ramp stops when `rule.stops` or `rule.masks` is set,
+            // keeping albedo untouched). A lime albedo pixel snaps first,
+            // then the sidecar is derived again from the snapped albedo, so a
+            // second run is a no-op.
+            const keepAlbedo = Boolean(rule.stops || rule.masks);
             ramped = rampSidecar(albedo, derivePropSidecar(albedo, rule, entry), { cool, keepAlbedo });
             if (!keepAlbedo && !samePixels(albedo, ramped.albedo)) {
                 ramped = rampSidecar(ramped.albedo, derivePropSidecar(ramped.albedo, rule, entry), { cool });

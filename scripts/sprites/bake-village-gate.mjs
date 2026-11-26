@@ -5,8 +5,11 @@
 //
 // Every texel is a palette stop: the masonry is the landmarks' own ashlar
 // (ART_RAMPS.ashlar, shared with the curtain wall), the roofs the Command
-// dome's slate, the doors ART_RAMPS.timber and the sign's letters Press
-// Start 2P (the chrome's display face) at 1 texel per font px. Light is the
+// dome's slate, the doors ART_RAMPS.timber and the CLAUDEVILLE entablature a
+// recessed carved-stone panel (W1-D 1.9): the chrome's display capitals
+// (Press Start 2P, 1 texel per font px) V-cut into the ashlar, each 2-px
+// stroke an ashlar[0] inset shadow wall beside an ashlar[3] lit wall over a
+// lit ashlar[8] lip, flanked by two domeSlate/trimGold heraldic shields. Light is the
 // baked upper-left key: SW-facing faces lit, SE-facing faces in shade, tops
 // lit, one ashlar stop per block (per-block jitter, a bevel row on each
 // block's top, joints one stop down), hard cast shadows from the solids
@@ -18,7 +21,8 @@
 //
 // Outputs (claudeville/assets/sprites/props/):
 //   prop.villageGate.png            gatehouse: two round towers, the arch
-//                                   block, its parapet and the CLAUDEVILLE sign
+//                                   block, its parapet and the carved
+//                                   CLAUDEVILLE entablature
 //   prop.villageGate.emissive.png   the towers' lamp-room glass (fixtures)
 //   prop.villageGate.occluder.png   2.3 surface channel (R height, G strength,
 //                                   B face*64 + min(63, round(h / 4)))
@@ -539,41 +543,60 @@ function paintArchFace(G, hit, n, sx, sy, glyphs) {
         if (d < 1.2) return ASHLAR[1];
         return ASHLAR[clampIdx(ref + 1, 2, 8)];
     }
-    // The sign plaque, centred on the block's face over the arch. Its frame
-    // lies in the wall (it steps down the 2:1 slope); each letter stands
-    // upright in its own 8-px cell, the cell dropping 4 px per letter with
-    // the plaque, so no stroke of the chrome's face is ever sheared.
+    // The carved entablature, centred on the block's face over the arch: a
+    // recessed panel of smooth dressed stone (ashlar[5]) in the wall (it
+    // steps down the 2:1 slope with the courses) under a 1-px moulding, lit
+    // on its top and left lips, its reveal in shade along the inner top and
+    // left and lit along the inner bottom and right. Each letter stands
+    // upright in its own CARVED_CELL-px cell, the cell dropping with the
+    // panel, so no stroke is ever sheared; each 2-px stroke is V-cut: its
+    // left wall the cut's inset shadow (ashlar[0]), its right wall ashlar[3],
+    // a lit lip under it (ashlar[8]) and beside it (ashlar[7]). A heraldic
+    // shield hangs either side, upright in its own cell (SHIELD_ROWS).
     const P = G.sign;
     const Yp = 32 * G.blockHalfDepth;
     const faceX = Math.floor(sx) + Math.round(Yp); // px from the arch's centre line
-    const halfW = Math.ceil(glyphs.width / 2) + 2;
+    const halfW = Math.ceil(glyphs.width / 2) + 3;
+    const py = Math.floor(sy);
+    const H = P.z1 - P.z0;
+    // A cell's top row (screen y) for a cell centred at face column `centre`.
+    const cellTop = (centre) => Math.floor((centre - Yp) / 2 + Yp - P.z1);
     if (faceX >= -halfW && faceX <= halfW && hit.Z >= P.z0 && hit.Z < P.z1) {
         const gx = faceX + halfW;
-        const gz = Math.floor(P.z1 - hit.Z); // rows from the plaque top
+        const gz = Math.floor(P.z1 - hit.Z); // rows from the panel top
         const W = halfW * 2;
-        const H = P.z1 - P.z0;
-        if (gz === 0 || gx === 0) return GOLD[3];
-        if (gz === H - 1 || gx === W) return GOLD[0];
+        if (gz === 0 || gx === 0) return ASHLAR[8];
+        if (gz === H - 1 || gx === W) return ASHLAR[2];
+        if (gz === 1 || gx === 1) return ASHLAR[3];
+        if (gz === H - 2 || gx === W - 1) return ASHLAR[7];
         const runLeft = -glyphs.inkLeft - Math.floor(glyphs.width / 2);
-        const letterAt = (fx, py) => {
+        const letterAt = (fx, ry) => {
             const runCol = fx - runLeft;
-            const k = Math.floor(runCol / 8);
+            const k = Math.floor(runCol / CARVED_CELL);
             const rows = glyphs.letters[k];
             if (!rows) return false;
-            const col = runCol - 8 * k;
-            const centreSx = runLeft + 8 * k + 4 - Yp;
-            const rowTop = Math.floor(centreSx / 2 + Yp - P.z1) + P.textTop;
-            const row = py - rowTop;
-            return row >= 0 && row < 7 && rows[row][col];
+            const col = runCol - CARVED_CELL * k;
+            const centre = runLeft + CARVED_CELL * k + Math.floor(CARVED_CELL / 2);
+            const row = ry - (cellTop(centre) + P.textTop);
+            return row >= 0 && row < rows.length && col >= 0 && col < rows[row].length && rows[row][col];
         };
-        const py = Math.floor(sy);
-        if (letterAt(faceX, py)) {
-            if (!letterAt(faceX, py - 1)) return GOLD[3];
-            if (!letterAt(faceX, py + 1)) return GOLD[1];
-            return GOLD[2];
-        }
-        if (letterAt(faceX - 1, py - 1)) return hex(P.fieldShadow);
-        return hex(P.field);
+        // V-cut: a stroke's left wall lies in the cut's shadow, its right
+        // wall takes the key; the field lip under it and right of it is lit.
+        if (letterAt(faceX, py)) return letterAt(faceX - 1, py) ? ASHLAR[3] : ASHLAR[0];
+        if (letterAt(faceX, py - 1)) return ASHLAR[8];
+        if (letterAt(faceX - 1, py)) return ASHLAR[7];
+        return ASHLAR[5];
+    }
+    // The shields: centred SHIELD_GAP px beyond either end of the panel.
+    for (const side of [-1, 1]) {
+        const centre = side * (halfW + SHIELD_GAP + Math.floor(SHIELD_W / 2));
+        const col = faceX - (centre - Math.floor(SHIELD_W / 2));
+        if (col < 0 || col >= SHIELD_W) continue;
+        const row = py - (cellTop(centre) + 1);
+        if (row < 0 || row >= SHIELD_ROWS.length) continue;
+        const code = SHIELD_ROWS[row][col];
+        if (code === '.') continue;
+        return SHIELD_COLOURS[code];
     }
     return null;
 }
@@ -748,7 +771,8 @@ function crop(result, ax, ay, pad = 1) {
 
 // Press Start 2P capitals (the chrome's display face, rasterised at its
 // native 8 px): 8-px cells, the eighth column the face's own spacing.
-const PS2P = Object.freeze({
+const CARVED_CELL = 8;
+const CARVED = Object.freeze({
     A: ['..###...', '.##.##..', '##...##.', '##...##.', '#######.', '##...##.', '##...##.'],
     C: ['..####..', '.##..##.', '##......', '##......', '##......', '.##..##.', '..####..'],
     D: ['#####...', '##..##..', '##...##.', '##...##.', '##...##.', '##..##..', '#####...'],
@@ -759,20 +783,42 @@ const PS2P = Object.freeze({
     V: ['##...##.', '##...##.', '##...##.', '###.###.', '.#####..', '..###...', '...#....'],
 });
 // The run's letters (7 rows x 8 cols each) and its inked extent in run
-// columns (cell k starts at column 8k).
-function glyphRun(text) {
+// columns (cell k starts at column CARVED_CELL * k).
+function carvedRun(text) {
     const letters = [...text].map((ch) => {
-        const rows = PS2P[ch];
-        if (!rows) throw new Error(`no PS2P glyph for ${ch}`);
+        const rows = CARVED[ch];
+        if (!rows) throw new Error(`no carved glyph for ${ch}`);
         return rows.map((r) => [...r].map((c) => c === '#'));
     });
     let inkLeft = Infinity;
     let inkRight = -1;
     letters.forEach((rows, k) => rows.forEach((row) => row.forEach((on, x) => {
-        if (on) { inkLeft = Math.min(inkLeft, 8 * k + x); inkRight = Math.max(inkRight, 8 * k + x); }
+        if (on) { inkLeft = Math.min(inkLeft, CARVED_CELL * k + x); inkRight = Math.max(inkRight, CARVED_CELL * k + x); }
     })));
     return { letters, inkLeft, width: inkRight - inkLeft + 1 };
 }
+
+// The twin heraldic shields (7 x 10, upright): a trimGold rim lit on its
+// upper-left, a domeSlate field per pale (lit dexter, shaded sinister), a
+// gold crown in chief, the point inked into the stone.
+const SHIELD_W = 7;
+const SHIELD_GAP = 2;
+const SHIELD_ROWS = Object.freeze([
+    'RRRRRRr',
+    'RCLCSCr',
+    'RCCCCcr',
+    'RLLMSSr',
+    'RLLMSSr',
+    'RLLMSSr',
+    '.RLMSr.',
+    '.rLMSr.',
+    '..rMr..',
+    '...k...',
+]);
+const SHIELD_COLOURS = Object.freeze({
+    R: GOLD[2], r: GOLD[0], C: GOLD[3], c: GOLD[1],
+    L: SLATE[4], M: SLATE[3], S: SLATE[2], k: INK,
+});
 
 // ---------------------------------------------------------------- output
 function png(data, w, h) {
@@ -791,7 +837,7 @@ function upscale(data, w, h, k) {
 
 function bakeGate() {
     const G = VILLAGE_GATE_GEOMETRY;
-    const glyphs = glyphRun(G.sign.text);
+    const glyphs = carvedRun(G.sign.text);
     const W = 300; const H = 320; const ax = 150; const ay = 250;
     const zTop = G.roofApex + 20;
     const base = render(gatehouseSolids(G), { width: W, height: H, ax, ay, zTop, glyphs, gate: G });

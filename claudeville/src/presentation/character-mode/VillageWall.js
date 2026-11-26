@@ -46,6 +46,23 @@ export const WALL_SPEC = Object.freeze({
     lanternArmH: 34,       // a wall lantern's bracket arm, above the ground
     lanternReach: 5,       // the arm's reach out of the face (iso px)
     blockLen: Object.freeze([9, 17]),
+    // W1-D 1.9 — the SW salient bastion a long run (at least `minRun` px)
+    // throws out at mid-span: a stepped prow in plan, `width` along the
+    // wall, its shoulders `shoulder` px proud of the face and its salient
+    // `project` px proud (`inset` in from each shoulder end), its platform
+    // at h `top` under `merlonH` merlons, its footing biting `bite` px
+    // into the ground. On the 2:1 lattice a step stays in view only where
+    // `inset` exceeds `project - shoulder` (left) and `shoulder` (right).
+    bastion: Object.freeze({ minRun: 420, width: 52, shoulder: 10, project: 20, inset: 14, top: 58, merlonH: 8, bite: 5 }),
+    // Stepped footings: a pier's foot steps out once more and bites
+    // `footBite` px below the base line; `quoin` is the long/short quoin
+    // run at a run's visible end.
+    footBite: 4,
+    quoin: Object.freeze([11, 6]),
+    // Course jitter: a block's bed may sit a texel high or low (the share
+    // of blocks either way), level again `jitterClear` px from an open end.
+    jitterShare: 0.18,
+    jitterClear: 16,
 });
 
 const A = ART_RAMPS.ashlar;
@@ -184,6 +201,12 @@ function paintBox(R, yb, box, shade) {
 }
 
 /**
+ * W1-D 1.9 — Tiny-Glade irregularity: course heights jitter by a texel per
+ * block (`jitterShare`), the visible end takes weathered long-and-short
+ * quoins, pier feet step out and bite into the ground, ivy drapes over the
+ * parapet above each curtain, and a long run breaks at mid-span on a SW
+ * salient bastion (`WALL_SPEC.bastion`, `layout.bastion`).
+ *
  * The run's layout: merlons, piers (with their lantern flags), arrow loops,
  * scuppers, ivy curtains and weather streaks, all hash-seeded by `seed`, so
  * the same run always paints the same wall and the lantern props can stand
@@ -206,14 +229,25 @@ const STAIR_LEN = WALL_STAIR.steps * WALL_STAIR.run;
 export function wallRunLayout({ x1, x2, seed = 0, piers = false, ivy = false, startTurret = false }) {
     const S = WALL_SPEC;
     const length = x2 - x1;
-    const layout = { merlons: [], piers: [], loops: [], scuppers: [], ivy: [], ivySprites: [], streaks: new Map(), stains: new Map(), bays: [], patches: [], turret: null };
+    const layout = { merlons: [], piers: [], loops: [], scuppers: [], ivy: [], ivySprites: [], streaks: new Map(), stains: new Map(), bays: [], patches: [], turret: null, bastion: null };
     if (startTurret) layout.turret = { u0: x1, u1: x1 + S.turret.width };
     const from = layout.turret ? layout.turret.u1 : x1;
-    // Piers: irregular 92-150 px apart, never within 34 px of an end.
+    // W1-D 1.9 — the mid-span salient bastion (a full run long enough).
+    if (piers && length >= S.bastion.minRun) {
+        const mid = Math.round((from + x2) / 2 + (hash(seed, 19) - 0.5) * 24);
+        layout.bastion = { u0: mid - S.bastion.width / 2, u1: mid + S.bastion.width / 2 };
+    }
+    const bastionClear = (a, b, pad) => !layout.bastion || b < layout.bastion.u0 - pad || a > layout.bastion.u1 + pad;
+    // Piers: irregular 92-150 px apart, never within 34 px of an end, nor
+    // of the bastion.
     if (piers && length >= 60) {
         let p = from + 34 + Math.floor(hash(seed, 21) * 36);
         let n = 0;
         while (p + S.pier.width < x2 - 34) {
+            if (!bastionClear(p, p + S.pier.width, 30)) {
+                p = layout.bastion.u1 + 34;
+                continue;
+            }
             layout.piers.push({ u0: p, u1: p + S.pier.width, n, lantern: false, stair: false, brazier: false });
             p += 92 + Math.floor(hash(seed, n, 22) * 58);
             n++;
@@ -235,7 +269,7 @@ export function wallRunLayout({ x1, x2, seed = 0, piers = false, ivy = false, st
         const stairPier = order.find((pier) => {
             if (pier.lantern) return false;
             const prev = layout.piers[pier.n - 1];
-            return pier.u0 - STAIR_LEN - 10 > (prev ? prev.u1 : from);
+            return pier.u0 - STAIR_LEN - 10 > (prev ? prev.u1 : from) && bastionClear(pier.u0 - STAIR_LEN - 10, pier.u0, 4);
         });
         if (stairPier) stairPier.stair = true;
         // The sentry brazier: the stair's pier when it stands 96 px clear
@@ -246,7 +280,8 @@ export function wallRunLayout({ x1, x2, seed = 0, piers = false, ivy = false, st
     }
     // Bays: the stretches between piers, each with its own character.
     let bayFrom = from;
-    for (const [i, pier] of [...layout.piers, null].entries()) {
+    const breaks = [...layout.piers, ...(layout.bastion ? [layout.bastion] : [])].sort((a, b) => a.u0 - b.u0);
+    for (const [i, pier] of [...breaks, null].entries()) {
         const bayTo = pier ? pier.u0 : x2;
         // The crown profile mostly alternates bay to bay, with a hashed
         // repeat now and then.
@@ -264,6 +299,13 @@ export function wallRunLayout({ x1, x2, seed = 0, piers = false, ivy = false, st
     while (u < x2 - 4) {
         const pier = layout.piers[nextPier];
         const w = S.merlonW + (hash(seed, k, 11) < 0.25 ? -1 : hash(seed, k, 12) < 0.2 ? 1 : 0);
+        // The bastion carries its own parapet: the curtain's crenels stop
+        // a crenel short of it and start again a crenel past it.
+        if (layout.bastion && u + w + S.crenelW > layout.bastion.u0 && u < layout.bastion.u1) {
+            u = layout.bastion.u1 + S.crenelW;
+            k++;
+            continue;
+        }
         if (pier && u + w + S.crenelW > pier.u0 - 3) {
             layout.merlons.push({ u0: pier.u0 - 3, u1: pier.u1 + 3, top: S.walk + S.merlonH + 3, chip: false, crown: true, k, profile: 'block' });
             u = pier.u1 + 3 + S.crenelW;
@@ -278,7 +320,8 @@ export function wallRunLayout({ x1, x2, seed = 0, piers = false, ivy = false, st
         k++;
     }
     if (length < 60) return layout;
-    const clearOfPiers = (a, b, pad) => a > from + pad && layout.piers.every((pier) => b < pier.u0 - (pier.stair ? STAIR_LEN : 0) - pad || a > pier.u1 + pad + 8);
+    const clearOfPiers = (a, b, pad) => a > from + pad && bastionClear(a, b, pad + 10)
+        && layout.piers.every((pier) => b < pier.u0 - (pier.stair ? STAIR_LEN : 0) - pad || a > pier.u1 + pad + 8);
     // Arrow loops: one every ~150 px, skipped where a pier stands.
     for (let a = from + 48 + Math.floor(hash(seed, 31) * 40); a < x2 - 30; a += 120 + Math.floor(hash(seed, a, 32) * 90)) {
         if (clearOfPiers(a - 2, a + 3, 10)) layout.loops.push(a);
@@ -378,7 +421,9 @@ export function rasterWallRun({ x1, y1, x2, y2, seed = 0, piers = false, ivy = f
     const right = px2 + S.depth + 6;
     const rise = startTurret ? S.turret.top + S.turret.merlonH + S.depth + S.turret.back : S.walk + S.merlonH + 3 + S.depth;
     const top = Math.min(yb(left), yb(right)) - rise - 6;
-    const bottom = Math.max(yb(left), yb(right)) + 14;
+    // Room under the base line for the stepped footings (and the bastion's
+    // prow, which stands its `project` px proud).
+    const bottom = Math.max(yb(left), yb(right)) + 14 + S.footBite + (layout.bastion ? S.bastion.bite : 0);
     const R = new Raster(left, top, right - left, bottom - top);
 
     const tableFrom = x1 - 40;
@@ -416,6 +461,31 @@ export function rasterWallRun({ x1, y1, x2, y2, seed = 0, piers = false, ivy = f
         }
     }
 
+    // W1-D 1.9 — course jitter: the bed under course j (j >= 1, below the
+    // string course) sits a texel high or low per block of course j, so
+    // neighbouring blocks step against each other; level within
+    // `jitterClear` px of an open end, where the next image carries on.
+    const jitterCourses = bodyCourses.length - 1;
+    const bedJitter = (j, u) => {
+        if (j <= 0 || j >= jitterCourses) return 0;
+        if ((openStart && u < x1 + S.jitterClear) || (openEnd && u >= x2 - S.jitterClear)) return 0;
+        const block = blockAt(bodyCourses[j], u);
+        const b = block < 0 ? blockAt(bodyCourses[j], u + 1) : block;
+        const r = hash(seed * 7 + j, b, 131);
+        return r < S.jitterShare ? -1 : r > 1 - S.jitterShare ? 1 : 0;
+    };
+    // The course (k), its row from its bed (row) and its height (rows) of a
+    // SW-face texel at u, height h above the body's first bed.
+    const courseOf = (u, rel) => {
+        const bed = (j) => j * S.courseH + bedJitter(j, u);
+        let k = Math.max(0, Math.floor(rel / S.courseH));
+        if (k > 0 && rel < bed(k)) k -= 1;
+        else if (rel >= bed(k + 1)) k += 1;
+        return { k, row: rel - bed(k), rows: bed(k + 1) - bed(k) };
+    };
+    // The visible end's quoins: long and short stones up the corner.
+    const quoinAt = (u, k) => showEnd && u >= x2 - S.quoin[k % 2] && u < x2;
+
     // --- the curtain: SW face, walk top, SE end face -------------------
     paintBox(R, yb, { u0: px1, u1: px2, d0: 0, d1: S.depth, h0: 0, h1: S.walk, right: showEnd }, (face, u, d, h, c, y) => {
         if (face === FACE_UP) {
@@ -450,8 +520,7 @@ export function rasterWallRun({ x1, y1, x2, y2, seed = 0, piers = false, ivy = f
         if (h < S.bodyFrom) return [SLIT, P_BODY];
         if (h >= S.walk - 2) return [h === S.walk - 1 ? LIT : MID, P_BODY];
         const rel = h - S.bodyFrom;
-        const k = Math.floor(rel / S.courseH);
-        const row = rel % S.courseH;
+        const { k, row, rows: courseRows } = courseOf(u, rel);
         const table = bodyCourses[Math.min(bodyCourses.length - 1, k)];
         const block = blockAt(table, u);
         const shadowOff = pierShadow(u);
@@ -460,6 +529,14 @@ export function rasterWallRun({ x1, y1, x2, y2, seed = 0, piers = false, ivy = f
         if (h >= S.stringBottom - 4 && h <= S.stringBottom - 3) {
             // The 2-px proud string course throws a 2-row band.
             t = h === S.stringBottom - 3 ? DEEP : SHADE;
+        } else if (quoinAt(u, k)) {
+            // Weathered quoins: dressed stones a stop over the face, a joint
+            // at each bed and at the quoin's inner end, the arris chipped.
+            const qu = x2 - u;
+            if (row === 0 || qu === S.quoin[k % 2]) t = SHADE;
+            else if (qu === 1 && hash(seed, k, 141) < 0.45 && row >= courseRows - 2) t = MID;
+            else if (hash(u >> 1, h >> 1, seed + 142) < 0.04) return [FO + 1, P_BODY];
+            else t = row === courseRows - 1 ? LITP : hash(seed, k, 143) < 0.4 ? MID : LIT;
         } else if (row === 0 || block < 0) {
             // Joints: eroded a stop deeper inside a weathered patch.
             t = patchBlocks.has(k * 4096 + (block < 0 ? blockAt(table, u + 1) : block)) ? DEEP : SHADE;
@@ -484,7 +561,7 @@ export function rasterWallRun({ x1, y1, x2, y2, seed = 0, piers = false, ivy = f
             const light = age < 0.3 ? 0.62 : 0.78;
             t = r < dark ? SLIT : r > light ? LIT : MID;
             // Upper-left bevel: half the blocks catch light on their top row.
-            if (row === S.courseH - 1 && blockAt(table, u + 1) >= 0 && hash(block, k, seed + 6) < 0.55) t += 1;
+            if (row === courseRows - 1 && blockAt(table, u + 1) >= 0 && hash(block, k, seed + 6) < 0.55) t += 1;
             // Damp foot: the lowest course a stop down.
             if (k === 0) t -= 1;
             // Weather: stains under the crenels, rare pits.
@@ -518,6 +595,9 @@ export function rasterWallRun({ x1, y1, x2, y2, seed = 0, piers = false, ivy = f
             // brighter than the curtain it stands proud of.
             const split = u0 + (k % 2 ? 5 : 9);
             if (row === 0 || u === split) return [SHADE, P_PIER];
+            // Weathered arris: a chipped corner now and then, lichen low.
+            if (u === u0 && row >= S.courseH - 2 && hash(seed, pier.n * 17 + k, 84) < 0.35) return [MID, P_PIER];
+            if (h < 14 && hash(u, h, seed + pier.n + 85) < 0.05) return [FO + 1, P_PIER];
             let t = hash(seed, pier.n * 17 + k, u < split ? 81 : 82) < 0.4 ? MID : LIT;
             if (row === S.courseH - 1 || u === u0) t += 1;
             if (h < 8) t -= 1;
@@ -612,7 +692,17 @@ export function rasterWallRun({ x1, y1, x2, y2, seed = 0, piers = false, ivy = f
         return [tone(t, 0), P_TRIM];
     });
 
-    // Pier feet: a proud block at each pier's base, its ledge lit.
+    // Pier feet, stepped (W1-D 1.9): a footing course bites `footBite` px
+    // into the ground one step proud of the foot, then the proud block at
+    // the pier's base, its ledge lit.
+    for (const pier of layout.piers) {
+        paintBox(R, yb, { u0: pier.u0 - 3, u1: pier.u1 + 3, d0: -S.pier.project - 5, d1: -S.plinthProject, h0: -S.footBite, h1: 0 }, (face, u, d, h) => {
+            if (face === FACE_UP) return [snow >= 2 ? SN + 3 : (moss(u + 9) > 0.5 ? GR + 1 : LIT), snow >= 2 ? P_TRIM : P_PIER];
+            if (face === FACE_SE) return [h === -1 ? CREV : DEEP, P_PIER];
+            if (h === -1) return [hash(u >> 2, seed, 151) < 0.5 ? SLIT : MID, P_PIER];
+            return [(u - pier.u0 + 40) % 7 === 0 ? DEEP : hash(u >> 1, h, seed + 152) < 0.3 ? DEEP : SHADE, P_PIER];
+        });
+    }
     for (const pier of layout.piers) {
         paintBox(R, yb, { u0: pier.u0 - 1, u1: pier.u1 + 1, d0: -S.pier.project - 2, d1: -S.plinthProject, h0: 0, h1: 7 }, (face, u, d, h) => {
             if (face === FACE_UP) return [snow >= 2 ? SN + 3 : (moss(u + 5) > 0.55 ? GR + 1 : HI), snow >= 2 ? P_TRIM : P_PIER];
@@ -720,6 +810,107 @@ export function rasterWallRun({ x1, y1, x2, y2, seed = 0, piers = false, ivy = f
         for (let du = -1; du <= 2; du++) R.recolor(lc + du, yb(lc + du) - d0 - 23, HI);
     }
 
+    // --- the SW salient bastion (W1-D 1.9): a stepped prow in plan (its
+    // shoulders, then its salient `inset` in from each shoulder end and
+    // `project` px proud), each tier coursed on the curtain's own block
+    // tables, a battered plinth over a footing that bites `bite` px into
+    // the ground, the string course carried round it, a platform above the
+    // walk crenellated on its front and SE edges, a cross loop on its prow.
+    if (layout.bastion) {
+        const B = S.bastion;
+        const b0 = layout.bastion.u0;
+        const b1 = layout.bastion.u1;
+        const tiers = [
+            { u0: b0, u1: b1, d0: -B.shoulder, shoulder: true },
+            { u0: b0 + B.inset, u1: b1 - B.inset, d0: -B.project, shoulder: false },
+        ];
+        const body = (tier) => (face, u, d, h) => {
+            if (face === FACE_UP) {
+                if (snow) return [SN + (d === tier.d0 ? 4 : 3), P_PIER];
+                if (d === tier.d0) return [HI, P_PIER];
+                // The platform in flags: joints every 7 px along, 6 across.
+                if ((u + 700) % 7 === 0 || (d + 600) % 6 === 0) return [MID, P_PIER];
+                return [hash(u >> 3, d >> 2, seed + 160) < 0.3 ? LIT : LITP, P_PIER];
+            }
+            const rel = h - S.bodyFrom;
+            const k = Math.max(0, Math.floor(rel / S.courseH));
+            const row = rel - k * S.courseH;
+            if (h >= S.stringBottom - 4 && h <= S.stringBottom - 3) return [h === S.stringBottom - 3 ? DEEP : SHADE, P_PIER];
+            if (face === FACE_SE) {
+                if (h >= B.top - 1) return [SHADE, P_PIER];
+                return [row === 0 ? CREV : (hash(seed, k, (d >> 2) + 161) < 0.3 ? SHADE : DEEP), P_PIER];
+            }
+            const table = bodyCourses[Math.min(bodyCourses.length - 1, k)];
+            const block = blockAt(table, u + (tier.shoulder ? 0 : 5));
+            if (h >= B.top - 1) return [LITP, P_PIER];
+            if (row === 0 || block < 0) return [SHADE, P_PIER];
+            // The salient's arris: long and short quoins, a chip now and then.
+            if (u === tier.u0 && row >= S.courseH - 2 && hash(seed, k, 162) < 0.35) return [MID, P_PIER];
+            if (h < 16 && hash(u, h, seed + 163) < 0.05) return [FO + 1, P_PIER];
+            let t = hash(seed * 5 + k, block, tier.shoulder ? 164 : 165) < 0.35 ? MID : LIT;
+            if (row === S.courseH - 1 && hash(block, k, seed + 166) < 0.55) t += 1;
+            if (u === tier.u0) t += 1;
+            if (k === 0) t -= 1;
+            return [tone(t, 0), P_PIER];
+        };
+        const plinth = (face, u, d, h) => {
+            if (face === FACE_UP) return [snow >= 2 ? SN + 3 : (moss(u + 3) > 0.62 ? GR + 2 : HI), snow >= 2 ? P_TRIM : P_PIER];
+            if (face === FACE_SE) return [h === 5 ? CREV : DEEP, P_PIER];
+            if (h === 0 || h === 5) return [DEEP, P_PIER];
+            return [h === S.plinthTop - 1 ? LIT : (u + (h < 5 ? 0 : 6)) % 13 === 0 ? DEEP : h < 5 ? SHADE : SLIT, P_PIER];
+        };
+        const footing = (face, u, d, h) => {
+            if (face === FACE_UP) return [snow >= 2 ? SN + 3 : (moss(u + 7) > 0.5 ? GR + 1 : LIT), snow >= 2 ? P_TRIM : P_PIER];
+            if (face === FACE_SE) return [h === -1 ? CREV : DEEP, P_PIER];
+            if (h === -1) return [hash(u >> 2, seed, 167) < 0.5 ? SLIT : MID, P_PIER];
+            return [(u + 40) % 9 === 0 || hash(u >> 1, h, seed + 168) < 0.3 ? DEEP : SHADE, P_PIER];
+        };
+        const band = (face, u, d, h) => {
+            if (face === FACE_UP) return [snow >= 2 ? SN + 4 : HI, P_TRIM];
+            if (face === FACE_SE) return [DEEP, P_TRIM];
+            if (h === S.stringTop - 1) return [HI, P_TRIM];
+            if (h === S.stringBottom) return [MID, P_TRIM];
+            return [LIT, P_TRIM];
+        };
+        const merlon = (box) => paintBox(R, yb, box, (face, u, d, h) => {
+            if (face === FACE_UP) return [snow ? SN + (d === box.d0 ? 4 : 3) : (d === box.d0 ? HI : LITP), P_MERLON];
+            if (face === FACE_SE) return [h === box.h1 - 1 ? SHADE : DEEP, P_MERLON];
+            if (h === box.h0) return [SHADE, P_MERLON];
+            return [h === box.h1 - 1 ? LITP : (u === box.u0 ? LIT : MID), P_MERLON];
+        });
+        for (const tier of tiers) {
+            paintBox(R, yb, { u0: tier.u0, u1: tier.u1, d0: tier.d0, d1: 0, h0: 0, h1: B.top }, body(tier));
+            paintBox(R, yb, { u0: tier.u0, u1: tier.u1, d0: tier.d0 - 2, d1: tier.d0 + 1, h0: S.stringBottom, h1: S.stringTop }, band);
+            paintBox(R, yb, { u0: tier.u1, u1: tier.u1 + 2, d0: tier.d0, d1: 0, h0: S.stringBottom, h1: S.stringTop, front: false }, band);
+            paintBox(R, yb, { u0: tier.u0, u1: tier.u1 + 2, d0: tier.d0 - 2, d1: tier.d0 + 2, h0: 0, h1: S.plinthTop }, plinth);
+            paintBox(R, yb, { u0: tier.u0 - 1, u1: tier.u1 + 3, d0: tier.d0 - 4, d1: tier.d0, h0: -B.bite, h1: 0 }, footing);
+        }
+        // The platform's merlons: the shoulders' front ends, the salient's
+        // front and both tiers' SE edges.
+        const mz0 = B.top;
+        const mz1 = B.top + B.merlonH;
+        const [shoulders, salient] = tiers;
+        merlon({ u0: shoulders.u0, u1: shoulders.u0 + 5, d0: shoulders.d0, d1: shoulders.d0 + 3, h0: mz0, h1: mz1 });
+        for (const [a, b] of [[shoulders.d0, shoulders.d0 + 4], [-4, 0]]) {
+            merlon({ u0: shoulders.u1 - 4, u1: shoulders.u1, d0: a, d1: b, h0: mz0, h1: mz1 });
+        }
+        for (let a = salient.u0; a < salient.u1 - 2; a += 8) {
+            merlon({ u0: a, u1: Math.min(salient.u1, a + 5), d0: salient.d0, d1: salient.d0 + 3, h0: mz0, h1: mz1 });
+        }
+        for (let a = salient.d0 + 6; a < shoulders.d0 - 1; a += 7) {
+            merlon({ u0: salient.u1 - 4, u1: salient.u1, d0: a, d1: Math.min(shoulders.d0, a + 4), h0: mz0, h1: mz1 });
+        }
+        // A cross loop on the salient's face.
+        const lc = Math.round((salient.u0 + salient.u1) / 2) + salient.d0;
+        const d0 = salient.d0;
+        for (let h = 24; h <= 36; h++) {
+            R.recolor(lc, yb(lc) - d0 - h, CREV);
+            R.recolor(lc + 1, yb(lc + 1) - d0 - h, h > 34 ? CREV : DEEP);
+        }
+        for (const du of [-2, -1, 2, 3]) R.recolor(lc + du, yb(lc + du) - d0 - 31, du < 0 ? CREV : DEEP);
+        for (let du = -1; du <= 2; du++) R.recolor(lc + du, yb(lc + du) - d0 - 23, HI);
+    }
+
     // --- details on the face ----------------------------------------------
     const faceY = (u, h) => yb(u) - h;
     // Arrow loops: a 2-px slit with a lit sill and a lintel.
@@ -765,6 +956,7 @@ export function rasterWallRun({ x1, y1, x2, y2, seed = 0, piers = false, ivy = f
         const m = noise1(u, 7, seed + 5);
         if (m < 0.55) continue;
         if (layout.piers.some((pier) => pier.stair && u >= pier.u0 - STAIR_LEN && u < pier.u0)) continue;
+        if (layout.bastion && u >= layout.bastion.u0 - 4 && u < layout.bastion.u1 + 6) continue;
         const c = u - S.plinthProject;
         const tall = Math.min(3, 1 + Math.floor((m - 0.55) * 8));
         for (let h = 0; h < tall; h++) {
@@ -820,6 +1012,30 @@ export function rasterWallRun({ x1, y1, x2, y2, seed = 0, piers = false, ivy = f
         for (const [u, h, t] of list) {
             if (h > S.walk - 1 || h < S.plinthTop + 1) continue;
             R.set(u, faceY(u, h), t, h, FACE_SW, P_GREEN);
+        }
+        // W1-D 1.9 — the drape over the parapet: above the curtain the ivy
+        // climbs the merlons' faces a few leaves high and spills over the
+        // walk's lip in the crenels between them (snow leaves the lip bare).
+        const span2 = curtain.u1 - curtain.u0;
+        for (let u = curtain.u0 + 2; u < curtain.u1 - 2; u++) {
+            const f = (u - curtain.u0 + 0.5) / span2 * 2 - 1;
+            const reach = Math.round(noise1(u, 4, curtain.salt + 3) * 6 * (1 - f * f));
+            if (reach < 1) continue;
+            const m = layout.merlons.find((mm) => u >= mm.u0 && u < mm.u1);
+            if (m) {
+                for (let h = S.walk; h < Math.min(m.top - 1, S.walk + reach); h++) {
+                    const r = hash(u >> 1, h >> 1, curtain.salt + 9);
+                    if (r < 0.18) continue;
+                    let t = r < 0.45 ? FO + 3 : r < 0.85 ? FO + 2 : FO + 1;
+                    if ((u & 1) === 0 && (h & 1) === 1) t += 1;
+                    R.set(u, faceY(u, h), Math.min(FO + 4, t), h, FACE_SW, P_GREEN);
+                }
+            } else if (snow < 2) {
+                for (let d = 0; d < Math.min(2, reach); d++) {
+                    const c = u + d;
+                    R.set(c, yb(c) - d - S.walk, d === 0 ? FO + 3 : FO + 2, S.walk, FACE_UP, P_GREEN);
+                }
+            }
         }
     }
 
