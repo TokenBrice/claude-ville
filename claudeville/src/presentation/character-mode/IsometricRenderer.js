@@ -6994,15 +6994,17 @@ export class IsometricRenderer {
     // `Object.create(IsometricRenderer.prototype)` test harnesses.
     _ensureOrcaPools() {
         if (this._orcaPools) return this._orcaPools;
+        // VisitTileAllocator.js contract: walkers may pass road-edge fixtures
+        // (`FIXTURE_FEET` restricts standing/fanning places only, not road
+        // transit). Only live wildlife and explicit dynamic obstacles enter
+        // ORCA's solid-disc obstacle list so lanterns, stalls, and bridge
+        // posts never trap walkers on narrow corridors.
         const obstacles = [];
-        for (let i = 0; i < FIXTURE_FEET.length; i++) {
-            obstacles.push(FIXTURE_FEET[i]);
-        }
         const pools = {
             pool: [],
             agents: [],
             obstacles,
-            staticFixtureCount: obstacles.length,
+            staticFixtureCount: 0,
             wildlifePool: [],
             seenSet: new Set(),
             scratchSteer: { x: 0, y: 0 },
@@ -7016,7 +7018,7 @@ export class IsometricRenderer {
                 agents: 0,
                 moving: 0,
                 planted: 0,
-                obstacles: obstacles.length,
+                obstacles: 0,
                 lines: 0,
                 totalLines: 0,
                 maxAgents: 0,
@@ -7031,6 +7033,12 @@ export class IsometricRenderer {
             },
             stepOptions: null,
         };
+        // Forward-progress cone (cos 45° ≈ 0.707): ORCA may deflect a walker
+        // up to 45° sideways around neighbors, guaranteeing strict distance
+        // reduction to every waypoint (orbiting a waypoint is mathematically
+        // impossible) and never shoving a walker backwards against its stride.
+        const MIN_FORWARD_DOT = 0.70710678;
+        const MAX_LATERAL_SIN = Math.sqrt(1 - MIN_FORWARD_DOT * MIN_FORWARD_DOT);
         const strideSteer = (desc, proposedX, proposedY) => {
             const sprite = desc.sprite;
             if (!sprite) {
@@ -7040,28 +7048,81 @@ export class IsometricRenderer {
             }
             if (sprite._stopLookActiveMs > 0) return null;
             if (typeof sprite.steeredPosition === 'function') {
-                const kept = sprite.steeredPosition(proposedX, proposedY);
-                if (!kept) return null;
+                let targetX = proposedX;
+                let targetY = proposedY;
+                if (desc.hasStep && desc.stepLength > 1e-6) {
+                    const stepDx = desc.origX - desc.x;
+                    const stepDy = desc.origY - desc.y;
+                    const stepLen = Math.hypot(stepDx, stepDy);
+                    // On the final step into a waypoint (or right after turning
+                    // a waypoint corner inside AgentSprite.update), preserve the
+                    // sprite's clean waypoint landing so it never orbits a corner.
+                    const distToWp = Number.isFinite(desc.targetX) && Number.isFinite(desc.targetY)
+                        ? Math.hypot(desc.targetX - desc.x, desc.targetY - desc.y)
+                        : Infinity;
+                    if (distToWp <= Math.max(12, stepLen * 2.5)) {
+                        pools.scratchSteer.x = desc.origX;
+                        pools.scratchSteer.y = desc.origY;
+                        return pools.scratchSteer;
+                    }
+                    const propDx = proposedX - desc.x;
+                    const propDy = proposedY - desc.y;
+                    const propLen = Math.hypot(propDx, propDy);
+                    if (!(propLen > 1e-6)) {
+                        pools.scratchSteer.x = desc.origX;
+                        pools.scratchSteer.y = desc.origY;
+                        return pools.scratchSteer;
+                    }
+                    if (stepLen > 1e-6) {
+                        const fx = stepDx / stepLen;
+                        const fy = stepDy / stepLen;
+                        const ox = propDx / propLen;
+                        const oy = propDy / propLen;
+                        const dot = ox * fx + oy * fy;
+                        if (dot < MIN_FORWARD_DOT) {
+                            const cross = fx * oy - fy * ox;
+                            const side = Math.abs(cross) > 1e-6
+                                ? (cross > 0 ? 1 : -1)
+                                : ((this._stableHash(desc.id || '') & 1) ? 1 : -1);
+                            const cdx = fx * MIN_FORWARD_DOT + (-fy * side) * MAX_LATERAL_SIN;
+                            const cdy = fy * MIN_FORWARD_DOT + (fx * side) * MAX_LATERAL_SIN;
+                            targetX = desc.x + cdx * stepLen;
+                            targetY = desc.y + cdy * stepLen;
+                        }
+                    }
+                }
+                const kept = sprite.steeredPosition(targetX, targetY);
+                if (!kept) {
+                    if (desc.hasStep) {
+                        pools.scratchSteer.x = desc.origX;
+                        pools.scratchSteer.y = desc.origY;
+                        return pools.scratchSteer;
+                    }
+                    return null;
+                }
                 if (this._isSpritePositionWalkable(sprite, kept.x, kept.y)) {
                     pools.scratchSteer.x = kept.x;
                     pools.scratchSteer.y = kept.y;
                     return pools.scratchSteer;
                 }
-                const keptX = sprite.steeredPosition(proposedX, desc.y);
+                const keptX = sprite.steeredPosition(targetX, desc.y);
                 if (keptX && this._isSpritePositionWalkable(sprite, keptX.x, keptX.y)) {
                     pools.scratchSteer.x = keptX.x;
                     pools.scratchSteer.y = keptX.y;
                     pools.frameWalkClamps++;
                     return pools.scratchSteer;
                 }
-                const keptY = sprite.steeredPosition(desc.x, proposedY);
+                const keptY = sprite.steeredPosition(desc.x, targetY);
                 if (keptY && this._isSpritePositionWalkable(sprite, keptY.x, keptY.y)) {
                     pools.scratchSteer.x = keptY.x;
                     pools.scratchSteer.y = keptY.y;
                     pools.frameWalkClamps++;
                     return pools.scratchSteer;
                 }
-                if (desc.hasStep && this._isSpritePositionWalkable(sprite, desc.origX, desc.origY)) {
+                // Always keep AgentSprite's own stepped position on narrow bridges,
+                // wall edges, or unwalkable-escape steps rather than rewinding
+                // back to `_stepStartX/_stepStartY`.
+                if (desc.hasStep) {
                     pools.scratchSteer.x = desc.origX;
                     pools.scratchSteer.y = desc.origY;
                     pools.frameWalkClamps++;
@@ -7092,13 +7153,19 @@ export class IsometricRenderer {
         };
         const isWalkable = (desc, x, y) => {
             const sprite = desc.sprite;
+            // If a stepped sprite fell back to its own `origX/origY` (e.g.
+            // stepping out of a wall edge or crossing a narrow bridge), do not
+            // reject it back to `_stepStartX/_stepStartY`.
+            if (desc.hasStep && Math.abs(x - desc.origX) < 1e-6 && Math.abs(y - desc.origY) < 1e-6) {
+                return true;
+            }
             return !sprite || this._isSpritePositionWalkable(sprite, x, y);
         };
         pools.stepOptions = {
             dt: 1 / 60,
             integrate: true,
             contextSteering: true,
-            arrivalRadius: 1.5,
+            arrivalRadius: 0.05,
             queryCells: 1,
             strideSteer,
             isWalkable,
@@ -7440,29 +7507,40 @@ export class IsometricRenderer {
                 if (Number.isFinite(sprite.vx)) sprite.vx = desc.vx;
                 if (Number.isFinite(sprite.vy)) sprite.vy = desc.vy;
 
-                if (Math.hypot(desc.x - desc.origX, desc.y - desc.origY) > 0.001) {
+                // Never rewind a sprite that already stepped in AgentSprite.update()
+                // back to its pre-step start when ORCA declined to integrate.
+                const stepMoved = desc.hasStep && Number.isFinite(sprite._stepStartX)
+                    ? Math.hypot(desc.x - sprite._stepStartX, desc.y - sprite._stepStartY)
+                    : 1;
+                const finalX = desc.hasStep && stepMoved < 1e-5 ? desc.origX : desc.x;
+                const finalY = desc.hasStep && stepMoved < 1e-5 ? desc.origY : desc.y;
+
+                if (Math.hypot(finalX - desc.origX, finalY - desc.origY) > 0.001) {
                     adjustments++;
                 }
-                sprite.x = desc.x;
-                sprite.y = desc.y;
+                sprite.x = finalX;
+                sprite.y = finalY;
 
-                // Advance past an obstructed non-crossing intermediate waypoint as
-                // soon as the line to the next waypoint is walkable so walkers
-                // never backtrack into a planted villager.
+                // Advance past an obstructed or bypassed non-crossing intermediate
+                // waypoint as soon as the line to the next waypoint is walkable so
+                // walkers never backtrack or orbit a waypoint they already passed.
                 if (Array.isArray(sprite.waypoints) && sprite.waypoints.length > 1) {
-                    let targetObstructed = false;
-                    for (let j = 0; j < activeCount; j++) {
-                        if (j === i) continue;
-                        const other = agents[j];
-                        if (!other.planted || other.surfaceTier !== desc.surfaceTier) continue;
-                        const dx = sprite.targetX - other.x;
-                        const dy = (sprite.targetY - other.y) * ORCA_Y_SCALE;
-                        if (dx * dx + dy * dy < obstructRadiusSq) {
-                            targetObstructed = true;
-                            break;
+                    const distToWp = Math.hypot(sprite.targetX - sprite.x, sprite.targetY - sprite.y);
+                    let shouldAdvance = distToWp <= 14;
+                    if (!shouldAdvance) {
+                        for (let j = 0; j < activeCount; j++) {
+                            if (j === i) continue;
+                            const other = agents[j];
+                            if (!other.planted || other.surfaceTier !== desc.surfaceTier) continue;
+                            const dx = sprite.targetX - other.x;
+                            const dy = (sprite.targetY - other.y) * ORCA_Y_SCALE;
+                            if (dx * dx + dy * dy < obstructRadiusSq) {
+                                shouldAdvance = true;
+                                break;
+                            }
                         }
                     }
-                    if (targetObstructed) {
+                    if (shouldAdvance) {
                         const wpTile = worldToTile(sprite.targetX, sprite.targetY);
                         const wpKey = `${Math.round(wpTile.tileX)},${Math.round(wpTile.tileY)}`;
                         const nextWp = sprite.waypoints[1];
@@ -7521,7 +7599,7 @@ export class IsometricRenderer {
                 agents: 0,
                 moving: 0,
                 planted: 0,
-                obstacles: FIXTURE_FEET.length,
+                obstacles: 0,
                 lines: 0,
                 totalLines: 0,
                 maxAgents: 0,

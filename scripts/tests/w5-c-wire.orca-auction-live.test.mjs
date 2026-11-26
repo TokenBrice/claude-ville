@@ -348,10 +348,62 @@ test('W5-C live ORCA preserves V7 stride lock, walkability boundaries, planted i
         `tier2 walker must match solo trajectory identically (delta=${Math.hypot(tier2Walker.x - tier2Ref.x, tier2Walker.y - tier2Ref.y)})`,
     );
 
-    // Static FIXTURE_FEET + 1 wildlife pose were included in ORCA obstacles, plus strike arc counted.
+    // Live wildlife pose is included in ORCA obstacles (road-edge FIXTURE_FEET
+    // restrict standing places only, so walkers pass lanterns/stalls/bridge
+    // posts freely), plus the active strike swing arc is counted.
     const diag = renderer.getCrowdOrcaDiagnostics();
-    assert.equal(diag.obstacles, FIXTURE_FEET.length + 1);
+    assert.equal(diag.obstacles, 1);
     assert.equal(diag.swingArcs, 1);
+});
+
+test('W5-C ORCA never rewinds a walking sprite or shoves it backwards on wall edges / narrow bridges', () => {
+    const renderer = createOrcaHost({
+        isWalkable: (_sprite, x, y) => Math.abs(y) <= 6 && x >= 0,
+    });
+
+    const walker = {
+        agent: { id: 'bridge-walker' },
+        x: 3.5,
+        y: 0,
+        targetX: 80,
+        targetY: 0,
+        moving: true,
+        chatting: false,
+        gaitSpeed: 45,
+        radius: ORCA_AGENT_RADIUS,
+        surfaceTier: 0,
+        _stepStartX: -1,
+        _stepStartY: 0,
+        _stepLength: 4.5,
+        steeredPosition(px, py) {
+            const dx = px - this._stepStartX;
+            const dy = py - this._stepStartY;
+            const len = Math.hypot(dx, dy);
+            if (!(len > 1e-6)) return null;
+            const s = this._stepLength / len;
+            return { x: this._stepStartX + dx * s, y: this._stepStartY + dy * s };
+        },
+    };
+
+    const blocker = {
+        agent: { id: 'bridge-planted' },
+        x: 8,
+        y: 0,
+        targetX: 8,
+        targetY: 0,
+        moving: false,
+        planted: true,
+        radius: ORCA_AGENT_RADIUS,
+        surfaceTier: 0,
+    };
+    renderer.agentSprites.set(walker.agent.id, walker);
+    renderer.agentSprites.set(blocker.agent.id, blocker);
+
+    renderer._applyLocalAvoidance([walker], 16.67);
+
+    // Must make forward progress along the bridge (never rewound to -1 or pushed backwards!)
+    assert.ok(walker.x > 0, `walker must advance forward off wall/bridge edge, got x=${walker.x}`);
+    assert.ok(Math.hypot(walker.x - (-1), walker.y - 0) >= 4.4, 'walker must preserve its stride length');
 });
 
 // ---------------------------------------------------------------------------
