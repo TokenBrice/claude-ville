@@ -76,7 +76,40 @@ export function summarizeParityAttribution({
   shareLe1 = 1,
   strict = false,
 }) {
-  if (!attribution || !pixelD || !width || !height) return null;
+  if (!attribution) {
+    if (!strict) return null;
+    return {
+      missingAttribution: true,
+      classifiedNonRimOver1: 0,
+      unclassifiedNonRimOver1: null,
+      rimOver1: null,
+      over1Total: null,
+      byTag: {},
+      byRegion: {},
+      byRecord: {},
+      strictThresholds: { shareLe1: STRICT_PASS_SHARE, maxUnclassifiedNonRimOver1: MAX_UNCLASSIFIED_NON_RIM_OVER1 },
+      strictPass: false,
+      enforced: true,
+      reason: 'missing attribution buffer under --strict-attribution',
+    };
+  }
+  if (!pixelD || !width || !height) {
+    if (!strict) return null;
+    return {
+      missingAttribution: false,
+      classifiedNonRimOver1: 0,
+      unclassifiedNonRimOver1: null,
+      rimOver1: null,
+      over1Total: null,
+      byTag: {},
+      byRegion: {},
+      byRecord: {},
+      strictThresholds: { shareLe1: STRICT_PASS_SHARE, maxUnclassifiedNonRimOver1: MAX_UNCLASSIFIED_NON_RIM_OVER1 },
+      strictPass: false,
+      enforced: true,
+      reason: 'invalid diff buffer or dimensions under --strict-attribution',
+    };
+  }
   const words = decodeAttributionBuffer(attribution, width, height, attributionFormat);
   const buckets = bucketAttributionDiffs({
     pixelD,
@@ -89,6 +122,7 @@ export function summarizeParityAttribution({
   });
   const strictPass = shareLe1 >= STRICT_PASS_SHARE && buckets.unclassifiedNonRimOver1 <= MAX_UNCLASSIFIED_NON_RIM_OVER1;
   return {
+    missingAttribution: false,
     classifiedNonRimOver1: buckets.explainedNonRimOver1,
     unclassifiedNonRimOver1: buckets.unclassifiedNonRimOver1,
     rimOver1: buckets.rimOver1,
@@ -99,7 +133,68 @@ export function summarizeParityAttribution({
     strictThresholds: { shareLe1: STRICT_PASS_SHARE, maxUnclassifiedNonRimOver1: MAX_UNCLASSIFIED_NON_RIM_OVER1 },
     strictPass,
     enforced: Boolean(strict),
+    reason: strictPass
+      ? null
+      : (shareLe1 < STRICT_PASS_SHARE
+        ? `shareLe1 ${shareLe1} < ${STRICT_PASS_SHARE}`
+        : `unclassifiedNonRimOver1 ${buckets.unclassifiedNonRimOver1} > ${MAX_UNCLASSIFIED_NON_RIM_OVER1}`),
   };
+}
+
+/**
+ * Apply attribution summary & `--strict-attribution` enforcement to a composite
+ * parity target result. Under `strict=true`, a missing attribution buffer FAILS
+ * loudly (never silently skips), and BOTH `shareLe1 >= 0.9999` AND
+ * `unclassifiedNonRimOver1 <= 10` are required.
+ */
+export function applyStrictAttributionPolicy(compositeTarget, attributionPayload, {
+  width = 0,
+  height = 0,
+  strict = false,
+} = {}) {
+  if (!compositeTarget || compositeTarget.status === 'n/a') return null;
+  if (!attributionPayload) {
+    if (!strict) return null;
+    const summary = summarizeParityAttribution({
+      pixelD: null,
+      attribution: null,
+      width,
+      height,
+      shareLe1: compositeTarget.shareLe1,
+      strict: true,
+    });
+    compositeTarget.attribution = summary;
+    compositeTarget.status = 'fail';
+    compositeTarget.verdict = 'fail';
+    compositeTarget.reason = summary.reason;
+    return summary;
+  }
+  const attrSummary = summarizeParityAttribution({
+    pixelD: Buffer.isBuffer(attributionPayload.pixelD) || attributionPayload.pixelD instanceof Uint8Array
+      ? attributionPayload.pixelD
+      : Buffer.from(attributionPayload.pixelDBase64, 'base64'),
+    attribution: Buffer.isBuffer(attributionPayload.attribution) || attributionPayload.attribution instanceof Uint8Array || attributionPayload.attribution instanceof Uint32Array
+      ? attributionPayload.attribution
+      : Buffer.from(attributionPayload.attributionBase64, 'base64'),
+    attributionFormat: attributionPayload.format || 'auto',
+    records: attributionPayload.records || [],
+    rimMask: attributionPayload.rimMask
+      ? attributionPayload.rimMask
+      : (attributionPayload.rimBase64 ? Buffer.from(attributionPayload.rimBase64, 'base64') : null),
+    width,
+    height,
+    shareLe1: compositeTarget.shareLe1,
+    strict,
+  });
+  if (attrSummary) {
+    compositeTarget.attribution = attrSummary;
+    if (strict && !attrSummary.strictPass) {
+      compositeTarget.status = 'fail';
+      compositeTarget.verdict = 'fail';
+      compositeTarget.reason = attrSummary.reason;
+    }
+  }
+  return attrSummary;
 }
 
 // §5.3 scenario matrix. `zoom` is a camera tier (Camera.tierZoom); the camera
@@ -169,7 +264,7 @@ Options:
   --look=<id:value,...>   LookStrengths overrides set in the page before posing (e.g. ms1:1)
   --no-device-loss        Skip the device-loss and WebGL context-loss checks
   --burst                 Also run gpu-burst FULL (level 0) per backend at 1680 and 4880
-  --strict-attribution    When attribution buffers are returned, enforce shareLe1 >= 0.9999 and <= 10 unclassified non-rim >1 LSB px
+  --strict-attribution    Require attribution buffer (fail if missing/null) and enforce shareLe1 >= 0.9999 and <= 10 unclassified non-rim >1 LSB px
   --no-images             Skip the frame/diff PNGs
   --headed                Show the Chromium window
   --help                  Print this help
@@ -482,7 +577,7 @@ function installParityHelpers() {
 
   // Render the frozen frame `passes` times and capture the last one inside
   // its own task (the WebGPU current texture expires with the task).
-  T.renderCapture = async (renderer, backend, passes = 3) => {
+  T.renderCapture = async (renderer, backend, passes = 3, { includeAttribution = false } = {}) => {
     let ok = false;
     for (let i = 0; i < passes; i++) {
       renderer.prepareFrame?.(T.frame.feed);
@@ -492,7 +587,10 @@ function installParityHelpers() {
     let capture = null;
     let reason = null;
     if (typeof renderer.debugCaptureTargets === 'function') {
-      capture = normalizeCapture(await renderer.debugCaptureTargets(), 'debugCaptureTargets');
+      capture = normalizeCapture(
+        await renderer.debugCaptureTargets(includeAttribution ? { includeAttribution: true } : undefined),
+        'debugCaptureTargets',
+      );
       if (!capture) reason = 'debugCaptureTargets() returned nothing';
     } else if (backend === 'webgl') {
       capture = normalizeCapture(glReadback(renderer), 'harness-readPixels');
@@ -767,14 +865,14 @@ function installParityHelpers() {
     const out = { backing: [T.width, T.height], targets: {}, webgpu: {}, webgl: {} };
     out.rim = await T.rimMask();
     const gl = await T.makeWebgl();
-    const a = await T.renderCapture(gl, 'webgl');
+    const a = await T.renderCapture(gl, 'webgl', 3, { includeAttribution: true });
     out.webgl = { ok: a.ok, source: a.capture?.source || null, fat: gl.fatPixelsFrame ?? null, lightAdmission: gl.lightAdmission || null, markRecords: gl.markRecords ?? null };
     if (!a.ok) out.error = 'the WebGL2 reference render() returned false';
     const made = await T.makeWebgpu();
     let g = null;
     if (made.renderer && !made.reason) {
       try {
-        g = await T.renderCapture(made.renderer, 'webgpu');
+        g = await T.renderCapture(made.renderer, 'webgpu', 3, { includeAttribution: true });
       } catch (error) {
         g = { ok: false, capture: null, reason: `render/capture threw: ${String(error?.message || error).slice(0, 200)}` };
       }
@@ -1279,27 +1377,13 @@ async function main() {
           }
           delete result.webglImage;
           delete result.webgpuImage;
-          if (result.attributionPayload && result.targets?.composite) {
-            const payload = result.attributionPayload;
+          if (result.targets?.composite) {
             const [bw, bh] = result.backing || [];
-            const attrSummary = summarizeParityAttribution({
-              pixelD: Buffer.from(payload.pixelDBase64, 'base64'),
-              attribution: Buffer.from(payload.attributionBase64, 'base64'),
-              attributionFormat: payload.format,
-              records: payload.records,
-              rimMask: payload.rimBase64 ? Buffer.from(payload.rimBase64, 'base64') : null,
-              width: bw,
-              height: bh,
-              shareLe1: result.targets.composite.shareLe1,
+            applyStrictAttributionPolicy(result.targets.composite, result.attributionPayload || null, {
+              width: bw || 0,
+              height: bh || 0,
               strict: options.strictAttribution,
             });
-            if (attrSummary) {
-              result.targets.composite.attribution = attrSummary;
-              if (options.strictAttribution && !attrSummary.strictPass && result.targets.composite.status === 'pass') {
-                result.targets.composite.status = 'fail';
-                result.targets.composite.verdict = 'fail';
-              }
-            }
           }
           delete result.attributionPayload;
           Object.assign(row, result);

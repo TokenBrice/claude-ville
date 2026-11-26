@@ -46,8 +46,16 @@ face). A metronome is a defect.
 ## `art:gate` Checks for Starred (★) Rules
 
 `art:gate` checks for the ★ rules:
-- (1) grid: an off-lattice edge detector on sprite alpha, plus a source grep for gradient/arc calls;
-- (2) every terrain-bake texel within ΔE_OK 0.02 of a ramp stop;
-- (3) the analyzer's Tier-A share per asset;
-- (6) a paving stone-id coverage ≥ 85 % from the bake's debug export;
-- (8) bank-face coverage ≥ 90 % of non-beach contacts and zero detached mirror runs (a run whose top row is > 10 px from its source's contact).
+
+### Enforced today by `npm run art:gate`
+- **(1) grid (partial):** integer manifest display scales, semi-alpha share ≤ 0.2 % outside atmosphere, and surface sidecar alignment/normal range.
+- **(2) stepped colour (partial):** terrain sheet off-ramp share (`ΔE_OK > 0.04` against `ART_RAMPS`), Wang 4×4 border edge continuity (`ΔE_OK ≤ 0.03`), seasonal ramp ordering/hue/saturation rules, tree canopy remap on-ramp integrity (`0` off-ramp pixels), and X-7 seasonal pooled ground saturation bands.
+- **(3) brightest-thing rule:** per-asset Tier-A share outside reserved status/emissive/snow roles (`≤ 5 %` new assets; ratcheted allowlist for pre-Wave-0 assets).
+- **(6) units, not noise (grain parity):** perceptual OKLab 4-neighbor mean ΔE grain density per 32×32 opaque interior sample within `[0.70, 1.30]` of `building.tavern/base.png`.
+- **Character strip alignment (V7):** `feet-audit.mjs --directions=e,w,se,sw` runs inside `art:gate` by default (unless `--no-feet-audit` is passed) with monotonic ratcheting for pre-Wave-0 strips.
+
+### Planned (`Wave 1 bake export` / `Wave 2`)
+- **(1) grid (`planned (Wave 1 bake export)` / `Wave 2`):** off-lattice edge detector on sprite alpha (`planned (Wave 1 bake export)`), plus a Wave 2 source grep for forbidden `createLinearGradient` / `createRadialGradient` / `arc` / `ellipse` calls in world or sky rendering (`planned (Wave 2)`).
+- **(2) terrain bake (`planned (Wave 1 bake export)`):** every rendered terrain-bake texel within `ΔE_OK ≤ 0.02` of a ramp stop.
+- **(6) paving (`planned (Wave 1 bake export)`):** paving stone-id coverage ≥ 85 % from the bake's debug export.
+- **(8) water contact (`planned (Wave 1 bake export)`):** bank-face coverage ≥ 90 % of non-beach contacts and zero detached mirror runs (a run whose top row is > 10 px from its source's contact).

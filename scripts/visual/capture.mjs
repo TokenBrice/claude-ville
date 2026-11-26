@@ -36,9 +36,25 @@ import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import { launchChromium } from '../smoke/support/chromium.mjs';
 import { BENCH_WEATHER, GPU_LAUNCH_ARGS, resolveServer } from '../smoke/support/world-bench.mjs';
+import { GPU_RECORD_FLAGS } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const DEFAULT_GOLDEN_DIR = path.join(ROOT, 'claudeville', 'visual', 'golden');
+
+/**
+ * Resolve the canonical GPU ABI flag bitmask for a frozen scene record.
+ * Uses `rec.flags` when present and ORs in any matching named boolean fields
+ * (e.g. `rec.reflect`, `rec.screenSpace`, `rec.writesDepth`) from `GPU_RECORD_FLAGS`.
+ */
+export function resolveRecordFlags(rec, flagMap = GPU_RECORD_FLAGS) {
+    let bits = Number.isFinite(rec?.flags) ? (rec.flags | 0) : 0;
+    if (flagMap && rec && typeof rec === 'object') {
+        for (const [name, bit] of Object.entries(flagMap)) {
+            if (rec[name] === true) bits |= bit;
+        }
+    }
+    return bits >>> 0;
+}
 
 // Astra 01 §5 causal control: daytime reduced-motion CSS opening land fill.
 export const GREEN_SWATCH_RGB = Object.freeze([65, 97, 57]); // #416139
@@ -137,6 +153,7 @@ export function analyzeFrameReadback(rgba, width, height) {
  */
 export function evaluateCaptureFenceState(state, {
     expectedSeason = null,
+    expectedBackend = null,
     minPresentGeneration = 0,
 } = {}) {
     const pendingReasons = [];
@@ -149,8 +166,17 @@ export function evaluateCaptureFenceState(state, {
         pendingReasons.push(`renderer._firstFrameReason=${state.firstFrameReason}`);
     }
     if (state.revealSnapshotPending) pendingReasons.push('renderer._revealSnapshotPending=true');
-    if (expectedSeason && state.season && state.season !== expectedSeason) {
-        pendingReasons.push(`season ${state.season} != expected ${expectedSeason}`);
+    if (state.assetsLoading === true) pendingReasons.push('assets still loading');
+    if (state.terrainRestaging === true) pendingReasons.push('terrain restage in progress');
+    if (expectedBackend && state.activeBackend !== expectedBackend) {
+        pendingReasons.push(`activeBackend ${state.activeBackend} != expected ${expectedBackend}`);
+    }
+    if (expectedSeason) {
+        if (!state.season || typeof state.season !== 'string' || state.season.trim() === '') {
+            pendingReasons.push(`season missing/empty (expected ${expectedSeason})`);
+        } else if (state.season !== expectedSeason) {
+            pendingReasons.push(`season ${state.season} != expected ${expectedSeason}`);
+        }
     }
     if (!state.terrainKey || typeof state.terrainKey !== 'string' || state.terrainKey.trim() === '') {
         pendingReasons.push('empty published terrain key');
@@ -320,16 +346,7 @@ function installVisualCaptureHelpers() {
         const stackEl = document.querySelector('#characterMode[data-world-ready] > #worldStack');
         const worldStackOpacity = stackEl ? Number(getComputedStyle(stackEl).opacity) : 0;
         const atmosphere = r?.atmosphereState || window.__claudeVilleAtmosphere;
-        const terrainKey =
-            r?.terrainCacheKey
-            || r?.terrainCacheBaseKey
-            || r?._terrainArtifactKey
-            || r?._lastTerrainKey
-            || r?._terrainBakedKey
-            || r?.terrainKey
-            || (r?.terrainCache ? `canvas:${r.terrainCache.width}x${r.terrainCache.height}` : '')
-            || (r?._terrainCanvas ? `canvas:${r._terrainCanvas.width}x${r._terrainCanvas.height}` : '')
-            || (r?.gpuWorld?._terrainTexture ? 'gpu:terrain-bound' : '');
+        const terrainKey = typeof r?.terrainCacheKey === 'string' ? r.terrainCacheKey : '';
         const presentGeneration =
             Number.isFinite(r?.presentGeneration) ? r.presentGeneration
             : Number.isFinite(r?._presentGeneration) ? r._presentGeneration
@@ -340,14 +357,19 @@ function installVisualCaptureHelpers() {
             : Number.isFinite(r?._renderedFrames) ? r._renderedFrames
             : Number.isFinite(r?.gpuWorld?.frameCount) ? r.gpuWorld.frameCount
             : null;
+        const assetStats = r?.assets?.cacheStats?.() || null;
+        const assetsLoading = Boolean(r?.assets?.isLoading || (Number(assetStats?.pending) > 0));
         return {
             bootState: app?._bootState || null,
             worldReadyAttr: Boolean(modeEl),
             worldStackOpacity,
             firstFrameReason: r?._firstFrameReason ?? null,
             revealSnapshotPending: Boolean(r?._revealSnapshotPending),
+            assetsLoading,
+            terrainRestaging: Boolean(r?._terrainRestage),
+            lampSilhouetteMode: r?._lampSilhouetteMode ?? r?._lampSilhouetteGate ?? null,
             season: r?._terrainSeason || atmosphere?.getSeason?.() || atmosphere?.season || null,
-            terrainKey: String(terrainKey || ''),
+            terrainKey,
             presentGeneration,
             fallbackFrameCount,
             activeBackend: r?.worldRendererMode || null,
@@ -441,26 +463,107 @@ function installVisualCaptureHelpers() {
         };
     };
 
-    const readGpuTargets = async (gpuWorld) => {
+    const flipRows = (bytes, width, height) => {
+        const row = width * 4;
+        const out = new Uint8Array(bytes.length);
+        for (let y = 0; y < height; y++) {
+            out.set(bytes.subarray((height - 1 - y) * row, (height - y) * row), y * row);
+        }
+        return out;
+    };
+
+    const readWebglFallback = (gpuWorld, renderer) => {
+        const gl = gpuWorld?.gl || renderer?.fxCanvas?.getContext?.('webgl2');
+        if (!gl) return null;
+        if (typeof gpuWorld?.ensureFreshOutput === 'function' && !gpuWorld.ensureFreshOutput()) return null;
+        const width = gpuWorld?.width || gl.drawingBufferWidth || renderer?.fxCanvas?.width || 0;
+        const height = gpuWorld?.height || gl.drawingBufferHeight || renderer?.fxCanvas?.height || 0;
+        if (width <= 0 || height <= 0) return null;
+        const read = (framebuffer, buffer) => {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+            gl.readBuffer(buffer);
+            const bytes = new Uint8Array(width * height * 4);
+            gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+            return gl.getError() === gl.NO_ERROR ? flipRows(bytes, width, height) : null;
+        };
+        const composite = read(null, gl.BACK);
+        const target = gpuWorld?.sceneTarget;
+        const scene = target?.framebuffer ? read(target.framebuffer, gl.COLOR_ATTACHMENT0) : null;
+        const emission = target?.framebuffer && target.attachments >= 2 ? read(target.framebuffer, gl.COLOR_ATTACHMENT1) : null;
+        if (target?.framebuffer) gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        if (!composite) return null;
+        return {
+            width,
+            height,
+            composite,
+            scene,
+            emission,
+            attribution: null,
+            attributionFormat: null,
+            source: 'webgl-readPixels',
+        };
+    };
+
+    const readGpuTargets = async (gpuWorld, renderer) => {
         if (typeof gpuWorld.debugCaptureTargets === 'function') {
-            const cap = await gpuWorld.debugCaptureTargets();
+            const cap = await gpuWorld.debugCaptureTargets({ includeAttribution: true });
             if (!cap) return null;
+            const attrBytes = cap.attribution
+                ? new Uint8Array(cap.attribution.buffer || cap.attribution, cap.attribution.byteOffset || 0, cap.attribution.byteLength || cap.attribution.length)
+                : null;
+            const attrFormat = cap.attributionFormat
+                || (cap.attribution instanceof Uint32Array ? 'r32uint' : attrBytes ? 'rgba8' : null);
             return {
                 width: cap.width,
                 height: cap.height,
                 composite: cap.composite ? new Uint8Array(cap.composite.buffer || cap.composite, cap.composite.byteOffset || 0, cap.composite.byteLength || cap.composite.length) : null,
                 scene: cap.scene ? new Uint8Array(cap.scene.buffer || cap.scene, cap.scene.byteOffset || 0, cap.scene.byteLength || cap.scene.length) : null,
                 emission: cap.emission ? new Uint8Array(cap.emission.buffer || cap.emission, cap.emission.byteOffset || 0, cap.emission.byteLength || cap.emission.length) : null,
-                attribution: cap.attribution ? new Uint8Array(cap.attribution.buffer || cap.attribution, cap.attribution.byteOffset || 0, cap.attribution.byteLength || cap.attribution.length) : null,
-                attributionFormat: cap.attributionFormat || (cap.attribution instanceof Uint32Array ? 'r32uint' : cap.attribution ? 'rgba8' : null),
+                attribution: attrBytes,
+                attributionFormat: attrFormat,
                 source: 'debugCaptureTargets',
             };
         }
-        return null;
+        return readWebglFallback(gpuWorld, renderer);
     };
 
     C.freezeAndCapture = async ({ settleFrames = 2 } = {}) => {
         const r = window.__claudeVilleApp.renderer;
+        // Opus P0-3 night reproducibility: wait for pending asset loads /
+        // terrain restages and run 2 real render ticks after pose+hour+weather
+        // so `_lampSilhouetteMode`, `brazierFlames`, and Command banner settle
+        // deterministically before stopping the loop and freezing records.
+        const settleDeadline = Date.now() + 10_000;
+        while (Date.now() < settleDeadline) {
+            const state = C.readFenceState();
+            if (!state.assetsLoading && !state.terrainRestaging) break;
+            await nextRaf();
+        }
+        let prevLampMode = r._lampSilhouetteMode ?? r._lampSilhouetteGate ?? null;
+        await nextRaf();
+        await nextRaf();
+        if ((r._lampSilhouetteMode ?? r._lampSilhouetteGate ?? null) !== prevLampMode) {
+            await nextRaf();
+            await nextRaf();
+        }
+
+        let gpuRecordFlags = null;
+        try {
+            const policy = await import('/src/presentation/character-mode/gpu/GpuWorldPolicy.js');
+            gpuRecordFlags = policy?.GPU_RECORD_FLAGS || null;
+        } catch {}
+
+        const resolveFlags = (rec) => {
+            let bits = Number.isFinite(rec?.flags) ? (rec.flags | 0) : 0;
+            if (gpuRecordFlags && rec && typeof rec === 'object') {
+                for (const [name, bit] of Object.entries(gpuRecordFlags)) {
+                    if (rec[name] === true) bits |= bit;
+                }
+            }
+            return bits >>> 0;
+        };
+
         r._stopLoop?.();
         const gpu = r.gpuWorld;
         const isGpu = gpu?.isActive?.() === true;
@@ -493,7 +596,7 @@ function installVisualCaptureHelpers() {
                 gpu.prepareFrame?.(frozenFrame.feed);
                 gpu.render(frozenFrame);
                 if (gpu.backend === 'webgpu') await gpu.drain?.();
-                finalCap = await readGpuTargets(gpu);
+                finalCap = await readGpuTargets(gpu, r);
             } else {
                 r._renderSingleFrame?.();
                 finalCap = readCanvasWorld(r);
@@ -536,14 +639,15 @@ function installVisualCaptureHelpers() {
                 index,
                 id: rec.id || rec.debugId || rec.key || `record:${index}`,
                 layer: rec.layer ?? 0,
-                flags: rec.flags ?? 0,
+                flags: resolveFlags(rec),
             })),
             marksCount: frozenFrame?.marks?.length || 0,
             telemetry: {
                 canvasBudget,
+                cacheStats: canvasBudget?.cacheStats || null,
                 gpuDiag,
                 pathDiag,
-                gpuTimerSupported: Boolean(gpuDiag?.gpuTimerSupported),
+                gpuTimerSupported: Boolean(gpuDiag?.gpuTimerSupported ?? gpuDiag?.timestamps?.supported),
                 gpuPassTimestampsMs: gpuDiag?.passTimestampsMs || null,
             },
             compositeBase64: toBase64(finalCap?.composite),
@@ -555,13 +659,13 @@ function installVisualCaptureHelpers() {
     };
 }
 
-async function waitForStrictCaptureFence(page, { expectedSeason, minPresentGeneration, timeoutMs = 30_000 }) {
+async function waitForStrictCaptureFence(page, { expectedSeason, expectedBackend = null, minPresentGeneration, timeoutMs = 30_000 }) {
     const start = Date.now();
     let lastState = null;
     let lastEval = null;
     while (Date.now() - start < timeoutMs) {
         lastState = await page.evaluate(() => window.__cvVisualCapture.readFenceState());
-        lastEval = evaluateCaptureFenceState(lastState, { expectedSeason, minPresentGeneration });
+        lastEval = evaluateCaptureFenceState(lastState, { expectedSeason, expectedBackend, minPresentGeneration });
         if (lastEval.ready) return { state: lastState, elapsedMs: Date.now() - start };
         await page.waitForTimeout(100);
     }
@@ -631,6 +735,7 @@ export async function captureVisualRun(options) {
                     // Wait for Astra's strict present-generation capture fence.
                     const fenced = await waitForStrictCaptureFence(page, {
                         expectedSeason,
+                        expectedBackend: options.backend,
                         minPresentGeneration: posed.beforePresentGeneration,
                     });
 
@@ -639,6 +744,10 @@ export async function captureVisualRun(options) {
                         { settleFrames: options.settleFrames },
                     );
 
+                    // Hard fail on silent backend fallback (e.g. webgpu/webgl -> canvas).
+                    if (captured.backend !== options.backend) {
+                        throw new Error(`Hard fail: active backend ${captured.backend} !== requested --backend=${options.backend}`);
+                    }
                     // Hard fail on fallback adapter or non-FULL quality ladder on GPU backends.
                     if (options.backend !== 'canvas' && !options.allowFallback && captured.adapter?.fallback === true) {
                         throw new Error(`Hard fail: adapter.fallback === true on ${options.backend}`);
@@ -709,6 +818,9 @@ export async function captureVisualRun(options) {
                     writeFileSync(path.join(caseDir, 'meta.json'), `${JSON.stringify(meta, null, 2)}\n`);
 
                     if (options.accept) {
+                        if (!captured.selfStableBytes) {
+                            throw new Error(`Refusing --accept for ${caseId}: readback was not byte-identical across settle passes (selfStableBytes=false)`);
+                        }
                         const goldenCaseDir = path.join(options.goldenDir, caseId);
                         mkdirSync(goldenCaseDir, { recursive: true });
                         cpSync(caseDir, goldenCaseDir, { recursive: true, force: true });

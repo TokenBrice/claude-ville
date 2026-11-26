@@ -16,8 +16,9 @@
 //             C1 ramps (ART_RAMPS) is further than dE_OK 0.04 in OKLab
 //   edgeCont  terrain only (4x4 Wang sheets): share of shared Wang-neighbor
 //             border texels within OKLab dE <= 0.03
-//   grain     Medium Contract OA-M1 Sobel edge-texel density per 32x32 opaque
-//             sample relative to building.tavern/base.png (target [0.70, 1.30])
+//   grain     Medium Contract OA-M1 perceptual OKLab 4-neighbor mean ΔE edge
+//             density per 32x32 opaque sample relative to building.tavern/base.png
+//             (target [0.70, 1.30])
 //   scale     manifest display scales that are not an integer multiple of
 //             the source texel (displaySize / size, display* / width|height,
 //             any numeric *scale* key)
@@ -29,8 +30,8 @@
 //
 // Usage:
 //   node scripts/sprites/art-analyze.mjs [--json] [--ids <id,prefix.*,...>] [--flagged]
-//   node scripts/sprites/art-analyze.mjs --gate [--budget <path>] [--season <spring|summer|autumn|winter>] [--with-feet-audit]
-//   node scripts/sprites/art-analyze.mjs --update-budget [--allow-loosen] [--budget <path>]
+//   node scripts/sprites/art-analyze.mjs --gate [--budget <path>] [--season <spring|summer|autumn|winter>] [--no-feet-audit]
+//   node scripts/sprites/art-analyze.mjs --update-budget [--allow-loosen] [--budget <path>] [--no-feet-audit]
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -86,7 +87,10 @@ export const THRESHOLDS = Object.freeze({
     offRamp: 0.10,
     terrainEdgeDeltaE: 0.03,
     terrainMinEdgeContinuity: 0.99,
-    sobelEdgeThreshold: 64,
+    // Calibrated perceptual OKLab 4-neighbor mean ΔE threshold so Tavern sits
+    // near ~0.38 edge density (~392 / 1024 interior px), leaving generous
+    // headroom for noisy/checkerboard assets to exceed 1.30x (max ~2.61x).
+    grainOklabDeltaE: 0.14,
     grainMinInteriorPixels: 64,
     grainRatioBand: Object.freeze([0.70, 1.30]),
 });
@@ -131,6 +135,7 @@ function parseArgs(argv) {
         budgetPath: DEFAULT_BUDGET_PATH,
         season: 'summer',
         withFeetAudit: false,
+        noFeetAudit: false,
     };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
@@ -140,6 +145,7 @@ function parseArgs(argv) {
         else if (arg === '--update-budget') opts.updateBudget = true;
         else if (arg === '--allow-loosen') opts.allowLoosen = true;
         else if (arg === '--with-feet-audit') opts.withFeetAudit = true;
+        else if (arg === '--no-feet-audit') opts.noFeetAudit = true;
         else if (arg === '--help' || arg === '-h') opts.help = true;
         else if (arg === '--ids' || arg.startsWith('--ids=')) {
             const value = arg === '--ids' ? argv[++i] : arg.slice('--ids='.length);
@@ -228,51 +234,69 @@ function nearestStop(lab, rampKeys) {
 // ------------------------------------------------ grain & Wang continuity
 
 /**
- * Medium Contract OA-M1 grain measurement: Sobel edge-texel density normalized
- * per 32x32 opaque interior sample (1024 interior opaque texels).
+ * Medium Contract OA-M1 grain measurement: perceptual OKLab 4-neighbor mean
+ * ΔE edge-texel density normalized per 32x32 opaque interior sample (1024
+ * interior opaque texels). Calibrated at ΔE >= 0.14 so building.tavern/base.png
+ * sits at ~392/1024 (~38.3%), leaving headroom up to ~2.61x so noisy or
+ * checkerboard assets cleanly exceed the 1.30x upper bound.
  *
  * @param {{ width: number, height: number, data: Uint8Array|Buffer }} png
  * @param {number} [edgeThreshold]
  * @returns {{ edgePixels: number, interiorPixels: number, densityPer32x32: number|null }}
  */
-export function measureGrainDensity(png, edgeThreshold = THRESHOLDS.sobelEdgeThreshold) {
+export function measureGrainDensity(png, edgeThreshold = THRESHOLDS.grainOklabDeltaE) {
     const { width, height, data } = png;
     if (width < 3 || height < 3) {
         return { edgePixels: 0, interiorPixels: 0, densityPer32x32: null };
     }
     const count = width * height;
-    const luma = new Float32Array(count);
+    const labL = new Float32Array(count);
+    const labA = new Float32Array(count);
+    const labB = new Float32Array(count);
     const opaque = new Uint8Array(count);
+    const labCache = new Map();
     for (let p = 0, i = 0; p < count; p++, i += 4) {
         if (data[i + 3] >= 128) {
             opaque[p] = 1;
-            luma[p] = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const key = (r << 16) | (g << 8) | b;
+            let hit = labCache.get(key);
+            if (!hit) {
+                hit = oklab(r, g, b);
+                if (labCache.size < 65536) labCache.set(key, hit);
+            }
+            labL[p] = hit[0];
+            labA[p] = hit[1];
+            labB[p] = hit[2];
         }
     }
     let interiorPixels = 0;
     let edgePixels = 0;
-    const threshSq = edgeThreshold * edgeThreshold;
+    const meanSumThreshold = edgeThreshold * 4;
     for (let y = 1; y < height - 1; y++) {
-        const row0 = (y - 1) * width;
-        const row1 = y * width;
-        const row2 = (y + 1) * width;
+        const row = y * width;
+        const rowUp = row - width;
+        const rowDown = row + width;
         for (let x = 1; x < width - 1; x++) {
+            const p = row + x;
             if (
-                !opaque[row0 + x - 1] || !opaque[row0 + x] || !opaque[row0 + x + 1]
-                || !opaque[row1 + x - 1] || !opaque[row1 + x] || !opaque[row1 + x + 1]
-                || !opaque[row2 + x - 1] || !opaque[row2 + x] || !opaque[row2 + x + 1]
+                !opaque[p]
+                || !opaque[p - 1] || !opaque[p + 1]
+                || !opaque[rowUp + x] || !opaque[rowDown + x]
             ) {
                 continue;
             }
             interiorPixels++;
-            const gx =
-                -luma[row0 + x - 1] + luma[row0 + x + 1]
-                - 2 * luma[row1 + x - 1] + 2 * luma[row1 + x + 1]
-                - luma[row2 + x - 1] + luma[row2 + x + 1];
-            const gy =
-                -luma[row0 + x - 1] - 2 * luma[row0 + x] - luma[row0 + x + 1]
-                + luma[row2 + x - 1] + 2 * luma[row2 + x] + luma[row2 + x + 1];
-            if (gx * gx + gy * gy >= threshSq) edgePixels++;
+            const lp = labL[p];
+            const ap = labA[p];
+            const bp = labB[p];
+            const dL = Math.hypot(lp - labL[p - 1], ap - labA[p - 1], bp - labB[p - 1]);
+            const dR = Math.hypot(lp - labL[p + 1], ap - labA[p + 1], bp - labB[p + 1]);
+            const dU = Math.hypot(lp - labL[rowUp + x], ap - labA[rowUp + x], bp - labB[rowUp + x]);
+            const dD = Math.hypot(lp - labL[rowDown + x], ap - labA[rowDown + x], bp - labB[rowDown + x]);
+            if (dL + dR + dU + dD >= meanSumThreshold) edgePixels++;
         }
     }
     const densityPer32x32 = interiorPixels >= THRESHOLDS.grainMinInteriorPixels
@@ -613,7 +637,7 @@ function scaleIssues(entry) {
     return issues;
 }
 
-function computeTavernGrainBenchmark() {
+export function computeTavernGrainBenchmark() {
     if (!existsSync(TAVERN_BENCHMARK_PATH)) return null;
     const png = readPng(TAVERN_BENCHMARK_PATH);
     return measureGrainDensity(png).densityPer32x32;
@@ -1117,7 +1141,8 @@ export function evaluateGate(results, summary, budget, { season = 'summer' } = {
 
     // Seasonal ground saturation band (X-7)
     const seasonBands = budget?.groundSaturationBySeason || {};
-    const targetBand = seasonBands[season] || [GROUND_SATURATION.min, GROUND_SATURATION.max];
+    const fallbackBand = resolveGroundBand(season);
+    const targetBand = seasonBands[season] || [fallbackBand.min, fallbackBand.max];
     if (summary?.ground && Number.isFinite(summary.ground.medianSaturation)) {
         const legacyBand = budget?.legacyPooledGroundSaturationBand?.[season];
         const effectiveMin = legacyBand ? legacyBand[0] : targetBand[0];
@@ -1131,6 +1156,36 @@ export function evaluateGate(results, summary, budget, { season = 'summer' } = {
                 cap: [effectiveMin, effectiveMax],
                 message: `pooled ground median S ${num(s, 4)} outside [${num(effectiveMin, 4)}, ${num(effectiveMax, 4)}]`,
             });
+        }
+    }
+
+    // Character strip V7 feet audit (non-empty frame failures in e,w,se,sw)
+    const feetAudit = summary?.feetAudit;
+    if (feetAudit && !feetAudit.skipped) {
+        if (feetAudit.parseError || feetAudit.exitCode === 2) {
+            violations.push({
+                id: 'feet-audit',
+                rule: 'feetAudit',
+                message: `feet-audit execution failed (exit=${feetAudit.exitCode}${feetAudit.stderr ? `: ${feetAudit.stderr}` : ''})`,
+            });
+        } else {
+            for (const [id, groups] of Object.entries(feetAudit.failingGroupsByCharacter || {})) {
+                const allowedGroups = new Set(allowlist[id]?.legacyFeetAuditGroups || []);
+                const unallowed = groups.filter((group) => !allowedGroups.has(group));
+                if (unallowed.length > 0) {
+                    const details = (feetAudit.detailsByCharacter?.[id] || [])
+                        .filter((entry) => unallowed.includes(entry.group))
+                        .map((entry) => entry.summary)
+                        .join('; ');
+                    violations.push({
+                        id,
+                        rule: 'feetAudit',
+                        actual: unallowed,
+                        cap: [...allowedGroups],
+                        message: `feet-audit failed for group(s) [${unallowed.join(', ')}]${details ? ` (${details})` : ''}`,
+                    });
+                }
+            }
         }
     }
 
@@ -1254,6 +1309,26 @@ export function updateBudgetMonotonic(currentBudget, results, summary, { allowLo
             if (gMax !== undefined) entry.maxGrainRatio = gMax;
         }
 
+        const feetAudit = summary?.feetAudit;
+        if (r.class === 'characters' && feetAudit && !feetAudit.skipped && !feetAudit.parseError) {
+            const measuredGroups = [...new Set(feetAudit.failingGroupsByCharacter?.[r.id] || [])].sort();
+            const prevGroups = Array.isArray(prev?.legacyFeetAuditGroups) ? [...new Set(prev.legacyFeetAuditGroups)].sort() : [];
+            const prevSet = new Set(prevGroups);
+            const measuredSet = new Set(measuredGroups);
+            const newlyFailing = measuredGroups.filter((g) => !prevSet.has(g));
+            const fixedGroups = prevGroups.filter((g) => !measuredSet.has(g));
+            if (newlyFailing.length > 0 && !allowLoosen) {
+                loosened.push(`${r.id}.legacyFeetAuditGroups: new failing group(s) [${newlyFailing.join(', ')}]`);
+            }
+            if (fixedGroups.length > 0) {
+                tightened.push(`${r.id}.legacyFeetAuditGroups: fixed [${fixedGroups.join(', ')}]`);
+            }
+            const keptGroups = allowLoosen ? measuredGroups : measuredGroups.filter((g) => prevSet.has(g));
+            if (keptGroups.length > 0) entry.legacyFeetAuditGroups = keptGroups;
+        } else if (Array.isArray(prev?.legacyFeetAuditGroups) && prev.legacyFeetAuditGroups.length > 0) {
+            entry.legacyFeetAuditGroups = [...prev.legacyFeetAuditGroups].sort();
+        }
+
         if (Object.keys(entry).length > 0) {
             entry.reason = prev?.reason || `pre-Wave-0 ${r.class} baseline; ratchet down on touch`;
             nextAllow[r.id] = entry;
@@ -1266,33 +1341,43 @@ export function updateBudgetMonotonic(currentBudget, results, summary, { allowLo
         if (!seen.has(id)) nextAllow[id] = entry;
     }
 
-    if (loosened.length > 0 && !allowLoosen) {
-        const err = new Error(`Refusing to loosen art-budget.json without --allow-loosen:\n  ${loosened.join('\n  ')}`);
-        err.loosened = loosened;
-        throw err;
-    }
-
-    // Sort keys deterministically so diffs stay minimal.
-    next.legacyAllowlist = Object.fromEntries(
-        Object.keys(nextAllow).sort().map((id) => [id, nextAllow[id]]),
-    );
-
-    // Check pooled ground saturation band
+    // Check pooled ground saturation band (refuse widening unless --allow-loosen)
     if (summary?.ground && Number.isFinite(summary.ground.medianSaturation)) {
         const s = summary.ground.medianSaturation;
-        const target = next.groundSaturationBySeason?.[season] || [0.45, 0.50];
-        if (s < target[0] || s > target[1]) {
+        const fallbackBand = resolveGroundBand(season);
+        const target = next.groundSaturationBySeason?.[season] || [fallbackBand.min, fallbackBand.max];
+        if (s + 1e-9 < target[0] || s > target[1] + 1e-9) {
             const prevLegacy = currentBudget.legacyPooledGroundSaturationBand?.[season];
             const nextMin = roundDown(Math.min(s, target[0]), 4);
             const nextMax = roundUp(Math.max(s, target[1]), 4);
-            if (!prevLegacy && !allowLoosen) {
-                throw new Error(`Refusing to add legacyPooledGroundSaturationBand.${season} without --allow-loosen (measured ${num(s, 4)})`);
+            if (!prevLegacy) {
+                if (!allowLoosen) {
+                    loosened.push(`legacyPooledGroundSaturationBand.${season}: new legacy band [${nextMin}, ${nextMax}] (measured ${num(s, 4)})`);
+                } else {
+                    next.legacyPooledGroundSaturationBand = {
+                        ...(next.legacyPooledGroundSaturationBand || {}),
+                        [season]: [nextMin, nextMax],
+                    };
+                }
+            } else {
+                const widenedMin = nextMin + 1e-9 < prevLegacy[0];
+                const widenedMax = nextMax > prevLegacy[1] + 1e-9;
+                if ((widenedMin || widenedMax) && !allowLoosen) {
+                    loosened.push(`legacyPooledGroundSaturationBand.${season}: widened ([${prevLegacy[0]}, ${prevLegacy[1]}] -> [${nextMin}, ${nextMax}])`);
+                } else {
+                    const effectiveMin = allowLoosen ? nextMin : Math.max(prevLegacy[0], nextMin);
+                    const effectiveMax = allowLoosen ? nextMax : Math.min(prevLegacy[1], nextMax);
+                    if (effectiveMin > prevLegacy[0] + 1e-9 || effectiveMax < prevLegacy[1] - 1e-9) {
+                        tightened.push(`legacyPooledGroundSaturationBand.${season}: tightened ([${prevLegacy[0]}, ${prevLegacy[1]}] -> [${effectiveMin}, ${effectiveMax}])`);
+                    }
+                    next.legacyPooledGroundSaturationBand = {
+                        ...(next.legacyPooledGroundSaturationBand || {}),
+                        [season]: [effectiveMin, effectiveMax],
+                    };
+                }
             }
-            next.legacyPooledGroundSaturationBand = {
-                ...(next.legacyPooledGroundSaturationBand || {}),
-                [season]: [nextMin, nextMax],
-            };
         } else if (next.legacyPooledGroundSaturationBand?.[season]) {
+            tightened.push(`legacyPooledGroundSaturationBand.${season}: removed (within target [${target[0]}, ${target[1]}])`);
             delete next.legacyPooledGroundSaturationBand[season];
             if (Object.keys(next.legacyPooledGroundSaturationBand).length === 0) {
                 delete next.legacyPooledGroundSaturationBand;
@@ -1300,23 +1385,104 @@ export function updateBudgetMonotonic(currentBudget, results, summary, { allowLo
         }
     }
 
+    if (loosened.length > 0 && !allowLoosen) {
+        const err = new Error(`Refusing to loosen art-budget.json without --allow-loosen:\n  ${loosened.join('\n  ')}`);
+        err.loosened = loosened;
+        throw err;
+    }
+
+    if (Number.isFinite(summary?.tavernGrainDensity)) {
+        next.tavernGrainBenchmark = {
+            asset: 'buildings/building.tavern/base.png',
+            metric: 'oklab-mean4-deltaE',
+            threshold: THRESHOLDS.grainOklabDeltaE,
+            densityPer32x32: Number(summary.tavernGrainDensity.toFixed(2)),
+        };
+    }
+
+    // Sort keys deterministically so diffs stay minimal.
+    next.legacyAllowlist = Object.fromEntries(
+        Object.keys(nextAllow).sort().map((id) => [id, nextAllow[id]]),
+    );
+
     return { budget: next, tightened, loosened };
 }
 
-function runFeetAuditCheck(ids) {
+function parseNonEmptyFeetFailures(parsed) {
+    const failingGroupsByCharacter = {};
+    const detailsByCharacter = {};
+    for (const character of parsed?.characters || []) {
+        const groups = new Set();
+        const details = [];
+        for (const strip of character.strips || []) {
+            for (const group of strip.groups || []) {
+                const reasons = [];
+                for (const [dir, entry] of Object.entries(group.directions || {})) {
+                    for (const frame of entry.frames || []) {
+                        if (frame.empty || frame.pass !== false) continue;
+                        const parts = [];
+                        if (Math.abs(frame.dx) > (parsed.tolerance ?? 2) || Math.abs(frame.dy) > (parsed.tolerance ?? 2)) {
+                            parts.push(`dx${frame.dx >= 0 ? '+' : ''}${frame.dx},dy${frame.dy >= 0 ? '+' : ''}${frame.dy}`);
+                        }
+                        if (frame.fragments?.length) parts.push(`fragment×${frame.fragments.length}`);
+                        if (frame.clearancePass === false) parts.push(`clearance=${frame.rise}`);
+                        if (frame.identityPass === false) parts.push('identity');
+                        if (frame.flickerPass === false) parts.push('flicker');
+                        reasons.push(`${dir}#${frame.frame ?? frame.index ?? '?'}(${parts.join(';') || 'fail'})`);
+                    }
+                }
+                if (reasons.length > 0) {
+                    groups.add(group.name);
+                    details.push({ group: group.name, summary: `${group.name}: ${reasons.slice(0, 4).join(' ')}` });
+                }
+            }
+        }
+        if (groups.size > 0) {
+            failingGroupsByCharacter[character.id] = [...groups].sort();
+            detailsByCharacter[character.id] = details;
+        }
+    }
+    return { failingGroupsByCharacter, detailsByCharacter };
+}
+
+export function runFeetAuditCheck(characterIds = null) {
+    if (Array.isArray(characterIds) && characterIds.length === 0) {
+        return {
+            skipped: true,
+            reason: 'no character ids in selection',
+            exitCode: 0,
+            parseError: false,
+            failures: [],
+            failingGroupsByCharacter: {},
+            detailsByCharacter: {},
+            stderr: '',
+        };
+    }
     const scriptPath = join(repoRoot, 'scripts', 'sprites', 'feet-audit.mjs');
-    const args = [scriptPath, '--json'];
-    if (ids && ids.length) args.push(`--ids=${ids.join(',')}`);
+    const args = [scriptPath, '--directions=e,w,se,sw', '--json'];
+    if (Array.isArray(characterIds) && characterIds.length > 0) {
+        args.push(`--ids=${characterIds.join(',')}`);
+    }
     const run = spawnSync(process.execPath, args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
     let parsed = null;
+    let parseError = false;
     try {
-        parsed = JSON.parse(run.stdout || '{}');
+        parsed = JSON.parse(run.stdout || '');
     } catch {
         parsed = null;
+        parseError = true;
     }
+    const { failingGroupsByCharacter, detailsByCharacter } = parsed
+        ? parseNonEmptyFeetFailures(parsed)
+        : { failingGroupsByCharacter: {}, detailsByCharacter: {} };
     return {
+        skipped: false,
         exitCode: run.status,
+        parseError,
+        charactersAudited: parsed?.characters?.length ?? 0,
         failures: parsed?.failures || [],
+        failingGroupsByCharacter,
+        detailsByCharacter,
         stderr: String(run.stderr || '').trim(),
     };
 }
@@ -1424,7 +1590,10 @@ function printReport(results, summary, opts, gateResult = null) {
     const flagged = results.filter((r) => r.flags.length).length;
     if (gateResult) {
         if (summary.tavernGrainDensity) {
-            console.log(`Tavern 32x32 Sobel grain benchmark: ${num(summary.tavernGrainDensity, 1)} edge px / 1024 interior px`);
+            console.log(`Tavern 32x32 OKLab grain benchmark (mean4 dE >= ${THRESHOLDS.grainOklabDeltaE}): ${num(summary.tavernGrainDensity, 1)} edge px / 1024 interior px`);
+        }
+        if (summary.feetAudit && !summary.feetAudit.skipped) {
+            console.log(`Feet audit (e,w,se,sw): ${summary.feetAudit.charactersAudited} character(s) checked (${Object.keys(summary.feetAudit.failingGroupsByCharacter || {}).length} with ratcheted legacy failures).`);
         }
         console.log(`Checked ${gateResult.assetsChecked} assets (${gateResult.allowlistedCount} ratcheted legacy allowlist entries, ${flagged} advisory flags).`);
         if (gateResult.pass) {
@@ -1480,7 +1649,7 @@ export function runArtAnalysis(opts = {}) {
 function main() {
     const opts = parseArgs(process.argv.slice(2));
     if (opts.help) {
-        console.log('Usage: node scripts/sprites/art-analyze.mjs [--json] [--ids <id,prefix.*,...>] [--flagged] [--gate] [--budget <path>] [--season <spring|summer|autumn|winter>] [--update-budget [--allow-loosen]] [--with-feet-audit]');
+        console.log('Usage: node scripts/sprites/art-analyze.mjs [--json] [--ids <id,prefix.*,...>] [--flagged] [--gate] [--budget <path>] [--season <spring|summer|autumn|winter>] [--update-budget [--allow-loosen]] [--with-feet-audit|--no-feet-audit]');
         return;
     }
 
@@ -1488,6 +1657,10 @@ function main() {
     if (opts.ids && results.length === 0) {
         console.error(`[art-analyze] no manifest ids match: ${opts.ids.join(', ')}`);
     }
+
+    const selectedCharacterIds = opts.ids
+        ? results.filter((r) => r.class === 'characters').map((r) => r.id)
+        : null;
 
     if (opts.updateBudget) {
         const currentBudget = existsSync(opts.budgetPath)
@@ -1517,14 +1690,15 @@ function main() {
                     feetAuditRequired: true,
                     feetAuditInvocation: 'node scripts/sprites/feet-audit.mjs --ids=<id> --directions=e,w,se,sw',
                 },
-                groundSaturationBySeason: {
-                    spring: [0.48, 0.56],
-                    summer: [0.45, 0.50],
-                    autumn: [0.40, 0.50],
-                    winter: [0.22, 0.36],
-                },
+                groundSaturationBySeason: Object.fromEntries(
+                    Object.entries(GROUND_SATURATION_BY_SEASON).map(([k, v]) => [k, [v.min, v.max]]),
+                ),
                 legacyAllowlist: {},
             };
+        const shouldRunFeet = opts.withFeetAudit || (currentBudget.globalRules?.feetAuditRequired === true && !opts.noFeetAudit);
+        if (shouldRunFeet) {
+            summary.feetAudit = runFeetAuditCheck(selectedCharacterIds);
+        }
         const { budget: nextBudget, tightened } = updateBudgetMonotonic(currentBudget, results, summary, {
             allowLoosen: opts.allowLoosen,
             season: opts.season,
@@ -1537,19 +1711,12 @@ function main() {
     let gateResult = null;
     if (opts.gate) {
         const budget = loadArtBudget(opts.budgetPath);
-        gateResult = evaluateGate(results, summary, budget, { season: opts.season });
-        if (opts.withFeetAudit) {
-            const feet = runFeetAuditCheck(opts.ids);
-            gateResult.feetAudit = feet;
-            if (feet.exitCode !== 0) {
-                gateResult.pass = false;
-                gateResult.violations.push({
-                    id: 'feet-audit',
-                    rule: 'feetAudit',
-                    message: `feet-audit failed (${feet.failures.length} group failure(s))`,
-                });
-            }
+        const shouldRunFeet = opts.withFeetAudit || (budget.globalRules?.feetAuditRequired === true && !opts.noFeetAudit);
+        if (shouldRunFeet) {
+            summary.feetAudit = runFeetAuditCheck(selectedCharacterIds);
         }
+        gateResult = evaluateGate(results, summary, budget, { season: opts.season });
+        if (summary.feetAudit) gateResult.feetAudit = summary.feetAudit;
     }
 
     if (opts.json) {

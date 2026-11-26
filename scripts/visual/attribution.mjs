@@ -209,7 +209,11 @@ export function classifyRecordRegion(record) {
     }
     const id = String(record.id || record.debugId || record.key || '').toLowerCase();
     const kind = String(record.kind || record.role || '').toLowerCase();
-    const flags = record.flags | 0;
+    const flags = (record.flags | 0)
+        | (record.reflect === true ? 2 : 0)
+        | (record.screenSpace === true ? 8 : 0)
+        | (record.cueRun === true ? 128 : 0)
+        | (record.actionMark === true ? 512 : 0);
     const layerByte = Math.max(0, Math.min(255, Number.isFinite(record.layer) ? (record.layer | 0) : 0));
 
     // GPU_RECORD_FLAGS.reflect = 2, screenSpace = 8, cueRun = 128, actionMark = 512

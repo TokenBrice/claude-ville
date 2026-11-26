@@ -9,6 +9,7 @@ import { makeTempDir } from './support/tmp.mjs';
 import {
     DEFAULT_BUDGET_PATH,
     GROUND_SATURATION_BY_SEASON,
+    computeTavernGrainBenchmark,
     evaluateGate,
     loadArtBudget,
     measureGrainDensity,
@@ -33,11 +34,14 @@ import {
     GREEN_SWATCH_RGB,
     analyzeFrameReadback,
     evaluateCaptureFenceState,
+    resolveRecordFlags,
 } from '../visual/capture.mjs';
 import {
+    DEFAULT_TELEMETRY_CAPS,
     JND_DELTA_E,
     comparePngBuffers,
     evaluateVerdict,
+    extractTelemetryBudgets,
     oklabDeltaEJnd,
     runVisualGate,
 } from '../visual/compare.mjs';
@@ -45,7 +49,10 @@ import {
     generateVisualBoard,
     scaleNearestPng,
 } from '../visual/board.mjs';
-import { summarizeParityAttribution } from '../smoke/webgpu-parity.mjs';
+import {
+    applyStrictAttributionPolicy,
+    summarizeParityAttribution,
+} from '../smoke/webgpu-parity.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -87,6 +94,8 @@ test('docs/medium-contract.md contains all 9 rules, irregularity note, and art:g
     }
     assert.ok(body.includes('A metronome is a defect.'));
     assert.ok(body.includes('`art:gate` checks for the ★ rules:'));
+    assert.ok(body.includes('Enforced today by `npm run art:gate`'));
+    assert.ok(body.includes('planned (Wave 1 bake export)'));
 
     const docsIndex = readFileSync(path.join(ROOT, 'docs', 'README.md'), 'utf8');
     assert.ok(docsIndex.includes('docs/medium-contract.md'), 'docs/README.md should register docs/medium-contract.md');
@@ -96,7 +105,7 @@ test('docs/medium-contract.md contains all 9 rules, irregularity note, and art:g
 // 2. Ratcheted art:gate & art-budget.json
 // ---------------------------------------------------------------------------
 
-test('art-budget.json locks X-7 seasonal saturation bands and passes art:gate on baseline', () => {
+test('art-budget.json locks X-7 seasonal saturation bands, calibrated Tavern grain benchmark, and passes art:gate with feet audit by default', () => {
     const budget = loadArtBudget(DEFAULT_BUDGET_PATH);
     assert.equal(budget.schemaVersion, 1);
     assert.deepEqual(budget.groundSaturationBySeason, {
@@ -110,12 +119,18 @@ test('art-budget.json locks X-7 seasonal saturation bands and passes art:gate on
     assert.deepEqual(GROUND_SATURATION_BY_SEASON.autumn, { min: 0.40, max: 0.50 });
     assert.deepEqual(GROUND_SATURATION_BY_SEASON.winter, { min: 0.22, max: 0.36 });
     assert.deepEqual(budget.globalRules.mediumContractGrainRatioBand, [0.70, 1.30]);
+    assert.ok(budget.tavernGrainBenchmark, 'art-budget.json must record tavernGrainBenchmark');
+    assert.ok(
+        budget.tavernGrainBenchmark.densityPer32x32 >= 300 && budget.tavernGrainBenchmark.densityPer32x32 <= 490,
+        `Tavern grain benchmark ${budget.tavernGrainBenchmark.densityPer32x32} should sit in [300, 490] per 1024 px`,
+    );
 
     const run = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'sprites', 'art-analyze.mjs'), '--gate'], {
         cwd: ROOT,
         encoding: 'utf8',
     });
     assert.equal(run.status, 0, `expected art:gate exit 0, got ${run.status}\nstdout: ${run.stdout}\nstderr: ${run.stderr}`);
+    assert.match(run.stdout, /Feet audit \(e,w,se,sw\):/);
     assert.match(run.stdout, /\[art:gate\] PASS/);
 });
 
@@ -162,7 +177,7 @@ test('art:gate fails on synthetic over-budget asset and CLI fails when budget ca
 
         const run = spawnSync(
             process.execPath,
-            [path.join(ROOT, 'scripts', 'sprites', 'art-analyze.mjs'), '--gate', '--ids=agent.claude.opus', `--budget=${tightPath}`],
+            [path.join(ROOT, 'scripts', 'sprites', 'art-analyze.mjs'), '--gate', '--no-feet-audit', '--ids=agent.claude.opus', `--budget=${tightPath}`],
             { cwd: ROOT, encoding: 'utf8' },
         );
         assert.equal(run.status, 1, 'CLI --gate must exit 1 on cap regression');
@@ -172,7 +187,59 @@ test('art:gate fails on synthetic over-budget asset and CLI fails when budget ca
     }
 });
 
-test('updateBudgetMonotonic tightens cleanly and refuses loosening unless allowLoosen is set', () => {
+test('calibrated OKLab grain detector rejects synthetic high-frequency noisy PNG (>1.30x Tavern) and feet-audit violations fail gate', () => {
+    const budget = loadArtBudget(DEFAULT_BUDGET_PATH);
+    const tavernGrain = computeTavernGrainBenchmark();
+    assert.ok(Number.isFinite(tavernGrain) && tavernGrain >= 300 && tavernGrain <= 490);
+
+    // High-frequency 1px checkerboard noise fixture must cleanly exceed 1.30x Tavern!
+    const noisyPng = makePng(32, 32, (x, y) => (((x + y) & 1) === 0 ? [55, 75, 45, 255] : [175, 195, 145, 255]));
+    const noisyGrain = measureGrainDensity(noisyPng);
+    const noisyRatio = noisyGrain.densityPer32x32 / tavernGrain;
+    assert.ok(noisyRatio > 1.30, `expected noisy PNG grain ratio > 1.30, got ${noisyRatio}`);
+
+    const noisyAsset = {
+        id: 'prop.syntheticNoisyChecker',
+        class: 'props',
+        files: ['props/prop.syntheticNoisyChecker.png'],
+        visiblePixels: 1024,
+        colours: 2,
+        semiAlpha: 0,
+        saturation: 0.35,
+        tierA: 0,
+        tierAExempt: 0,
+        offRamp: null,
+        edgeContinuity: null,
+        grainDensity: noisyGrain.densityPer32x32,
+        grainRatio: noisyRatio,
+        surfaceIssues: [],
+        terrain: null,
+        scaleIssues: [],
+        missing: [],
+        errors: [],
+        flags: [],
+    };
+    const gateNoisy = evaluateGate([noisyAsset], { seasonalRamps: [], canopyRemaps: [] }, budget);
+    assert.equal(gateNoisy.pass, false);
+    assert.ok(gateNoisy.violations.some((v) => v.id === 'prop.syntheticNoisyChecker' && v.rule === 'grainRatio'));
+
+    // Unallowlisted failing character strip in feet-audit fails the gate
+    const gateFeet = evaluateGate([], {
+        seasonalRamps: [],
+        canopyRemaps: [],
+        feetAudit: {
+            skipped: false,
+            exitCode: 1,
+            parseError: false,
+            failingGroupsByCharacter: { 'agent.synthetic.bad': ['strike'] },
+            detailsByCharacter: { 'agent.synthetic.bad': [{ group: 'strike', summary: 'strike: e#0(dx+5,dy0)' }] },
+        },
+    }, budget);
+    assert.equal(gateFeet.pass, false);
+    assert.ok(gateFeet.violations.some((v) => v.id === 'agent.synthetic.bad' && v.rule === 'feetAudit'));
+});
+
+test('updateBudgetMonotonic tightens cleanly and refuses loosening caps, ground saturation bands, or feet audit groups unless allowLoosen is set', () => {
     const baseBudget = {
         schemaVersion: 1,
         globalRules: {
@@ -185,7 +252,10 @@ test('updateBudgetMonotonic tightens cleanly and refuses loosening unless allowL
         },
         groundSaturationBySeason: { spring: [0.48, 0.56], summer: [0.45, 0.50], autumn: [0.40, 0.50], winter: [0.22, 0.36] },
         legacyAllowlist: {
-            'agent.test': { maxColours: 300, maxTierA: 0.15, reason: 'legacy' },
+            'agent.test': { maxColours: 300, maxTierA: 0.15, legacyFeetAuditGroups: ['read', 'wait'], reason: 'legacy' },
+        },
+        legacyPooledGroundSaturationBand: {
+            summer: [0.45, 0.5059],
         },
     };
 
@@ -200,10 +270,32 @@ test('updateBudgetMonotonic tightens cleanly and refuses loosening unless allowL
         grainRatio: null,
         terrain: null,
     }];
-    const tight = updateBudgetMonotonic(baseBudget, improved, {});
+    const tightSummary = {
+        ground: { medianSaturation: 0.502 },
+        feetAudit: { skipped: false, parseError: false, failingGroupsByCharacter: { 'agent.test': ['wait'] } },
+    };
+    const tight = updateBudgetMonotonic(baseBudget, improved, tightSummary);
     assert.equal(tight.budget.legacyAllowlist['agent.test'].maxColours, 200);
     assert.equal(tight.budget.legacyAllowlist['agent.test'].maxTierA, undefined);
-    assert.equal(tight.tightened.length, 2);
+    assert.deepEqual(tight.budget.legacyAllowlist['agent.test'].legacyFeetAuditGroups, ['wait']);
+    assert.deepEqual(tight.budget.legacyPooledGroundSaturationBand.summer, [0.45, 0.502]);
+    assert.equal(tight.tightened.length, 4);
+
+    // Widening legacyPooledGroundSaturationBand MUST fail without --allow-loosen
+    assert.throws(
+        () => updateBudgetMonotonic(baseBudget, improved, { ground: { medianSaturation: 0.54 } }, { allowLoosen: false }),
+        /Refusing to loosen art-budget\.json/,
+    );
+    const widenedAllowed = updateBudgetMonotonic(baseBudget, improved, { ground: { medianSaturation: 0.54 } }, { allowLoosen: true });
+    assert.deepEqual(widenedAllowed.budget.legacyPooledGroundSaturationBand.summer, [0.45, 0.54]);
+
+    // Adding a new failing feet-audit group MUST fail without --allow-loosen
+    assert.throws(
+        () => updateBudgetMonotonic(baseBudget, improved, {
+            feetAudit: { skipped: false, parseError: false, failingGroupsByCharacter: { 'agent.test': ['read', 'wait', 'strike'] } },
+        }, { allowLoosen: false }),
+        /Refusing to loosen art-budget\.json/,
+    );
 
     const regressed = [{
         ...improved[0],
@@ -340,6 +432,26 @@ test('attribution.mjs and webgpu-parity.mjs bucket explained vs unclassified >1 
     assert.equal(paritySummary.classifiedNonRimOver1, 2);
     assert.equal(paritySummary.unclassifiedNonRimOver1, 1);
     assert.equal(paritySummary.strictPass, true);
+
+    // Strict attribution MUST fail loudly if attribution buffer is missing/null!
+    const targetMissing = { status: 'pass', verdict: 'pass', shareLe1: 0.99999 };
+    const missingSummary = applyStrictAttributionPolicy(targetMissing, null, { width: w, height: h, strict: true });
+    assert.equal(missingSummary.missingAttribution, true);
+    assert.equal(missingSummary.strictPass, false);
+    assert.equal(targetMissing.status, 'fail');
+    assert.equal(targetMissing.verdict, 'fail');
+
+    // Strict attribution enforces BOTH shareLe1 >= 0.9999 AND unclassifiedNonRimOver1 <= 10
+    const targetLowShare = { status: 'pass', verdict: 'pass', shareLe1: 0.9995 };
+    applyStrictAttributionPolicy(targetLowShare, { pixelD, attribution: words, format: 'r32uint', records, rimMask }, { width: w, height: h, strict: true });
+    assert.equal(targetLowShare.status, 'fail');
+
+    const manyUnclassifiedD = new Uint8Array(count).fill(4);
+    const manyUnclassifiedWords = new Uint32Array(count).fill(encodeAttributionWord({ recordIndex: 2, regionClass: REGION_CLASS.buildingWall, shaderTag: 0 }));
+    const targetTooManyUnclassified = { status: 'pass', verdict: 'pass', shareLe1: 0.99995 };
+    applyStrictAttributionPolicy(targetTooManyUnclassified, { pixelD: manyUnclassifiedD, attribution: manyUnclassifiedWords, format: 'r32uint', records }, { width: w, height: h, strict: true });
+    assert.equal(targetTooManyUnclassified.status, 'fail');
+    assert.equal(targetTooManyUnclassified.attribution.unclassifiedNonRimOver1, 16);
 });
 
 // ---------------------------------------------------------------------------
@@ -368,16 +480,26 @@ test('capture.mjs catches #416139 green first frames and enforces all capture fe
         worldStackOpacity: 1,
         firstFrameReason: null,
         revealSnapshotPending: false,
+        assetsLoading: false,
+        terrainRestaging: false,
+        activeBackend: 'webgpu',
         season: 'summer',
         terrainKey: 'v3:summer:clear',
         presentGeneration: 5,
         fallbackFrameCount: 5,
     };
-    assert.equal(evaluateCaptureFenceState(readyState, { expectedSeason: 'summer', minPresentGeneration: 4 }).ready, true);
+    assert.equal(evaluateCaptureFenceState(readyState, { expectedSeason: 'summer', expectedBackend: 'webgpu', minPresentGeneration: 4 }).ready, true);
     assert.equal(evaluateCaptureFenceState({ ...readyState, worldStackOpacity: 0 }, { minPresentGeneration: 4 }).ready, false);
     assert.equal(evaluateCaptureFenceState({ ...readyState, firstFrameReason: 'boot' }, { minPresentGeneration: 4 }).ready, false);
     assert.equal(evaluateCaptureFenceState({ ...readyState, revealSnapshotPending: true }, { minPresentGeneration: 4 }).ready, false);
+    assert.equal(evaluateCaptureFenceState({ ...readyState, assetsLoading: true }, { minPresentGeneration: 4 }).ready, false);
+    assert.equal(evaluateCaptureFenceState({ ...readyState, terrainRestaging: true }, { minPresentGeneration: 4 }).ready, false);
     assert.equal(evaluateCaptureFenceState({ ...readyState, season: 'winter' }, { expectedSeason: 'summer', minPresentGeneration: 4 }).ready, false);
+    // Strict expectedSeason: null/empty season MUST fail when expectedSeason is specified
+    assert.equal(evaluateCaptureFenceState({ ...readyState, season: null }, { expectedSeason: 'winter', minPresentGeneration: 4 }).ready, false);
+    assert.equal(evaluateCaptureFenceState({ ...readyState, season: '' }, { expectedSeason: 'winter', minPresentGeneration: 4 }).ready, false);
+    // Strict expectedBackend: silent canvas fallback MUST fail when webgpu/webgl is requested
+    assert.equal(evaluateCaptureFenceState({ ...readyState, activeBackend: 'canvas' }, { expectedBackend: 'webgpu', minPresentGeneration: 4 }).ready, false);
     assert.equal(evaluateCaptureFenceState({ ...readyState, terrainKey: '' }, { minPresentGeneration: 4 }).ready, false);
     assert.equal(evaluateCaptureFenceState({ ...readyState, presentGeneration: 4 }, { minPresentGeneration: 4 }).ready, false);
     // Fallback frame-count support before Integrator wires presentGeneration
@@ -385,6 +507,10 @@ test('capture.mjs catches #416139 green first frames and enforces all capture fe
         evaluateCaptureFenceState({ ...readyState, presentGeneration: null, fallbackFrameCount: 6 }, { minPresentGeneration: 5 }).ready,
         true,
     );
+
+    // GPU ABI record flag resolution (numeric flags + named boolean fallback)
+    assert.equal(resolveRecordFlags({ reflect: true, screenSpace: true }), 2 | 8);
+    assert.equal(resolveRecordFlags({ flags: 1, reflect: true, actionMark: true }), 1 | 2 | 512);
 });
 
 // ---------------------------------------------------------------------------
@@ -442,17 +568,91 @@ test('compare.mjs computes OKLab ΔE, SSIM, regional verdicts, and telemetry/str
     assert.equal(vFail.verdict, 'fail');
     assert.ok(vFail.failures.length >= 4);
 
-    // CI --gate on empty golden dir passes cleanly via schema self-test
+    // Real nested meta.json telemetry extraction & calibrated honest caps
+    const extractedReal = extractTelemetryBudgets({
+        telemetry: {
+            canvasBudget: {
+                resources: {
+                    totalBytes: 710_000_000, // includes ~639 MB pre-existing cpuDecodedEstimateBytes
+                    ownershipLeaves: {
+                        cpuDecodedEstimateBytes: 639_000_000,
+                        cpuDerivedEstimateBytes: 24_000_000,
+                        gpuOwnedBytes: 42_000_000,
+                    },
+                },
+                cacheStats: {
+                    agentSprites: { gpuEquippedMaxComposeMs: 4.5 },
+                },
+            },
+            pathDiag: { flow: { avgLookupMs: 0.12 } }, // within 0.15 cold boot cap
+        },
+    });
+    assert.equal(extractedReal.derivedCpuBytes, 24_000_000);
+    assert.equal(extractedReal.derivedCpuCap, DEFAULT_TELEMETRY_CAPS.derivedCpuCap);
+    assert.equal(extractedReal.gpuOwnedBytes, 42_000_000);
+    assert.equal(extractedReal.gpuOwnedCap, DEFAULT_TELEMETRY_CAPS.gpuOwnedCap);
+    assert.equal(extractedReal.unifiedBytes, 710_000_000);
+    assert.equal(extractedReal.gpuEquippedMaxComposeMs, 4.5);
+    assert.equal(extractedReal.pathLookupAvgMs, 0.12);
+    assert.equal(extractedReal.pathLookupCapMs, 0.15);
+
+    const vNestedPass = evaluateVerdict({
+        caseId: 'nested-telemetry-pass',
+        perceptualByRegion: cmpPass.perceptualByRegion,
+        parityAttribution: cmpPass.parityAttribution,
+        fence: { greenFillShare: 0.04 },
+        requireFenceMetadata: true,
+        telemetryBudgets: extractedReal,
+    });
+    assert.equal(vNestedPass.verdict, 'pass', `expected pass with realistic decoded bitmaps, got ${vNestedPass.failures.join('; ')}`);
+
+    // Also verify direct ownershipLeaves + gpuDiag fallback + strict failures
+    const extractedFallback = extractTelemetryBudgets({
+        telemetry: {
+            canvasBudget: { ownershipLeaves: { cpuDerivedEstimateBytes: 120_000_000 }, totalBytes: 700_000_000 },
+            gpuDiag: { resources: { totalBytes: 180_000_000 } },
+            cacheStats: { agentSprites: { gpuEquippedMaxComposeMs: 22 } },
+            pathDiag: { flow: { avgLookupMs: 0.25 } },
+        },
+    });
+    const vNestedFail = evaluateVerdict({
+        caseId: 'nested-telemetry-fail',
+        perceptualByRegion: cmpPass.perceptualByRegion,
+        parityAttribution: cmpPass.parityAttribution,
+        fence: { greenFillShare: 0.60 },
+        requireFenceMetadata: true,
+        telemetryBudgets: extractedFallback,
+    });
+    assert.equal(vNestedFail.verdict, 'fail');
+    assert.ok(vNestedFail.failures.some((f) => f.includes('derivedCpuBytes')));
+    assert.ok(vNestedFail.failures.some((f) => f.includes('gpuOwnedBytes')));
+    assert.ok(vNestedFail.failures.some((f) => f.includes('gpuEquippedMaxComposeMs')));
+    assert.ok(vNestedFail.failures.some((f) => f.includes('pathLookupAvgMs')));
+    assert.ok(vNestedFail.failures.some((f) => f.includes('greenFillShare')));
+
+    // CI --gate on empty golden dir passes cleanly via schema self-test,
+    // but FAILS loudly under --require-goldens!
     const tmpDir = makeTempDir('cv-w0d-golden-');
     try {
         const emptyGate = runVisualGate({ goldenDir: tmpDir });
         assert.equal(emptyGate.pass, true);
         assert.equal(emptyGate.mode, 'schema-self-test');
 
-        // CLI invocation also exits 0 cleanly
+        const strictEmpty = runVisualGate({ goldenDir: tmpDir, requireGoldens: true });
+        assert.equal(strictEmpty.pass, false);
+        assert.equal(strictEmpty.mode, 'missing-goldens');
+
+        const cliStrict = spawnSync(
+            process.execPath,
+            [path.join(ROOT, 'scripts', 'visual', 'compare.mjs'), '--gate', '--require-goldens', `--golden-dir=${tmpDir}`],
+            { cwd: ROOT, encoding: 'utf8' },
+        );
+        assert.equal(cliStrict.status, 1, '--require-goldens must exit 1 on 0 goldens');
+
+        // CLI invocation with --allow-empty-goldens exits 0 cleanly
         const cli = spawnSync(
             process.execPath,
-            [path.join(ROOT, 'scripts', 'visual', 'compare.mjs'), '--gate', `--golden-dir=${tmpDir}`],
+            [path.join(ROOT, 'scripts', 'visual', 'compare.mjs'), '--gate', '--allow-empty-goldens', `--golden-dir=${tmpDir}`],
             { cwd: ROOT, encoding: 'utf8' },
         );
         assert.equal(cli.status, 0, cli.stderr);
@@ -467,12 +667,45 @@ test('compare.mjs computes OKLab ΔE, SSIM, regional verdicts, and telemetry/str
             backend: 'webgpu',
             adapter: { vendor: 'nvidia', architecture: 'blackwell', fallback: false },
             determinism: { selfStableBytes: true, ladderLevel: 0, nondeterministicMasks: [] },
+            fence: { greenFillShare: 0.02 },
             structural: { labelCollisionPairs: 0, bodyOverlapPairs: 0 },
         }));
-        const goldenGate = runVisualGate({ goldenDir: tmpDir });
+        const goldenGate = runVisualGate({ goldenDir: tmpDir, requireGoldens: true });
         assert.equal(goldenGate.pass, true);
         assert.equal(goldenGate.mode, 'golden-verify');
         assert.equal(goldenGate.goldenCases, 1);
+
+        // Missing candidate directory or missing candidate composite.png / meta.json MUST fail loudly!
+        const missingCandDirGate = runVisualGate({
+            goldenDir: tmpDir,
+            candidateDir: path.join(tmpDir, 'does-not-exist'),
+        });
+        assert.equal(missingCandDirGate.pass, false);
+        assert.equal(missingCandDirGate.mode, 'missing-candidate-dir');
+
+        const partialCandRoot = path.join(tmpDir, 'cand-empty-case');
+        mkdirSync(path.join(partialCandRoot, 'readme-noon'), { recursive: true });
+        const missingFilesGate = runVisualGate({
+            goldenDir: tmpDir,
+            candidateDir: partialCandRoot,
+        });
+        assert.equal(missingFilesGate.pass, false);
+        assert.ok(missingFilesGate.verdicts[0].failures.some((f) => f.includes('composite.png missing')));
+        assert.ok(missingFilesGate.verdicts[0].failures.some((f) => f.includes('meta.json missing')));
+
+        // Missing determinism/adapter/fence metadata in candidate meta.json MUST fail loudly!
+        const badMetaCandRoot = path.join(tmpDir, 'cand-bad-meta');
+        mkdirSync(path.join(badMetaCandRoot, 'readme-noon'), { recursive: true });
+        writeFileSync(path.join(badMetaCandRoot, 'readme-noon', 'composite.png'), PNG.sync.write(base));
+        writeFileSync(path.join(badMetaCandRoot, 'readme-noon', 'meta.json'), JSON.stringify({ caseId: 'readme-noon' }));
+        const badMetaGate = runVisualGate({
+            goldenDir: tmpDir,
+            candidateDir: badMetaCandRoot,
+        });
+        assert.equal(badMetaGate.pass, false);
+        assert.ok(badMetaGate.verdicts[0].failures.some((f) => f.includes('selfStableBytes')));
+        assert.ok(badMetaGate.verdicts[0].failures.some((f) => f.includes('adapter.fallback')));
+        assert.ok(badMetaGate.verdicts[0].failures.some((f) => f.includes('greenFillShare')));
     } finally {
         rmSync(tmpDir, { recursive: true, force: true });
     }

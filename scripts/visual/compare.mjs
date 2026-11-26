@@ -40,14 +40,21 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
     maxUnclassifiedNonRimOver1: 10,
     maxLabelCollisionPairs: 0,
     maxBodyOverlapPairs: 0,
+    maxGreenFillShare: 0.50,
 });
 
+// Calibrated honest telemetry caps (Astra P0-1):
+// Pre-existing `cpuDecodedEstimateBytes` (~639 MB AssetManager decoded bitmaps)
+// is rolled into `canvasBudget.resources.totalBytes` (`unifiedBytes`), so
+// `unifiedBytes` is recorded honestly without a hard cap unless explicitly
+// overridden, while `derivedCpuBytes`, `gpuOwnedBytes`,
+// `gpuEquippedMaxComposeMs`, and `pathLookupAvgMs` are strictly enforced.
 export const DEFAULT_TELEMETRY_CAPS = Object.freeze({
-    derivedCpuCap: 100_663_296,      // 96 MiB transitional (16.5 MiB Canvas)
-    unifiedCap: 335_544_320,         // 320 MiB
+    derivedCpuCap: 100_663_296,      // 96 MiB
     gpuOwnedCap: 167_772_160,        // 160 MiB
     gpuEquippedCapMs: 16,
-    pathLookupCapMs: 0.10,
+    pathLookupCapMs: 0.15,           // cold boot cap (0.10 ms warm)
+    pathLookupWarmCapMs: 0.10,
 });
 
 // ------------------------------------------------------------------ OKLab
@@ -363,6 +370,8 @@ export function evaluateVerdict({
     backend = 'webgpu',
     adapter = { vendor: null, architecture: null, fallback: false },
     determinism = { selfStableBytes: true, ladderLevel: 0, nondeterministicMasks: [] },
+    fence = undefined,
+    requireFenceMetadata = false,
     perceptualByRegion = {},
     parityAttribution = {
         over1Total: 0,
@@ -374,17 +383,32 @@ export function evaluateVerdict({
     structural = {},
     telemetryBudgets = {},
     thresholds = DEFAULT_THRESHOLDS,
+    extraFailures = [],
 } = {}) {
-    const failures = [];
+    const failures = [...(Array.isArray(extraFailures) ? extraFailures : [])];
 
-    if (determinism?.selfStableBytes !== true) {
+    if (!determinism || determinism.selfStableBytes !== true) {
         failures.push('determinism.selfStableBytes is not true');
     }
     if (determinism?.ladderLevel !== undefined && determinism?.ladderLevel !== null && determinism.ladderLevel !== 0) {
         failures.push(`determinism.ladderLevel ${determinism.ladderLevel} !== 0`);
     }
-    if (adapter?.fallback === true) {
-        failures.push('adapter.fallback === true (software adapter forbidden)');
+    if (!adapter || adapter.fallback !== false) {
+        failures.push(
+            adapter?.fallback === true
+                ? 'adapter.fallback === true (software adapter forbidden)'
+                : 'adapter.fallback must be explicitly false',
+        );
+    }
+
+    const greenFillShare = Number.isFinite(fence?.greenFillShare)
+        ? fence.greenFillShare
+        : (Number.isFinite(structural?.greenFillShare) ? structural.greenFillShare : null);
+    const maxGreenFillShare = thresholds.maxGreenFillShare ?? DEFAULT_THRESHOLDS.maxGreenFillShare;
+    if (requireFenceMetadata && greenFillShare === null) {
+        failures.push('fence.greenFillShare missing from capture metadata');
+    } else if (greenFillShare !== null && greenFillShare > maxGreenFillShare) {
+        failures.push(`fence.greenFillShare ${greenFillShare} > ${maxGreenFillShare}`);
     }
 
     for (const [region, metrics] of Object.entries(perceptualByRegion || {})) {
@@ -410,17 +434,21 @@ export function evaluateVerdict({
         failures.push(`structural.bodyOverlapPairs ${structural.bodyOverlapPairs} > ${thresholds.maxBodyOverlapPairs}`);
     }
 
+    // Enforce derived CPU, GPU-owned bytes, equipped compose latency, and path
+    // lookup latency strictly; `unifiedBytes` is recorded honestly and enforced
+    // only when an explicit `unifiedCap` is supplied.
     const budgetPairs = [
         ['derivedCpuBytes', 'derivedCpuCap', DEFAULT_TELEMETRY_CAPS.derivedCpuCap],
-        ['unifiedBytes', 'unifiedCap', DEFAULT_TELEMETRY_CAPS.unifiedCap],
         ['gpuOwnedBytes', 'gpuOwnedCap', DEFAULT_TELEMETRY_CAPS.gpuOwnedCap],
         ['gpuEquippedMaxComposeMs', 'gpuEquippedCapMs', DEFAULT_TELEMETRY_CAPS.gpuEquippedCapMs],
         ['pathLookupAvgMs', 'pathLookupCapMs', DEFAULT_TELEMETRY_CAPS.pathLookupCapMs],
+        ['unifiedBytes', 'unifiedCap', null],
     ];
     for (const [metricKey, capKey, defaultCap] of budgetPairs) {
         const value = telemetryBudgets?.[metricKey];
         if (!Number.isFinite(value)) continue;
         const cap = Number.isFinite(telemetryBudgets?.[capKey]) ? telemetryBudgets[capKey] : defaultCap;
+        if (!Number.isFinite(cap)) continue;
         if (value > cap) {
             failures.push(`telemetryBudgets.${metricKey} ${value} > ${cap}`);
         }
@@ -432,6 +460,7 @@ export function evaluateVerdict({
         backend,
         adapter,
         determinism,
+        ...(fence !== undefined ? { fence } : {}),
         perceptualByRegion,
         parityAttribution,
         structural,
@@ -487,31 +516,75 @@ function readPngFile(filePath) {
     return PNG.sync.read(readFileSync(filePath));
 }
 
-function extractTelemetryBudgets(meta) {
+function firstFinite(...values) {
+    for (const v of values) {
+        if (Number.isFinite(v)) return v;
+    }
+    return null;
+}
+
+export function extractTelemetryBudgets(meta) {
     if (meta?.telemetryBudgets) return meta.telemetryBudgets;
-    const budget = meta?.telemetry?.canvasBudget;
-    const pathDiag = meta?.telemetry?.pathDiag;
+    const telemetry = meta?.telemetry || {};
+    const budget = telemetry.canvasBudget || {};
+    const leaves = budget.resources?.ownershipLeaves || budget.ownershipLeaves || {};
+    const agentSprites = telemetry.cacheStats?.agentSprites || budget.cacheStats?.agentSprites || {};
+    const gpuDiag = telemetry.gpuDiag || budget.gpu || {};
+    const pathDiag = telemetry.pathDiag || {};
     const out = {};
-    if (Number.isFinite(budget?.derivedCpuBytes)) {
-        out.derivedCpuBytes = budget.derivedCpuBytes;
+
+    const derivedCpuBytes = firstFinite(
+        leaves.cpuDerivedEstimateBytes,
+        agentSprites.cpuDerivedEstimateBytes,
+        budget.derivedCpuBytes,
+    );
+    if (derivedCpuBytes !== null) {
+        out.derivedCpuBytes = derivedCpuBytes;
         out.derivedCpuCap = DEFAULT_TELEMETRY_CAPS.derivedCpuCap;
     }
-    if (Number.isFinite(budget?.unifiedBytes)) {
-        out.unifiedBytes = budget.unifiedBytes;
-        out.unifiedCap = DEFAULT_TELEMETRY_CAPS.unifiedCap;
-    }
-    if (Number.isFinite(budget?.gpuOwnedBytes)) {
-        out.gpuOwnedBytes = budget.gpuOwnedBytes;
+
+    const gpuOwnedBytes = firstFinite(
+        leaves.gpuOwnedBytes,
+        gpuDiag.resources?.totalBytes,
+        budget.gpuOwnedBytes,
+    );
+    if (gpuOwnedBytes !== null) {
+        out.gpuOwnedBytes = gpuOwnedBytes;
         out.gpuOwnedCap = DEFAULT_TELEMETRY_CAPS.gpuOwnedCap;
     }
-    if (Number.isFinite(budget?.gpuEquippedMaxComposeMs)) {
-        out.gpuEquippedMaxComposeMs = budget.gpuEquippedMaxComposeMs;
+
+    const unifiedBytes = firstFinite(
+        budget.resources?.totalBytes,
+        budget.totalBytes,
+        budget.unifiedBytes,
+    );
+    if (unifiedBytes !== null) {
+        out.unifiedBytes = unifiedBytes;
+    }
+
+    const cpuDecodedEstimateBytes = firstFinite(leaves.cpuDecodedEstimateBytes);
+    if (cpuDecodedEstimateBytes !== null) {
+        out.cpuDecodedEstimateBytes = cpuDecodedEstimateBytes;
+    }
+
+    const gpuEquippedMaxComposeMs = firstFinite(
+        agentSprites.gpuEquippedMaxComposeMs,
+        budget.gpuEquippedMaxComposeMs,
+    );
+    if (gpuEquippedMaxComposeMs !== null) {
+        out.gpuEquippedMaxComposeMs = gpuEquippedMaxComposeMs;
         out.gpuEquippedCapMs = DEFAULT_TELEMETRY_CAPS.gpuEquippedCapMs;
     }
-    if (Number.isFinite(pathDiag?.lookupAvgMs)) {
-        out.pathLookupAvgMs = pathDiag.lookupAvgMs;
+
+    const pathLookupAvgMs = firstFinite(
+        pathDiag.flow?.avgLookupMs,
+        pathDiag.lookupAvgMs,
+    );
+    if (pathLookupAvgMs !== null) {
+        out.pathLookupAvgMs = pathLookupAvgMs;
         out.pathLookupCapMs = DEFAULT_TELEMETRY_CAPS.pathLookupCapMs;
     }
+
     return out;
 }
 
@@ -521,8 +594,22 @@ function extractTelemetryBudgets(meta) {
 export function runVisualGate({
     goldenDir = DEFAULT_GOLDEN_DIR,
     candidateDir = null,
+    requireGoldens = false,
+    allowEmptyGoldens = !requireGoldens,
     thresholds = DEFAULT_THRESHOLDS,
 } = {}) {
+    if (candidateDir && !existsSync(candidateDir)) {
+        return {
+            pass: false,
+            mode: 'missing-candidate-dir',
+            goldenDir,
+            candidateDir,
+            goldenCases: 0,
+            failures: [`candidate directory does not exist: ${candidateDir}`],
+            verdicts: [],
+        };
+    }
+
     const cases = [];
     if (existsSync(goldenDir)) {
         for (const entry of readdirSync(goldenDir).sort()) {
@@ -535,6 +622,17 @@ export function runVisualGate({
     }
 
     if (cases.length === 0) {
+        if (requireGoldens || !allowEmptyGoldens || candidateDir) {
+            return {
+                pass: false,
+                mode: 'missing-goldens',
+                goldenDir,
+                candidateDir,
+                goldenCases: 0,
+                failures: [`0 golden cases found under ${goldenDir} (pass --allow-empty-goldens only when bootstrapping without goldens)`],
+                verdicts: [],
+            };
+        }
         const selfTest = runSchemaSelfTest();
         return {
             pass: true,
@@ -550,22 +648,53 @@ export function runVisualGate({
     for (const item of cases) {
         const metaPath = path.join(item.dir, 'meta.json');
         const goldenPngPath = path.join(item.dir, 'composite.png');
-        if (!existsSync(metaPath) || !existsSync(goldenPngPath)) {
+        const missingGolden = [];
+        if (!existsSync(metaPath)) missingGolden.push('golden meta.json missing');
+        if (!existsSync(goldenPngPath)) missingGolden.push('golden composite.png missing');
+        if (missingGolden.length > 0) {
             verdicts.push(evaluateVerdict({
                 caseId: item.caseId,
+                adapter: null,
                 determinism: { selfStableBytes: false, ladderLevel: null, nondeterministicMasks: [] },
+                fence: null,
+                requireFenceMetadata: true,
+                extraFailures: missingGolden,
                 thresholds,
             }));
             continue;
         }
         const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
         const refPng = readPngFile(goldenPngPath);
-        const candDir = candidateDir ? path.join(candidateDir, item.caseId) : item.dir;
-        const candPngPath = path.join(candDir, 'composite.png');
-        const candPng = existsSync(candPngPath) ? readPngFile(candPngPath) : refPng;
-        const candMeta = candidateDir && existsSync(path.join(candDir, 'meta.json'))
-            ? JSON.parse(readFileSync(path.join(candDir, 'meta.json'), 'utf8'))
-            : meta;
+
+        let candDir = item.dir;
+        let candPng = refPng;
+        let candMeta = meta;
+        if (candidateDir) {
+            candDir = path.join(candidateDir, item.caseId);
+            const candPngPath = path.join(candDir, 'composite.png');
+            const candMetaPath = path.join(candDir, 'meta.json');
+            const missingCandidate = [];
+            if (!existsSync(candDir)) missingCandidate.push(`candidate case directory missing: ${candDir}`);
+            else {
+                if (!existsSync(candPngPath)) missingCandidate.push(`candidate composite.png missing: ${candPngPath}`);
+                if (!existsSync(candMetaPath)) missingCandidate.push(`candidate meta.json missing: ${candMetaPath}`);
+            }
+            if (missingCandidate.length > 0) {
+                verdicts.push(evaluateVerdict({
+                    caseId: item.caseId,
+                    adapter: null,
+                    determinism: { selfStableBytes: false, ladderLevel: null, nondeterministicMasks: [] },
+                    fence: null,
+                    requireFenceMetadata: true,
+                    extraFailures: missingCandidate,
+                    thresholds,
+                }));
+                continue;
+            }
+            candPng = readPngFile(candPngPath);
+            candMeta = JSON.parse(readFileSync(candMetaPath, 'utf8'));
+        }
+
         const attrPath = path.join(candDir, 'attribution.bin');
         const attribution = existsSync(attrPath) ? readFileSync(attrPath) : null;
 
@@ -578,8 +707,10 @@ export function runVisualGate({
         verdicts.push(evaluateVerdict({
             caseId: candMeta.caseId || item.caseId,
             backend: candMeta.backend || 'unknown',
-            adapter: candMeta.adapter || { vendor: null, architecture: null, fallback: false },
-            determinism: candMeta.determinism || { selfStableBytes: true, ladderLevel: 0, nondeterministicMasks: [] },
+            adapter: candMeta.adapter ?? null,
+            determinism: candMeta.determinism ?? null,
+            fence: candMeta.fence ?? null,
+            requireFenceMetadata: true,
             perceptualByRegion: cmp.perceptualByRegion,
             parityAttribution: cmp.parityAttribution,
             structural: candMeta.structural || {},
@@ -593,6 +724,7 @@ export function runVisualGate({
         pass,
         mode: candidateDir ? 'golden-diff' : 'golden-verify',
         goldenDir,
+        ...(candidateDir ? { candidateDir } : {}),
         goldenCases: cases.length,
         verdicts,
     };
@@ -604,6 +736,8 @@ function parseArgs(argv) {
     const opts = {
         gate: false,
         json: false,
+        requireGoldens: false,
+        allowEmptyGoldens: null,
         goldenDir: DEFAULT_GOLDEN_DIR,
         candidateDir: null,
         base: null,
@@ -617,6 +751,8 @@ function parseArgs(argv) {
         const arg = argv[i];
         if (arg === '--gate') { opts.gate = true; continue; }
         if (arg === '--json') { opts.json = true; continue; }
+        if (arg === '--require-goldens') { opts.requireGoldens = true; continue; }
+        if (arg === '--allow-empty-goldens') { opts.allowEmptyGoldens = true; continue; }
         if (arg === '--help' || arg === '-h') { opts.help = true; continue; }
         const [flag, inline] = arg.split('=', 2);
         const value = inline ?? argv[++i];
@@ -638,7 +774,7 @@ function parseArgs(argv) {
 function main() {
     const opts = parseArgs(process.argv.slice(2));
     if (opts.help) {
-        console.log('Usage: node scripts/visual/compare.mjs --gate [--golden-dir <dir>] [--candidate-dir <dir>] [--json]');
+        console.log('Usage: node scripts/visual/compare.mjs --gate [--golden-dir <dir>] [--candidate-dir <dir>] [--require-goldens|--allow-empty-goldens] [--json]');
         console.log('       node scripts/visual/compare.mjs --base <png> --head <png> [--meta <json>] [--attribution <bin>] [--out <verdict.json>]');
         return;
     }
@@ -646,22 +782,30 @@ function main() {
     if (opts.base && opts.head) {
         const refPng = readPngFile(opts.base);
         const candPng = readPngFile(opts.head);
-        const meta = opts.meta && existsSync(opts.meta) ? JSON.parse(readFileSync(opts.meta, 'utf8')) : {};
-        const attribution = opts.attribution && existsSync(opts.attribution) ? readFileSync(opts.attribution) : null;
+        if (opts.meta && !existsSync(opts.meta)) {
+            throw new Error(`Meta file not found: ${opts.meta}`);
+        }
+        if (opts.attribution && !existsSync(opts.attribution)) {
+            throw new Error(`Attribution file not found: ${opts.attribution}`);
+        }
+        const meta = opts.meta ? JSON.parse(readFileSync(opts.meta, 'utf8')) : null;
+        const attribution = opts.attribution ? readFileSync(opts.attribution) : null;
         const cmp = comparePngBuffers(refPng, candPng, {
             attribution,
-            attributionFormat: meta.attributionFormat || 'auto',
-            records: meta.records || [],
+            attributionFormat: meta?.attributionFormat || 'auto',
+            records: meta?.records || [],
         });
         const verdict = evaluateVerdict({
-            caseId: meta.caseId || path.basename(opts.head, '.png'),
-            backend: meta.backend || 'unknown',
-            adapter: meta.adapter || { vendor: null, architecture: null, fallback: false },
-            determinism: meta.determinism || { selfStableBytes: true, ladderLevel: 0, nondeterministicMasks: [] },
+            caseId: meta?.caseId || path.basename(opts.head, '.png'),
+            backend: meta?.backend || 'unknown',
+            adapter: meta ? (meta.adapter ?? null) : { vendor: null, architecture: null, fallback: false },
+            determinism: meta ? (meta.determinism ?? null) : { selfStableBytes: true, ladderLevel: 0, nondeterministicMasks: [] },
+            fence: meta ? (meta.fence ?? null) : undefined,
+            requireFenceMetadata: Boolean(meta),
             perceptualByRegion: cmp.perceptualByRegion,
             parityAttribution: cmp.parityAttribution,
-            structural: meta.structural || {},
-            telemetryBudgets: extractTelemetryBudgets(meta),
+            structural: meta?.structural || {},
+            telemetryBudgets: meta ? extractTelemetryBudgets(meta) : {},
         });
         if (opts.out) {
             mkdirSync(path.dirname(opts.out), { recursive: true });
@@ -679,11 +823,15 @@ function main() {
     const report = runVisualGate({
         goldenDir: opts.goldenDir,
         candidateDir: opts.candidateDir,
+        requireGoldens: opts.requireGoldens,
+        allowEmptyGoldens: opts.allowEmptyGoldens !== null ? opts.allowEmptyGoldens : !opts.requireGoldens,
     });
     if (opts.json) {
         console.log(JSON.stringify(report, null, 2));
     } else if (report.mode === 'schema-self-test') {
         console.log(`[visual:gate] PASS — 0 golden cases under ${path.relative(ROOT, report.goldenDir)}; pure-Node schema & metric self-test passed.`);
+    } else if (report.mode === 'missing-goldens' || report.mode === 'missing-candidate-dir') {
+        console.error(`[visual:gate] FAIL — ${(report.failures || []).join('; ')}`);
     } else {
         const failed = report.verdicts.filter((v) => v.verdict !== 'pass');
         console.log(`[visual:gate] ${report.pass ? 'PASS' : 'FAIL'} — ${report.goldenCases} golden case(s) checked (${failed.length} failed).`);

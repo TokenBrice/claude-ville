@@ -53,6 +53,9 @@
     "agent.claude.fable": {
       "maxColours": 871,
       "maxTierA": 0.2376,
+      "legacyFeetAuditGroups": [
+        "read"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.claude.fable.b": {
@@ -62,6 +65,9 @@
     },
     "agent.claude.haiku": {
       "maxColours": 248,
+      "legacyFeetAuditGroups": [
+        "wait"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.claude.mythos": {
@@ -71,29 +77,49 @@
     "agent.claude.opus": {
       "maxColours": 632,
       "maxTierA": 0.0911,
+      "legacyFeetAuditGroups": [
+        "wait"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.claude.opus.b": {
       "maxColours": 219,
       "maxTierA": 0.0799,
+      "legacyFeetAuditGroups": [
+        "celebrate",
+        "think",
+        "wait"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.claude.sonnet": {
       "maxColours": 375,
       "maxTierA": 0.2441,
+      "legacyFeetAuditGroups": [
+        "wait"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.codex.base": {
       "maxColours": 769,
+      "legacyFeetAuditGroups": [
+        "read"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.codex.gpt53spark": {
       "maxColours": 1028,
       "maxTierA": 0.0833,
+      "legacyFeetAuditGroups": [
+        "read"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.codex.gpt54": {
       "maxColours": 733,
+      "legacyFeetAuditGroups": [
+        "read"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.codex.gpt55": {
@@ -107,6 +133,9 @@
     "agent.codex.gpt55.xhigh": {
       "maxColours": 1024,
       "maxTierA": 0.0798,
+      "legacyFeetAuditGroups": [
+        "read"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.codex.gpt56luna": {
@@ -122,6 +151,9 @@
     "agent.codex.gpt56sol": {
       "maxColours": 325,
       "maxTierA": 0.1024,
+      "legacyFeetAuditGroups": [
+        "read"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.codex.gpt56sol.b": {
@@ -143,6 +175,9 @@
     },
     "agent.deepseek.flash": {
       "maxColours": 460,
+      "legacyFeetAuditGroups": [
+        "read"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.deepseek.flash.high": {
@@ -155,10 +190,16 @@
     },
     "agent.deepseek.pro": {
       "maxColours": 531,
+      "legacyFeetAuditGroups": [
+        "read"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.deepseek.reasoner": {
       "maxColours": 635,
+      "legacyFeetAuditGroups": [
+        "read"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.gemini.argon": {
@@ -204,6 +245,9 @@
     "agent.grok.composer": {
       "maxColours": 356,
       "maxTierA": 0.0566,
+      "legacyFeetAuditGroups": [
+        "read"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.kimi.base": {
@@ -249,6 +293,10 @@
     "bridge.landmark.civic.ns": {
       "maxColours": 96,
       "maxTierA": 0.0984,
+      "reason": "pre-Wave-0 bridges baseline; ratchet down on touch"
+    },
+    "bridge.landmark.rustic.ns": {
+      "minGrainRatio": 0.6978,
       "reason": "pre-Wave-0 bridges baseline; ratchet down on touch"
     },
     "building.command": {
@@ -360,12 +408,29 @@
       "maxSemiAlpha": 0.7669,
       "reason": "pre-Wave-0 statusOverlays baseline; ratchet down on touch"
     },
+    "prop.anchorChain": {
+      "maxGrainRatio": 1.3607,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
     "prop.beaconRock": {
-      "minGrainRatio": 0.5751,
+      "minGrainRatio": 0.2617,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.bellowsBench": {
+      "maxGrainRatio": 1.3419,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.bollardPair": {
+      "minGrainRatio": 0.3359,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.bridgeBannerRune": {
       "maxTierA": 0.2368,
+      "minGrainRatio": 0.4341,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.crabPots": {
+      "maxGrainRatio": 2.5572,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.driftwood.log": {
@@ -375,19 +440,20 @@
     "prop.duck": {
       "maxColours": 67,
       "maxTierA": 0.1,
+      "maxGrainRatio": 1.3152,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.farHamlet": {
       "maxColours": 49,
-      "minGrainRatio": 0.5833,
+      "minGrainRatio": 0.0723,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.farShore.a": {
-      "minGrainRatio": 0.3564,
+      "minGrainRatio": 0,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.farShore.b": {
-      "minGrainRatio": 0.0038,
+      "minGrainRatio": 0,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.farm.beehives": {
@@ -400,6 +466,7 @@
     },
     "prop.farm.cropRows.short": {
       "maxTierA": 0.1454,
+      "minGrainRatio": 0.5943,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.farm.hayWagon": {
@@ -410,6 +477,14 @@
       "maxTierA": 0.082,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
+    "prop.farm.trough": {
+      "minGrainRatio": 0.6744,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.fauna.cat": {
+      "minGrainRatio": 0.5767,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
     "prop.fauna.chicken": {
       "maxTierA": 0.4299,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
@@ -418,13 +493,29 @@
       "maxTierA": 0.3887,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
+    "prop.fauna.deer": {
+      "minGrainRatio": 0.4139,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
     "prop.fauna.dog": {
       "maxTierA": 0.6169,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.fauna.sheep": {
       "maxTierA": 0.7712,
-      "minGrainRatio": 0.4799,
+      "minGrainRatio": 0.3971,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.fence.gate": {
+      "minGrainRatio": 0.269,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.fence.neSw": {
+      "minGrainRatio": 0.3299,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.fence.nwSe": {
+      "minGrainRatio": 0.3299,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.festival.produceAwning": {
@@ -434,10 +525,12 @@
     "prop.festival.pumpkins": {
       "maxColours": 56,
       "maxTierA": 0.5877,
+      "maxGrainRatio": 1.6683,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.festival.stook": {
       "maxTierA": 0.31,
+      "maxGrainRatio": 1.9929,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.fishRack": {
@@ -451,51 +544,89 @@
     },
     "prop.flowerCart": {
       "maxTierA": 0.3244,
+      "maxGrainRatio": 1.6486,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.grindstone": {
       "maxTierA": 0.0512,
+      "minGrainRatio": 0.6003,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.gullFlight": {
       "maxTierA": 0.2303,
+      "maxGrainRatio": 1.6726,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.gullFlight.bank": {
       "maxTierA": 0.1921,
+      "maxGrainRatio": 1.5046,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.gullFlight.down": {
       "maxTierA": 0.2174,
+      "maxGrainRatio": 1.6992,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.gullFlight.level": {
       "maxTierA": 0.2303,
+      "maxGrainRatio": 1.6726,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.gullFlight.up": {
       "maxTierA": 0.1949,
+      "maxGrainRatio": 1.5329,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.gullPerch": {
       "maxTierA": 0.3438,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
+    "prop.handcart": {
+      "maxGrainRatio": 1.3893,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
     "prop.harborBeaconBuoy": {
       "maxTierA": 0.2462,
+      "maxGrainRatio": 1.5559,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.harborShip.cutter": {
+      "minGrainRatio": 0.6627,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.harborShip.skiff": {
+      "minGrainRatio": 0.6939,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.harborShip.sloop": {
+      "minGrainRatio": 0.3893,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.harborShip.stack10": {
+      "minGrainRatio": 0.6439,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.harborShip.stack30": {
+      "minGrainRatio": 0.6843,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.heron": {
+      "minGrainRatio": 0.6657,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.hourglassBelfryGlass": {
       "maxTierA": 0.0651,
-      "minGrainRatio": 0.499,
+      "minGrainRatio": 0.0904,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.interior.anvilBench": {
       "maxColours": 57,
+      "minGrainRatio": 0.6809,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.interior.archiveShelf": {
       "maxColours": 57,
+      "minGrainRatio": 0.6715,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.interior.cargoBench": {
@@ -510,22 +641,40 @@
       "maxTierA": 0.0875,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
+    "prop.interior.readingDesk": {
+      "minGrainRatio": 0.5823,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
     "prop.lakeShrine": {
       "maxColours": 102,
       "maxTierA": 0.0605,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
+    "prop.laundryLine": {
+      "minGrainRatio": 0.5049,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
     "prop.mangroveRoot.arch": {
       "maxColours": 83,
       "maxTierA": 0.1858,
+      "maxGrainRatio": 1.5687,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.mangroveRoot.twisted": {
       "maxColours": 55,
+      "maxGrainRatio": 1.3058,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.marketStall.bread": {
       "maxTierA": 0.1735,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.marketStall.ochre": {
+      "minGrainRatio": 0.6835,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.netRack": {
+      "minGrainRatio": 0.3034,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.noticePillar": {
@@ -537,8 +686,20 @@
       "maxTierA": 0.2344,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
+    "prop.reefWreck": {
+      "minGrainRatio": 0.3532,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.repoStone.cairn": {
+      "minGrainRatio": 0.6343,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
     "prop.repoStone.obelisk": {
-      "minGrainRatio": 0.5066,
+      "minGrainRatio": 0.0492,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.repoStone.stone": {
+      "minGrainRatio": 0.2747,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.runeBrazier": {
@@ -564,23 +725,25 @@
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.seaStack.a": {
-      "minGrainRatio": 0.5429,
+      "minGrainRatio": 0.1675,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.seaStack.b": {
-      "minGrainRatio": 0.4012,
+      "minGrainRatio": 0.0684,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.seaStack.c": {
-      "minGrainRatio": 0.4692,
+      "minGrainRatio": 0.0529,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.signpost": {
       "maxTierA": 0.0728,
+      "minGrainRatio": 0.6054,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.songbird": {
       "maxTierA": 0.2659,
+      "minGrainRatio": 0.5739,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.songbird.down": {
@@ -589,14 +752,31 @@
     },
     "prop.songbird.up": {
       "maxTierA": 0.7308,
+      "maxGrainRatio": 1.4924,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.toolRack": {
       "maxColours": 51,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
+    "prop.torchSconce": {
+      "minGrainRatio": 0.5512,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.villageGate": {
+      "minGrainRatio": 0.4425,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
     "prop.villageGateDoors": {
-      "minGrainRatio": 0.6225,
+      "minGrainRatio": 0.0907,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.villageWallSeaTower": {
+      "minGrainRatio": 0.3633,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
+    "prop.wallIvyCurtain": {
+      "minGrainRatio": 0.3193,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
     "prop.watermill": {
@@ -608,6 +788,10 @@
       "maxTierA": 0.0577,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
+    "prop.wellTrough": {
+      "minGrainRatio": 0.6915,
+      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
+    },
     "prop.windmill": {
       "maxColours": 62,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
@@ -616,7 +800,7 @@
       "maxTierA": 0.1839,
       "maxOffRamp": 0.8201,
       "minEdgeContinuity": 0.6647,
-      "minGrainRatio": 0.5936,
+      "minGrainRatio": 0.0549,
       "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
     },
     "terrain.cobble-alt": {
@@ -640,6 +824,7 @@
       "maxTierA": 0.0958,
       "maxOffRamp": 0.9157,
       "minEdgeContinuity": 0.4633,
+      "minGrainRatio": 0.0672,
       "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
     },
     "terrain.grass-cobble": {
@@ -647,34 +832,39 @@
       "maxTierA": 0.118,
       "maxOffRamp": 0.8041,
       "minEdgeContinuity": 0.3505,
+      "minGrainRatio": 0.6055,
       "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
     },
     "terrain.grass-dirt": {
       "maxTierA": 0.1329,
       "maxOffRamp": 0.249,
       "minEdgeContinuity": 0.6551,
+      "minGrainRatio": 0.1034,
       "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
     },
     "terrain.grass-shore": {
       "maxTierA": 0.2174,
       "maxOffRamp": 0.8777,
       "minEdgeContinuity": 0.6401,
+      "minGrainRatio": 0.3566,
       "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
     },
     "terrain.gravel-yard": {
       "maxOffRamp": 0.4733,
       "minEdgeContinuity": 0.405,
+      "minGrainRatio": 0.4989,
       "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
     },
     "terrain.marsh-reed": {
       "maxOffRamp": 0.5864,
       "minEdgeContinuity": 0.2777,
-      "minGrainRatio": 0.6391,
+      "minGrainRatio": 0.0832,
       "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
     },
     "terrain.sand-alt": {
       "maxOffRamp": 0.4812,
       "minEdgeContinuity": 0.3076,
+      "minGrainRatio": 0.4898,
       "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
     },
     "terrain.shallow-deep": {
@@ -682,7 +872,7 @@
       "maxOffRamp": 0.9348,
       "minEdgeContinuity": 0.6129,
       "maxWaterSaturation": 0.9786,
-      "minGrainRatio": 0.6834,
+      "minGrainRatio": 0.0694,
       "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
     },
     "terrain.shore-shallow": {
@@ -690,12 +880,13 @@
       "maxOffRamp": 0.834,
       "minEdgeContinuity": 0.6588,
       "maxWaterSaturation": 0.8809,
-      "minGrainRatio": 0.6519,
+      "minGrainRatio": 0.063,
       "reason": "pre-Wave-0 terrain baseline; ratchet down on touch"
     },
     "veg.boulder.granite.large": {
       "maxColours": 103,
       "maxTierA": 0.0542,
+      "minGrainRatio": 0.6885,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.boulder.granite.small": {
@@ -705,11 +896,16 @@
     "veg.boulder.mossy.large": {
       "maxColours": 101,
       "maxTierA": 0.1154,
+      "minGrainRatio": 0.512,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.boulder.mossy.small": {
       "maxColours": 78,
       "maxTierA": 0.0914,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.bramblePatch": {
+      "minGrainRatio": 0.1904,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.flower.a": {
@@ -718,59 +914,146 @@
     },
     "veg.flower.b": {
       "maxTierA": 0.265,
+      "maxGrainRatio": 1.5276,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.flower.c": {
+      "maxGrainRatio": 1.5467,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.flowerBed": {
       "maxColours": 107,
       "maxTierA": 0.2179,
+      "minGrainRatio": 0.5174,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.hedge": {
       "maxColours": 188,
       "maxTierA": 0.3592,
+      "maxGrainRatio": 1.5941,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.hedgerow": {
+      "minGrainRatio": 0.5103,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.lilypad": {
       "maxColours": 43,
       "maxTierA": 0.0567,
+      "maxGrainRatio": 1.5444,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.planter": {
       "maxColours": 211,
       "maxTierA": 0.1126,
+      "maxGrainRatio": 1.3895,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.root.arch": {
       "maxColours": 73,
       "maxTierA": 0.1456,
+      "minGrainRatio": 0.4306,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.standingStone.mossy": {
       "maxColours": 40,
+      "minGrainRatio": 0.3646,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.ash.world": {
+      "minGrainRatio": 0.1617,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.ash.world.snow": {
+      "minGrainRatio": 0.3994,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.birch.large": {
+      "minGrainRatio": 0.4379,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.birch.small": {
+      "maxGrainRatio": 1.4386,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.birch.tall": {
+      "minGrainRatio": 0.3081,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.tree.birch.tall.bare": {
-      "minGrainRatio": 0.6698,
+      "minGrainRatio": 0.3159,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.maple.large": {
+      "minGrainRatio": 0.1808,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.maple.tall": {
+      "minGrainRatio": 0.419,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.maple.tall.bare": {
+      "minGrainRatio": 0.4486,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.tree.oak.large": {
       "maxColours": 84,
+      "minGrainRatio": 0.4993,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.oak.large.bare": {
+      "minGrainRatio": 0.3019,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.tree.oak.small": {
       "maxColours": 42,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
+    "veg.tree.oak.tall": {
+      "minGrainRatio": 0.4867,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.oak.tall.bare": {
+      "minGrainRatio": 0.0928,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
     "veg.tree.pine.large": {
       "maxColours": 61,
+      "minGrainRatio": 0.462,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.pine.tall": {
+      "minGrainRatio": 0.1661,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.poplar.tall": {
+      "minGrainRatio": 0.2399,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.poplar.tall.bare": {
+      "minGrainRatio": 0.1977,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.tree.willow.large": {
       "maxColours": 63,
+      "minGrainRatio": 0.4533,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.willow.large.bare": {
+      "minGrainRatio": 0.4841,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     },
     "veg.tree.willow.small": {
       "maxColours": 89,
+      "minGrainRatio": 0.6853,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.willow.tall": {
+      "minGrainRatio": 0.154,
+      "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
+    },
+    "veg.tree.willow.tall.bare": {
+      "minGrainRatio": 0.1048,
       "reason": "pre-Wave-0 vegetation baseline; ratchet down on touch"
     }
   },
@@ -779,5 +1062,11 @@
       0.45,
       0.5059
     ]
+  },
+  "tavernGrainBenchmark": {
+    "asset": "buildings/building.tavern/base.png",
+    "metric": "oklab-mean4-deltaE",
+    "threshold": 0.14,
+    "densityPer32x32": 392.1
   }
 }
