@@ -2135,6 +2135,9 @@ export class IsometricRenderer {
             // 6.7 — open ground the overlay may splash rain on (no building
             // art covers it); static per village, classified once.
             openGroundTiles: () => openGroundTiles(this),
+            // W2.3 — baked puddle sites for 2-frame concentric rain rings.
+            groundWeatherField: () => this.groundField?.weather || null,
+            groundPuddleMask: () => this.groundPuddleMask || null,
         });
         // #21 — cinematic director listens for VillageDirector camera cues and
         // drives time-boxed glides on the camera (abort-on-input is in Camera).

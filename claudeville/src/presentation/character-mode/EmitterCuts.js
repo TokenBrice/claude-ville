@@ -29,7 +29,7 @@
 import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../config/scenery.js';
 import { atlasSourceRect } from './AssetManager.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
-import { buildEmitterCut, emitterNightCarry } from './CanvasGrade.js';
+import { buildEmitterCut, CanvasOverlayStampCache, emitterNightCarry } from './CanvasGrade.js';
 import { mirrorAccentGate, mirrorAccentLayers, mirrorAccentRainCut, mirrorStormDrop } from './CoastBake.js';
 import {
     DAYTIME_WORK_BLOOM_CORE,
@@ -829,6 +829,175 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
     renderer.buildingRenderer?.drawLanternLight?.(ctx);
     ctx.restore();
     return bloomCtx ? bloomLayer : null;
+}
+
+// W2 (spec 02 §4.3/§4.5/§4.7/§4.8) — Canvas fallback overlays: cached golden
+// silhouette rim, Afterglow top-20 % alpenglow, and west-window apricot glint,
+// drawn after the frame grade and right under `drawCanvasEmitterCuts`.
+const occluderSidecars = new Map();
+const gradeOverlayDescriptors = new Map();
+const canvasGradeOverlayCache = new CanvasOverlayStampCache();
+
+function occluderSidecarFor(assets, id) {
+    const companion = assets.getCompanion?.(id, 'occluder');
+    if (companion) return companion;
+    const key = `${assets.assetVersion || ''}|${id}`;
+    const cached = occluderSidecars.get(key);
+    if (cached !== undefined) return cached === 'loading' ? null : cached;
+    const albedo = assets.get?.(id);
+    const src = typeof albedo?.src === 'string' ? albedo.src : '';
+    if (assets.getEntry && !assets.getEntry(id)?.occluderSidecar) {
+        occluderSidecars.set(key, null);
+        return null;
+    }
+    if (!src || typeof Image === 'undefined') {
+        occluderSidecars.set(key, null);
+        return null;
+    }
+    const image = new Image();
+    occluderSidecars.set(key, 'loading');
+    image.onload = () => occluderSidecars.set(key, image);
+    image.onerror = () => occluderSidecars.set(key, null);
+    image.src = src.replace(/\.png(?=([?#]|$))/, '.occluder.png');
+    return null;
+}
+
+function readImageRgba(image, width, height) {
+    if (!image || !width || !height) return null;
+    const scratch = document.createElement('canvas');
+    scratch.width = width;
+    scratch.height = height;
+    const sctx = scratch.getContext('2d', { willReadFrequently: true });
+    sctx.drawImage(image, 0, 0, width, height);
+    const data = sctx.getImageData(0, 0, width, height).data;
+    scratch.width = 0;
+    scratch.height = 0;
+    return data;
+}
+
+function gradeOverlayDescriptorFor(assets, id, entry, gate, glass) {
+    const albedoImg = assets.get?.(id);
+    const width = albedoImg?.naturalWidth || albedoImg?.width || 0;
+    const height = albedoImg?.naturalHeight || albedoImg?.height || 0;
+    if (!width || !height) return null;
+    const alpenglowRow = Number(entry?.alpenglowRow) || 0;
+    const surfaceCoded = entry?.surfaceCode === true;
+    const occluderImg = surfaceCoded ? occluderSidecarFor(assets, id) : null;
+    const emissiveImg = surfaceCoded && entry?.emissiveSidecar === true ? emissiveSidecarFor(assets, id) : null;
+    if (!alpenglowRow && !occluderImg) return null;
+    const key = `${assets.assetVersion || ''}|${id}`;
+    let entryState = gradeOverlayDescriptors.get(key);
+    if (!entryState || entryState.albedoImg !== albedoImg || entryState.occluderImg !== occluderImg || entryState.emissiveImg !== emissiveImg) {
+        const albedo = readImageRgba(albedoImg, width, height);
+        const geometry = occluderImg ? readImageRgba(occluderImg, width, height) : null;
+        const emissiveRgba = emissiveImg ? readImageRgba(emissiveImg, width, height) : null;
+        entryState = {
+            albedoImg,
+            occluderImg,
+            emissiveImg,
+            emissiveRgba,
+            unlitKey: '',
+            descriptor: {
+                width,
+                height,
+                albedo,
+                geometry,
+                alpenglowRow,
+                unlitEmitter: null,
+                revision: 1,
+            },
+        };
+        gradeOverlayDescriptors.set(key, entryState);
+    }
+    const unlitKey = `${gate > 0.02 ? 1 : 0}|${glass?.key || (glass?.canvas ? `${glass.x},${glass.y},${glass.canvas.width},${glass.canvas.height}` : '')}`;
+    if (entryState.emissiveRgba && entryState.unlitKey !== unlitKey) {
+        entryState.unlitKey = unlitKey;
+        const count = width * height;
+        const mask = new Uint8Array(count);
+        const em = entryState.emissiveRgba;
+        if (!(gate > 0.02)) {
+            for (let p = 0; p < count; p++) if (em[p * 4 + 3] > 0) mask[p] = 1;
+        } else if (glass?.canvas) {
+            const gctx = glass.canvas.getContext('2d', { willReadFrequently: true });
+            const gw = glass.canvas.width;
+            const gh = glass.canvas.height;
+            const gdata = gctx.getImageData(0, 0, gw, gh).data;
+            const gx0 = Math.round(glass.x || 0);
+            const gy0 = Math.round(glass.y || 0);
+            for (let gy = 0; gy < gh; gy++) {
+                const sy = gy0 + gy;
+                if (sy < 0 || sy >= height) continue;
+                for (let gx = 0; gx < gw; gx++) {
+                    const sx = gx0 + gx;
+                    if (sx < 0 || sx >= width) continue;
+                    const p = sy * width + sx;
+                    if (em[p * 4 + 3] > 0 && gdata[(gy * gw + gx) * 4 + 3] > 0) mask[p] = 1;
+                }
+            }
+        }
+        entryState.descriptor.unlitEmitter = mask;
+        entryState.descriptor.revision += 1;
+    }
+    return entryState.descriptor;
+}
+
+export function drawCanvasGradeOverlays(ctx, renderer, atmosphere) {
+    const assets = renderer?.assets;
+    const camera = renderer?.camera;
+    const grade = atmosphere?.lightGrade || null;
+    if (!ctx || !assets || !camera || !grade) return;
+    if (!(grade.rimStrength > 0) && !(grade.afterglow > 0) && !(grade.windowGlint > 0)) return;
+    const viewport = renderer._screenViewport?.() || null;
+    const topLeft = viewport ? camera.screenToWorld(0, 0) : null;
+    const bottomRight = viewport ? camera.screenToWorld(viewport.width, viewport.height) : null;
+    ctx.save();
+    camera.applyTransform(ctx);
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    const transform = ctx.getTransform();
+    const scale = Math.max(1, Math.hypot(transform.a, transform.b));
+    const buildings = renderer.buildingRenderer;
+    const buildingDrawables = buildings?.enumerateDrawables?.() || [];
+    const seen = new Set();
+    for (const drawable of buildingDrawables) {
+        const building = drawable.building;
+        const id = drawable.entry?.id;
+        if (!building || !id || seen.has(building)) continue;
+        seen.add(building);
+        const entry = assets.getEntry?.(id) || drawable.entry;
+        if (!entry?.surfaceCode && !(Number(entry?.alpenglowRow) > 0)) continue;
+        const gate = buildings._emissiveGateFor?.(building) ?? 1;
+        const glass = buildings.glassPatchFor?.(building) || null;
+        const desc = gradeOverlayDescriptorFor(assets, id, entry, gate, glass);
+        if (!desc) continue;
+        const stamp = canvasGradeOverlayCache.get(desc, grade);
+        if (!stamp) continue;
+        const [ax, ay] = assets.getAnchor(id);
+        const x = Math.round(drawable.wx - ax);
+        const y = Math.round(drawable.wy - ay);
+        if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + stamp.width < topLeft.x || y + stamp.height < topLeft.y)) continue;
+        const sortYAtX = (worldX) => buildingColumnSortY(buildingDrawables, building, worldX, drawable.sortY);
+        drawCarvedBuildingLayer(ctx, renderer, { canvas: stamp, x, y }, building, sortYAtX);
+    }
+    if (grade.afterglow > 0) {
+        for (const sprite of renderer.districtPropSprites || []) {
+            const id = sprite?.id;
+            const entry = id ? assets.getEntry?.(id) : null;
+            if (!entry || !(Number(entry.alpenglowRow) > 0)) continue;
+            const desc = gradeOverlayDescriptorFor(assets, id, entry, 0, null);
+            if (!desc) continue;
+            const stamp = canvasGradeOverlayCache.get(desc, grade);
+            if (!stamp) continue;
+            const [ax, ay] = assets.getAnchor(id);
+            const x = Math.round(sprite.x - ax);
+            const y = Math.round(sprite.y - ay);
+            if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + stamp.width < topLeft.x || y + stamp.height < topLeft.y)) continue;
+            const occluders = occludersFor(renderer, sprite.sortY, sprite.sortY, x, y, stamp.width, stamp.height, id);
+            drawCarved(ctx, stamp, x, y, occluders, scale);
+        }
+    }
+    ctx.restore();
 }
 
 let bloomLayer = null;

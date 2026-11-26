@@ -1396,7 +1396,7 @@ uniform float u_grassGust;
 ${glslRgbArray('GRASS_GUST_FROM', GRASS_GUST_STOPS.map(pair => pair[0]))}
 ${glslRgbArray('GRASS_GUST_TO', GRASS_GUST_STOPS.map(pair => pair[1]))}
 vec3 applyGrassGust(vec3 color, vec2 world) {
-    if (u_grassGust <= 0.0 || color.g <= color.r || color.g <= color.b) return color;
+    if (u_grassGust <= 0.0 || color.g <= color.b) return color;
     int k = -1;
     for (int i = 0; i < ${GRASS_GUST_STOPS.length}; i++) {
         if (sameColour(color, GRASS_GUST_FROM[i])) { k = i; break; }

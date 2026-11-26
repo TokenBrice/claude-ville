@@ -43,7 +43,10 @@ import { captureCoastArtifact, restoreCoastArtifact, validCoastArtifact, coastAr
 // visual-terrain-v3.1 (W1.1, X-5): the 1×1 colour-lattice ground bake —
 // paving as stone units, 3 px kerbs, calm meadow sweeps, inline OA-T3
 // stamps, E1 footings — so no stale 2×1 artifact ever restores.
-export const TERRAIN_BAKE_ALGORITHM_VERSION = 'visual-terrain-v3.1';
+// visual-terrain-v3.2 (W2.4): four-season turf ramps (grassDormant /
+// grassSpring), autumn reeds/meadows, winter trampled avenue crowns, lagoon
+// rim ice, and dawn dew sites — busting pre-Wave-2 saved terrain.
+export const TERRAIN_BAKE_ALGORITHM_VERSION = 'visual-terrain-v3.2';
 export const TERRAIN_ARTIFACT_DB = 'claudeville-terrain-artifacts';
 // The ceiling of one entry, and (schema 3) of all stored entries together:
 // at most ENTRY_LIMIT entries whose bytes sum to TERRAIN_ARTIFACT_AGGREGATE_BYTES.

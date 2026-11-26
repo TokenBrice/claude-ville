@@ -948,7 +948,7 @@ function canopyRemapReport() {
             const allowed = new Set([
                 ...(plan?.ramp ? rampStopSet(plan.ramp, plan.stops) : []),
                 ...(plan?.turning ? rampStopSet(plan.turning) : []),
-                ...(plan?.blossom ? rampStopSet('blossom') : []),
+                ...(plan?.blossom ? rampStopSet(plan.blossom === 'ivory' ? 'blossomIvory' : 'blossom') : []),
             ]);
             for (let y = 0; y < height; y++) {
                 for (let x = 0; x < width; x++) {

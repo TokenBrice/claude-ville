@@ -37,7 +37,8 @@ import { COAST_FIELD_FLAGS, OCEAN_HORIZON_WORLD_Y } from './CoastBake.js';
 import { drawOffshoreScenery, isOffshoreRecordId } from './OffshoreScenery.js';
 import { poolMaskRect, poolReceiverMask } from './CanvasPoolMask.js';
 import { drawCanvasWaterColumns } from './CanvasWaterState.js';
-import { drawCanvasEmitterCuts, drawMineCrystalGlow } from './EmitterCuts.js';
+import { drawCanvasEmitterCuts, drawCanvasGradeOverlays, drawMineCrystalGlow } from './EmitterCuts.js';
+import { roofLightningSheen } from './RoofWeather.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
 import { groundOptionsFor, groundStateAt, liquidPrecipitation } from './GroundState.js';
 import { ungradeRgb } from './CanvasGrade.js';
@@ -611,9 +612,15 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     overlayCtx.clearRect(0, 0, viewport.width, viewport.height);
     // EN-4 — live wetness from liquid rain only (winter snow keeps it dry).
     renderer._surfaceWetness = Math.max(wx ? liquidPrecipitation(atmosphere, wx) : 0, renderer._groundState.wetness);
-    // 5.2 roofs / 6.6 — roof snow, wet slate and eave drips step with the
-    // same ground state and the live precipitation.
-    renderer.buildingRenderer?.syncRoofWeather?.(atmosphere, renderer._groundState, renderer.motionScale ?? 1, renderer.motionTimeMs);
+    // 5.2 roofs / 6.6 / W2.3 — roof snow, wet slate, eave drips and lightning
+    // wet-slate sheen step with the ground state, precipitation and strike.
+    renderer.buildingRenderer?.syncRoofWeather?.(
+        atmosphere,
+        renderer._groundState,
+        renderer.motionScale ?? 1,
+        renderer.motionTimeMs,
+        roofLightningSheen(strike, renderer.motionScale ?? 1),
+    );
     const reactions = applySurfaceWetnessToReactions(atmosphere?.reactions || {}, renderer._surfaceWetness);
     renderer._atmosphereReactions = reactions;
     renderer.buildingRenderer?.setLightingState(atmosphere?.lighting);
@@ -717,6 +724,8 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // on the ground plane, ahead of agents and buildings.
         drawGroundHaze(renderer, ctx, atmosphere, viewport);
         drawGroundFog(ctx, renderer, atmosphere, viewport);
+        // W2.4 — dawn dew glints on sunlit grass tufts (graded with the ground).
+        drawWorldDawnDew(ctx, renderer, atmosphere, viewport);
     } else {
         const plan = hazePlanForPressure(hazePressureLevel(renderer, atmosphere, viewport), renderer.motionScale ?? 1);
         renderer._gpuHazeStrength = groundHazeStrength(atmosphere, plan.density);
@@ -981,6 +990,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // emission, at the FULL bloom target's half scale, is its bloom
         // source, as authored emission is the resident bloom's.
         drawCanvasWaterColumns(overlayCtx, renderer);
+        drawCanvasGradeOverlays(overlayCtx, renderer, atmosphere);
         const emission = drawCanvasEmitterCuts(overlayCtx, renderer, atmosphere, 0.5);
         if (feed) feed.emission = emission;
         postFxRendered = renderer.postFx?.render?.(canvas, feed) === true;
@@ -1006,6 +1016,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // hybrid path drew both above, before its pass).
     if (!gpuWorldRendered && !postFxActive) {
         drawCanvasWaterColumns(overlayCtx, renderer);
+        drawCanvasGradeOverlays(overlayCtx, renderer, atmosphere);
         drawCanvasEmitterCuts(overlayCtx, renderer, atmosphere);
     }
     // 10.2 — on the resident path, with the overlay's backing pixels exactly
@@ -1369,6 +1380,7 @@ export function recordLiveGroundCues(renderer, options) {
     bounds.right = Math.ceil(bounds.left + (viewport?.width || 0) / zoom) + 8;
     bounds.bottom = Math.ceil(bounds.top + (viewport?.height || 0) / zoom) + 8;
     recorder.begin(bounds);
+    drawWorldDawnDew(recorder, renderer, options.atmosphere, options.viewport);
     drawGroundSemantics(renderer, recorder, options, GROUND_CUES_LIVE);
     renderer._groundCueRecords = recorder.end();
     const stats = renderer._groundCueStats || (renderer._groundCueStats = {});
@@ -1859,7 +1871,24 @@ function groundFogFor(renderer, atmosphere, viewport) {
         atmosphere,
         viewport,
         timeMs: renderer.motionTimeMs,
+        waterFields: renderer._coastBake?.waterFields || null,
     }) || null;
+}
+
+function drawWorldDawnDew(ctx, renderer, atmosphere, viewport) {
+    const sites = renderer.groundField?.dewSites;
+    if (!sites?.points?.length || !renderer.camera) return;
+    const zoom = Math.max(0.01, Number(renderer.camera.zoom) || 1);
+    const x = Math.floor(-(Number(renderer.camera.renderOffsetX) || 0) / zoom);
+    const y = Math.floor(-(Number(renderer.camera.renderOffsetY) || 0) / zoom);
+    const view = {
+        x,
+        y,
+        width: Math.ceil((Number(viewport?.width) || 0) / zoom) + 2,
+        height: Math.ceil((Number(viewport?.height) || 0) / zoom) + 2,
+    };
+    const reducedMotion = !(Number(renderer.motionScale) > 0);
+    renderer.seasonalAmbience?.drawDawnDew?.(ctx, atmosphere, sites, renderer.motionTimeMs, reducedMotion, view);
 }
 
 function drawGroundFog(ctx, renderer, atmosphere, viewport) {

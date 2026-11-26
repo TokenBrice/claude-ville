@@ -382,7 +382,7 @@ fn applyPuddle(color: vec3f, world: vec2f) -> vec3f {
 const GRASS_GUST_FROM = ${grassGustRgb(0)};
 const GRASS_GUST_TO = ${grassGustRgb(1)};
 fn applyGrassGust(color: vec3f, world: vec2f) -> vec3f {
-  if (frame.grassGust <= 0.0 || color.g <= color.r || color.g <= color.b) { return color; }
+  if (frame.grassGust <= 0.0 || color.g <= color.b) { return color; }
   var k = -1;
   for (var i = 0; i < ${GRASS_GUST_STOPS.length}; i++) {
     if (sameColour(color, GRASS_GUST_FROM[i])) { k = i; break; }

@@ -6131,8 +6131,8 @@ export class BuildingSprite {
 
     // 5.2 roofs / 6.6 — steps the roof weather once a frame from the C-W2
     // ground state and the live precipitation (WorldFrameRenderer).
-    syncRoofWeather(atmosphere, ground, motionScale = this.motionScale, motionTimeMs = 0) {
-        this.roofWeather.sync(atmosphere, ground, motionScale, motionTimeMs);
+    syncRoofWeather(atmosphere, ground, motionScale = this.motionScale, motionTimeMs = 0, lightningSheen = 0) {
+        this.roofWeather.sync(atmosphere, ground, motionScale, motionTimeMs, lightningSheen);
     }
 
     // The roof snow / wet-course / low-sun glint patch of `building`

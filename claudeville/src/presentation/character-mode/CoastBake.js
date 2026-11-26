@@ -54,6 +54,13 @@ import { moonRoadFor, seaSunLift, sunRoadFor } from './gpu/GpuFrameState.js';
 import { SEA_SUN_LIFT_FLOOR } from './gpu/GpuWorldPolicy.js';
 import { lookStrength } from './LookStrengths.js';
 import { liquidPrecipitation, snowBucketOf } from './GroundState.js';
+import {
+    SEA_FRESNEL_Y,
+    SEA_FRESNEL_WEIGHT,
+    SEA_FRESNEL_FAR,
+    SEA_FRESNEL_BANDS,
+    seaFresnelGate,
+} from './GradeEvaluator.js';
 
 const HALF_W = TILE_WIDTH / 2;
 const HALF_H = TILE_HEIGHT / 2;
@@ -175,12 +182,8 @@ const WATER_SKY_STEPS = 32;
 // share of the far sky (`grade.seaFar`, else `skyHorizon`) in the sky colour.
 // Course 3 is today's water exactly, and the gate (1 by day, 0 from night
 // 0.85) keeps the night bit-exact.
-export const SEA_FRESNEL_Y = Object.freeze([96, 352, 640]);
-export const SEA_FRESNEL_WEIGHT = Object.freeze([0.62, 0.46, 0.30, 0.0]);
-export const SEA_FRESNEL_FAR = Object.freeze([1.0, 0.75, 0.40, 0.0]);
-export const SEA_FRESNEL_BANDS = Object.freeze([4, 5, 6]);
+export { SEA_FRESNEL_Y, SEA_FRESNEL_WEIGHT, SEA_FRESNEL_FAR, SEA_FRESNEL_BANDS, seaFresnelGate };
 export const SEA_FRESNEL_NEAR = SEA_FRESNEL_Y.length;
-export const seaFresnelGate = (night) => Math.max(0, Math.min(1, (0.85 - (Number(night) || 0)) / 0.35));
 
 // W2.4 (spec 02 §4.13) — calm-lagoon rim ice by snow bucket (tiles of signed
 // distance into the water, jittered x0.75–1.25 per texel pair), its inner
