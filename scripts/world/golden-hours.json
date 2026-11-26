@@ -40,134 +40,134 @@
   "backends": {
     "webgpu": {
       "clear-0500": {
-        "mean": 62.4,
-        "p10": 30,
-        "p90": 92,
-        "warmShare": 0.04162,
-        "darkShare": 0.10893
+        "mean": 60.95,
+        "p10": 29,
+        "p90": 91,
+        "warmShare": 0.03824,
+        "darkShare": 0.11901
       },
       "clear-1200": {
-        "mean": 113.64,
-        "p10": 48,
-        "p90": 178,
-        "warmShare": 0.15834,
-        "darkShare": 0.06554
+        "mean": 111.53,
+        "p10": 44,
+        "p90": 173,
+        "warmShare": 0.12397,
+        "darkShare": 0.07067
       },
       "clear-1915": {
-        "mean": 84.73,
-        "p10": 34,
-        "p90": 128,
-        "warmShare": 0.08168,
-        "darkShare": 0.09652
+        "mean": 82.48,
+        "p10": 27,
+        "p90": 126,
+        "warmShare": 0.07048,
+        "darkShare": 0.10471
       },
       "storm-1915": {
-        "mean": 66.32,
-        "p10": 31,
-        "p90": 97,
-        "warmShare": 0.00104,
-        "darkShare": 0.10305
+        "mean": 64.6,
+        "p10": 29,
+        "p90": 94,
+        "warmShare": 0.00016,
+        "darkShare": 0.11368
       },
       "clear-2300": {
-        "mean": 58.43,
-        "p10": 24,
-        "p90": 98,
-        "warmShare": 0.08601,
-        "darkShare": 0.14677
+        "mean": 56.87,
+        "p10": 23,
+        "p90": 97,
+        "warmShare": 0.08068,
+        "darkShare": 0.15488
       },
       "storm-0200": {
-        "mean": 44.95,
-        "p10": 20,
-        "p90": 77,
-        "warmShare": 0.05998,
-        "darkShare": 0.28234
+        "mean": 43.71,
+        "p10": 18,
+        "p90": 76,
+        "warmShare": 0.05653,
+        "darkShare": 0.28702
       }
     },
     "webgl": {
       "clear-0500": {
-        "mean": 62.4,
-        "p10": 30,
-        "p90": 92,
-        "warmShare": 0.04163,
-        "darkShare": 0.10895
+        "mean": 60.95,
+        "p10": 29,
+        "p90": 91,
+        "warmShare": 0.03824,
+        "darkShare": 0.11901
       },
       "clear-1200": {
-        "mean": 113.64,
-        "p10": 48,
-        "p90": 178,
-        "warmShare": 0.15831,
-        "darkShare": 0.06555
+        "mean": 111.53,
+        "p10": 44,
+        "p90": 173,
+        "warmShare": 0.12397,
+        "darkShare": 0.07067
       },
       "clear-1915": {
-        "mean": 84.72,
-        "p10": 34,
-        "p90": 128,
-        "warmShare": 0.08171,
-        "darkShare": 0.09652
+        "mean": 82.48,
+        "p10": 27,
+        "p90": 126,
+        "warmShare": 0.07048,
+        "darkShare": 0.10471
       },
       "storm-1915": {
-        "mean": 66.32,
-        "p10": 31,
-        "p90": 97,
-        "warmShare": 0.00104,
-        "darkShare": 0.10307
+        "mean": 64.6,
+        "p10": 29,
+        "p90": 94,
+        "warmShare": 0.00016,
+        "darkShare": 0.11368
       },
       "clear-2300": {
-        "mean": 58.43,
-        "p10": 24,
-        "p90": 98,
-        "warmShare": 0.086,
-        "darkShare": 0.14678
+        "mean": 56.87,
+        "p10": 23,
+        "p90": 97,
+        "warmShare": 0.08068,
+        "darkShare": 0.15488
       },
       "storm-0200": {
-        "mean": 44.95,
-        "p10": 20,
-        "p90": 77,
-        "warmShare": 0.05998,
-        "darkShare": 0.28235
+        "mean": 43.71,
+        "p10": 18,
+        "p90": 76,
+        "warmShare": 0.05653,
+        "darkShare": 0.28702
       }
     },
     "canvas": {
       "clear-0500": {
-        "mean": 62.57,
-        "p10": 30,
-        "p90": 93,
-        "warmShare": 0.04109,
-        "darkShare": 0.10714
+        "mean": 60.97,
+        "p10": 28,
+        "p90": 91,
+        "warmShare": 0.03674,
+        "darkShare": 0.11764
       },
       "clear-1200": {
-        "mean": 109.45,
-        "p10": 47,
-        "p90": 157,
-        "warmShare": 0.11407,
-        "darkShare": 0.06904
+        "mean": 107.66,
+        "p10": 40,
+        "p90": 152,
+        "warmShare": 0.09389,
+        "darkShare": 0.07923
       },
       "clear-1915": {
-        "mean": 90.18,
-        "p10": 38,
-        "p90": 134,
-        "warmShare": 0.08492,
-        "darkShare": 0.08557
+        "mean": 87.6,
+        "p10": 33,
+        "p90": 131,
+        "warmShare": 0.07134,
+        "darkShare": 0.09665
       },
       "storm-1915": {
-        "mean": 77.23,
-        "p10": 39,
-        "p90": 109,
-        "warmShare": 0.00026,
-        "darkShare": 0.0769
+        "mean": 75.11,
+        "p10": 35,
+        "p90": 107,
+        "warmShare": 0.00016,
+        "darkShare": 0.08634
       },
       "clear-2300": {
-        "mean": 56.9,
-        "p10": 23,
-        "p90": 98,
-        "warmShare": 0.08761,
-        "darkShare": 0.18734
+        "mean": 55.18,
+        "p10": 22,
+        "p90": 97,
+        "warmShare": 0.0841,
+        "darkShare": 0.19922
       },
       "storm-0200": {
-        "mean": 48.4,
-        "p10": 20,
-        "p90": 85,
-        "warmShare": 0.07379,
-        "darkShare": 0.25597
+        "mean": 46.99,
+        "p10": 19,
+        "p90": 84,
+        "warmShare": 0.07007,
+        "darkShare": 0.2726
       }
     }
   }

@@ -114,8 +114,10 @@ async function openBackend(browser, baseUrl, renderer) {
     await page.waitForFunction((want) => {
       const r = window.__claudeVilleApp.renderer;
       const name = r.gpuWorld?.constructor?.name || '';
+      const terrainReady = typeof r.terrainCacheKey === 'string' && r.terrainCacheKey.length > 0 && !r._terrainRestage;
+      if (!terrainReady) return false;
       if (want === 'canvas') return !r.gpuWorld;
-      return want === 'webgpu' ? /WebGPU/.test(name) : name === 'GpuWorldRenderer';
+      return (want === 'webgpu' ? /WebGPU/.test(name) : name === 'GpuWorldRenderer') && r.gpuWorld?.isActive?.() === true;
     }, renderer, { timeout: 90_000 });
   } catch {
     const reason = await page.evaluate(() => window.__claudeVilleApp.renderer.worldBackendReason || null).catch(() => null);

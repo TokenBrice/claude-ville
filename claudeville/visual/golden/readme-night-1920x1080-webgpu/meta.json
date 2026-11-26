@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "caseId": "readme-night-1920x1080-webgpu",
-  "capturedAt": "2026-11-26T02:42:47.540Z",
+  "capturedAt": "2026-11-26T05:53:19.541Z",
   "scenario": "readme-showcase",
   "hour": 22,
   "weather": "clear",
@@ -25,19 +25,19 @@
     "nondeterministicMasks": []
   },
   "fence": {
-    "elapsedMs": 26,
-    "terrainKey": "-1640,-376,3280,2000@1|assets|season:summer|stage:summer|scenery:0|passes:ground-splat:sheetsw,coast-field:0:723:9:136:24:313|s0,coast-reflections:1:9:9:3,|retry:0",
-    "presentGeneration": 4,
+    "elapsedMs": 6615,
+    "terrainKey": "-1640,-376,3280,2000@1|assets|season:summer|stage:summer|scenery:0|passes:ground-splat:sheetsw,coast-field:e0:0:723:9:136:24:313|s0,coast-reflections:1:9:9:3:12,|retry:0",
+    "presentGeneration": 9,
     "centerRgb": [
-      218,
-      164,
-      134
+      210,
+      159,
+      131
     ],
     "greenFillShare": 0,
-    "distinctInteriorColors": 147
+    "distinctInteriorColors": 155
   },
   "attributionFormat": "r32uint",
-  "recordsCount": 818,
+  "recordsCount": 827,
   "marksCount": 16,
   "records": [
     {
@@ -2178,943 +2178,943 @@
     },
     {
       "index": 356,
-      "id": "ground:building:archive",
+      "id": "ground:lampshade:4",
       "layer": 0,
       "flags": 256
     },
     {
       "index": 357,
+      "id": "ground:building:archive",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 358,
       "id": "ground:readme-onyx:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 358,
+      "index": 359,
       "id": "ground:readme-onyx:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 359,
+      "index": 360,
       "id": "ground:readme-lumen:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 360,
+      "index": 361,
       "id": "ground:readme-lumen:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 361,
+      "index": 362,
       "id": "ground:readme-tomo:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 362,
+      "index": 363,
       "id": "ground:readme-tomo:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 363,
+      "index": 364,
       "id": "ground:readme-iris:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 364,
+      "index": 365,
       "id": "ground:readme-iris:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 365,
+      "index": 366,
       "id": "ground:readme-sol:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 366,
+      "index": 367,
       "id": "ground:readme-sol:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 367,
+      "index": 368,
       "id": "ground:readme-sybil:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 368,
+      "index": 369,
       "id": "ground:readme-sybil:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 369,
+      "index": 370,
       "id": "ground:readme-argos:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 370,
+      "index": 371,
       "id": "ground:readme-argos:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 371,
+      "index": 372,
       "id": "ground:readme-pip:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 372,
+      "index": 373,
       "id": "ground:readme-pip:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 373,
+      "index": 374,
       "id": "ground:readme-hazel:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 374,
+      "index": 375,
       "id": "ground:readme-hazel:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 375,
+      "index": 376,
       "id": "ground:readme-sage:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 376,
+      "index": 377,
       "id": "ground:readme-sage:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 377,
+      "index": 378,
       "id": "ground:zai-glmth_mpb63pdk_1e8b50af:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 378,
+      "index": 379,
       "id": "ground:zai-glmth_mpb63pdk_1e8b50af:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 379,
+      "index": 380,
       "id": "ground:building:command",
       "layer": 0,
       "flags": 256
     },
     {
-      "index": 380,
+      "index": 381,
       "id": "ground:readme-juniper:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 381,
+      "index": 382,
       "id": "ground:readme-juniper:status",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 382,
+      "index": 383,
       "id": "ground:readme-kestrel:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 383,
+      "index": 384,
       "id": "ground:readme-kestrel:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 384,
+      "index": 385,
       "id": "ground:readme-lark:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 385,
+      "index": 386,
       "id": "ground:readme-lark:status",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 386,
-      "id": "ground:readme-flint:shadow",
-      "layer": 0,
-      "flags": 0
-    },
-    {
       "index": 387,
-      "id": "ground:readme-flint:working",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 388,
       "id": "ground:readme-moss:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 389,
+      "index": 388,
       "id": "ground:readme-moss:status",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 390,
+      "index": 389,
       "id": "ground:building:tavern",
       "layer": 0,
       "flags": 256
     },
     {
+      "index": 390,
+      "id": "ground:readme-flint:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
       "index": 391,
-      "id": "ground:readme-rowan:shadow",
+      "id": "ground:readme-flint:working",
       "layer": 0,
       "flags": 0
     },
     {
       "index": 392,
-      "id": "ground:readme-rowan:working",
+      "id": "ground:readme-rowan:shadow",
       "layer": 0,
       "flags": 0
     },
     {
       "index": 393,
-      "id": "ground:readme-cinder:shadow",
+      "id": "ground:readme-rowan:working",
       "layer": 0,
       "flags": 0
     },
     {
       "index": 394,
-      "id": "ground:readme-quill:shadow",
+      "id": "ground:readme-cinder:shadow",
       "layer": 0,
       "flags": 0
     },
     {
       "index": 395,
+      "id": "ground:readme-quill:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 396,
       "id": "ground:building:mine",
       "layer": 0,
       "flags": 256
     },
     {
-      "index": 396,
+      "index": 397,
       "id": "ground:tree:15.95,28.7",
       "layer": 0,
       "flags": 256
     },
     {
-      "index": 397,
+      "index": 398,
       "id": "ground:tree:16.7,28",
       "layer": 0,
       "flags": 256
     },
     {
-      "index": 398,
+      "index": 399,
       "id": "ground:tree:17.6,27.4",
       "layer": 0,
       "flags": 256
     },
     {
-      "index": 399,
+      "index": 400,
       "id": "ground:readme-spark:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 400,
+      "index": 401,
       "id": "ground:readme-spark:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 401,
+      "index": 402,
       "id": "ground:tree:22.854085365335923,27.079082055532762",
       "layer": 0,
       "flags": 256
     },
     {
-      "index": 402,
+      "index": 403,
       "id": "ground:readme-tansy:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 403,
+      "index": 404,
       "id": "ground:readme-tansy:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 404,
+      "index": 405,
       "id": "ground:readme-basalt:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 405,
+      "index": 406,
       "id": "ground:readme-basalt:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 406,
+      "index": 407,
       "id": "ground:readme-terra:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 407,
+      "index": 408,
       "id": "ground:readme-terra:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 408,
+      "index": 409,
       "id": "ground:readme-ember:shadow",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 409,
+      "index": 410,
       "id": "ground:readme-ember:working",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 410,
+      "index": 411,
       "id": "ground:building:forge",
       "layer": 0,
       "flags": 256
     },
     {
-      "index": 411,
+      "index": 412,
       "id": "ground:building:taskboard",
       "layer": 0,
       "flags": 256
     },
     {
-      "index": 412,
-      "id": "ground:reflect:agent:readme-spark",
-      "layer": 2,
-      "flags": 16418
-    },
-    {
       "index": 413,
-      "id": "cache-water:prop.runeFountain:16.2,20",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 414,
       "id": "cache-water:prop.well:12.5,27.5",
       "layer": 0,
       "flags": 0
     },
     {
+      "index": 414,
+      "id": "cache-water:prop.archiveCistern:1.15,19",
+      "layer": 0,
+      "flags": 0
+    },
+    {
       "index": 415,
-      "id": "cache-water:prop.runeFountain:1.15,19",
+      "id": "mirror-accent:forge:2:0",
       "layer": 0,
       "flags": 0
     },
     {
       "index": 416,
-      "id": "mirror-accent:watchtower:1",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 417,
-      "id": "mirror-accent:watchtower:-2",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 418,
-      "id": "mirror-accent:harbor:-1",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 419,
-      "id": "mirror-accent:forge:1",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 420,
-      "id": "mirror-accent:forge:2",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 421,
       "id": "bridge-emitter:west-river-plank",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 422,
+      "index": 417,
       "id": "bridge-emitter:central-river-bridge",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 423,
+      "index": 418,
+      "id": "bridge-emitter:north-farm-bridge",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 419,
       "id": "cache-emitter:prop.lantern:12.5,35.4",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 424,
+      "index": 420,
       "id": "cache-emitter:prop.lantern:11.2,17.3",
       "layer": 0,
       "flags": 0
     },
     {
+      "index": 421,
+      "id": "cache-emitter:prop.lantern:22.5,19.75",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 422,
+      "id": "cache-emitter:prop.plazaBrazier.lit:12,18",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 423,
+      "id": "cache-emitter:prop.plazaBrazier.lit:26,32",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 424,
+      "id": "cache-emitter:prop.archiveCistern:1.15,19",
+      "layer": 0,
+      "flags": 0
+    },
+    {
       "index": 425,
-      "id": "cache-emitter:prop.lantern:24.75,19.5",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 426,
-      "id": "cache-emitter:prop.runeBrazier:12,18",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 427,
-      "id": "cache-emitter:prop.runeBrazier:26,32",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 428,
-      "id": "cache-emitter:prop.runeBrazier:1.9,18.25",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 429,
       "id": "cache-emitter:prop.lantern:6,22",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 430,
+      "index": 426,
       "id": "cache-emitter:prop.lantern:14,30",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 431,
+      "index": 427,
       "id": "cache-emitter:prop.lantern:19,29",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 432,
+      "index": 428,
       "id": "cache-emitter:prop.lantern:20,32",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 433,
+      "index": 429,
       "id": "cache-emitter:prop.lantern:18,35",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 434,
+      "index": 430,
       "id": "cache-emitter:prop.lantern:18,37",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 435,
+      "index": 431,
       "id": "cache-emitter:prop.lantern:6,35",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 436,
+      "index": 432,
       "id": "cache-emitter:prop.lantern:9,36",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 437,
+      "index": 433,
       "id": "cache-emitter:prop.lantern:25,21",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 438,
+      "index": 434,
       "id": "cache-emitter:prop.lantern:10,12",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 439,
+      "index": 435,
       "id": "cache-emitter:prop.lantern:15,7",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 440,
+      "index": 436,
       "id": "cache-emitter:prop.lantern:23,13",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 441,
+      "index": 437,
       "id": "cache-emitter:prop.lantern:27,17",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 442,
+      "index": 438,
       "id": "cache-emitter:prop.lantern:30,30",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 443,
+      "index": 439,
       "id": "cache-emitter:prop.lantern:21,35",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 444,
+      "index": 440,
       "id": "cache-emitter:prop.lantern:16.5,26.4",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 445,
+      "index": 441,
       "id": "cache-emitter:prop.lantern:19.6,21.6",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 446,
+      "index": 442,
       "id": "prop:veg.reedClump:whole",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 447,
+      "index": 443,
       "id": "prop:veg.cattailClump:whole",
       "layer": 0,
       "flags": 1
+    },
+    {
+      "index": 444,
+      "id": "prop:veg.cattailClump:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 445,
+      "id": "mist-halo:14",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 446,
+      "id": "mist-halo:13",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 447,
+      "id": "mist-halo:15",
+      "layer": 0,
+      "flags": 0
     },
     {
       "index": 448,
-      "id": "prop:veg.cattailClump:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 449,
       "id": "building.archive:column:0",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 450,
+      "index": 449,
       "id": "building.archive:column:1",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 451,
+      "index": 450,
       "id": "building.archive:column:1:part:bellLouvre",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 452,
+      "index": 451,
       "id": "prop:veg.boulder.mossy.small:whole",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 453,
+      "index": 452,
       "id": "building.archive:column:2",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 454,
+      "index": 453,
       "id": "building.archive:column:2:part:bellLouvre",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 455,
+      "index": 454,
       "id": "building.archive:column:3",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 456,
+      "index": 455,
       "id": "building.archive:column:3:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 457,
+      "index": 456,
       "id": "building.archive:column:16",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 458,
+      "index": 457,
       "id": "building.archive:column:4",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 459,
+      "index": 458,
       "id": "building.archive:column:4:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 460,
+      "index": 459,
       "id": "mist-halo:3",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 461,
+      "index": 460,
       "id": "building.archive:column:15",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 462,
+      "index": 461,
       "id": "building.archive:column:5",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 463,
+      "index": 462,
       "id": "building.archive:column:5:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 464,
+      "index": 463,
       "id": "building.archive:column:14",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 465,
+      "index": 464,
       "id": "agent:readme-onyx",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 466,
+      "index": 465,
       "id": "carried-lantern:readme-onyx",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 467,
+      "index": 466,
       "id": "building.archive:column:6",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 468,
+      "index": 467,
       "id": "building.archive:column:6:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 469,
+      "index": 468,
       "id": "building.archive:column:13",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 470,
+      "index": 469,
       "id": "building.archive:column:13:part:door",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 471,
+      "index": 470,
       "id": "building.archive:column:7",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 472,
+      "index": 471,
       "id": "building.archive:column:7:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 473,
+      "index": 472,
       "id": "building.archive:column:12",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 474,
+      "index": 473,
       "id": "building.archive:column:12:part:door",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 475,
+      "index": 474,
       "id": "agent:readme-lumen",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 476,
+      "index": 475,
       "id": "agent:readme-lumen-head",
       "layer": 3,
       "flags": 1
     },
     {
-      "index": 477,
+      "index": 476,
       "id": "carried-lantern:readme-lumen",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 478,
+      "index": 477,
       "id": "agent:readme-tomo",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 479,
+      "index": 478,
       "id": "agent:readme-tomo-head",
       "layer": 3,
       "flags": 1
     },
     {
-      "index": 480,
+      "index": 479,
       "id": "carried-lantern:readme-tomo",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 481,
+      "index": 480,
       "id": "building.archive:column:8",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 482,
+      "index": 481,
       "id": "building.archive:column:8:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 483,
+      "index": 482,
       "id": "building.archive:column:11",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 484,
+      "index": 483,
       "id": "building.archive:column:11:part:door",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 485,
+      "index": 484,
       "id": "building.archive:column:9",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 486,
+      "index": 485,
       "id": "building.archive:column:9:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 487,
+      "index": 486,
       "id": "building.archive:column:10",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 488,
+      "index": 487,
       "id": "building.archive:column:10:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 489,
+      "index": 488,
       "id": "agent:readme-iris",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 490,
+      "index": 489,
       "id": "carried-lantern:readme-iris",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 491,
+      "index": 490,
       "id": "agent:readme-sol",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 492,
+      "index": 491,
       "id": "carried-lantern:readme-sol",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 493,
+      "index": 492,
       "id": "agent:readme-sybil",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 494,
+      "index": 493,
       "id": "carried-lantern:readme-sybil",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 495,
+      "index": 494,
       "id": "agent:readme-argos",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 496,
+      "index": 495,
       "id": "carried-lantern:readme-argos",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 497,
+      "index": 496,
       "id": "agent:readme-pip",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 498,
+      "index": 497,
       "id": "carried-lantern:readme-pip",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 499,
+      "index": 498,
       "id": "agent:readme-hazel",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 500,
+      "index": 499,
       "id": "carried-lantern:readme-hazel",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 501,
+      "index": 500,
       "id": "agent:readme-sage",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 502,
+      "index": 501,
       "id": "carried-lantern:readme-sage",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 503,
+      "index": 502,
       "id": "agent:zai-glmth_mpb63pdk_1e8b50af",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 504,
+      "index": 503,
       "id": "agent:zai-glmth_mpb63pdk_1e8b50af-head",
       "layer": 3,
       "flags": 1
     },
     {
-      "index": 505,
+      "index": 504,
       "id": "carried-lantern:zai-glmth_mpb63pdk_1e8b50af",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 506,
+      "index": 505,
       "id": "building.command:column:0",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 507,
+      "index": 506,
       "id": "building.command:column:1",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 508,
+      "index": 507,
       "id": "building.command:column:1:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 509,
+      "index": 508,
       "id": "building.command:column:1:part:banner",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 510,
+      "index": 509,
       "id": "building.command:column:2",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 511,
+      "index": 510,
       "id": "building.command:column:2:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 512,
+      "index": 511,
       "id": "building.command:column:2:part:banner",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 512,
+      "id": "building.command:column:2:part:brazierFlames",
       "layer": 0,
       "flags": 1
     },
@@ -3150,1800 +3150,1854 @@
     },
     {
       "index": 518,
+      "id": "building.command:column:3:part:brazierFlames",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 519,
       "id": "building.command:column:16",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 519,
+      "index": 520,
       "id": "building.command:column:4",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 520,
+      "index": 521,
       "id": "building.command:column:4:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 521,
+      "index": 522,
       "id": "building.command:column:4:part:gate",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 522,
+      "index": 523,
+      "id": "building.command:column:4:part:brazierFlames",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 524,
       "id": "building.command:column:15",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 523,
+      "index": 525,
       "id": "building.command:column:15:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 524,
+      "index": 526,
       "id": "building.command:column:5",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 525,
+      "index": 527,
       "id": "building.command:column:5:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 526,
+      "index": 528,
       "id": "building.command:column:5:part:gate",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 527,
+      "index": 529,
+      "id": "building.command:column:5:part:brazierFlames",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 530,
       "id": "mist-halo:0",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 528,
+      "index": 531,
       "id": "building.command:column:14",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 529,
+      "index": 532,
       "id": "building.command:column:14:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 530,
+      "index": 533,
       "id": "agent:readme-juniper",
       "layer": 2,
       "flags": 24609
     },
     {
-      "index": 531,
+      "index": 534,
       "id": "agent:readme-juniper:queue-candle",
       "layer": 6,
       "flags": 8193
     },
     {
-      "index": 532,
+      "index": 535,
       "id": "agent:readme-kestrel",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 533,
+      "index": 536,
       "id": "carried-lantern:readme-kestrel",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 534,
+      "index": 537,
       "id": "agent:readme-lark",
       "layer": 2,
       "flags": 24609
     },
     {
-      "index": 535,
+      "index": 538,
       "id": "agent:readme-lark:queue-candle",
       "layer": 6,
       "flags": 8193
     },
     {
-      "index": 536,
+      "index": 539,
       "id": "building.command:column:6",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 537,
+      "index": 540,
       "id": "building.command:column:6:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 538,
+      "index": 541,
       "id": "building.command:column:6:part:gate",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 539,
+      "index": 542,
+      "id": "building.command:column:6:part:brazierFlames",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 543,
       "id": "mist-halo:8",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 540,
+      "index": 544,
       "id": "building.command:column:13",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 541,
+      "index": 545,
       "id": "building.command:column:13:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 542,
+      "index": 546,
       "id": "building.command:column:7",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 543,
+      "index": 547,
       "id": "building.command:column:7:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 544,
+      "index": 548,
       "id": "prop:calendar.harvest-pumpkins-civic:whole",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 545,
+      "index": 549,
       "id": "building.command:column:12",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 546,
+      "index": 550,
       "id": "building.command:column:12:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 547,
-      "id": "agent:readme-flint",
-      "layer": 2,
-      "flags": 16417
-    },
-    {
-      "index": 548,
-      "id": "agent:readme-flint-head",
-      "layer": 3,
-      "flags": 1
-    },
-    {
-      "index": 549,
-      "id": "carried-lantern:readme-flint",
-      "layer": 6,
-      "flags": 1
-    },
-    {
-      "index": 550,
+      "index": 551,
       "id": "agent:readme-moss",
       "layer": 2,
       "flags": 24609
     },
     {
-      "index": 551,
+      "index": 552,
       "id": "agent:readme-moss:queue-candle",
       "layer": 6,
       "flags": 8193
     },
     {
-      "index": 552,
+      "index": 553,
       "id": "building.command:column:8",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 553,
+      "index": 554,
       "id": "building.command:column:8:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 554,
+      "index": 555,
       "id": "mist-halo:7",
       "layer": 0,
       "flags": 0
     },
     {
-      "index": 555,
+      "index": 556,
       "id": "building.command:column:11",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 556,
+      "index": 557,
       "id": "building.command:column:11:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 557,
+      "index": 558,
       "id": "building.command:column:9",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 558,
+      "index": 559,
       "id": "building.command:column:9:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 559,
+      "index": 560,
       "id": "building.command:column:10",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 560,
+      "index": 561,
       "id": "building.command:column:10:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 561,
+      "index": 562,
       "id": "building.tavern:column:0",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 562,
+      "index": 563,
       "id": "building.tavern:column:1",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 563,
+      "index": 564,
       "id": "building.tavern:column:2",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 564,
+      "index": 565,
       "id": "building.tavern:column:3",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 565,
+      "index": 566,
       "id": "building.tavern:column:4",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 566,
+      "index": 567,
       "id": "building.tavern:column:5",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 567,
-      "id": "building.tavern:column:6",
-      "layer": 0,
-      "flags": 17
-    },
-    {
       "index": 568,
-      "id": "building.tavern:column:7",
+      "id": "prop:prop.plazaFountain:whole",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 569,
+      "id": "prop:prop.plazaFountainWater:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 570,
+      "id": "building.tavern:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 571,
+      "id": "building.tavern:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 572,
       "id": "building.tavern:column:7:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 570,
+      "index": 573,
       "id": "prop:rest-seat.stool.tavern-bar-w.back:whole",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 571,
+      "index": 574,
+      "id": "agent:readme-flint",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 575,
+      "id": "agent:readme-flint-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 576,
+      "id": "carried-lantern:readme-flint",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 577,
       "id": "agent:readme-rowan",
       "layer": 2,
       "flags": 16417
     },
     {
-      "index": 572,
+      "index": 578,
       "id": "carried-lantern:readme-rowan",
       "layer": 6,
       "flags": 1
     },
     {
-      "index": 573,
+      "index": 579,
       "id": "prop:rest-seat.stool.tavern-bar-w.front:whole",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 574,
+      "index": 580,
       "id": "building.tavern:column:8",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 575,
+      "index": 581,
       "id": "building.tavern:column:8:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 576,
+      "index": 582,
       "id": "building.tavern:column:9",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 577,
+      "index": 583,
       "id": "building.tavern:column:9:glass",
       "layer": 0,
       "flags": 17
     },
     {
-      "index": 578,
+      "index": 584,
       "id": "prop:rest-seat.stool.tavern-bar-mid.back:whole",
       "layer": 0,
       "flags": 1
     },
     {
-      "index": 579,
-      "id": "mist-halo:13",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 580,
-      "id": "prop:rest-seat.stool.tavern-bar-mid.front:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 581,
-      "id": "mist-halo:9",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 582,
-      "id": "building.tavern:column:17",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 583,
-      "id": "prop:tavern-arcade:column:0",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 584,
-      "id": "building.tavern:column:10",
-      "layer": 0,
-      "flags": 17
-    },
-    {
       "index": 585,
-      "id": "building.tavern:column:10:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 586,
-      "id": "prop:tavern-arcade:column:1",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 587,
-      "id": "building.tavern:column:16",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 588,
-      "id": "building.tavern:column:16:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 589,
-      "id": "prop:tavern-arcade:column:2",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 590,
-      "id": "prop:tavern-arcade:column:3",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 591,
-      "id": "mist-halo:14",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 592,
-      "id": "building.tavern:column:15",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 593,
-      "id": "building.tavern:column:15:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 594,
-      "id": "prop:tavern-arcade:column:4",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 595,
-      "id": "prop:tavern-arcade:column:5",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 596,
-      "id": "building.tavern:column:14",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 597,
-      "id": "building.tavern:column:14:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 598,
-      "id": "prop:tavern-arcade:column:6",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 599,
-      "id": "mist-halo:10",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 600,
-      "id": "prop:tavern-arcade:column:7",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 601,
-      "id": "building.tavern:column:13",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 602,
-      "id": "building.tavern:column:13:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 603,
-      "id": "prop:tavern-arcade:column:8",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 604,
-      "id": "prop:tavern-arcade:column:9",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 605,
-      "id": "building.tavern:column:12",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 606,
-      "id": "building.tavern:column:12:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 607,
-      "id": "prop:tavern-arcade:column:10",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 608,
-      "id": "prop:tavern-arcade:column:11",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 609,
-      "id": "prop:bridge.rail.central-river-bridge:column:19",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 610,
-      "id": "prop:bridge.rail.central-river-bridge:column:20",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 611,
-      "id": "prop:bridge.rail.central-river-bridge:column:21",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 612,
-      "id": "prop:bridge.rail.central-river-bridge:column:22",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 613,
-      "id": "prop:bridge.rail.central-river-bridge:column:18",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 614,
-      "id": "building.tavern:column:11",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 615,
-      "id": "building.tavern:column:11:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 616,
-      "id": "prop:tavern-arcade:column:12",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 617,
-      "id": "mist-halo:6",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 618,
-      "id": "prop:bridge.rail.central-river-bridge:column:17",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 619,
-      "id": "prop:tavern-arcade:column:13",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 620,
-      "id": "prop:bridge.rail.central-river-bridge:column:16",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 621,
-      "id": "prop:tavern-arcade:column:14",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 622,
-      "id": "prop:bridge.rail.central-river-bridge:column:15",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 623,
-      "id": "prop:rest-seat.tavern.tavern-wall-w.back:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 624,
-      "id": "prop:tavern-arcade:column:15",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 625,
-      "id": "agent:readme-cinder",
-      "layer": 2,
-      "flags": 16417
-    },
-    {
-      "index": 626,
-      "id": "agent:readme-cinder-head",
-      "layer": 3,
-      "flags": 1
-    },
-    {
-      "index": 627,
-      "id": "carried-lantern:readme-cinder",
-      "layer": 6,
-      "flags": 1
-    },
-    {
-      "index": 628,
-      "id": "agent:readme-cinder:tavern-tankard",
-      "layer": 6,
-      "flags": 1
-    },
-    {
-      "index": 629,
-      "id": "prop:rest-seat.tavern.tavern-wall-w.front:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 630,
-      "id": "prop:bridge.rail.central-river-bridge:column:14",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 631,
-      "id": "prop:tavern-arcade:column:16",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 632,
-      "id": "prop:bridge.rail.central-river-bridge:column:13",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 633,
-      "id": "prop:tavern-arcade:column:17",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 634,
-      "id": "mist-halo:11",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 635,
-      "id": "prop:bridge.rail.central-river-bridge:column:12",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 636,
-      "id": "prop:tavern-arcade:column:18",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 637,
-      "id": "mist-halo:5",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 638,
-      "id": "prop:bridge.rail.central-river-bridge:column:11",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 639,
-      "id": "prop:tavern-arcade:column:19",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 640,
-      "id": "prop:rest-seat.tavern.tavern-wall-e.back:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 641,
-      "id": "prop:rest-seat.tavern.tavern-yard-w.back:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 642,
-      "id": "agent:readme-quill",
-      "layer": 2,
-      "flags": 16417
-    },
-    {
-      "index": 643,
-      "id": "carried-lantern:readme-quill",
-      "layer": 6,
-      "flags": 1
-    },
-    {
-      "index": 644,
-      "id": "agent:readme-quill:tavern-tankard",
-      "layer": 6,
-      "flags": 1
-    },
-    {
-      "index": 645,
-      "id": "prop:prop.mangroveRoot.twisted:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 646,
-      "id": "prop:rest-seat.tavern.tavern-wall-e.front:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 647,
-      "id": "prop:rest-seat.tavern.tavern-yard-w.front:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 648,
-      "id": "prop:bridge.rail.central-river-bridge:column:10",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 649,
-      "id": "prop:bridge.rail.central-river-bridge:column:9",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 650,
-      "id": "prop:bridge.rail.central-river-bridge:column:8",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 651,
-      "id": "mist-halo:12",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 652,
-      "id": "prop:bridge.rail.central-river-bridge:column:7",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 653,
-      "id": "prop:rest-seat.tavern.tavern-yard-mid.back:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 654,
-      "id": "prop:rest-seat.tavern.tavern-yard-mid.front:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 655,
-      "id": "prop:bridge.rail.central-river-bridge:column:6",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 656,
-      "id": "building.mine:column:0",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 657,
-      "id": "prop:bridge.rail.central-river-bridge:column:5",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 658,
-      "id": "prop:bridge.rail.central-river-bridge:column:4",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 659,
-      "id": "prop:fantasy.tree:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 660,
-      "id": "prop:fantasy.tree:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 661,
-      "id": "building.mine:column:1",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 662,
-      "id": "prop:bridge.rail.central-river-bridge:column:0",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 663,
-      "id": "prop:bridge.rail.central-river-bridge:column:1",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 664,
-      "id": "prop:bridge.rail.central-river-bridge:column:2",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 665,
-      "id": "prop:bridge.rail.central-river-bridge:column:3",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 666,
-      "id": "prop:rest-seat.tavern.tavern-yard-e.back:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 667,
-      "id": "prop:fantasy.tree:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 668,
-      "id": "prop:rest-seat.tavern.tavern-yard-e.front:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 669,
-      "id": "building.mine:column:2",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 670,
-      "id": "building.mine:column:2:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 671,
-      "id": "building.mine:column:13",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 672,
-      "id": "building.mine:column:3",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 673,
-      "id": "building.mine:column:3:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 674,
-      "id": "building.mine:column:12",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 675,
-      "id": "prop:prop.bridgeBannerRune:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 676,
-      "id": "building.mine:column:4",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 677,
-      "id": "building.mine:column:4:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 678,
-      "id": "building.mine:column:11",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 679,
-      "id": "building.mine:column:5",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 680,
-      "id": "building.mine:column:10",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 681,
-      "id": "prop:rest-seat.pier.harbor-pier.back:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 682,
-      "id": "prop:calendar.weekend-awning:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 683,
-      "id": "prop:rest-seat.pier.harbor-pier.front:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 684,
-      "id": "building.mine:column:6",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 685,
-      "id": "building.mine:column:9",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 686,
-      "id": "building.mine:column:7",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 687,
-      "id": "building.mine:column:8",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 688,
-      "id": "building.harbor:column:0",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 689,
-      "id": "building.harbor:column:1",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 690,
-      "id": "building.harbor:column:14",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 691,
-      "id": "building.harbor:column:15",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 692,
-      "id": "building.harbor:column:16",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 693,
-      "id": "building.harbor:column:17",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 694,
-      "id": "building.harbor:column:18",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 695,
-      "id": "building.harbor:column:19",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 696,
-      "id": "building.harbor:column:20",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 697,
-      "id": "building.harbor:column:21",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 698,
-      "id": "building.harbor:column:22",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 699,
-      "id": "building.harbor:column:23",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 700,
-      "id": "agent:readme-spark",
-      "layer": 2,
-      "flags": 16417
-    },
-    {
-      "index": 701,
-      "id": "carried-lantern:readme-spark",
-      "layer": 6,
-      "flags": 1
-    },
-    {
-      "index": 702,
-      "id": "building.harbor:column:2",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 703,
-      "id": "building.harbor:column:13",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 704,
-      "id": "building.harbor:column:3",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 705,
-      "id": "building.harbor:column:12",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 706,
-      "id": "building.harbor:column:4",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 707,
-      "id": "building.harbor:column:11",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 708,
-      "id": "building.harbor:column:11:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 709,
-      "id": "building.harbor:column:5",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 710,
-      "id": "building.harbor:column:5:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 711,
-      "id": "building.harbor:column:10",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 712,
-      "id": "building.harbor:column:10:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 713,
-      "id": "prop:fantasy.tree:whole",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 714,
-      "id": "building.harbor:column:6",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 715,
-      "id": "building.harbor:column:6:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 716,
-      "id": "building.harbor:column:9",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 717,
-      "id": "building.harbor:column:9:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 718,
-      "id": "building.harbor:column:7",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 719,
-      "id": "building.harbor:column:7:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 720,
-      "id": "building.harbor:column:8",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 721,
-      "id": "building.harbor:column:8:glass",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 722,
-      "id": "building.harbor:column:8:part:door",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 723,
-      "id": "prop:prop.villageGate:column:0",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 724,
-      "id": "agent:readme-tansy",
-      "layer": 2,
-      "flags": 16417
-    },
-    {
-      "index": 725,
-      "id": "carried-lantern:readme-tansy",
-      "layer": 6,
-      "flags": 1
-    },
-    {
-      "index": 726,
-      "id": "mist-halo:2",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 727,
-      "id": "prop:prop.villageGate:column:1",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 728,
-      "id": "prop:prop.villageGate:column:2",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 729,
-      "id": "agent:readme-basalt",
-      "layer": 2,
-      "flags": 16417
-    },
-    {
-      "index": 730,
-      "id": "agent:readme-basalt-head",
-      "layer": 3,
-      "flags": 1
-    },
-    {
-      "index": 731,
-      "id": "carried-lantern:readme-basalt",
-      "layer": 6,
-      "flags": 1
-    },
-    {
-      "index": 732,
-      "id": "agent:readme-terra",
-      "layer": 2,
-      "flags": 16417
-    },
-    {
-      "index": 733,
-      "id": "carried-lantern:readme-terra",
-      "layer": 6,
-      "flags": 1
-    },
-    {
-      "index": 734,
-      "id": "mist-halo:17",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 735,
-      "id": "prop:prop.villageGate:column:3",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 736,
-      "id": "prop:prop.villageGate:column:4",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 737,
-      "id": "agent:readme-ember",
-      "layer": 2,
-      "flags": 16417
-    },
-    {
-      "index": 738,
-      "id": "agent:readme-ember-head",
-      "layer": 3,
-      "flags": 1
-    },
-    {
-      "index": 739,
-      "id": "carried-lantern:readme-ember",
-      "layer": 6,
-      "flags": 1
-    },
-    {
-      "index": 740,
-      "id": "prop:prop.villageGate:column:5",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 741,
-      "id": "building.forge:column:0",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 742,
-      "id": "prop:prop.villageGate:column:6",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 743,
-      "id": "building.forge:column:1",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 744,
-      "id": "mist-halo:15",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 745,
-      "id": "prop:prop.villageGate:column:7",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 746,
-      "id": "mist-halo:19",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 747,
-      "id": "building.forge:column:2",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 748,
-      "id": "building.forge:column:2:part:bellows",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 749,
-      "id": "prop:prop.villageGate:column:8",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 750,
-      "id": "building.forge:column:3",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 751,
-      "id": "building.forge:column:3:part:bellows",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 752,
-      "id": "building.forge:column:14",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 753,
-      "id": "prop:prop.villageGate:column:9",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 754,
-      "id": "mist-halo:18",
-      "layer": 0,
-      "flags": 0
-    },
-    {
-      "index": 755,
-      "id": "building.forge:column:4",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 756,
-      "id": "building.forge:column:4:part:bellows",
-      "layer": 0,
-      "flags": 1
-    },
-    {
-      "index": 757,
-      "id": "building.forge:column:13",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 758,
-      "id": "prop:prop.villageGate:column:10",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 759,
-      "id": "building.forge:column:5",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 760,
-      "id": "building.forge:column:12",
-      "layer": 0,
-      "flags": 17
-    },
-    {
-      "index": 761,
       "id": "mist-halo:16",
       "layer": 0,
       "flags": 0
     },
     {
+      "index": 586,
+      "id": "prop:rest-seat.stool.tavern-bar-mid.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 587,
+      "id": "mist-halo:9",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 588,
+      "id": "building.tavern:column:17",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 589,
+      "id": "prop:tavern-arcade:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 590,
+      "id": "building.tavern:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 591,
+      "id": "building.tavern:column:10:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 592,
+      "id": "prop:tavern-arcade:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 593,
+      "id": "building.tavern:column:16",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 594,
+      "id": "building.tavern:column:16:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 595,
+      "id": "prop:tavern-arcade:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 596,
+      "id": "prop:tavern-arcade:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 597,
+      "id": "mist-halo:17",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 598,
+      "id": "building.tavern:column:15",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 599,
+      "id": "building.tavern:column:15:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 600,
+      "id": "prop:tavern-arcade:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 601,
+      "id": "prop:tavern-arcade:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 602,
+      "id": "building.tavern:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 603,
+      "id": "building.tavern:column:14:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 604,
+      "id": "prop:tavern-arcade:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 605,
+      "id": "mist-halo:10",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 606,
+      "id": "prop:tavern-arcade:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 607,
+      "id": "building.tavern:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 608,
+      "id": "building.tavern:column:13:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 609,
+      "id": "prop:tavern-arcade:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 610,
+      "id": "prop:tavern-arcade:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 611,
+      "id": "building.tavern:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 612,
+      "id": "building.tavern:column:12:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 613,
+      "id": "prop:tavern-arcade:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 614,
+      "id": "prop:tavern-arcade:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 615,
+      "id": "prop:bridge.rail.central-river-bridge:column:19",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 616,
+      "id": "prop:bridge.rail.central-river-bridge:column:20",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 617,
+      "id": "prop:bridge.rail.central-river-bridge:column:21",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 618,
+      "id": "prop:bridge.rail.central-river-bridge:column:22",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 619,
+      "id": "prop:bridge.rail.central-river-bridge:column:18",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 620,
+      "id": "building.tavern:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 621,
+      "id": "building.tavern:column:11:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 622,
+      "id": "prop:tavern-arcade:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 623,
+      "id": "mist-halo:6",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 624,
+      "id": "prop:bridge.rail.central-river-bridge:column:17",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 625,
+      "id": "prop:tavern-arcade:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 626,
+      "id": "prop:bridge.rail.central-river-bridge:column:16",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 627,
+      "id": "prop:tavern-arcade:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 628,
+      "id": "prop:bridge.rail.central-river-bridge:column:15",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 629,
+      "id": "prop:rest-seat.tavern.tavern-wall-w.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 630,
+      "id": "prop:tavern-arcade:column:15",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 631,
+      "id": "agent:readme-cinder",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 632,
+      "id": "agent:readme-cinder-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 633,
+      "id": "carried-lantern:readme-cinder",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 634,
+      "id": "agent:readme-cinder:tavern-tankard",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 635,
+      "id": "prop:rest-seat.tavern.tavern-wall-w.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 636,
+      "id": "prop:bridge.rail.central-river-bridge:column:14",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 637,
+      "id": "prop:tavern-arcade:column:16",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 638,
+      "id": "prop:bridge.rail.central-river-bridge:column:13",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 639,
+      "id": "prop:tavern-arcade:column:17",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 640,
+      "id": "mist-halo:11",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 641,
+      "id": "prop:bridge.rail.central-river-bridge:column:12",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 642,
+      "id": "prop:tavern-arcade:column:18",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 643,
+      "id": "mist-halo:5",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 644,
+      "id": "prop:bridge.rail.central-river-bridge:column:11",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 645,
+      "id": "prop:tavern-arcade:column:19",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 646,
+      "id": "prop:rest-seat.tavern.tavern-wall-e.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 647,
+      "id": "prop:rest-seat.tavern.tavern-yard-w.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 648,
+      "id": "agent:readme-quill",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 649,
+      "id": "carried-lantern:readme-quill",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 650,
+      "id": "agent:readme-quill:tavern-tankard",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 651,
+      "id": "prop:prop.mangroveRoot.twisted:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 652,
+      "id": "prop:rest-seat.tavern.tavern-wall-e.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 653,
+      "id": "prop:rest-seat.tavern.tavern-yard-w.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 654,
+      "id": "prop:bridge.rail.central-river-bridge:column:10",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 655,
+      "id": "prop:bridge.rail.central-river-bridge:column:9",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 656,
+      "id": "prop:bridge.rail.central-river-bridge:column:8",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 657,
+      "id": "mist-halo:12",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 658,
+      "id": "prop:bridge.rail.central-river-bridge:column:7",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 659,
+      "id": "prop:rest-seat.tavern.tavern-yard-mid.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 660,
+      "id": "prop:rest-seat.tavern.tavern-yard-mid.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 661,
+      "id": "prop:bridge.rail.central-river-bridge:column:6",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 662,
+      "id": "building.mine:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 663,
+      "id": "prop:bridge.rail.central-river-bridge:column:5",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 664,
+      "id": "prop:bridge.rail.central-river-bridge:column:4",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 665,
+      "id": "prop:fantasy.tree:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 666,
+      "id": "prop:fantasy.tree:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 667,
+      "id": "building.mine:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 668,
+      "id": "prop:bridge.rail.central-river-bridge:column:0",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 669,
+      "id": "prop:bridge.rail.central-river-bridge:column:1",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 670,
+      "id": "prop:bridge.rail.central-river-bridge:column:2",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 671,
+      "id": "prop:bridge.rail.central-river-bridge:column:3",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 672,
+      "id": "prop:rest-seat.tavern.tavern-yard-e.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 673,
+      "id": "prop:fantasy.tree:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 674,
+      "id": "prop:rest-seat.tavern.tavern-yard-e.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 675,
+      "id": "building.mine:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 676,
+      "id": "building.mine:column:2:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 677,
+      "id": "building.mine:column:2:part:roomGlassLit",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 678,
+      "id": "building.mine:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 679,
+      "id": "building.mine:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 680,
+      "id": "building.mine:column:3:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 681,
+      "id": "building.mine:column:3:part:roomGlassLit",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 682,
+      "id": "building.mine:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 683,
+      "id": "prop:prop.bridgeBannerRune:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 684,
+      "id": "building.mine:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 685,
+      "id": "building.mine:column:4:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 686,
+      "id": "building.mine:column:4:part:roomGlassLit",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 687,
+      "id": "building.mine:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 688,
+      "id": "building.mine:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 689,
+      "id": "building.mine:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 690,
+      "id": "prop:rest-seat.pier.harbor-pier.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 691,
+      "id": "prop:calendar.weekend-awning:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 692,
+      "id": "prop:rest-seat.pier.harbor-pier.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 693,
+      "id": "building.mine:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 694,
+      "id": "building.mine:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 695,
+      "id": "building.mine:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 696,
+      "id": "building.mine:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 697,
+      "id": "building.harbor:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 698,
+      "id": "building.harbor:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 699,
+      "id": "building.harbor:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 700,
+      "id": "building.harbor:column:15",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 701,
+      "id": "building.harbor:column:16",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 702,
+      "id": "building.harbor:column:17",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 703,
+      "id": "building.harbor:column:18",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 704,
+      "id": "building.harbor:column:19",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 705,
+      "id": "building.harbor:column:20",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 706,
+      "id": "building.harbor:column:21",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 707,
+      "id": "building.harbor:column:22",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 708,
+      "id": "building.harbor:column:23",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 709,
+      "id": "agent:readme-spark",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 710,
+      "id": "carried-lantern:readme-spark",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 711,
+      "id": "building.harbor:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 712,
+      "id": "building.harbor:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 713,
+      "id": "building.harbor:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 714,
+      "id": "building.harbor:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 715,
+      "id": "building.harbor:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 716,
+      "id": "building.harbor:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 717,
+      "id": "building.harbor:column:11:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 718,
+      "id": "building.harbor:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 719,
+      "id": "building.harbor:column:5:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 720,
+      "id": "building.harbor:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 721,
+      "id": "building.harbor:column:10:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 722,
+      "id": "prop:fantasy.tree:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 723,
+      "id": "building.harbor:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 724,
+      "id": "building.harbor:column:6:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 725,
+      "id": "building.harbor:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 726,
+      "id": "building.harbor:column:9:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 727,
+      "id": "building.harbor:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 728,
+      "id": "building.harbor:column:7:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 729,
+      "id": "building.harbor:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 730,
+      "id": "building.harbor:column:8:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 731,
+      "id": "building.harbor:column:8:part:door",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 732,
+      "id": "prop:prop.villageGate:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 733,
+      "id": "agent:readme-tansy",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 734,
+      "id": "carried-lantern:readme-tansy",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 735,
+      "id": "mist-halo:2",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 736,
+      "id": "prop:prop.villageGate:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 737,
+      "id": "prop:prop.villageGate:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 738,
+      "id": "agent:readme-basalt",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 739,
+      "id": "agent:readme-basalt-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 740,
+      "id": "carried-lantern:readme-basalt",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 741,
+      "id": "agent:readme-terra",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 742,
+      "id": "carried-lantern:readme-terra",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 743,
+      "id": "mist-halo:20",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 744,
+      "id": "prop:prop.villageGate:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 745,
+      "id": "prop:prop.villageGate:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 746,
+      "id": "agent:readme-ember",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 747,
+      "id": "agent:readme-ember-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 748,
+      "id": "carried-lantern:readme-ember",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 749,
+      "id": "prop:prop.villageGate:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 750,
+      "id": "building.forge:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 751,
+      "id": "prop:prop.villageGate:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 752,
+      "id": "building.forge:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 753,
+      "id": "mist-halo:18",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 754,
+      "id": "prop:prop.villageGate:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 755,
+      "id": "mist-halo:22",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 756,
+      "id": "building.forge:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 757,
+      "id": "building.forge:column:2:part:bellows",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 758,
+      "id": "prop:prop.villageGate:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 759,
+      "id": "building.forge:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 760,
+      "id": "building.forge:column:3:part:bellows",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 761,
+      "id": "building.forge:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
       "index": 762,
-      "id": "prop:prop.villageGate:column:11",
+      "id": "prop:prop.villageGate:column:9",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 763,
-      "id": "building.forge:column:6",
+      "id": "mist-halo:21",
       "layer": 0,
-      "flags": 17
+      "flags": 0
     },
     {
       "index": 764,
-      "id": "building.forge:column:11",
+      "id": "building.forge:column:4",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 765,
-      "id": "mist-halo:1",
+      "id": "building.forge:column:4:part:bellows",
       "layer": 0,
-      "flags": 0
+      "flags": 1
     },
     {
       "index": 766,
-      "id": "prop:prop.villageGate:column:12",
+      "id": "building.forge:column:13",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 767,
-      "id": "building.forge:column:7",
+      "id": "prop:prop.villageGate:column:10",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 768,
-      "id": "building.forge:column:7:forge-workload",
+      "id": "building.forge:column:5",
       "layer": 0,
-      "flags": 1
+      "flags": 17
     },
     {
       "index": 769,
-      "id": "building.forge:column:10",
+      "id": "building.forge:column:12",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 770,
-      "id": "building.forge:column:10:glass",
+      "id": "mist-halo:19",
       "layer": 0,
-      "flags": 17
+      "flags": 0
     },
     {
       "index": 771,
-      "id": "prop:prop.villageGate:column:13",
+      "id": "prop:prop.villageGate:column:11",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 772,
-      "id": "building.forge:column:8",
+      "id": "building.forge:column:6",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 773,
-      "id": "building.forge:column:8:glass",
+      "id": "building.forge:column:11",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 774,
-      "id": "building.forge:column:8:forge-workload",
+      "id": "mist-halo:1",
       "layer": 0,
-      "flags": 1
+      "flags": 0
     },
     {
       "index": 775,
-      "id": "building.forge:column:9",
+      "id": "prop:prop.villageGate:column:12",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 776,
-      "id": "building.forge:column:9:glass",
+      "id": "building.forge:column:7",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 777,
-      "id": "prop:prop.villageGate:column:14",
+      "id": "building.forge:column:7:forge-workload",
       "layer": 0,
-      "flags": 17
+      "flags": 1
     },
     {
       "index": 778,
-      "id": "prop:prop.villageGate:column:15",
+      "id": "building.forge:column:10",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 779,
-      "id": "building.taskboard:column:0",
+      "id": "building.forge:column:10:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 780,
-      "id": "building.taskboard:column:0:glass",
+      "id": "prop:prop.villageGate:column:13",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 781,
-      "id": "prop:prop.villageGate:column:16",
+      "id": "building.forge:column:8",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 782,
-      "id": "building.taskboard:column:1",
+      "id": "building.forge:column:8:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 783,
-      "id": "building.taskboard:column:1:glass",
+      "id": "building.forge:column:8:forge-workload",
       "layer": 0,
-      "flags": 17
+      "flags": 1
     },
     {
       "index": 784,
-      "id": "prop:prop.villageGate:column:17",
+      "id": "building.forge:column:9",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 785,
-      "id": "building.taskboard:column:2",
+      "id": "building.forge:column:9:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 786,
-      "id": "building.taskboard:column:2:glass",
+      "id": "prop:prop.villageGate:column:14",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 787,
-      "id": "building.taskboard:column:11",
+      "id": "prop:prop.villageGate:column:15",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 788,
-      "id": "building.taskboard:column:11:glass",
+      "id": "building.taskboard:column:0",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 789,
-      "id": "prop:prop.villageGate:column:18",
+      "id": "building.taskboard:column:0:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 790,
-      "id": "mist-halo:4",
+      "id": "prop:prop.villageGate:column:16",
       "layer": 0,
-      "flags": 0
+      "flags": 17
     },
     {
       "index": 791,
-      "id": "building.taskboard:column:3",
+      "id": "building.taskboard:column:1",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 792,
-      "id": "building.taskboard:column:3:glass",
+      "id": "building.taskboard:column:1:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 793,
-      "id": "building.taskboard:column:10",
+      "id": "prop:prop.villageGate:column:17",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 794,
-      "id": "building.taskboard:column:10:glass",
+      "id": "building.taskboard:column:2",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 795,
-      "id": "prop:prop.villageGate:column:19",
+      "id": "building.taskboard:column:2:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 796,
-      "id": "building.taskboard:column:4",
+      "id": "building.taskboard:column:11",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 797,
-      "id": "building.taskboard:column:4:glass",
+      "id": "building.taskboard:column:11:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 798,
-      "id": "building.taskboard:column:9",
+      "id": "prop:prop.villageGate:column:18",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 799,
-      "id": "building.taskboard:column:9:glass",
+      "id": "mist-halo:4",
       "layer": 0,
-      "flags": 17
+      "flags": 0
     },
     {
       "index": 800,
-      "id": "prop:prop.villageGate:column:20",
+      "id": "building.taskboard:column:3",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 801,
-      "id": "building.taskboard:column:5",
+      "id": "building.taskboard:column:3:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 802,
-      "id": "building.taskboard:column:5:glass",
+      "id": "building.taskboard:column:10",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 803,
-      "id": "building.taskboard:column:8",
+      "id": "building.taskboard:column:10:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 804,
-      "id": "building.taskboard:column:8:glass",
+      "id": "prop:prop.villageGate:column:19",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 805,
-      "id": "prop:prop.villageGate:column:21",
+      "id": "building.taskboard:column:4",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 806,
-      "id": "building.taskboard:column:6",
+      "id": "building.taskboard:column:4:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 807,
-      "id": "building.taskboard:column:6:glass",
+      "id": "building.taskboard:column:9",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 808,
-      "id": "building.taskboard:column:7",
+      "id": "building.taskboard:column:9:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 809,
-      "id": "building.taskboard:column:7:glass",
+      "id": "prop:prop.villageGate:column:20",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 810,
-      "id": "prop:prop.villageGate:column:22",
+      "id": "building.taskboard:column:5",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 811,
-      "id": "prop:prop.villageGate:column:23",
+      "id": "building.taskboard:column:5:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 812,
-      "id": "prop:prop.villageGate:column:24",
+      "id": "building.taskboard:column:8",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 813,
-      "id": "prop:prop.villageGate:column:25",
+      "id": "building.taskboard:column:8:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 814,
-      "id": "prop:prop.villageGate:column:26",
+      "id": "prop:prop.villageGate:column:21",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 815,
-      "id": "prop:prop.villageGate:column:27",
+      "id": "building.taskboard:column:6",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 816,
-      "id": "prop:prop.villageGate:column:28",
+      "id": "building.taskboard:column:6:glass",
       "layer": 0,
       "flags": 17
     },
     {
       "index": 817,
+      "id": "building.taskboard:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 818,
+      "id": "building.taskboard:column:7:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 819,
+      "id": "prop:prop.villageGate:column:22",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 820,
+      "id": "prop:prop.villageGate:column:23",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 821,
+      "id": "prop:prop.villageGate:column:24",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 822,
+      "id": "prop:prop.villageGate:column:25",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 823,
+      "id": "prop:prop.villageGate:column:26",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 824,
+      "id": "prop:prop.villageGate:column:27",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 825,
+      "id": "prop:prop.villageGate:column:28",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 826,
       "id": "prop:prop.villageGate:column:29",
       "layer": 0,
       "flags": 17
@@ -4983,21 +5037,21 @@
         "shadeField": 0
       },
       "volatilePixels": 2505011,
-      "shadeFieldBufferBytes": 15138816,
-      "retainedAssetPixels": 164356,
+      "shadeFieldBufferBytes": 0,
+      "retainedAssetPixels": 89380,
       "domCanvasPixels": 3467520,
       "resources": {
         "canvas": {
           "visible": 13870080,
           "volatile": 10020044,
-          "retained": 657424
+          "retained": 357520
         },
-        "canvasBytes": 123738940,
+        "canvasBytes": 104155508,
         "gpu": {
           "textures": {
-            "gpuWorld.pinnedSources": 99576650,
-            "gpuWorld.evictableSources": 31384512,
-            "gpuWorld.albedoPage": 8388608,
+            "gpuWorld.pinnedSources": 100631610,
+            "gpuWorld.evictableSources": 36429056,
+            "gpuWorld.albedoPage": 4194304,
             "gpuWorld.radiance": 0
           },
           "attachments": {
@@ -5009,50 +5063,50 @@
             "gpuWorld.bloomB": 975240
           },
           "buffers": {
-            "gpuWorld.vertices": 131072,
+            "gpuWorld.vertices": 65536,
             "gpuWorld.marks": 2048,
             "gpuWorld.particles": 6720,
             "gpuWorld.lights": 16384
           },
           "groupTotals": {
-            "textures": 139349770,
+            "textures": 141254970,
             "attachments": 26223120,
-            "buffers": 156224
+            "buffers": 90688
           },
-          "totalBytes": 165729114,
-          "pinnedBytes": 134344602,
-          "evictableBytes": 31384512
+          "totalBytes": 167568778,
+          "pinnedBytes": 131139722,
+          "evictableBytes": 36429056
         },
-        "gpuBytes": 165729114,
+        "gpuBytes": 167568778,
         "ownershipLeaves": {
-          "cpuDecodedEstimateBytes": 639202512,
-          "cpuDerivedEstimateBytes": 109868860,
+          "cpuDecodedEstimateBytes": 640641744,
+          "cpuDerivedEstimateBytes": 90285428,
           "canvasVisibleEstimateBytes": 13870080,
-          "gpuOwnedBytes": 165729114
+          "gpuOwnedBytes": 167568778
         },
-        "totalBytes": 928670566,
+        "totalBytes": 912366030,
         "budgetBytes": 378217728
       },
       "cacheCounts": {
         "lightGradients": 0,
         "lightFadeColors": 0,
         "lightColorRgb": 0,
-        "fantasyForestTrees": 21
+        "fantasyForestTrees": 5
       },
       "cacheStats": {
         "assets": {
-          "bitmaps": 290,
-          "bitmapPixels": 22885007,
+          "bitmaps": 300,
+          "bitmapPixels": 22962959,
           "masks": 9,
           "maskBytes": 732480,
           "outlines": 9,
           "outlinePixels": 732480,
-          "companions": 147,
-          "companionPixels": 60334245,
+          "companions": 168,
+          "companionPixels": 60503077,
           "atlasImages": 4,
-          "atlasPixels": 14354048,
+          "atlasPixels": 14467072,
           "atlasMetadata": 1,
-          "materialTextureBytes": 298753172,
+          "materialTextureBytes": 299880596,
           "missing": 0,
           "optionalMissing": 0,
           "decodedLoaded": true,
@@ -5071,16 +5125,16 @@
         "agentSprites": {
           "processedSpriteSheets": 0,
           "processedSpritePixels": 0,
-          "processedSpriteEntryLimit": 37,
+          "processedSpriteEntryLimit": 24,
           "processedSpritePixelLimit": 12500000,
           "codexEquipmentAssets": 0,
           "codexEquipmentPixels": 0,
           "codexEquipmentEstimateBytes": 0,
-          "canvasCellBytes": 15980032,
-          "canvasCells": 472,
-          "modelSheetBytes": 62295040,
-          "modelBaseBytes": 18146816,
-          "layerCacheBytes": 80288608,
+          "canvasCellBytes": 11748032,
+          "canvasCells": 347,
+          "modelSheetBytes": 63378432,
+          "modelBaseBytes": 17232704,
+          "layerCacheBytes": 76211608,
           "gpuEquippedSheetPixelLimit": 0,
           "gpuEquippedSheets": 0,
           "gpuEquippedSheetEstimateBytes": 0,
@@ -5089,10 +5143,10 @@
           "packedGeometryEstimateBytes": 0,
           "processedSpriteEstimateBytes": 0,
           "compositorEstimateBytes": 0,
-          "privateDerivedEstimateBytes": 101568,
+          "privateDerivedEstimateBytes": 33856,
           "gpuAgentMaterialAtlasEstimateBytes": 0,
           "gpuAgentEmissiveAtlasEstimateBytes": 0,
-          "cpuDerivedEstimateBytes": 80390176,
+          "cpuDerivedEstimateBytes": 76245464,
           "ownership": {
             "compositorSpriteSheets": {
               "ownershipClass": "CPU-derived",
@@ -5108,7 +5162,7 @@
             },
             "agentLayerSheets": {
               "ownershipClass": "CPU-derived",
-              "estimateBytes": 80288608
+              "estimateBytes": 76211608
             },
             "packedGeometrySheets": {
               "ownershipClass": "CPU-derived",
@@ -5116,7 +5170,7 @@
             },
             "perSpriteEffectCells": {
               "ownershipClass": "CPU-derived",
-              "estimateBytes": 101568
+              "estimateBytes": 33856
             },
             "gpuAgentMaterialAtlas": {
               "ownershipClass": "CPU-derived",
@@ -5130,37 +5184,24 @@
           "activeProfileKeys": [
             "agent.claude.fable|claude|8|_|_|raw|#bb9587",
             "agent.claude.haiku|claude|1|_|_|raw|_",
-            "agent.claude.haiku|claude|8|_|_|raw|#bb9587",
             "agent.claude.mythos|claude|2|_|_|raw|_",
-            "agent.claude.opus.b|claude|11|_|_|raw|_",
             "agent.claude.opus.b|claude|5|_|_|raw|_",
-            "agent.claude.sonnet|claude|11|_|_|raw|_",
             "agent.claude.sonnet|claude|1|_|_|raw|#bb9587",
             "agent.claude.sonnet|claude|3|_|_|raw|_",
             "agent.codex.gpt53spark|codex|7|_|multitool|raw|_",
             "agent.codex.gpt54|codex|10|_|engineerWrench|raw|_",
             "agent.codex.gpt55|codex|1|_|runeblade|raw|_",
             "agent.codex.gpt55|codex|9|_|runeblade|raw|_",
-            "agent.codex.gpt56luna.b|codex|3|_|crescentSaber|raw|_",
             "agent.codex.gpt56sol.b|codex|3|_|dawnblade|raw|_",
             "agent.codex.gpt56terra|codex|6|_|earthbreaker|raw|_",
-            "agent.codex.gpt6astra|codex|1|_|worldsplitter|raw|_",
-            "agent.codex.gpt6astra|codex|9|effortXhigh|worldsplitter|raw|_",
             "agent.deepseek.flash.high|deepseek|2|_|_|raw|_",
             "agent.deepseek.flash.xhigh|deepseek|3|effortMax|_|raw|_",
-            "agent.deepseek.flash|deepseek|4|_|_|raw|_",
-            "agent.deepseek.pro|deepseek|4|_|_|raw|_",
-            "agent.deepseek.reasoner|deepseek|9|_|_|raw|_",
             "agent.gemini.argon|gemini|0|_|_|raw|_",
-            "agent.gemini.base|gemini|11|_|_|raw|_",
-            "agent.gemini.base|gemini|2|_|_|raw|_",
-            "agent.gemini.carbon|gemini|5|_|_|raw|_",
             "agent.gemini.flash|gemini|1|_|_|raw|_",
             "agent.gemini.neon|gemini|8|effortXhigh|_|raw|_",
             "agent.grok.base|grok|4|biretta|_|raw|_",
             "agent.grok.base|grok|5|hornedHelm|_|raw|_",
             "agent.grok.composer|grok|11|laurelCrown|_|raw|_",
-            "agent.kimi.base|kimi|8|wingedHelm|_|raw|_",
             "agent.kimi.base|kimi|9|wingedHelm|_|raw|_",
             "agent.zai.flash|zai|11|_|_|raw|_",
             "agent.zai.glm.b|zai|7|_|_|raw|_",
@@ -5173,7 +5214,7 @@
             "agent.zai.flash|zai|11|_|_|raw|_"
           ],
           "sharedDerivedHighWaterEstimateBytes": 201326592,
-          "toolClassifications": 22
+          "toolClassifications": 0
         }
       },
       "gpu": {
@@ -5197,9 +5238,9 @@
           "pending": 0,
           "errors": 0,
           "dropped": 0,
-          "samples": 3,
-          "gpuMs": 0.90333856,
-          "gpuMsP25": 0.60544
+          "samples": 4,
+          "gpuMs": 2.8708343999999997,
+          "gpuMsP25": 2.184192
         },
         "supported": true,
         "active": true,
@@ -5207,10 +5248,10 @@
         "suspended": false,
         "width": 1680,
         "height": 1032,
-        "frames": 10,
+        "frames": 14,
         "skippedFrames": 0,
-        "records": 818,
-        "batches": 318,
+        "records": 827,
+        "batches": 333,
         "markRecords": 16,
         "markRoleRecords": 7,
         "lateMarkRecords": 0,
@@ -5229,7 +5270,7 @@
         "displayError": null,
         "uncapturedErrors": 0,
         "lastUncapturedError": null,
-        "lights": 72,
+        "lights": 74,
         "localLightPhase": 1,
         "exposureBucket": "deep-night",
         "wetReflections": 0,
@@ -5237,32 +5278,32 @@
         "gradeExposure": 0.750249167236455,
         "cloudCourses": 3,
         "aerialHaze": 0.020679608373703452,
-        "uploads": 640,
-        "uploadBytes": 226087272,
+        "uploads": 491,
+        "uploadBytes": 216769836,
         "uploadBytesByKind": {
-          "wholeImages": 215727140,
+          "wholeImages": 207981500,
           "imagePatches": 0,
-          "albedoPage": 3641028,
-          "typedFields": 6620800,
-          "lightRecords": 98304
+          "albedoPage": 1888948,
+          "typedFields": 6735548,
+          "lightRecords": 163840
         },
         "sceneTextureBindings": {
-          "groupsBound": 318,
+          "groupsBound": 333,
           "records": {
-            "albedoPage": 110,
-            "pilotAtlas": 141,
+            "albedoPage": 106,
+            "pilotAtlas": 140,
             "agentAtlas": 0,
             "cueAtlas": 338,
-            "other": 229
+            "other": 243
           }
         },
-        "skippedOccluderUploads": 138,
-        "uploadMs": 52.145730900000004,
-        "cpuMs": 60.67014959999999,
-        "shaderCpuMs": 8.524418700000002,
-        "gpuMs": 0.90333856,
-        "gpuMsP25": 0.60544,
-        "gpuTimerSamples": 3,
+        "skippedOccluderUploads": 0,
+        "uploadMs": 39.17357116307999,
+        "cpuMs": 46.81814357316,
+        "shaderCpuMs": 7.644572410079999,
+        "gpuMs": 2.8708343999999997,
+        "gpuMsP25": 2.184192,
+        "gpuTimerSamples": 4,
         "gpuTimerEvery": 4,
         "gpuTimerSupported": true,
         "gpuTimerExtension": "timestamp-query",
@@ -5301,31 +5342,31 @@
           }
         },
         "qualityTimingSource": "gpu-timer",
-        "frameGapMs": 63.657028100000005,
-        "textureBytes": 158637850,
-        "residentTextureBytes": 158637850,
-        "cachedTextureBytes": 130961162,
+        "frameGapMs": 69.91803532035,
+        "textureBytes": 160543050,
+        "residentTextureBytes": 160543050,
+        "cachedTextureBytes": 137060666,
         "cachedTextureCapBytes": 167411712,
         "cachedTextureCapExceeded": false,
-        "cachedTextures": 144,
+        "cachedTextures": 160,
         "albedoPage": {
-          "layers": 2,
-          "bytes": 8388608,
-          "entries": 173,
-          "liveEntries": 77,
-          "pagedRecords": 110,
+          "layers": 1,
+          "bytes": 4194304,
+          "entries": 81,
+          "liveEntries": 71,
+          "pagedRecords": 106,
           "overflowRecords": 0,
-          "fill": 0.129,
+          "fill": 0.253,
           "repacks": 1,
-          "uploads": 250,
-          "uploadBytes": 3641028
+          "uploads": 144,
+          "uploadBytes": 1888948
         },
         "radiance": {
           "supported": false,
           "override": null,
           "reason": "not ported to WebGPU (Stage A declared exclusion)"
         },
-        "textureEvictions": 85,
+        "textureEvictions": 28,
         "maxCachedTextureBytes": 167411712,
         "maxCachedTextures": 512,
         "materialAttachments": 2,
@@ -5353,12 +5394,12 @@
           "pacedLevel": 2,
           "coolDownUntilMs": null,
           "nextProbeAtMs": null,
-          "sampledAtMs": 3795
+          "sampledAtMs": 8385
         },
         "lightAdmission": {
           "cap": 128,
-          "admitted": 72,
-          "offered": 75,
+          "admitted": 74,
+          "offered": 77,
           "culled": 14,
           "overCap": 0,
           "tileFull": 3,
@@ -5370,41 +5411,41 @@
         "debugLoad": null,
         "resources": {
           "textures": {
-            "pinnedSources": 99576650,
-            "evictableSources": 31384512,
-            "albedoPage": 8388608,
+            "pinnedSources": 100631610,
+            "evictableSources": 36429056,
+            "albedoPage": 4194304,
             "radiance": 0
           },
-          "pinnedBytes": 134344602,
-          "evictableBytes": 31384512,
-          "totalBytes": 165729114,
+          "pinnedBytes": 131139722,
+          "evictableBytes": 36429056,
+          "totalBytes": 167568778,
           "atlasPages": [
             {
               "name": "world-pilot",
-              "width": 2032,
+              "width": 2048,
               "height": 1766,
-              "bytes": 14354048,
+              "bytes": 14467072,
               "pinned": true
             },
             {
               "name": "material:world-pilot:channels",
-              "width": 2032,
+              "width": 2048,
               "height": 1766,
-              "bytes": 14354048,
+              "bytes": 14467072,
               "pinned": true
             },
             {
               "name": "emissive:world-pilot:channels",
-              "width": 2032,
+              "width": 2048,
               "height": 1766,
-              "bytes": 14354048,
+              "bytes": 14467072,
               "pinned": true
             },
             {
               "name": "occluder:world-pilot:channels",
-              "width": 2032,
+              "width": 2048,
               "height": 1766,
-              "bytes": 14354048,
+              "bytes": 14467072,
               "pinned": true
             }
           ],
@@ -5419,16 +5460,16 @@
             "bloomB": 975240
           },
           "buffers": {
-            "vertices": 131072,
+            "vertices": 65536,
             "marks": 2048,
             "particles": 6720,
             "lights": 16384
           }
         },
-        "atlasRecords": 141,
-        "individualRecords": 677,
-        "sourceBatchCount": 318,
-        "sourceUploadBytes": 226054504
+        "atlasRecords": 140,
+        "individualRecords": 687,
+        "sourceBatchCount": 333,
+        "sourceUploadBytes": 216769836
       },
       "terrainCache": {
         "strategy": "single-surface",
@@ -5476,8 +5517,8 @@
           "crowdBumpCooldownLimit": 512,
           "nicknames": 1,
           "nicknameLimit": 256,
-          "liveSpriteCanvases": 28,
-          "liveSpriteCanvasPixels": 18959360
+          "liveSpriteCanvases": 21,
+          "liveSpriteCanvasPixels": 14219520
         },
         "waterDescriptors": {
           "total": 701,
@@ -5486,11 +5527,11 @@
         "harbor": {
           "stateVersion": 1,
           "stateReductions": 1,
-          "unchangedReconciliations": 1,
+          "unchangedReconciliations": 19,
           "sourceNormalizations": 1,
-          "sourceCacheHits": 1,
-          "animationAdvances": 6,
-          "semanticReconciliations": 2,
+          "sourceCacheHits": 19,
+          "animationAdvances": 154,
+          "semanticReconciliations": 20,
           "rawEventCount": 5,
           "normalizedEventCount": 5,
           "seenEventIds": 5,
@@ -5540,13 +5581,13 @@
           "oversizedCacheFallbacks": 0,
           "cameraMotion": {
             "stationary": {
-              "frames": 5,
+              "frames": 10,
               "drawTimeMs": 0,
               "repaintCount": 0,
               "repaintTimeMs": 0
             },
             "manual-pan": {
-              "frames": 1,
+              "frames": 0,
               "drawTimeMs": 0,
               "repaintCount": 0,
               "repaintTimeMs": 0
@@ -5591,7 +5632,7 @@
         },
         "events": {
           "snapshots": 37,
-          "chatPairs": 0,
+          "chatPairs": 1,
           "emittedToolKeys": 21,
           "emittedToolAgents": 21,
           "maxEmittedToolKeysPerAgent": 32,
@@ -5601,7 +5642,7 @@
           "maxObservedResultIdsPerAgent": 16
         },
         "landmarks": {
-          "items": 16,
+          "items": 17,
           "seenSnapshots": 16,
           "previousTokenTotals": 37,
           "previousTokenClassTotals": 37,
@@ -5633,7 +5674,7 @@
           "pendingGathers": 0,
           "pendingGatherLimit": 64,
           "disposed": false,
-          "gitReplayCacheHits": 1,
+          "gitReplayCacheHits": 20,
           "gitReplayCacheMisses": 1,
           "gitReplayNormalized": 5,
           "gitReplayRawDuplicates": 0
@@ -5641,12 +5682,12 @@
         "allocator": {
           "buildings": 9,
           "retainedAgentSprites": 37,
-          "reservations": 37,
-          "reservationAgents": 37,
+          "reservations": 36,
+          "reservationAgents": 36,
           "agentMeta": 37,
-          "relatedCache": 32,
+          "relatedCache": 0,
           "occupancyEntries": 37,
-          "occupancyBuckets": 4,
+          "occupancyBuckets": 35,
           "disposed": false
         },
         "behavior": {
@@ -5889,7 +5930,7 @@
           "teams": 1,
           "recentArrivals": 0,
           "recentDepartures": 0,
-          "chatPairs": 0,
+          "chatPairs": 1,
           "advisorPairs": 0,
           "overlapFiles": 0,
           "overlapPeers": 0,
@@ -5911,19 +5952,19 @@
           "sinkCount": 16,
           "memoryBytes": 141692,
           "flow": {
-            "lookups": 40,
-            "avgLookupMs": 0.125,
+            "lookups": 41,
+            "avgLookupMs": 0.12195121951219512,
             "maxLookupMs": 2,
-            "avgTraceLookupMs": 0,
-            "avgGuidedLookupMs": 0.15625,
+            "avgTraceLookupMs": 1,
+            "avgGuidedLookupMs": 0.125,
             "avgAdhocLookupMs": 0,
             "sinkLookups": 33,
             "traceHits": 1,
             "guidedSearches": 32,
-            "adhocSearches": 7,
+            "adhocSearches": 8,
             "unweightedSearches": 0,
             "staleFieldFallbacks": 0,
-            "sinkHitRate": 0.825,
+            "sinkHitRate": 0.8048780487804879,
             "traceHitRate": 0.030303030303030304,
             "rebuilds": 11,
             "rebuildMs": 2,
@@ -5958,9 +5999,9 @@
             "pending": 0,
             "errors": 0,
             "dropped": 0,
-            "samples": 3,
-            "gpuMs": 0.90333856,
-            "gpuMsP25": 0.60544
+            "samples": 4,
+            "gpuMs": 2.8708343999999997,
+            "gpuMsP25": 2.184192
           },
           "supported": true,
           "active": true,
@@ -5968,10 +6009,10 @@
           "suspended": false,
           "width": 1680,
           "height": 1032,
-          "frames": 10,
+          "frames": 14,
           "skippedFrames": 0,
-          "records": 818,
-          "batches": 318,
+          "records": 827,
+          "batches": 333,
           "markRecords": 16,
           "markRoleRecords": 7,
           "lateMarkRecords": 0,
@@ -5990,7 +6031,7 @@
           "displayError": null,
           "uncapturedErrors": 0,
           "lastUncapturedError": null,
-          "lights": 72,
+          "lights": 74,
           "localLightPhase": 1,
           "exposureBucket": "deep-night",
           "wetReflections": 0,
@@ -5998,32 +6039,32 @@
           "gradeExposure": 0.750249167236455,
           "cloudCourses": 3,
           "aerialHaze": 0.020679608373703452,
-          "uploads": 640,
-          "uploadBytes": 226087272,
+          "uploads": 491,
+          "uploadBytes": 216769836,
           "uploadBytesByKind": {
-            "wholeImages": 215727140,
+            "wholeImages": 207981500,
             "imagePatches": 0,
-            "albedoPage": 3641028,
-            "typedFields": 6620800,
-            "lightRecords": 98304
+            "albedoPage": 1888948,
+            "typedFields": 6735548,
+            "lightRecords": 163840
           },
           "sceneTextureBindings": {
-            "groupsBound": 318,
+            "groupsBound": 333,
             "records": {
-              "albedoPage": 110,
-              "pilotAtlas": 141,
+              "albedoPage": 106,
+              "pilotAtlas": 140,
               "agentAtlas": 0,
               "cueAtlas": 338,
-              "other": 229
+              "other": 243
             }
           },
-          "skippedOccluderUploads": 138,
-          "uploadMs": 52.145730900000004,
-          "cpuMs": 60.67014959999999,
-          "shaderCpuMs": 8.524418700000002,
-          "gpuMs": 0.90333856,
-          "gpuMsP25": 0.60544,
-          "gpuTimerSamples": 3,
+          "skippedOccluderUploads": 0,
+          "uploadMs": 39.17357116307999,
+          "cpuMs": 46.81814357316,
+          "shaderCpuMs": 7.644572410079999,
+          "gpuMs": 2.8708343999999997,
+          "gpuMsP25": 2.184192,
+          "gpuTimerSamples": 4,
           "gpuTimerEvery": 4,
           "gpuTimerSupported": true,
           "gpuTimerExtension": "timestamp-query",
@@ -6062,31 +6103,31 @@
             }
           },
           "qualityTimingSource": "gpu-timer",
-          "frameGapMs": 63.657028100000005,
-          "textureBytes": 158637850,
-          "residentTextureBytes": 158637850,
-          "cachedTextureBytes": 130961162,
+          "frameGapMs": 69.91803532035,
+          "textureBytes": 160543050,
+          "residentTextureBytes": 160543050,
+          "cachedTextureBytes": 137060666,
           "cachedTextureCapBytes": 167411712,
           "cachedTextureCapExceeded": false,
-          "cachedTextures": 144,
+          "cachedTextures": 160,
           "albedoPage": {
-            "layers": 2,
-            "bytes": 8388608,
-            "entries": 173,
-            "liveEntries": 77,
-            "pagedRecords": 110,
+            "layers": 1,
+            "bytes": 4194304,
+            "entries": 81,
+            "liveEntries": 71,
+            "pagedRecords": 106,
             "overflowRecords": 0,
-            "fill": 0.129,
+            "fill": 0.253,
             "repacks": 1,
-            "uploads": 250,
-            "uploadBytes": 3641028
+            "uploads": 144,
+            "uploadBytes": 1888948
           },
           "radiance": {
             "supported": false,
             "override": null,
             "reason": "not ported to WebGPU (Stage A declared exclusion)"
           },
-          "textureEvictions": 85,
+          "textureEvictions": 28,
           "maxCachedTextureBytes": 167411712,
           "maxCachedTextures": 512,
           "materialAttachments": 2,
@@ -6114,12 +6155,12 @@
             "pacedLevel": 2,
             "coolDownUntilMs": null,
             "nextProbeAtMs": null,
-            "sampledAtMs": 3795
+            "sampledAtMs": 8385
           },
           "lightAdmission": {
             "cap": 128,
-            "admitted": 72,
-            "offered": 75,
+            "admitted": 74,
+            "offered": 77,
             "culled": 14,
             "overCap": 0,
             "tileFull": 3,
@@ -6131,41 +6172,41 @@
           "debugLoad": null,
           "resources": {
             "textures": {
-              "pinnedSources": 99576650,
-              "evictableSources": 31384512,
-              "albedoPage": 8388608,
+              "pinnedSources": 100631610,
+              "evictableSources": 36429056,
+              "albedoPage": 4194304,
               "radiance": 0
             },
-            "pinnedBytes": 134344602,
-            "evictableBytes": 31384512,
-            "totalBytes": 165729114,
+            "pinnedBytes": 131139722,
+            "evictableBytes": 36429056,
+            "totalBytes": 167568778,
             "atlasPages": [
               {
                 "name": "world-pilot",
-                "width": 2032,
+                "width": 2048,
                 "height": 1766,
-                "bytes": 14354048,
+                "bytes": 14467072,
                 "pinned": true
               },
               {
                 "name": "material:world-pilot:channels",
-                "width": 2032,
+                "width": 2048,
                 "height": 1766,
-                "bytes": 14354048,
+                "bytes": 14467072,
                 "pinned": true
               },
               {
                 "name": "emissive:world-pilot:channels",
-                "width": 2032,
+                "width": 2048,
                 "height": 1766,
-                "bytes": 14354048,
+                "bytes": 14467072,
                 "pinned": true
               },
               {
                 "name": "occluder:world-pilot:channels",
-                "width": 2032,
+                "width": 2048,
                 "height": 1766,
-                "bytes": 14354048,
+                "bytes": 14467072,
                 "pinned": true
               }
             ],
@@ -6180,16 +6221,16 @@
               "bloomB": 975240
             },
             "buffers": {
-              "vertices": 131072,
+              "vertices": 65536,
               "marks": 2048,
               "particles": 6720,
               "lights": 16384
             }
           },
-          "atlasRecords": 141,
-          "individualRecords": 677,
-          "sourceBatchCount": 318,
-          "sourceUploadBytes": 226054504
+          "atlasRecords": 140,
+          "individualRecords": 687,
+          "sourceBatchCount": 333,
+          "sourceUploadBytes": 216769836
         },
         "worldRendererMode": "webgpu",
         "worldBackendReason": "?renderer=webgpu · webgpu ready · webgl2 not probed"
@@ -6197,18 +6238,18 @@
     },
     "cacheStats": {
       "assets": {
-        "bitmaps": 290,
-        "bitmapPixels": 22885007,
+        "bitmaps": 300,
+        "bitmapPixels": 22962959,
         "masks": 9,
         "maskBytes": 732480,
         "outlines": 9,
         "outlinePixels": 732480,
-        "companions": 147,
-        "companionPixels": 60334245,
+        "companions": 168,
+        "companionPixels": 60503077,
         "atlasImages": 4,
-        "atlasPixels": 14354048,
+        "atlasPixels": 14467072,
         "atlasMetadata": 1,
-        "materialTextureBytes": 298753172,
+        "materialTextureBytes": 299880596,
         "missing": 0,
         "optionalMissing": 0,
         "decodedLoaded": true,
@@ -6227,16 +6268,16 @@
       "agentSprites": {
         "processedSpriteSheets": 0,
         "processedSpritePixels": 0,
-        "processedSpriteEntryLimit": 37,
+        "processedSpriteEntryLimit": 24,
         "processedSpritePixelLimit": 12500000,
         "codexEquipmentAssets": 0,
         "codexEquipmentPixels": 0,
         "codexEquipmentEstimateBytes": 0,
-        "canvasCellBytes": 15980032,
-        "canvasCells": 472,
-        "modelSheetBytes": 62295040,
-        "modelBaseBytes": 18146816,
-        "layerCacheBytes": 80288608,
+        "canvasCellBytes": 11748032,
+        "canvasCells": 347,
+        "modelSheetBytes": 63378432,
+        "modelBaseBytes": 17232704,
+        "layerCacheBytes": 76211608,
         "gpuEquippedSheetPixelLimit": 0,
         "gpuEquippedSheets": 0,
         "gpuEquippedSheetEstimateBytes": 0,
@@ -6245,10 +6286,10 @@
         "packedGeometryEstimateBytes": 0,
         "processedSpriteEstimateBytes": 0,
         "compositorEstimateBytes": 0,
-        "privateDerivedEstimateBytes": 101568,
+        "privateDerivedEstimateBytes": 33856,
         "gpuAgentMaterialAtlasEstimateBytes": 0,
         "gpuAgentEmissiveAtlasEstimateBytes": 0,
-        "cpuDerivedEstimateBytes": 80390176,
+        "cpuDerivedEstimateBytes": 76245464,
         "ownership": {
           "compositorSpriteSheets": {
             "ownershipClass": "CPU-derived",
@@ -6264,7 +6305,7 @@
           },
           "agentLayerSheets": {
             "ownershipClass": "CPU-derived",
-            "estimateBytes": 80288608
+            "estimateBytes": 76211608
           },
           "packedGeometrySheets": {
             "ownershipClass": "CPU-derived",
@@ -6272,7 +6313,7 @@
           },
           "perSpriteEffectCells": {
             "ownershipClass": "CPU-derived",
-            "estimateBytes": 101568
+            "estimateBytes": 33856
           },
           "gpuAgentMaterialAtlas": {
             "ownershipClass": "CPU-derived",
@@ -6286,37 +6327,24 @@
         "activeProfileKeys": [
           "agent.claude.fable|claude|8|_|_|raw|#bb9587",
           "agent.claude.haiku|claude|1|_|_|raw|_",
-          "agent.claude.haiku|claude|8|_|_|raw|#bb9587",
           "agent.claude.mythos|claude|2|_|_|raw|_",
-          "agent.claude.opus.b|claude|11|_|_|raw|_",
           "agent.claude.opus.b|claude|5|_|_|raw|_",
-          "agent.claude.sonnet|claude|11|_|_|raw|_",
           "agent.claude.sonnet|claude|1|_|_|raw|#bb9587",
           "agent.claude.sonnet|claude|3|_|_|raw|_",
           "agent.codex.gpt53spark|codex|7|_|multitool|raw|_",
           "agent.codex.gpt54|codex|10|_|engineerWrench|raw|_",
           "agent.codex.gpt55|codex|1|_|runeblade|raw|_",
           "agent.codex.gpt55|codex|9|_|runeblade|raw|_",
-          "agent.codex.gpt56luna.b|codex|3|_|crescentSaber|raw|_",
           "agent.codex.gpt56sol.b|codex|3|_|dawnblade|raw|_",
           "agent.codex.gpt56terra|codex|6|_|earthbreaker|raw|_",
-          "agent.codex.gpt6astra|codex|1|_|worldsplitter|raw|_",
-          "agent.codex.gpt6astra|codex|9|effortXhigh|worldsplitter|raw|_",
           "agent.deepseek.flash.high|deepseek|2|_|_|raw|_",
           "agent.deepseek.flash.xhigh|deepseek|3|effortMax|_|raw|_",
-          "agent.deepseek.flash|deepseek|4|_|_|raw|_",
-          "agent.deepseek.pro|deepseek|4|_|_|raw|_",
-          "agent.deepseek.reasoner|deepseek|9|_|_|raw|_",
           "agent.gemini.argon|gemini|0|_|_|raw|_",
-          "agent.gemini.base|gemini|11|_|_|raw|_",
-          "agent.gemini.base|gemini|2|_|_|raw|_",
-          "agent.gemini.carbon|gemini|5|_|_|raw|_",
           "agent.gemini.flash|gemini|1|_|_|raw|_",
           "agent.gemini.neon|gemini|8|effortXhigh|_|raw|_",
           "agent.grok.base|grok|4|biretta|_|raw|_",
           "agent.grok.base|grok|5|hornedHelm|_|raw|_",
           "agent.grok.composer|grok|11|laurelCrown|_|raw|_",
-          "agent.kimi.base|kimi|8|wingedHelm|_|raw|_",
           "agent.kimi.base|kimi|9|wingedHelm|_|raw|_",
           "agent.zai.flash|zai|11|_|_|raw|_",
           "agent.zai.glm.b|zai|7|_|_|raw|_",
@@ -6329,7 +6357,7 @@
           "agent.zai.flash|zai|11|_|_|raw|_"
         ],
         "sharedDerivedHighWaterEstimateBytes": 201326592,
-        "toolClassifications": 22
+        "toolClassifications": 0
       }
     },
     "gpuDiag": {
@@ -6353,9 +6381,9 @@
         "pending": 0,
         "errors": 0,
         "dropped": 0,
-        "samples": 3,
-        "gpuMs": 0.90333856,
-        "gpuMsP25": 0.60544
+        "samples": 4,
+        "gpuMs": 2.8708343999999997,
+        "gpuMsP25": 2.184192
       },
       "supported": true,
       "active": true,
@@ -6363,10 +6391,10 @@
       "suspended": false,
       "width": 1680,
       "height": 1032,
-      "frames": 10,
+      "frames": 14,
       "skippedFrames": 0,
-      "records": 818,
-      "batches": 318,
+      "records": 827,
+      "batches": 333,
       "markRecords": 16,
       "markRoleRecords": 7,
       "lateMarkRecords": 0,
@@ -6385,7 +6413,7 @@
       "displayError": null,
       "uncapturedErrors": 0,
       "lastUncapturedError": null,
-      "lights": 72,
+      "lights": 74,
       "localLightPhase": 1,
       "exposureBucket": "deep-night",
       "wetReflections": 0,
@@ -6393,32 +6421,32 @@
       "gradeExposure": 0.750249167236455,
       "cloudCourses": 3,
       "aerialHaze": 0.020679608373703452,
-      "uploads": 640,
-      "uploadBytes": 226087272,
+      "uploads": 491,
+      "uploadBytes": 216769836,
       "uploadBytesByKind": {
-        "wholeImages": 215727140,
+        "wholeImages": 207981500,
         "imagePatches": 0,
-        "albedoPage": 3641028,
-        "typedFields": 6620800,
-        "lightRecords": 98304
+        "albedoPage": 1888948,
+        "typedFields": 6735548,
+        "lightRecords": 163840
       },
       "sceneTextureBindings": {
-        "groupsBound": 318,
+        "groupsBound": 333,
         "records": {
-          "albedoPage": 110,
-          "pilotAtlas": 141,
+          "albedoPage": 106,
+          "pilotAtlas": 140,
           "agentAtlas": 0,
           "cueAtlas": 338,
-          "other": 229
+          "other": 243
         }
       },
-      "skippedOccluderUploads": 138,
-      "uploadMs": 52.145730900000004,
-      "cpuMs": 60.67014959999999,
-      "shaderCpuMs": 8.524418700000002,
-      "gpuMs": 0.90333856,
-      "gpuMsP25": 0.60544,
-      "gpuTimerSamples": 3,
+      "skippedOccluderUploads": 0,
+      "uploadMs": 39.17357116307999,
+      "cpuMs": 46.81814357316,
+      "shaderCpuMs": 7.644572410079999,
+      "gpuMs": 2.8708343999999997,
+      "gpuMsP25": 2.184192,
+      "gpuTimerSamples": 4,
       "gpuTimerEvery": 4,
       "gpuTimerSupported": true,
       "gpuTimerExtension": "timestamp-query",
@@ -6457,31 +6485,31 @@
         }
       },
       "qualityTimingSource": "gpu-timer",
-      "frameGapMs": 63.657028100000005,
-      "textureBytes": 158637850,
-      "residentTextureBytes": 158637850,
-      "cachedTextureBytes": 130961162,
+      "frameGapMs": 69.91803532035,
+      "textureBytes": 160543050,
+      "residentTextureBytes": 160543050,
+      "cachedTextureBytes": 137060666,
       "cachedTextureCapBytes": 167411712,
       "cachedTextureCapExceeded": false,
-      "cachedTextures": 144,
+      "cachedTextures": 160,
       "albedoPage": {
-        "layers": 2,
-        "bytes": 8388608,
-        "entries": 173,
-        "liveEntries": 77,
-        "pagedRecords": 110,
+        "layers": 1,
+        "bytes": 4194304,
+        "entries": 81,
+        "liveEntries": 71,
+        "pagedRecords": 106,
         "overflowRecords": 0,
-        "fill": 0.129,
+        "fill": 0.253,
         "repacks": 1,
-        "uploads": 250,
-        "uploadBytes": 3641028
+        "uploads": 144,
+        "uploadBytes": 1888948
       },
       "radiance": {
         "supported": false,
         "override": null,
         "reason": "not ported to WebGPU (Stage A declared exclusion)"
       },
-      "textureEvictions": 85,
+      "textureEvictions": 28,
       "maxCachedTextureBytes": 167411712,
       "maxCachedTextures": 512,
       "materialAttachments": 2,
@@ -6509,12 +6537,12 @@
         "pacedLevel": 2,
         "coolDownUntilMs": null,
         "nextProbeAtMs": null,
-        "sampledAtMs": 3795
+        "sampledAtMs": 8385
       },
       "lightAdmission": {
         "cap": 128,
-        "admitted": 72,
-        "offered": 75,
+        "admitted": 74,
+        "offered": 77,
         "culled": 14,
         "overCap": 0,
         "tileFull": 3,
@@ -6526,41 +6554,41 @@
       "debugLoad": null,
       "resources": {
         "textures": {
-          "pinnedSources": 99576650,
-          "evictableSources": 31384512,
-          "albedoPage": 8388608,
+          "pinnedSources": 100631610,
+          "evictableSources": 36429056,
+          "albedoPage": 4194304,
           "radiance": 0
         },
-        "pinnedBytes": 134344602,
-        "evictableBytes": 31384512,
-        "totalBytes": 165729114,
+        "pinnedBytes": 131139722,
+        "evictableBytes": 36429056,
+        "totalBytes": 167568778,
         "atlasPages": [
           {
             "name": "world-pilot",
-            "width": 2032,
+            "width": 2048,
             "height": 1766,
-            "bytes": 14354048,
+            "bytes": 14467072,
             "pinned": true
           },
           {
             "name": "material:world-pilot:channels",
-            "width": 2032,
+            "width": 2048,
             "height": 1766,
-            "bytes": 14354048,
+            "bytes": 14467072,
             "pinned": true
           },
           {
             "name": "emissive:world-pilot:channels",
-            "width": 2032,
+            "width": 2048,
             "height": 1766,
-            "bytes": 14354048,
+            "bytes": 14467072,
             "pinned": true
           },
           {
             "name": "occluder:world-pilot:channels",
-            "width": 2032,
+            "width": 2048,
             "height": 1766,
-            "bytes": 14354048,
+            "bytes": 14467072,
             "pinned": true
           }
         ],
@@ -6575,16 +6603,16 @@
           "bloomB": 975240
         },
         "buffers": {
-          "vertices": 131072,
+          "vertices": 65536,
           "marks": 2048,
           "particles": 6720,
           "lights": 16384
         }
       },
-      "atlasRecords": 141,
-      "individualRecords": 677,
-      "sourceBatchCount": 318,
-      "sourceUploadBytes": 226054504
+      "atlasRecords": 140,
+      "individualRecords": 687,
+      "sourceBatchCount": 333,
+      "sourceUploadBytes": 216769836
     },
     "pathDiag": {
       "cacheEntries": 0,
@@ -6594,19 +6622,19 @@
       "sinkCount": 16,
       "memoryBytes": 141692,
       "flow": {
-        "lookups": 40,
-        "avgLookupMs": 0.125,
+        "lookups": 41,
+        "avgLookupMs": 0.12195121951219512,
         "maxLookupMs": 2,
-        "avgTraceLookupMs": 0,
-        "avgGuidedLookupMs": 0.15625,
+        "avgTraceLookupMs": 1,
+        "avgGuidedLookupMs": 0.125,
         "avgAdhocLookupMs": 0,
         "sinkLookups": 33,
         "traceHits": 1,
         "guidedSearches": 32,
-        "adhocSearches": 7,
+        "adhocSearches": 8,
         "unweightedSearches": 0,
         "staleFieldFallbacks": 0,
-        "sinkHitRate": 0.825,
+        "sinkHitRate": 0.8048780487804879,
         "traceHitRate": 0.030303030303030304,
         "rebuilds": 11,
         "rebuildMs": 2,
