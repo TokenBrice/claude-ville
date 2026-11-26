@@ -2377,6 +2377,7 @@ buildings:
     # 2.3 — occluder R = true height, B = surface code (face x 64 + h/4),
     # baked by scripts/sprites/bake-surface-channel.mjs; the GPU reads B.
     surfaceCode: true
+    alpenglowRow: 47
     # 6.3 — base.rooms.png: R = room index (1..N) on each room's glass,
     # baked by scripts/sprites/bake-room-masks.mjs.
     roomsSidecar: true
@@ -2560,6 +2561,7 @@ buildings:
     emissiveSidecar: true
     occluderSidecar: true
     surfaceCode: true
+    alpenglowRow: 102
     roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.watchtower }
     elevation: { base: 0, top: 384, unit: sprite-px }
@@ -3142,6 +3144,7 @@ buildings:
     emissiveSidecar: true
     occluderSidecar: true
     surfaceCode: true
+    alpenglowRow: 50
     roomsSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.archive }
     elevation: { base: 0, top: 240, unit: sprite-px }
@@ -3322,6 +3325,7 @@ props:
     height: 208
     anchor: [64, 168]
     materialClass: stone
+    alpenglowRow: 44
     emissiveSidecar: true
     emissive:
       strength: 0.8
