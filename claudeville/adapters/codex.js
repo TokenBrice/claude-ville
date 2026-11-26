@@ -33,6 +33,7 @@ const {
 const { WaitReason, deriveTurnState, toEpochMs } = require('./turnState');
 const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 const { TOOL_RESULT_LIMIT, toolResultId, toolResultLocation } = require('./toolResults');
+const { readT3ActiveDelegates, readT3Lineage, readT3RenamedTitles } = require('./t3code');
 
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
@@ -2290,6 +2291,12 @@ class CodexAdapter {
         if (!proc?.dead && proc?.start === job.ownerStart) activeThreads.add(threadId);
       }
     }
+    const t3ActiveDelegates = readT3ActiveDelegates();
+    for (const entry of t3ActiveDelegates.values()) {
+      if (entry.parentProvider === 'codex' && typeof entry.parentNative === 'string' && entry.parentNative) {
+        activeThreads.add(entry.parentNative);
+      }
+    }
     const rollouts = scanRecentRollouts(activeThresholdMs, { force, activeThreads });
     const sessionNames = readCodexSessionNames();
     const sessions = [];
@@ -2315,18 +2322,33 @@ class CodexAdapter {
       if (!activeSessionIds.has(sessionId)) _rolloutFileBySessionId.delete(sessionId);
     }
 
+    const codexThreadIds = parsedRollouts.map(rollout => rollout.threadId).filter(Boolean);
+    const t3Lineage = readT3Lineage('codex', codexThreadIds);
+    const t3Titles = readT3RenamedTitles('codex', codexThreadIds);
+
     for (const { filePath, mtime, detail, scanContext, sessionId, fullSessionId, threadId } of parsedRollouts) {
       const jobs = mcpThreads.get(threadId);
       const job = jobs?.at(-1);
       const finished = job?.endedAt && job.endedAt >= (detail.turnStartedAt || 0);
-      const sessionName = jobs?.findLast(item => item.label)?.label || sessionNames.get(threadId) || sessionNames.get(sessionId) || detail.agentName || null;
+      const lowerThreadId = String(threadId || '').toLowerCase();
+      const t3Link = !detail.parentThreadId ? (t3Lineage.get(lowerThreadId) || null) : null;
+      const t3RenamedTitle = t3Titles.get(lowerThreadId) || null;
+      const baseSessionName = jobs?.findLast(item => item.label)?.label || sessionNames.get(threadId) || sessionNames.get(sessionId) || detail.agentName || null;
+      const sessionName = t3RenamedTitle || baseSessionName || t3Link?.title || null;
+      const t3Delegates = t3ActiveDelegates.get(fullSessionId) || t3ActiveDelegates.get(`codex-${threadId}`) || null;
+      const resolvedParent = detail.parentThreadId
+        ? (sessionIdByThreadId.get(detail.parentThreadId) || `codex-${detail.parentThreadId}`)
+        : (t3Link
+          ? ((t3Link.parentProvider === 'codex' && sessionIdByThreadId.get(t3Link.parentNative)) || t3Link.parentSessionId)
+          : null);
       sessions.push({
         sessionId: fullSessionId,
         provider: 'codex',
         agentId: threadId,
         name: sessionName,
         agentName: sessionName,
-        agentType: detail.agentType || 'main',
+        userNamed: Boolean(t3RenamedTitle),
+        agentType: t3Link ? 'sub-agent' : (detail.agentType || 'main'),
         // The spawn path ("/root/composition"); its leaf is the name the
         // orchestrator's `send_message` addresses.
         agentPath: typeof detail.agentPath === 'string' && detail.agentPath ? detail.agentPath.slice(0, 512) : null,
@@ -2363,7 +2385,14 @@ class CodexAdapter {
           sessionId: fullSessionId,
           project: detail.project || null,
         }, scanContext.gitEntries),
-        ...(job ? { subagentKind: 'mcp' } : {}),
+        ...(job ? { subagentKind: 'mcp' } : (t3Link ? { subagentKind: 'delegate' } : {})),
+        ...(t3Delegates && t3Delegates.count > 0 ? {
+          backgroundPending: {
+            count: t3Delegates.count,
+            kinds: ['agent'],
+            since: t3Delegates.since,
+          },
+        } : {}),
         ...(finished ? {
           ...deriveTurnState({ turnEnded: true, turnEndedAt: job.endedAt }),
           openQuestion: null,
@@ -2372,9 +2401,8 @@ class CodexAdapter {
           apiError: ['failed', 'timeout', 'crashed'].includes(job.status)
             ? { kind: job.errorKind || job.status, status: null, at: job.endedAt } : null,
         } : {}),
-        parentSessionId: detail.parentThreadId
-          ? sessionIdByThreadId.get(detail.parentThreadId) || `codex-${detail.parentThreadId}`
-          : null,
+        parentSessionId: resolvedParent,
+        ...(t3Link ? { rootSessionId: resolvedParent } : {}),
       });
     }
 

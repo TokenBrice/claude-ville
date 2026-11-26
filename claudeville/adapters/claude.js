@@ -22,7 +22,7 @@ const {
 const { deriveTurnState, toEpochMs } = require('./turnState');
 const { normalizeToolResults, toolResultId, toolResultLocation } = require('./toolResults');
 const { estimateCost } = require('./sessionPresentation');
-const { readT3RenamedTitles } = require('./t3code');
+const { readT3ActiveDelegates, readT3Lineage, readT3RenamedTitles } = require('./t3code');
 const { emptyObservedSources, makeDialogue, pickDialogue, sanitizeDialogueText } = require('./dialogue');
 const { MODEL_REVISION, contextWindowForModel } = require('../src/config/models.generated.cjs');
 
@@ -251,8 +251,18 @@ function projectClaudeExecution(sessions, taskGroups = []) {
     const group = groups.get(sessionId);
     if (group) {
       const summary = summarizeTaskGroup(group);
+      const hasTodos = Array.isArray(session.todos) && session.todos.length > 0;
+      const mirroredTodos = !hasTodos && summary.tasks.length > 0
+        ? normalizedTaskRecords(group.tasks).slice(0, 64).map(task => ({
+          subject: task.subject,
+          status: TASK_DONE_STATUSES.has(task.status)
+            ? 'completed'
+            : (task.status === 'in_progress' || task.status === 'in-progress' ? 'in_progress' : 'pending'),
+          phase: null,
+        }))
+        : null;
       if (summary.taskProgress.total > 0 || children.length === 0) {
-        return { ...session, ...summary };
+        return { ...session, ...summary, ...(mirroredTodos ? { todos: mirroredTodos } : {}) };
       }
     }
     if (children.length > 0) {
@@ -455,6 +465,8 @@ function createTranscriptProjection() {
     _allCompactions: [],
     _allCompactionCount: 0,
     _allCompactionUuids: new Set(),
+    _taskItems: [],
+    _taskSeq: 0,
   };
 }
 
@@ -474,6 +486,10 @@ function cloneTranscriptProjection(projection) {
       ? { _allCompactions: projection._allCompactions.map(item => ({ ...item })) }
       : {}),
     ...(projection._allCompactionUuids ? { _allCompactionUuids: new Set(projection._allCompactionUuids) } : {}),
+    ...(Array.isArray(projection._taskItems)
+      ? { _taskItems: projection._taskItems.map(item => ({ ...item })) }
+      : {}),
+    ...(projection._taskSeq !== undefined ? { _taskSeq: projection._taskSeq } : {}),
   };
 }
 
@@ -483,15 +499,26 @@ function hookErrorCount(value) {
   return null;
 }
 
+function normalizeTodoStatus(value) {
+  const rawStatus = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (rawStatus === 'completed' || rawStatus === 'complete' || rawStatus === 'done' || rawStatus === 'skipped') {
+    return 'completed';
+  }
+  if (rawStatus === 'in_progress' || rawStatus === 'in-progress' || rawStatus === 'running') {
+    return 'in_progress';
+  }
+  return 'pending';
+}
+
 function projectTodos(value) {
   if (!Array.isArray(value)) return null;
   return value.slice(0, 64).flatMap((todo) => {
     if (!todo || typeof todo !== 'object') return [];
-    const subject = typeof todo.subject === 'string' ? todo.subject.trim() : '';
-    const rawStatus = typeof todo.status === 'string' ? todo.status.trim().toLowerCase() : '';
-    const status = ['pending', 'in_progress', 'completed'].includes(rawStatus)
-      ? rawStatus
-      : 'pending';
+    const rawSubject = typeof todo.subject === 'string' && todo.subject.trim()
+      ? todo.subject
+      : (typeof todo.content === 'string' ? todo.content : '');
+    const subject = rawSubject.trim();
+    const status = normalizeTodoStatus(todo.status);
     return subject ? [{ subject: subject.slice(0, 200), status, phase: null }] : [];
   });
 }
@@ -590,6 +617,44 @@ function addTranscriptProjectionEntry(projection, entry, msg, prompt) {
     if (block.name === 'TodoWrite') {
       const todos = projectTodos(block.input.todos);
       if (todos) projection.todos = todos;
+    } else if (block.name === 'TaskCreate') {
+      const rawSubject = typeof block.input.subject === 'string' && block.input.subject.trim()
+        ? block.input.subject
+        : (typeof block.input.title === 'string' && block.input.title.trim()
+          ? block.input.title
+          : (typeof block.input.content === 'string' ? block.input.content : ''));
+      const subject = rawSubject.trim().slice(0, 200);
+      if (subject) {
+        projection._taskSeq = (projection._taskSeq || 0) + 1;
+        const id = String(block.input.taskId ?? block.input.id ?? projection._taskSeq).trim();
+        if (!Array.isArray(projection._taskItems)) projection._taskItems = [];
+        const status = normalizeTodoStatus(block.input.status);
+        const existingIdx = projection._taskItems.findIndex(item => item.id === id);
+        if (existingIdx >= 0) {
+          projection._taskItems[existingIdx] = { id, subject, status };
+        } else {
+          projection._taskItems.push({ id, subject, status });
+          if (projection._taskItems.length > 64) projection._taskItems.shift();
+        }
+        projection.todos = projection._taskItems.map(item => ({ subject: item.subject, status: item.status, phase: null }));
+      }
+    } else if (block.name === 'TaskUpdate' && Array.isArray(projection._taskItems) && projection._taskItems.length > 0) {
+      const taskId = block.input.taskId != null ? String(block.input.taskId).trim()
+        : (block.input.id != null ? String(block.input.id).trim() : '');
+      const rawStatus = typeof block.input.status === 'string' ? block.input.status.trim().toLowerCase() : '';
+      const rawSubject = typeof block.input.subject === 'string' ? block.input.subject.trim().slice(0, 200) : '';
+      const idx = taskId
+        ? projection._taskItems.findIndex(item => item.id === taskId)
+        : (rawSubject ? projection._taskItems.findIndex(item => item.subject === rawSubject) : -1);
+      if (idx >= 0) {
+        if (rawStatus === 'deleted' || rawStatus === 'removed') {
+          projection._taskItems.splice(idx, 1);
+        } else {
+          if (rawStatus) projection._taskItems[idx].status = normalizeTodoStatus(rawStatus);
+          if (rawSubject) projection._taskItems[idx].subject = rawSubject;
+        }
+        projection.todos = projection._taskItems.map(item => ({ subject: item.subject, status: item.status, phase: null }));
+      }
     }
     if (!['Edit', 'Write', 'Read'].includes(block.name)) continue;
     if (typeof block.input.file_path !== 'string' || !block.input.file_path.trim()) continue;
@@ -2369,6 +2434,8 @@ function stripInternalProjectionFields(projection) {
     _allCompactions,
     _allCompactionCount,
     _allCompactionUuids,
+    _taskItems,
+    _taskSeq,
     ...publicFields
   } = projection;
   return publicFields;
@@ -3247,6 +3314,49 @@ function readActiveClaudeTaskGroups(sessions) {
   return taskGroups;
 }
 
+function mergeT3BackgroundPending(local, t3Delegates) {
+  if (!t3Delegates || !t3Delegates.count) return local || null;
+  if (!local) {
+    return {
+      count: t3Delegates.count,
+      kinds: ['agent'],
+      since: t3Delegates.since,
+    };
+  }
+  const starts = [local.since, t3Delegates.since].filter(Number.isFinite);
+  return {
+    count: (local.count || 0) + t3Delegates.count,
+    kinds: [...new Set([...(local.kinds || []), 'agent'])],
+    since: starts.length ? Math.min(...starts) : null,
+  };
+}
+
+function applyT3LineageToClaudeSessions(sessions) {
+  const candidates = sessions.filter(session => session?.sessionId && !session.parentSessionId);
+  if (candidates.length === 0) return sessions;
+  const lineage = readT3Lineage('claudeAgent', candidates.map(session => session.sessionId));
+  if (lineage.size === 0) return sessions;
+  return sessions.map((session) => {
+    if (!session?.sessionId || session.parentSessionId) return session;
+    const link = lineage.get(session.sessionId.toLowerCase());
+    if (!link) return session;
+    const useRenamedTitle = link.titleRenamed && !session.userNamed && link.title;
+    const resolvedName = useRenamedTitle
+      ? link.title
+      : (session.agentName || session.name || link.title || null);
+    return {
+      ...session,
+      parentSessionId: link.parentSessionId,
+      rootSessionId: session.rootSessionId || link.parentSessionId,
+      agentType: 'sub-agent',
+      subagentKind: 'delegate',
+      name: resolvedName,
+      agentName: resolvedName,
+      userNamed: session.userNamed === true || Boolean(useRenamedTitle),
+    };
+  });
+}
+
 // ─── Adapter class ────────────────────────────────────
 
 class ClaudeAdapter {
@@ -3321,6 +3431,7 @@ class ClaudeAdapter {
     this.registryFiles = files;
     this.registry = registry;
     const t3Titles = readT3RenamedTitles('claudeAgent', [...registry.values()].filter(r => r.t3).map(r => r.sessionId));
+    const t3ActiveDelegates = readT3ActiveDelegates();
     const teamMembership = readClaudeTeamMembership();
     this.processLeads = new Map(_teamMembershipCache.leads);
     for (const record of registry.values()) {
@@ -3342,7 +3453,7 @@ class ClaudeAdapter {
       if (!entry.sessionId) continue;
       if (now - (entry.timestamp || 0) > HISTORY_SCAN_MS) {
         const record = registry.get(entry.sessionId);
-        if (!record?.status && !record?.endedAt) continue;
+        if (!record?.status && !record?.endedAt && !t3ActiveDelegates.has(entry.sessionId)) continue;
       }
 
       rememberSessionIdentity(entry.sessionId, entry, now);
@@ -3382,8 +3493,9 @@ class ClaudeAdapter {
         : 0;
       const lastActive = Math.max(session.lastActivity, fileMtime, childMtime);
       const record = session.agentType === 'main' ? registry.get(session.sessionId) : null;
+      const t3Delegates = t3ActiveDelegates.get(session.sessionId) || null;
       const quiet = now - lastActive > activeThresholdMs;
-      if (quiet && !registryKeepsSession(record, now - activeThresholdMs)) continue;
+      if (quiet && !registryKeepsSession(record, now - activeThresholdMs) && !t3Delegates) continue;
 
       session.lastActivity = lastActive;
       const sessionFilePath = resolveSessionFilePath(session.sessionId, session.project);
@@ -3396,16 +3508,19 @@ class ClaudeAdapter {
       const state = session.agentType === 'main'
         ? this.mainTurn(sessionFilePath, permissionMode, now, session.sessionId, record)
         : getClaudeTurnState(sessionFilePath, permissionMode, now);
-      if (quiet && state.signalSource !== 'registry' && !record?.status) continue;
+      if (quiet && state.signalSource !== 'registry' && !record?.status && !t3Delegates) continue;
       mainSessions.push({
         ...session,
         ...state,
         ...getTranscriptProjection(sessionFilePath, session.project, model),
-        backgroundPending: readBackgroundPending(sessionFilePath, {
-          subagentsDir: mainSubagentsDir(sessionFilePath),
-          activeThresholdMs,
-          now,
-        }),
+        backgroundPending: mergeT3BackgroundPending(
+          readBackgroundPending(sessionFilePath, {
+            subagentsDir: mainSubagentsDir(sessionFilePath),
+            activeThresholdMs,
+            now,
+          }),
+          t3Delegates,
+        ),
         name: naming.name,
         agentName: naming.name,
         userNamed: naming.userNamed,
@@ -3432,7 +3547,15 @@ class ClaudeAdapter {
     // Orphan sessions (active .jsonl files whose history entry is older than HISTORY_SCAN_MS).
     // Computed before subagents so their session IDs feed into the subagent scan — otherwise
     // long-running parents that haven't logged a recent prompt would have their subagents missed.
-    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, new Set(sessionsMap.keys()), registry, teamMembership, t3Titles);
+    const orphans = this._getOrphanSessions(
+      activeThresholdMs,
+      projectPathMap,
+      new Set(sessionsMap.keys()),
+      registry,
+      teamMembership,
+      t3Titles,
+      t3ActiveDelegates,
+    );
     for (const orphan of orphans) {
       if (!orphan.project || !orphan.sessionId) continue;
       const encoded = claudeProjectDirName(orphan.project);
@@ -3442,7 +3565,7 @@ class ClaudeAdapter {
 
     const subAgents = this._getActiveSubAgents(activeThresholdMs, activeSessionIdsByProject, projectPathMap);
 
-    const sessions = [...mainSessions, ...subAgents, ...orphans];
+    const sessions = applyT3LineageToClaudeSessions([...mainSessions, ...subAgents, ...orphans]);
     return projectClaudeExecution(sessions, _adapterShutdown ? [] : readActiveClaudeTaskGroups(sessions));
   }
 
@@ -3571,7 +3694,15 @@ class ClaudeAdapter {
     return results;
   }
 
-  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set(), registry = new Map(), teamMembership = new Map(), t3Titles = new Map()) {
+  _getOrphanSessions(
+    activeThresholdMs,
+    projectPathMap = new Map(),
+    knownIds = new Set(),
+    registry = new Map(),
+    teamMembership = new Map(),
+    t3Titles = new Map(),
+    t3ActiveDelegates = new Map(),
+  ) {
     const projectsDir = path.join(CLAUDE_DIR, 'projects');
     if (!fs.existsSync(projectsDir)) return [];
 
@@ -3611,8 +3742,9 @@ class ClaudeAdapter {
           );
 
           const record = registry.get(sessionId);
+          const t3Delegates = t3ActiveDelegates.get(sessionId) || null;
           const quiet = now - lastActivity > activeThresholdMs;
-          if (quiet && !registryKeepsSession(record, now - activeThresholdMs)) continue;
+          if (quiet && !registryKeepsSession(record, now - activeThresholdMs) && !t3Delegates) continue;
 
           const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name, filePath);
           const detail = getSubAgentDetail(filePath, decodedProject);
@@ -3623,22 +3755,25 @@ class ClaudeAdapter {
           const identity = getSessionIdentity(sessionId);
           const project = identity?.project || decodedProject;
           const teamLead = record && _teamMembershipCache.leads.get(`${record.pid}:${record.procStart}`) === sessionId;
-          const fallbackType = record?.status || record?.endedAt ? 'main' : 'team-member';
+          const fallbackType = record?.status || record?.endedAt || t3Delegates ? 'main' : 'team-member';
           const agentType = teamName && !teamLead ? 'team-member' : identity?.agentType || fallbackType;
           const model = detail.model || null;
 
           const state = agentType === 'main' || (!teamName && !identity)
             ? this.mainTurn(filePath, permissionMode, now, sessionId, agentType === 'main' ? record : null)
             : getClaudeTurnState(filePath, permissionMode, now);
-          if (quiet && state.signalSource !== 'registry' && !record?.status) continue;
+          if (quiet && state.signalSource !== 'registry' && !record?.status && !t3Delegates) continue;
           results.push({
             ...state,
             ...getTranscriptProjection(filePath, project, model),
-            backgroundPending: readBackgroundPending(filePath, {
-              subagentsDir: mainSubagentsDir(filePath),
-              activeThresholdMs,
-              now,
-            }),
+            backgroundPending: mergeT3BackgroundPending(
+              readBackgroundPending(filePath, {
+                subagentsDir: mainSubagentsDir(filePath),
+                activeThresholdMs,
+                now,
+              }),
+              t3Delegates,
+            ),
             sessionId,
             provider: 'claude',
             agentId: agentType === 'main' ? null : sessionId,
@@ -3752,7 +3887,10 @@ class ClaudeAdapter {
       });
 
       let sourcePath;
-      if (session.agentType === 'sub-agent' || session.agentType === 'workflow-subagent') {
+      const isNativeSubagent = (session.agentType === 'sub-agent' || session.agentType === 'workflow-subagent')
+        && session.subagentKind !== 'delegate'
+        && Boolean(session.agentId);
+      if (isNativeSubagent) {
         const agentFile = `agent-${session.agentId}.jsonl`;
         sourcePath = session.workflowId
           ? path.join(parentDir, 'subagents', 'workflows', session.workflowId, agentFile)

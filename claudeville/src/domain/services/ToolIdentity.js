@@ -286,6 +286,11 @@ const TOOL_METADATA = Object.freeze({
         classification: { building: 'taskboard', reason: 'plan-mode-exit', confidence: 0.94 },
         icon: '📐',
     },
+    update_plan: {
+        classification: { building: 'taskboard', reason: 'plan-work', confidence: 0.95 },
+        icon: '📋',
+        category: 'task',
+    },
     'functions.update_plan': {
         classification: { building: 'taskboard', reason: 'plan-work', confidence: 0.95 },
     },
@@ -351,6 +356,8 @@ const TOOL_NAME_ALIASES = Object.freeze({
     eval: 'Bash',
     task: 'Task',
     todo: 'TodoWrite',
+    todowrite: 'TodoWrite',
+    update_steps: 'TodoWrite',
     web_search: 'WebSearch',
     search_web: 'WebSearch',
     ask_question: 'AskUserQuestion',
@@ -962,6 +969,8 @@ const TOOL_CATEGORY_ALIASES = Object.freeze({
     search_file_content: 'search',
 
     update_plan: 'task',
+    update_steps: 'task',
+    todowrite: 'task',
     settodolist: 'task',
     enterplanmode: 'task',
     exitplanmode: 'task',
@@ -989,7 +998,7 @@ const TOOL_ACTION_CATEGORIES = Object.freeze({
     toolsearch: 'search', searchtools: 'search', grep_search: 'search', codebase_search: 'search', file_search: 'search',
     ask: 'think', askuserquestion: 'think', ask_question: 'think',
     plan: 'think', think: 'think', reason: 'think', reasoning: 'think',
-    enterplanmode: 'think', exitplanmode: 'think', update_plan: 'think',
+    enterplanmode: 'think', exitplanmode: 'think', update_plan: 'think', update_steps: 'think',
     'mcp__sequential-thinking__sequentialthinking': 'think',
     message: 'message', sendmessage: 'message', send_message: 'message', post_message: 'message',
 });

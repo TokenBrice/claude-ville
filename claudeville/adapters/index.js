@@ -176,6 +176,7 @@ function normalizeProviderId(provider, fallback = 'claude') {
   return String(provider || fallback).toLowerCase();
 }
 const SESSION_TASK_LIMIT = 12;
+const SESSION_TODO_LIMIT = 64;
 
 function normalizeTaskProgress(value) {
   if (!value || typeof value !== 'object') return null;
@@ -206,6 +207,33 @@ function normalizeTasks(value) {
       .replace(/^-+|-+$/g, '')
       .slice(0, 64) || 'unknown';
     return [{ subject, status }];
+  });
+}
+
+function normalizeTodos(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, SESSION_TODO_LIMIT).flatMap((todo) => {
+    if (!todo || typeof todo !== 'object') return [];
+    const rawSubject = typeof todo.subject === 'string' && todo.subject.trim()
+      ? todo.subject
+      : (typeof todo.content === 'string' ? todo.content : '');
+    const subject = rawSubject
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 200);
+    if (!subject) return [];
+    const rawStatus = typeof todo.status === 'string' ? todo.status.trim().toLowerCase() : '';
+    let status = 'pending';
+    if (rawStatus === 'completed' || rawStatus === 'complete' || rawStatus === 'done' || rawStatus === 'skipped') {
+      status = 'completed';
+    } else if (rawStatus === 'in_progress' || rawStatus === 'in-progress' || rawStatus === 'running') {
+      status = 'in_progress';
+    }
+    const phase = typeof todo.phase === 'string' && todo.phase.trim()
+      ? todo.phase.trim().slice(0, 80)
+      : null;
+    return [{ subject, status, phase }];
   });
 }
 
@@ -304,6 +332,7 @@ function normalizeSession(rawSession, context = {}) {
       : null,
     taskProgress: normalizeTaskProgress(session?.taskProgress),
     tasks: normalizeTasks(session?.tasks),
+    todos: normalizeTodos(session?.todos),
     reasoningEffort: session?.reasoningEffort ?? null,
     workflowId: session?.workflowId ?? null,
     workflowName: session?.workflowName ?? null,
@@ -611,8 +640,28 @@ function getAllSessions(activeThresholdMs, { force = false, overlayOnly = false 
     }
   }
   const allSessions = adapters.flatMap((adapter) => _sessionsByProvider.get(adapter.provider) || []);
+  const sessionIds = new Set(allSessions.map((session) => session?.sessionId).filter(Boolean));
+  const codexByNativeParent = new Map();
+  for (const session of allSessions) {
+    if (session?.provider === 'codex' && session.agentId && session.sessionId) {
+      codexByNativeParent.set(`codex-${session.agentId}`, session.sessionId);
+    }
+  }
+  const resolvedSessions = codexByNativeParent.size > 0
+    ? allSessions.map((session) => {
+      const parent = session?.parentSessionId;
+      if (!parent || sessionIds.has(parent)) return session;
+      const mapped = codexByNativeParent.get(parent);
+      if (!mapped) return session;
+      return {
+        ...session,
+        parentSessionId: mapped,
+        ...(session.rootSessionId === parent ? { rootSessionId: mapped } : {}),
+      };
+    })
+    : allSessions;
   const repositoryScanProjects = isGitEnrichmentDisabled() ? [] : getRepositoryScanProjects();
-  const normalizedSessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(allSessions, {
+  const normalizedSessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(resolvedSessions, {
     projects: repositoryScanProjects,
   })).map(session => normalizeSession(linkMcpSession(session)));
   const sessions = foldSessionOverlays(normalizedSessions, now);

@@ -298,7 +298,7 @@ function extractTaskKey(input, { preferCompleted = false } = {}) {
             const preferred = value.find(item => preferCompleted ? taskItemCompleted(item) : !taskItemCompleted(item));
             return taskIdentityFromItem(preferred || value[0]);
         }
-        for (const key of ['todos', 'tasks', 'items', 'checklist', 'subtasks']) {
+        for (const key of ['todos', 'tasks', 'items', 'checklist', 'subtasks', 'steps']) {
             if (Array.isArray(value[key])) {
                 const keyFromList = findInValue(value[key]);
                 if (keyFromList) return keyFromList;
@@ -330,7 +330,7 @@ function ritualMetaFor(event) {
     const input = event.input;
     const text = inputText(input);
     const host = extractHost(input);
-    const isCompletedTask = /status['"]?\s*[:=]\s*['"]?completed\b/i.test(text) || /\bcompleted\b/i.test(text);
+    const isCompletedTask = /status['"]?\s*[:=]\s*['"]?(?:completed|done)\b/i.test(text) || /\bcompleted\b/i.test(text);
     const label = host ? compactText(host, host) : compactText(input, tool);
     if (tool === 'Task' || tool === 'Agent') {
         // Priority order: synthetic dispatch payload (child*), then classified

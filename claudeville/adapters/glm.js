@@ -31,7 +31,22 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { claudeTranscript } = require('./claude');
-const { deriveTurnState } = require('./turnState');
+const { deriveTurnState, toEpochMs } = require('./turnState');
+const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
+const { normalizeToolResults, toolResultId, toolResultLocation } = require('./toolResults');
+const {
+  dedupeGitEvents,
+  extractGitEventsFromCommandSource,
+  normalizeProjectPath,
+} = require('./gitEvents');
+const {
+  cleanT3UserPrompt,
+  projectT3Todos,
+  readT3AcpGlmSessionDetail,
+  readT3AcpGlmSessions,
+  readT3ActiveDelegates,
+  t3StateDbExists,
+} = require('./t3code');
 const {
   createDetailResponse,
   recentMcpJobs,
@@ -43,9 +58,12 @@ const {
   statCacheKey,
   stateFileStat,
   sameStateVersion,
+  stripShellLocationPrefix,
+  summarizeToolInput,
   deleteTailState,
   trimCache,
 } = require('./shared');
+const { contextWindowForModel } = require('../src/config/models.generated.cjs');
 
 const STATE_DIR = process.env.CLAUDEVILLE_GLM_STATE_DIR
   || process.env.GLM_CC_STATE_DIR
@@ -53,6 +71,15 @@ const STATE_DIR = process.env.CLAUDEVILLE_GLM_STATE_DIR
 const JOURNAL_FILE = path.join(STATE_DIR, 'journal.jsonl');
 const JOBS_DIR = path.join(STATE_DIR, 'jobs');
 const THREADS_DIR = path.join(STATE_DIR, 'threads');
+const ACP_JSON_MAX_BYTES = 16 * 1024 * 1024;
+const ACP_EXIT_CODE_RE = /(?:^|\n)Exit code:\s*(\d+)\b/i;
+
+function acpGlmSessionDir() {
+  return process.env.CLAUDEVILLE_GLM_ACP_SESSION_DIR
+    || path.join(os.homedir(), '.local', 'state', 'glm-acp-agent', 'sessions');
+}
+
+const ACP_GLM_SESSION_DIR = acpGlmSessionDir();
 
 // Ids the server mints (`<prefix>_<base36 ms>_<8 hex>`); anything else in the
 // journal never becomes a path.
@@ -498,6 +525,443 @@ function buildSession(threadId, jobs, { now, activeThresholdMs }) {
   };
 }
 
+// ─── Standalone ACP GLM JSON sessions ──────────────────
+
+const _acpJsonCache = new Map();
+
+function safeJsonParse(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function canonicalAcpPath(rawPath, project) {
+  if (typeof rawPath !== 'string' || !rawPath.trim()) return null;
+  const cleaned = rawPath.trim().replace(/^file:\/\//, '');
+  const resolved = path.isAbsolute(cleaned)
+    ? path.normalize(cleaned)
+    : (project ? path.resolve(project, cleaned) : cleaned);
+  if (project) {
+    const normProj = path.resolve(project);
+    if (resolved === normProj) return null;
+    if (resolved.startsWith(`${normProj}${path.sep}`)) {
+      return resolved.slice(normProj.length + 1).split(path.sep).join('/');
+    }
+  }
+  return resolved;
+}
+
+function parseAcpToolArgs(rawArgs) {
+  if (!rawArgs) return {};
+  if (typeof rawArgs === 'object') return rawArgs;
+  if (typeof rawArgs === 'string') {
+    const parsed = safeJsonParse(rawArgs);
+    return parsed && typeof parsed === 'object' ? parsed : { raw: rawArgs };
+  }
+  return {};
+}
+
+function readStandaloneAcpJsonFile(filePath, lstat) {
+  if (!lstat?.isFile() || lstat.size <= 0 || lstat.size > ACP_JSON_MAX_BYTES) return null;
+  const key = statCacheKey(filePath, lstat);
+  const cached = _acpJsonCache.get(filePath);
+  if (cached?.key === key) {
+    _acpJsonCache.delete(filePath);
+    _acpJsonCache.set(filePath, cached);
+    return cached.parsed;
+  }
+
+  let data = null;
+  let fd;
+  try {
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > ACP_JSON_MAX_BYTES) return null;
+    const buffer = Buffer.allocUnsafe(stat.size);
+    let offset = 0;
+    while (offset < stat.size) {
+      const n = fs.readSync(fd, buffer, offset, stat.size - offset, offset);
+      if (n <= 0) break;
+      offset += n;
+    }
+    data = JSON.parse(buffer.toString('utf8', 0, offset));
+  } catch (error) {
+    if (error?.code && !['ENOENT', 'ENOTDIR'].includes(error.code)) noteReadFailure(error);
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+
+  const parsed = reduceStandaloneAcpJson(filePath, data, lstat.mtimeMs);
+  _acpJsonCache.delete(filePath);
+  _acpJsonCache.set(filePath, { key, parsed });
+  trimCache(_acpJsonCache, CACHE_MAX);
+  return parsed;
+}
+
+function reduceStandaloneAcpJson(filePath, data, mtimeMs) {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) return null;
+  // Filter out empty ~4.9 KB T3 capability probe files that contain only
+  // system messages and no user/assistant conversation turns.
+  const hasConversation = data.messages.some(m => m && (m.role === 'user' || m.role === 'assistant'));
+  if (!hasConversation) return null;
+
+  const fallbackId = path.basename(filePath, '.json');
+  const rawNativeId = typeof data.sessionId === 'string' && data.sessionId.trim()
+    ? data.sessionId.trim()
+    : fallbackId;
+  if (!rawNativeId || rawNativeId.includes('/') || rawNativeId.includes('\\') || rawNativeId.includes('\0')) return null;
+
+  const nativeId = rawNativeId;
+  const sessionId = `zai-${nativeId}`;
+  const model = (typeof data.model === 'string' && data.model.trim()) || 'glm';
+  const rawThought = typeof data.thoughtLevel === 'string' ? data.thoughtLevel.trim().toLowerCase() : '';
+  const reasoningEffort = rawThought || null;
+  const rawCwd = typeof data.cwd === 'string' && data.cwd.trim() ? data.cwd.trim() : null;
+  const project = rawCwd ? (normalizeProjectPath(rawCwd) || rawCwd) : null;
+  const agentName = typeof data.title === 'string' && data.title.trim() ? data.title.trim().slice(0, 128) : null;
+  const lastActivity = Math.max(toEpochMs(data.updatedAt) || 0, Number(mtimeMs) || 0);
+
+  const observedSources = emptyObservedSources();
+  const dialogueRaw = [];
+  const workingSetRaw = [];
+  const lastResults = [];
+  const gitEvents = [];
+  const toolHistory = [];
+  const detailMessages = [];
+  const callsById = new Map();
+  const pendingCalls = new Map();
+
+  let todos = [];
+  let lastTool = null;
+  let lastToolInput = null;
+  let lastMessage = null;
+  let lastPrompt = null;
+  let lastNonSystemRole = null;
+  let lastAssistantHadTools = false;
+  let msgSeq = 0;
+
+  for (const msg of data.messages) {
+    if (!msg || typeof msg !== 'object') continue;
+    const role = msg.role;
+    if (role === 'system') continue;
+    lastNonSystemRole = role;
+    const ts = toEpochMs(msg.timestamp || msg.createdAt) || lastActivity;
+    msgSeq += 1;
+
+    if (role === 'user') {
+      const content = typeof msg.content === 'string'
+        ? msg.content
+        : (Array.isArray(msg.content)
+          ? msg.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n')
+          : '');
+      const cleaned = cleanT3UserPrompt(content);
+      if (cleaned) {
+        lastPrompt = cleaned;
+        detailMessages.push({ role: 'user', text: cleaned.slice(0, 1200), ts });
+      }
+      pendingCalls.clear();
+      continue;
+    }
+
+    if (role === 'assistant') {
+      if (typeof msg.reasoning_content === 'string' && msg.reasoning_content.trim()) {
+        observedSources.thinkingPlaintext = true;
+        dialogueRaw.push({
+          kind: 'thinking',
+          source: 'glm.reasoning',
+          text: msg.reasoning_content,
+          observedAt: ts,
+          actionId: `msg-${msgSeq}-think`,
+        });
+      }
+      if (typeof msg.content === 'string' && msg.content.trim()) {
+        observedSources.assistantText = true;
+        lastMessage = msg.content.trim().slice(0, 400);
+        detailMessages.push({ role: 'assistant', text: msg.content.trim().slice(0, 1600), ts });
+        dialogueRaw.push({
+          kind: 'assistant',
+          source: 'glm.assistant',
+          text: msg.content,
+          observedAt: ts,
+          actionId: `msg-${msgSeq}-text`,
+        });
+      }
+
+      const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+      lastAssistantHadTools = toolCalls.length > 0;
+      for (let i = 0; i < toolCalls.length; i++) {
+        const tc = toolCalls[i];
+        const toolName = String(tc?.function?.name || tc?.name || '').trim();
+        if (!toolName) continue;
+        const lowerTool = toolName.toLowerCase();
+        const args = parseAcpToolArgs(tc?.function?.arguments ?? tc?.arguments ?? tc?.input);
+        const callId = typeof tc.id === 'string' && tc.id ? tc.id : `call-${msgSeq}-${i}`;
+        let summary = '';
+
+        if (lowerTool === 'todowrite' && Array.isArray(args.todos)) {
+          const projected = projectT3Todos(args.todos);
+          if (projected) {
+            todos = projected;
+            const activeTodo = args.todos.find(t => String(t?.status || '').toLowerCase() === 'in_progress');
+            const planText = activeTodo?.activeForm || activeTodo?.active_form || activeTodo?.content || activeTodo?.subject || null;
+            if (typeof planText === 'string' && planText.trim()) {
+              observedSources.planStep = true;
+              dialogueRaw.push({
+                kind: 'plan',
+                source: 'glm.todowrite',
+                text: planText.trim(),
+                observedAt: ts,
+                actionId: callId,
+              });
+            }
+          }
+          const doneCount = todos.filter(t => t.status === 'completed').length;
+          const activeSubject = todos.find(t => t.status === 'in_progress')?.subject;
+          summary = activeSubject
+            ? `${activeSubject} (${doneCount}/${todos.length})`.slice(0, 160)
+            : (todos.length ? `${doneCount}/${todos.length} todos` : '');
+        } else if (lowerTool === 'run_command' || lowerTool === 'bash') {
+          const cmd = typeof args.command === 'string'
+            ? args.command
+            : (typeof args.CommandLine === 'string' ? args.CommandLine : (typeof args.cmd === 'string' ? args.cmd : ''));
+          summary = cmd ? stripShellLocationPrefix(cmd).slice(0, 200) : '';
+        } else {
+          const targetPath = typeof args.path === 'string'
+            ? args.path
+            : (typeof args.file_path === 'string' ? args.file_path : (typeof args.Path === 'string' ? args.Path : null));
+          if (targetPath) {
+            if (['read_file', 'read', 'view_file'].includes(lowerTool)) {
+              workingSetRaw.push({ path: targetPath, op: 'read', at: ts });
+            } else if (['write_file', 'edit_file', 'write', 'edit'].includes(lowerTool)) {
+              workingSetRaw.push({ path: targetPath, op: 'write', at: ts });
+            }
+          }
+          summary = summarizeToolInput(args, { maxLength: 160 }) || '';
+        }
+
+        lastTool = toolName;
+        lastToolInput = summary || null;
+        toolHistory.push({ tool: toolName, detail: summary, input: summary, ts });
+        callsById.set(callId, { toolName, args, summary, ts });
+        pendingCalls.set(callId, { toolName, ts });
+      }
+      continue;
+    }
+
+    if (role === 'tool') {
+      const callId = typeof msg.tool_call_id === 'string' ? msg.tool_call_id : null;
+      if (callId) pendingCalls.delete(callId);
+      const call = callId ? callsById.get(callId) : null;
+      const content = typeof msg.content === 'string' ? msg.content : '';
+      if (call && ['run_command', 'bash'].includes(call.toolName.toLowerCase())) {
+        const exitMatch = content.match(ACP_EXIT_CODE_RE);
+        const exitCode = exitMatch ? Number(exitMatch[1]) : null;
+        const cmd = typeof call.args?.command === 'string'
+          ? call.args.command
+          : (typeof call.args?.CommandLine === 'string' ? call.args.CommandLine : (typeof call.args?.cmd === 'string' ? call.args.cmd : ''));
+        if (exitCode !== null && ts) {
+          lastResults.push({
+            id: toolResultId({
+              provider: 'zai',
+              sessionId,
+              callId,
+              tool: call.toolName,
+              detail: call.summary,
+              completedAt: ts,
+            }),
+            tool: call.toolName,
+            detail: call.summary,
+            exitCode,
+            exitCodeSource: 'exit',
+            durationMs: null,
+            completedAt: ts,
+            source: 'transcript',
+            location: toolResultLocation({ cwd: project, command: cmd }),
+            noOutput: !content.replace(ACP_EXIT_CODE_RE, '').replace(/^(?:STDOUT|STDERR):\s*/gim, '').trim(),
+          });
+        }
+        if (cmd) {
+          const extracted = extractGitEventsFromCommandSource(
+            { command: cmd, cwd: project },
+            {
+              sessionId,
+              provider: 'zai',
+              project: project || '',
+              cwd: project || '',
+              timestamp: ts,
+              completedAt: ts,
+              exitCode: exitCode ?? undefined,
+              isError: exitCode !== null ? exitCode !== 0 : false,
+              output: content,
+            },
+          );
+          if (Array.isArray(extracted) && extracted.length) gitEvents.push(...extracted);
+        }
+      }
+    }
+  }
+
+  const workingSet = [];
+  const seenPaths = new Set();
+  for (let i = workingSetRaw.length - 1; i >= 0 && workingSet.length < 16; i--) {
+    const item = workingSetRaw[i];
+    const canonical = canonicalAcpPath(item.path, project);
+    if (!canonical || seenPaths.has(canonical)) continue;
+    seenPaths.add(canonical);
+    workingSet.push({ path: canonical, op: item.op, at: item.at || 0, source: 'transcript' });
+  }
+
+  const dialogueCandidates = [];
+  for (const raw of dialogueRaw.slice(-24)) {
+    const candidate = makeDialogue({
+      text: raw.text,
+      kind: raw.kind,
+      source: raw.source,
+      observedAt: raw.observedAt,
+      actionId: raw.actionId,
+      project,
+    });
+    if (candidate) dialogueCandidates.push(candidate);
+  }
+
+  let turn;
+  if (pendingCalls.size > 0) {
+    const firstPending = pendingCalls.values().next().value;
+    turn = deriveTurnState({ pendingTool: firstPending.toolName, pendingSince: firstPending.ts });
+  } else if (lastNonSystemRole === 'assistant' && !lastAssistantHadTools) {
+    turn = deriveTurnState({ turnEnded: true, turnEndedAt: lastActivity });
+  } else {
+    turn = deriveTurnState({ turnEnded: false });
+  }
+
+  const dedupedGitEvents = gitEvents.length ? dedupeGitEvents(gitEvents) : [];
+  const normalizedResults = normalizeToolResults(lastResults);
+
+  return {
+    nativeId,
+    filePath,
+    lastActivity,
+    dialogueCandidates,
+    session: {
+      sessionId,
+      provider: 'zai',
+      agentId: nativeId,
+      agentType: 'main',
+      agentName,
+      userNamed: false,
+      headless: false,
+      model,
+      reasoningEffort,
+      status: 'active',
+      lastActivity,
+      project,
+      ...turn,
+      turnStartedAt: null,
+      lastTurnDurationMs: null,
+      apiError: null,
+      lastTool,
+      lastToolInput,
+      lastMessage,
+      lastPrompt,
+      dialogue: null,
+      observedSources,
+      workingSet,
+      lastResults: normalizedResults,
+      gitEvents: dedupedGitEvents,
+      todos,
+      tokenUsage: null,
+      contextWindowMax: contextWindowForModel(model, 'zai') || 1_000_000,
+      parentSessionId: null,
+      subagentKind: null,
+      signalSource: 'transcript',
+    },
+    detail: createDetailResponse({
+      provider: 'zai',
+      sessionId,
+      project: project || '',
+      agentName,
+      toolHistory: toolHistory.slice(-120),
+      messages: detailMessages.slice(-50),
+      tokenUsage: null,
+      gitEvents: dedupedGitEvents,
+    }),
+  };
+}
+
+function readStandaloneAcpGlmSessions(activeThresholdMs, { now = Date.now(), excludeNativeIds = new Set() } = {}) {
+  const dir = acpGlmSessionDir();
+  let entries;
+  try {
+    if (!fs.existsSync(dir)) return [];
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code && !['ENOENT', 'ENOTDIR'].includes(error.code)) noteReadFailure(error);
+    return [];
+  }
+
+  const threshold = activeThresholdMs == null ? null : Math.max(0, Number(activeThresholdMs) || 0);
+  const sessions = [];
+  for (const entry of entries) {
+    if (!entry.name.endsWith('.json') || entry.name.startsWith('.')) continue;
+    const baseId = entry.name.slice(0, -'.json'.length).toLowerCase();
+    if (excludeNativeIds.has(baseId)) continue;
+    const filePath = path.join(dir, entry.name);
+    let lstat;
+    try {
+      lstat = fs.lstatSync(filePath);
+    } catch {
+      continue;
+    }
+    if (!lstat.isFile()) continue;
+    if (threshold != null && now - lstat.mtimeMs > threshold) continue;
+    const record = readStandaloneAcpJsonFile(filePath, lstat);
+    if (!record) continue;
+    if (excludeNativeIds.has(record.nativeId.toLowerCase())) continue;
+    if (threshold != null && now - record.lastActivity > threshold) continue;
+    const dialogue = pickDialogue(record.dialogueCandidates, { now });
+    sessions.push({
+      ...record.session,
+      dialogue: dialogue ? { ...dialogue } : null,
+      observedSources: { ...record.session.observedSources },
+      workingSet: record.session.workingSet.map(item => ({ ...item })),
+      lastResults: record.session.lastResults.map(item => ({ ...item })),
+      gitEvents: record.session.gitEvents.slice(),
+      todos: record.session.todos.map(item => ({ ...item })),
+    });
+  }
+  return sessions;
+}
+
+function readStandaloneAcpGlmDetail(nativeId, project = null) {
+  const cleanId = String(nativeId || '').trim();
+  if (!cleanId || cleanId.includes('/') || cleanId.includes('\\') || cleanId.includes('\0') || cleanId === '.' || cleanId === '..') {
+    return null;
+  }
+  const dir = acpGlmSessionDir();
+  const filePath = path.join(dir, `${cleanId}.json`);
+  let lstat;
+  try {
+    lstat = fs.lstatSync(filePath);
+  } catch {
+    return null;
+  }
+  const record = readStandaloneAcpJsonFile(filePath, lstat);
+  if (!record) return null;
+  return {
+    ...record.detail,
+    project: record.detail.project || project || '',
+    toolHistory: record.detail.toolHistory.map(item => ({ ...item })),
+    messages: record.detail.messages.map(item => ({ ...item })),
+    gitEvents: record.detail.gitEvents.slice(),
+  };
+}
+
 // ─── Adapter class ──────────────────────────────────────
 
 class GlmAdapter {
@@ -506,7 +970,9 @@ class GlmAdapter {
   get homeDir() { return STATE_DIR; }
 
   isAvailable() {
-    return fs.existsSync(STATE_DIR);
+    return fs.existsSync(STATE_DIR)
+      || fs.existsSync(acpGlmSessionDir())
+      || t3StateDbExists();
   }
 
   getActiveSessions(activeThresholdMs) {
@@ -516,6 +982,44 @@ class GlmAdapter {
       const session = buildSession(threadId, jobs, { now, activeThresholdMs });
       if (session) sessions.push(session);
     }
+
+    const t3ActiveDelegates = readT3ActiveDelegates();
+    const keepSessionIds = new Set(t3ActiveDelegates.keys());
+    const t3Sessions = readT3AcpGlmSessions(activeThresholdMs, { now, keepSessionIds });
+    const seenNativeIds = new Set(t3Sessions.map(s => String(s.agentId || '').toLowerCase()).filter(Boolean));
+
+    // Backfill todos from standalone ACP JSON if T3 turn_items lacked them.
+    const acpDir = acpGlmSessionDir();
+    for (const session of t3Sessions) {
+      if (Array.isArray(session.todos) && session.todos.length > 0) continue;
+      if (!session.agentId) continue;
+      const candidatePath = path.join(acpDir, `${session.agentId}.json`);
+      try {
+        const lstat = fs.lstatSync(candidatePath);
+        const standalone = readStandaloneAcpJsonFile(candidatePath, lstat);
+        if (standalone?.session?.todos?.length) {
+          session.todos = standalone.session.todos.map(item => ({ ...item }));
+        }
+      } catch { /* optional standalone mirror */ }
+    }
+
+    const standaloneSessions = readStandaloneAcpGlmSessions(activeThresholdMs, {
+      now,
+      excludeNativeIds: seenNativeIds,
+    });
+
+    for (const session of [...t3Sessions, ...standaloneSessions]) {
+      const delegates = t3ActiveDelegates.get(session.sessionId);
+      if (delegates && delegates.count > 0) {
+        session.backgroundPending = {
+          count: delegates.count,
+          kinds: ['agent'],
+          since: delegates.since,
+        };
+      }
+      sessions.push(session);
+    }
+
     return sessions.sort((a, b) => b.lastActivity - a.lastActivity);
   }
 
@@ -524,17 +1028,23 @@ class GlmAdapter {
   getSessionDetail(sessionId, project) {
     const threadId = threadIdOf(sessionId);
     const jobs = readThreads().get(threadId);
-    if (!jobs) return createDetailResponse({ sessionId, project, jobs: [] });
-    const target = transcriptFile(threadId);
-    const latestJob = jobs[jobs.length - 1];
-    return createDetailResponse({
-      sessionId,
-      project,
-      jobs: recentMcpJobs(jobs),
-      toolHistory: readTranscript(target, claudeTranscript.toolHistory),
-      messages: readTranscript(target, claudeTranscript.recentMessages),
-      tokenUsage: readTranscript(target, f => claudeTranscript.tokenUsage(f, latestJob?.model || null, 'zai')),
-    });
+    if (jobs) {
+      const target = transcriptFile(threadId);
+      const latestJob = jobs[jobs.length - 1];
+      return createDetailResponse({
+        sessionId,
+        project,
+        jobs: recentMcpJobs(jobs),
+        toolHistory: readTranscript(target, claudeTranscript.toolHistory),
+        messages: readTranscript(target, claudeTranscript.recentMessages),
+        tokenUsage: readTranscript(target, f => claudeTranscript.tokenUsage(f, latestJob?.model || null, 'zai')),
+      });
+    }
+    const t3Detail = readT3AcpGlmSessionDetail(threadId, project);
+    if (t3Detail) return t3Detail;
+    const standaloneDetail = readStandaloneAcpGlmDetail(threadId, project);
+    if (standaloneDetail) return standaloneDetail;
+    return createDetailResponse({ sessionId, project, jobs: [] });
   }
 
   getWatchPaths({ sessions = [] } = {}) {
@@ -545,27 +1055,49 @@ class GlmAdapter {
     if (fs.existsSync(JOURNAL_FILE)) {
       paths.push({ type: 'file', path: JOURNAL_FILE, scope: 'discovery', kind: 'discovery', probe: true });
     }
+    const acpDir = acpGlmSessionDir();
+    if (fs.existsSync(acpDir)) {
+      paths.push({ type: 'directory', path: acpDir, filters: ['.json'], scope: 'discovery', kind: 'discovery' });
+    }
     const threads = _journal.threads;
     for (const session of sessions) {
       const threadId = threadIdOf(session.sessionId);
       const jobs = threads.get(threadId);
-      const job = jobs?.[jobs.length - 1];
-      if (!job || job.endedAt) continue;
-      const target = transcriptFile(threadId);
-      if (!target) continue;
-      paths.push({
-        type: 'file',
-        path: target.file,
-        scope: 'active',
-        kind: 'transcript',
-        probe: true,
-        activity: session.lastActivity,
-        sessionId: session.sessionId,
-        project: session.project,
-      });
+      if (jobs) {
+        const job = jobs[jobs.length - 1];
+        if (!job || job.endedAt) continue;
+        const target = transcriptFile(threadId);
+        if (!target) continue;
+        paths.push({
+          type: 'file',
+          path: target.file,
+          scope: 'active',
+          kind: 'transcript',
+          probe: true,
+          activity: session.lastActivity,
+          sessionId: session.sessionId,
+          project: session.project,
+        });
+        continue;
+      }
+      if (threadId && !threadId.includes('/') && !threadId.includes('\\') && fs.existsSync(acpDir)) {
+        const acpFile = path.join(acpDir, `${threadId}.json`);
+        if (fs.existsSync(acpFile)) {
+          paths.push({
+            type: 'file',
+            path: acpFile,
+            scope: 'active',
+            kind: 'transcript',
+            probe: true,
+            activity: session.lastActivity,
+            sessionId: session.sessionId,
+            project: session.project,
+          });
+        }
+      }
     }
     return paths;
   }
 }
 
-module.exports = { GlmAdapter };
+module.exports = { GlmAdapter, ACP_GLM_SESSION_DIR };

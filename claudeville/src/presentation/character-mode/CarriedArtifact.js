@@ -245,6 +245,8 @@ const PLAN_TOOLS = new Set([
     'EnterPlanMode',
     'ExitPlanMode',
     'update_plan',
+    'update_steps',
+    'todowrite',
 ]);
 
 const PROOF_FRESH_MS = 90_000;
