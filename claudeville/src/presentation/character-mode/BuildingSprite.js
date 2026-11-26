@@ -7225,7 +7225,7 @@ export class BuildingSprite {
                     agents: readers,
                     compactions,
                     chronicleEvents: this._compactionRecords,
-                    now: new Date(),
+                    now: new Date(Date.now()),
                     loomPanel: this._archiveLoomPanel || null,
                 }),
             };

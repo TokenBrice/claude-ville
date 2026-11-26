@@ -879,7 +879,7 @@ export function buildArchiveCutawayState({
     busiestRepo = null,
     compactions = [],
     chronicleEvents = [],
-    now = new Date(),
+    now = new Date(Date.now()),
     loomPanel = null,
 } = {}) {
     const refDate = now instanceof Date ? now : new Date(now);
