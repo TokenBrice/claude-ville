@@ -51,6 +51,32 @@ export function writeSignageMode(value, storage = globalThis.window?.localStorag
     return mode;
 }
 
+export const SPEECH_DISPLAY_STORAGE_KEY = 'claudeville.world.speechDisplay';
+export const SPEECH_DISPLAY_MODES = Object.freeze(['auto', 'bubbles', 'spoken', 'both']);
+export const DEFAULT_SPEECH_DISPLAY = 'auto';
+export const SPEECH_DISPLAY_EVENT = 'world:speech-display-setting';
+export const SPEECH_DISPLAY_LABELS = Object.freeze({
+    auto: 'Zoom-adaptive',
+    bubbles: 'Above agents',
+    spoken: 'Bottom-left stream',
+    both: 'Both',
+});
+
+export function normalizeSpeechDisplay(value) {
+    return SPEECH_DISPLAY_MODES.includes(value) ? value : DEFAULT_SPEECH_DISPLAY;
+}
+
+export function readSpeechDisplay(storage = globalThis.window?.localStorage) {
+    try { return normalizeSpeechDisplay(storage?.getItem(SPEECH_DISPLAY_STORAGE_KEY)); }
+    catch { return DEFAULT_SPEECH_DISPLAY; }
+}
+
+export function writeSpeechDisplay(value, storage = globalThis.window?.localStorage) {
+    const mode = normalizeSpeechDisplay(value);
+    try { storage?.setItem(SPEECH_DISPLAY_STORAGE_KEY, mode); } catch { /* optional persistence */ }
+    return mode;
+}
+
 // 10.3 — the World overlay's 2D context attributes. Context attributes are
 // fixed by the first getContext call, so every site that creates it (App's
 // resize and the renderer) passes these: display-p3 on a P3 screen, where

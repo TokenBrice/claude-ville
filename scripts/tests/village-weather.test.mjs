@@ -11,7 +11,16 @@ import { RoofWeather } from '../../claudeville/src/presentation/character-mode/R
 import { gpuRainField } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 import { forecastKnot, forecastKnotsByDate } from '../../claudeville/src/presentation/character-mode/VillageWeather.js';
-import { VILLAGE_WEATHER_KEY, readVillageForecast, setVillageForecast, watchVillageWeather } from '../../claudeville/src/presentation/shared/VillageWeatherSettings.js';
+import {
+    VILLAGE_WEATHER_KEY,
+    VILLAGE_WEATHER_MODES,
+    readVillageForecast,
+    readVillageWeatherMode,
+    setVillageForecast,
+    setVillageWeatherMode,
+    watchVillageWeather,
+    weatherMode,
+} from '../../claudeville/src/presentation/shared/VillageWeatherSettings.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/open-meteo-london.json', import.meta.url)));
 const HOUR = 3_600_000;
@@ -284,4 +293,52 @@ test('client stays offline by default and discards a response after opting out',
     root.localStorage.getItem = key => key === VILLAGE_WEATHER_KEY ? 'real-sky' : null;
     watchVillageWeather({ root, simulation: true }).destroy();
     assert.equal(calls, 1);
+});
+
+test('idyllic weather mode stays offline, fires onChange against modeled, and keeps winter dry and unfrozen', (t) => {
+    t.after(() => {
+        setVillageWeatherMode('modeled');
+        setVillageForecast(null);
+    });
+    assert.deepEqual(VILLAGE_WEATHER_MODES, ['modeled', 'real-sky', 'idyllic']);
+    assert.equal(weatherMode('idyllic'), 'idyllic');
+    assert.equal(weatherMode('unknown'), 'modeled');
+
+    let calls = 0;
+    let changes = 0;
+    const root = {
+        localStorage: { getItem: () => null },
+        addEventListener() {},
+        removeEventListener() {},
+        setTimeout: () => assert.fail('idyllic weather must not schedule polls'),
+        clearTimeout() {},
+        fetch: () => { calls++; return new Promise(() => {}); },
+    };
+    const watcher = watchVillageWeather({ root, onChange: () => { changes++; } });
+    try {
+        const before = changes;
+        watcher.setMode('idyllic');
+        assert.equal(readVillageWeatherMode(), 'idyllic');
+        assert.equal(calls, 0);
+        assert.equal(changes, before + 1);
+        const winterNight = new Date(2026, 0, 15, 2, 0);
+        const atmosphere = new AtmosphereState({ nowProvider: () => winterNight });
+        const snap = atmosphere.snapshot();
+        assert.deepEqual(snap.weatherSource, { kind: 'idyllic', ageMinutes: null });
+        assert.equal(snap.timeline.idyllic, true);
+        assert.equal(snap.weather.type, 'clear');
+        assert.equal(snap.weather.cloudCover, 0.10);
+        assert.equal(snap.weather.precipitation, 0);
+        assert.equal(snap.weather.fog, 0);
+        assert.equal(snap.weather.freezing, false);
+        const ground = groundStateAt(winterNight, groundOptionsFor(snap));
+        assert.equal(ground.frost, 0);
+        assert.equal(ground.snowCover, 0);
+        assert.equal(ground.wetness, 0);
+        watcher.setMode('modeled');
+        assert.equal(readVillageWeatherMode(), 'modeled');
+        assert.equal(changes, before + 2);
+    } finally {
+        watcher.destroy();
+    }
 });

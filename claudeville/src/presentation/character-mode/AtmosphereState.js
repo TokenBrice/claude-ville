@@ -37,9 +37,9 @@ import {
     solsticeAlignmentAt,
 } from '../../config/villageCalendar.js';
 import { lookStrength } from './LookStrengths.js';
-import { readVillageForecast } from '../shared/VillageWeatherSettings.js';
+import { readVillageForecast, readVillageWeatherMode } from '../shared/VillageWeatherSettings.js';
 import { PRECIPITATING, groundOptionsFor, groundStateAt, isFrostMonth, precipitationIsFrozen, snowBucketOf, snowfallOn } from './GroundState.js';
-import { WIND_MAX, baseWindX, windAt, windSpeedForType } from './Wind.js';
+import { WIND_MAX, WIND_SPEED_BY_TYPE, baseWindX, windAt, windSpeedForType } from './Wind.js';
 import {
     SUNRISE_ALTITUDE_DEG,
     runtimeSite,
@@ -287,6 +287,20 @@ export const WEATHER_PRESETS = {
         sunOcclusion: 0.82,
     },
 };
+
+// Perpetual balmy clear sky for the Idyllic weather mode (real day/night arc,
+// moon, tides, eclipses, aurora, and seasons remain active).
+export const IDYLLIC_WEATHER = Object.freeze({
+    type: 'clear',
+    intensity: WEATHER_PRESETS.clear.intensity,
+    cloudCover: 0.10,
+    precipitation: 0,
+    fog: 0,
+    frozen: false,
+    windX: WIND_SPEED_BY_TYPE.clear,
+    cause: 'timeline',
+    timelineMode: 'auto',
+});
 
 // The sun has no asset: SkyRenderer bakes a flat-to-core stepped disc (0.10).
 // The sky's clouds are SkyRenderer's baked horizon deck (5.7), not sprites.
@@ -591,7 +605,8 @@ function timelineStateAt(minute, knots, joined = false, realSky = false) {
 
 // W3-D — 0.0 / 1.0 °C freezing hysteresis for visible breath puffs.
 export function resolveFreezingState(temperatureC, previousFreezing = false, frozenPrecip = false,
-    { date, weather, frost, snowCover, phase } = {}) {
+    { date, weather, frost, snowCover, phase, idyllic = false } = {}) {
+    if (idyllic) return false;
     const temp = temperatureC == null ? NaN : Number(temperatureC);
     if (!Number.isFinite(temp)) {
         const month = date?.getMonth();
@@ -1047,10 +1062,23 @@ function normalizeWeatherOverride(override, fallbackSeed = null) {
 }
 
 // C-W1 — the weather is a pure function of (local date, minute, optional
-// explicit seed, forecast or debug override). Nothing about agents, moods, the
-// director, pushes or the Chronicle can reach it.
-export function resolveWeather(date, override = null, { seedOverride = null, timelineMode = 'auto', timelineKnots = null, forecast = null } = {}) {
+// explicit seed, forecast, idyllic mode, or debug override). Nothing about agents,
+// moods, the director, pushes or the Chronicle can reach it.
+export function resolveWeather(
+    date,
+    override = null,
+    { seedOverride = null, timelineMode = 'auto', timelineKnots = null, forecast = null, idyllic = false } = {},
+) {
     if (override) return normalizeWeatherOverride(override, seedOverride);
+    if (idyllic && timelineMode !== 'fixed' && !timelineKnots && seedOverride == null) {
+        return {
+            ...IDYLLIC_WEATHER,
+            previousType: 'clear',
+            nextType: 'clear',
+            transitionProgress: 1,
+            seed: resolveSeed(null, `${localDateKey(date)}|weather-timeline`),
+        };
+    }
     // Pinned QA knots win in both modes: fixed mode only drops the date hash.
     if (timelineMode === 'fixed' && !timelineKnots) return deterministicWeather(date, seedOverride);
     return resolveWeatherAt(minutesSinceMidnight(date), timelineFor(date, seedOverride, timelineKnots, forecast));
@@ -1104,7 +1132,13 @@ function timelineFor(date, seedOverride, timelineKnots, forecast) {
  * or fixed timeline). Debug weather overrides are a
  * live-only look and never enter the history.
  */
-export function weatherHistorySampler(date, { seedOverride = null, timelineMode = 'auto', timelineKnots = null, forecast = null } = {}) {
+export function weatherHistorySampler(
+    date,
+    { seedOverride = null, timelineMode = 'auto', timelineKnots = null, forecast = null, idyllic = false } = {},
+) {
+    if (idyllic && timelineMode !== 'fixed' && !timelineKnots && seedOverride == null) {
+        return () => IDYLLIC_WEATHER;
+    }
     if (timelineMode === 'fixed' && !timelineKnots) {
         const at = new Date(date.getFullYear(), date.getMonth(), date.getDate());
         return (minute) => {
@@ -1748,7 +1782,10 @@ function forecastSource(date, forecast) {
 }
 
 export function createLiveAtmosphereSnapshot() {
-    return createAtmosphereSnapshot({ forecast: readVillageForecast() });
+    return createAtmosphereSnapshot({
+        forecast: readVillageForecast(),
+        weatherMode: readVillageWeatherMode(),
+    });
 }
 
 export function createAtmosphereSnapshot({
@@ -1760,6 +1797,7 @@ export function createAtmosphereSnapshot({
     timelineMode = 'auto',
     timelineKnots = null,
     forecast = null,
+    weatherMode = 'modeled',
     solarSite = null,
     lunarTide = null,
 } = {}) {
@@ -1770,10 +1808,20 @@ export function createAtmosphereSnapshot({
     const phases = phasesForShift(shift);
     const { phase, phaseProgress } = resolvePhase(minute, phases);
     const dayProgress = minute / DAY_MINUTES;
-    const weatherSource = weatherOverride || hourOverride != null || seedOverride != null || timelineMode === 'fixed' || timelineKnots
-        ? null : forecastSource(effectiveDate, forecast);
+    const hasOverride = Boolean(
+        weatherOverride || hourOverride != null || seedOverride != null
+        || timelineMode === 'fixed' || timelineKnots,
+    );
+    const idyllic = !hasOverride && weatherMode === 'idyllic';
+    const weatherSource = hasOverride
+        ? null
+        : idyllic
+            ? { kind: 'idyllic', ageMinutes: null }
+            : forecastSource(effectiveDate, forecast);
     const activeForecast = weatherSource?.kind === 'forecast' ? forecast : null;
-    const weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode, timelineKnots, forecast: activeForecast });
+    const weather = resolveWeather(effectiveDate, weatherOverride, {
+        seedOverride, timelineMode, timelineKnots, forecast: activeForecast, idyllic,
+    });
     weather.frozen = weather.precipitation > PRECIPITATING && precipitationIsFrozen(effectiveDate.getMonth(), weather);
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const intensity = clamp(weather.intensity);
@@ -1831,6 +1879,17 @@ export function createAtmosphereSnapshot({
         cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}|m${Math.round(lighting.moonFill * 10)}${weather.frozen ? '|snow' : ''}`,
         weather,
         weatherSource,
+        ...(idyllic ? {
+            timeline: {
+                mode: timelineMode,
+                hourOverride,
+                frozen: false,
+                seedOverride,
+                knots: timelineKnots,
+                forecast: null,
+                idyllic: true,
+            },
+        } : {}),
         sky: {
             palette: skyPaletteFor(lightGrade),
             assetIds: SKY_ASSETS,
@@ -1883,6 +1942,7 @@ export class AtmosphereState {
     update({ now = null, motionScale = null } = {}) {
         const baseNow = this._frozenDate ?? now ?? this.nowProvider();
         const forecast = this._frozenDate ? null : readVillageForecast();
+        const weatherMode = this._frozenDate ? 'modeled' : readVillageWeatherMode();
         this._lastSnapshot = createAtmosphereSnapshot({
             now: baseNow,
             motionScale,
@@ -1892,6 +1952,7 @@ export class AtmosphereState {
             timelineMode: this._timelineMode,
             timelineKnots: this._timelineKnots,
             forecast,
+            weatherMode,
             lunarTide: {
                 previousLevel: this._lunarTideLevel,
                 override: this._lunarTideOverride,
@@ -1902,6 +1963,7 @@ export class AtmosphereState {
         this._lunarTideLevel = tide.source === 'lunar' ? tide.level : null;
         // C-W2 — everything `groundStateAt` needs to integrate the same
         // history the live weather resolves from.
+        const idyllic = this._lastSnapshot.weatherSource?.kind === 'idyllic';
         this._lastSnapshot.timeline = {
             mode: this._timelineMode,
             hourOverride: this._hourOverride,
@@ -1909,12 +1971,13 @@ export class AtmosphereState {
             seedOverride: this._seedOverride,
             knots: this._timelineKnots,
             forecast: this._lastSnapshot.weatherSource?.kind === 'forecast' ? forecast : null,
+            idyllic,
         };
         const { weather, effectiveDate: date, phase } = this._lastSnapshot;
-        const ground = weather.temperatureC == null && (isFrostMonth(date.getMonth()) || phase === 'night' || phase === 'dawn')
+        const ground = !idyllic && weather.temperatureC == null && (isFrostMonth(date.getMonth()) || phase === 'night' || phase === 'dawn')
             ? groundStateAt(date, groundOptionsFor(this._lastSnapshot)) : null;
         this._freezingState = resolveFreezingState(weather.temperatureC, this._freezingState, weather.frozen,
-            { date, weather, phase, frost: ground?.frost, snowCover: ground?.snowCover });
+            { date, weather, phase, frost: ground?.frost, snowCover: ground?.snowCover, idyllic });
         weather.freezing = this._freezingState;
         return this._lastSnapshot;
     }

@@ -47,7 +47,7 @@ import { groundOptionsFor, groundStateAt, liquidPrecipitation } from './GroundSt
 import { ungradeRgb } from './CanvasGrade.js';
 import { PEAK, armPeakMarks, drawMomentEdgePlates, setMomentStage, takePeakMarks } from './EffectStamps.js';
 import { drawCouncilScrim, RETOLD_SCRUBBER_RESERVED_NAME, COUNCIL_RIBBON_RESERVED_NAME } from './CouncilRibbon.js';
-import { drawQuillPip, scribeSpeaker, usesScribeLine, THOUGHT_PAINT } from './ThoughtColumn.js';
+import { drawQuillPip, resolveSpeechDisplay, scribeSpeaker, usesScribeLine, THOUGHT_PAINT } from './ThoughtColumn.js';
 import { getReservedRect, getReservedRects, publishReservedBox } from '../shared/ReservedRects.js';
 import { postcardFrame } from './Postcard.js';
 
@@ -1162,14 +1162,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     if (!gpuWorldRendered) {
         for (const sprite of sortedSprites) sprite.drawDeferredNameTag?.(overlayCtx);
     }
-    renderer._scribeSpeaker = null;
-    if (!postcard && usesScribeLine(restZoom, renderer.getReadMode(), theatreMode)) {
-        const speaker = scribeSpeaker(renderer._overlayBubbleOrder);
-        if (speaker) {
-            renderer._scribeSpeaker = speaker;
-            drawQuillPip(overlayCtx, speaker, zoom);
-        }
-    } else if (!postcard) drawThoughtLayer(overlayCtx, sortedSprites, zoom);
+    paintSpeechLayer(overlayCtx, renderer, sortedSprites, { zoom, restZoom, theatreMode, postcard });
     // 4.5 — the shared-file overlap plate. The thread and knot live in the
     // occluded ground texture; the exact counts belong here, once, in both
     // backends, so dense load keeps the numbers when the lines are dropped.
@@ -1728,6 +1721,16 @@ const CAPTION_STYLES = Object.freeze({
     returned: { eyebrow: 'RETURNED', accent: '#b9ad96', text: '#f3e2bd' },
 });
 
+const SPOKEN_SPEAKER_MAX_CHARS = 18;
+
+export function shortSpeakerName(sprite) {
+    const raw = String(sprite?.agent?.name || sprite?.agent?.displayName || '').trim();
+    if (!raw) return '';
+    return raw.length > SPOKEN_SPEAKER_MAX_CHARS
+        ? `${raw.slice(0, SPOKEN_SPEAKER_MAX_CHARS - 1).trimEnd()}…`
+        : raw;
+}
+
 // V8 — caption priority: incident > verified release > returned > milestone.
 // An incident is the chapter Ambient composed, or a verified failed/rejected
 // push inside its window whether or not Ambient owns the camera (the bracket
@@ -1753,8 +1756,17 @@ function captionSource(renderer, villageSnapshot) {
         const agent = parade.agentId ? renderer?.world?.agents?.get?.(parade.agentId) : null;
         if (!agent?.isSubagent) return { style: CAPTION_STYLES.milestone, text: paradeText };
     }
-    const speaker = renderer?._scribeSpeaker;
-    if (speaker) return { style: CAPTION_STYLES.spoken, text: speaker._statusThread[0].text, chip: speaker.thoughtRepoAccent?.() };
+    const line = renderer?._scribeLine || (renderer?._scribeSpeaker?._statusThread?.[0]?.text
+        ? {
+            text: renderer._scribeSpeaker._statusThread[0].text,
+            chip: renderer._scribeSpeaker.thoughtRepoAccent?.(),
+            speakerName: shortSpeakerName(renderer._scribeSpeaker),
+        }
+        : null);
+    if (line?.text) {
+        const text = line.speakerName ? `${line.speakerName} · ${line.text}` : line.text;
+        return { style: CAPTION_STYLES.spoken, text, chip: line.chip };
+    }
     return null;
 }
 
@@ -2320,6 +2332,43 @@ function drawBuildingLightReflections(renderer, ctx, atmosphere) {
 function drawThoughtLayer(ctx, sprites, zoom) {
     for (const sprite of sprites) sprite.drawThought?.(ctx, zoom, THOUGHT_PAINT.LEADER);
     for (const sprite of sprites) sprite.drawThought?.(ctx, zoom, THOUGHT_PAINT.COLUMN);
+}
+
+export function paintSpeechLayer(overlayCtx, renderer, sortedSprites, {
+    zoom,
+    restZoom = zoom,
+    theatreMode = false,
+    postcard = false,
+} = {}) {
+    const speechPlan = resolveSpeechDisplay(
+        restZoom,
+        renderer.getReadMode?.() === true,
+        theatreMode,
+        renderer.getSpeechDisplay?.(),
+    );
+    renderer._speechDisplayPlan = speechPlan;
+    renderer._scribeSpeaker = null;
+    renderer._scribeLine = null;
+    if (postcard) return speechPlan;
+    // Snapshot the SPOKEN line before drawThoughtLayer() runs because
+    // AgentSprite.drawThought() clears sprite._statusThread during COLUMN paint.
+    const speaker = speechPlan.useScribe ? scribeSpeaker(renderer._overlayBubbleOrder) : null;
+    if (speaker) {
+        renderer._scribeSpeaker = speaker;
+        const text = speaker._statusThread?.[0]?.text || '';
+        if (text) {
+            renderer._scribeLine = {
+                text,
+                chip: speaker.thoughtRepoAccent?.() || null,
+                speakerName: shortSpeakerName(speaker),
+            };
+        }
+    }
+    if (speechPlan.drawBubbles) drawThoughtLayer(overlayCtx, sortedSprites, zoom);
+    if (speechPlan.useScribe && speaker && (!speechPlan.drawBubbles || speaker.bubbleSlot == null)) {
+        drawQuillPip(overlayCtx, speaker, zoom);
+    }
+    return speechPlan;
 }
 
 function drawGlassPass(ctx, renderer, sprites, labelOptions) {

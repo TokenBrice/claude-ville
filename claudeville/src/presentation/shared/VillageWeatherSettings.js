@@ -1,9 +1,11 @@
 export const VILLAGE_WEATHER_KEY = 'claudeville.villageWeather';
+export const VILLAGE_WEATHER_MODES = Object.freeze(['modeled', 'real-sky', 'idyllic']);
 export const OPEN_METEO_URL = 'https://open-meteo.com/';
 export const WEATHER_LICENCE_URL = 'https://creativecommons.org/licenses/by/4.0/';
 const HOUR_MS = 60 * 60_000;
 
 let villageForecast = null;
+let villageWeatherMode = 'modeled';
 
 export function readVillageForecast() {
     return villageForecast;
@@ -14,7 +16,15 @@ export function setVillageForecast(forecast) {
 }
 
 export function weatherMode(value) {
-    return value === 'real-sky' ? 'real-sky' : 'modeled';
+    return VILLAGE_WEATHER_MODES.includes(value) ? value : 'modeled';
+}
+
+export function readVillageWeatherMode() {
+    return villageWeatherMode;
+}
+
+export function setVillageWeatherMode(mode) {
+    villageWeatherMode = weatherMode(mode);
 }
 
 export function readVillageWeather(storage) {
@@ -23,7 +33,7 @@ export function readVillageWeather(storage) {
 }
 
 export function watchVillageWeather({ simulation = false, onChange, root = window } = {}) {
-    let enabled = false;
+    let currentMode = null;
     let controller = null;
     let timer = null;
     let forecast = null;
@@ -49,7 +59,7 @@ export function watchVillageWeather({ simulation = false, onChange, root = windo
                 const fetchedAt = Number.isFinite(result.fetchedAt) && result.fetchedAt > 0 ? result.fetchedAt : null;
                 let days = null;
                 if (fetchedAt && result.hourly) {
-                    days = forecast.fetchedAt === fetchedAt ? forecast.days : null;
+                    days = forecast?.fetchedAt === fetchedAt ? forecast.days : null;
                     if (!days) {
                         const { forecastKnotsByDate } = await import('../character-mode/VillageWeather.js');
                         if (signal.aborted) return;
@@ -69,13 +79,16 @@ export function watchVillageWeather({ simulation = false, onChange, root = windo
     }
 
     function setMode(mode) {
-        const wanted = !simulation && mode === 'real-sky';
-        if (enabled === wanted) return;
-        enabled = wanted;
+        const nextMode = simulation ? 'modeled' : weatherMode(mode);
+        if (currentMode === nextMode) return;
+        currentMode = nextMode;
+        setVillageWeatherMode(nextMode);
         root.clearTimeout(timer);
+        timer = null;
         controller?.abort();
-        publish(enabled ? { fetchedAt: null, days: null } : null);
-        if (enabled) void refresh();
+        controller = null;
+        publish(nextMode === 'real-sky' ? { fetchedAt: null, days: null } : null);
+        if (nextMode === 'real-sky') void refresh();
     }
 
     const sync = () => {

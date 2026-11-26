@@ -131,6 +131,7 @@ const MEMO_MAX = 8;
 const SNOW_DAY_MEMO_MAX = 512;
 
 const _groundMemo = new Map();
+const _idyllicGroundMemo = new Map();
 const _rainbowMemo = new Map();
 const _snowDayMemo = new Map();
 
@@ -174,7 +175,8 @@ function timelineKey(options) {
     // pinned knots do not.
     const nightRain = knots || nightRainOn() ? '' : '|wx0';
     const forecast = options.forecast ? `|forecast:${options.forecast.fetchedAt}` : '';
-    return `${options.timelineMode || 'auto'}|${options.seedOverride ?? ''}|${knots}${nightRain}${forecast}`;
+    const idyllic = options.idyllic ? '|idyllic' : '';
+    return `${options.timelineMode || 'auto'}|${options.seedOverride ?? ''}|${knots}${nightRain}${forecast}${idyllic}`;
 }
 
 function historyKey(date, minute, options) {
@@ -353,6 +355,7 @@ export function groundOptionsFor(atmosphere) {
         timelineMode: timeline?.mode || 'auto',
         timelineKnots: timeline?.knots || null,
         forecast: timeline?.forecast || null,
+        idyllic: Boolean(timeline?.idyllic || atmosphere?.weatherSource?.kind === 'idyllic'),
         // BI-5 — the frost melts by the snapshot's own sun.
         sun: frostSunFor(atmosphere),
     };
@@ -360,13 +363,28 @@ export function groundOptionsFor(atmosphere) {
 
 /**
  * C-W2 ground state for `date` (its local minute, or `options.minute`).
- * `options`: `{ seedOverride, timelineMode, timelineKnots, forecast }` — the same
- * timeline inputs as the live snapshot (`atmosphere.timeline`) — and the
+ * `options`: `{ seedOverride, timelineMode, timelineKnots, forecast, idyllic }` —
+ * the same timeline inputs as the live snapshot (`atmosphere.timeline`) — and the
  * frost's `sun` (`frostSunFor`; the fallback sun when omitted).
  */
 export function groundStateAt(date, options = {}) {
     const minute = Number.isFinite(options.minute) ? options.minute : minuteOfDay(date);
     const bucket = Math.floor(minute / GROUND_BUCKET_MINUTES) * GROUND_BUCKET_MINUTES;
+    if (options.idyllic === true) {
+        let dry = _idyllicGroundMemo.get(bucket);
+        if (!dry) {
+            dry = Object.freeze({
+                wetness: 0,
+                puddles: 0,
+                snowCover: 0,
+                frost: 0,
+                frostRising: false,
+                bucketMinute: bucket,
+            });
+            _idyllicGroundMemo.set(bucket, dry);
+        }
+        return dry;
+    }
     const sun = options.sun || { ...FROST_FALLBACK_SUN, elevationDeg: fallbackElevation(minute, FROST_FALLBACK_SUN.sunriseMinute, FROST_FALLBACK_SUN.solarNoonMinute) };
     const sunrise = Math.round(finiteOr(sun.sunriseMinute, FROST_FALLBACK_SUN.sunriseMinute));
     const melt = frostMeltQuarter(sun, minute);
@@ -426,6 +444,7 @@ export function snowBucketOf(snowCover) {
  * `date`'s minute, or null (still raining, never rained, snow, or longer ago).
  */
 export function rainClearedMinutesAgo(date, options = {}) {
+    if (options.idyllic === true) return null;
     const minute = Math.floor(Number.isFinite(options.minute) ? options.minute : minuteOfDay(date));
     const key = historyKey(date, minute, options);
     if (_rainbowMemo.has(key)) return _rainbowMemo.get(key);

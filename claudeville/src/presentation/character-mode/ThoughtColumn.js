@@ -34,6 +34,10 @@ export const THOUGHT_HEAD = Object.freeze({
     pad: 9,
     maxText: 232,
 });
+// Overview compact head text cap (~20–22 chars) when bubbles render at z < 1.6.
+export const THOUGHT_COMPACT_MAX_TEXT = 148;
+// Shorter-reach candidate prefix used in overview compact mode (slots 0..3).
+export const THOUGHT_OVERVIEW_CANDIDATE_COUNT = 16;
 // The long-wait clock replaces the head bubble with a fixed glyph box.
 export const THOUGHT_CLOCK_WIDTH = 22;
 // Older lines: smaller, fainter rows a 3 px gap above the head and each other.
@@ -252,11 +256,21 @@ function countDigits(value) {
  * `clock` swaps the head for the long-wait clock glyph; `chip` reserves the
  * repo pennant zone; `tagLength` > 0 adds the speaker tag (displaced or
  * occluded heads only); `mergedCount` > 1 adds the ×N count; `historyLimit`
- * caps the older lines drawn (0 in a crowd, see IsometricRenderer).
+ * caps the older lines drawn (0 in a crowd, see IsometricRenderer); `headMaxText`
+ * caps head text width (148 px in overview compact mode, default 232 px).
  * Bounds (`left/right/top/bottom`) are whole pixels around every painted
  * fill and stroke, tail included, relative to the bubble centre and base.
  */
-export function layoutThoughtColumn(out, thread, clock = false, chip = false, tagLength = 0, mergedCount = 1, historyLimit = THOUGHT_HISTORY_LIMIT) {
+export function layoutThoughtColumn(
+    out,
+    thread,
+    clock = false,
+    chip = false,
+    tagLength = 0,
+    mergedCount = 1,
+    historyLimit = THOUGHT_HISTORY_LIMIT,
+    headMaxText = THOUGHT_HEAD.maxText,
+) {
     const head = thread?.[0] || null;
     out.clock = clock;
     out.headTop = THOUGHT_HEAD.centerY - THOUGHT_HEAD.height / 2;
@@ -274,7 +288,7 @@ export function layoutThoughtColumn(out, thread, clock = false, chip = false, ta
     } else {
         const text = String(head?.text || '');
         const mark = needsConfidenceMark(text, head?.confidence) ? 1 : 0;
-        out.headKeep = thoughtTextKeep(text, THOUGHT_HEAD.maxText, mark);
+        out.headKeep = thoughtTextKeep(text, headMaxText, mark);
         out.textWidth = thoughtTextWidth(text.length, out.headKeep, mark);
         out.chipZone = chip ? THOUGHT_CHIP.inset + THOUGHT_CHIP.width + THOUGHT_CHIP.gap : THOUGHT_HEAD.pad;
         out.tagWidth = tagLength > 0 ? tagLength * THOUGHT_DISPLAY_ADVANCE + THOUGHT_TAG.gap : 0;
@@ -344,6 +358,38 @@ export function thoughtLeader(out, column, shiftX, slotShift, toY) {
 
 export function usesScribeLine(restZoom, readMode, theatreMode) {
     return !readMode && (restZoom < 1.6 || theatreMode);
+}
+
+/**
+ * Resolves how agent speech/thought lines render for the current zoom, READ
+ * mode, Theatre mode, and operator `speechDisplay` preference:
+ * - READ (`B`): always draws above-agent bubbles (compact at `restZoom < 1.6`).
+ * - Theatre (`H`): always pure stage — bottom-left SPOKEN stream + quill pip.
+ * - Otherwise follows `speechDisplay`: `'auto'` (zoom-adaptive at 1.6),
+ *   `'bubbles'` (always above agents), `'spoken'` (always bottom-left stream),
+ *   or `'both'` (above-agent bubbles plus bottom-left stream without duplicate pip).
+ */
+export function resolveSpeechDisplay(restZoom, readMode, theatreMode, speechDisplay = 'auto') {
+    const overviewCompact = restZoom < 1.6;
+    if (readMode === true) {
+        return { drawBubbles: true, useScribe: false, drawPip: false, overviewCompact };
+    }
+    if (theatreMode === true) {
+        return { drawBubbles: false, useScribe: true, drawPip: true, overviewCompact: false };
+    }
+    switch (speechDisplay) {
+        case 'bubbles':
+            return { drawBubbles: true, useScribe: false, drawPip: false, overviewCompact };
+        case 'spoken':
+            return { drawBubbles: false, useScribe: true, drawPip: true, overviewCompact: false };
+        case 'both':
+            return { drawBubbles: true, useScribe: true, drawPip: false, overviewCompact };
+        case 'auto':
+        default:
+            return overviewCompact
+                ? { drawBubbles: false, useScribe: true, drawPip: true, overviewCompact: false }
+                : { drawBubbles: true, useScribe: false, drawPip: false, overviewCompact: false };
+    }
 }
 
 /** The overview speaks one line, using the same focus/freshness order as thought placement. */

@@ -5,8 +5,8 @@ import { runInNewContext } from 'node:vm';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { InspectionGlass, writeGlassSetting } from '../../claudeville/src/presentation/character-mode/InspectionGlass.js';
 import { CouncilRibbon } from '../../claudeville/src/presentation/character-mode/CouncilRibbon.js';
-import { drawQuillPip, scribeSpeaker, usesScribeLine } from '../../claudeville/src/presentation/character-mode/ThoughtColumn.js';
-import { ambientCaptionLayout } from '../../claudeville/src/presentation/character-mode/WorldFrameRenderer.js';
+import { drawQuillPip, resolveSpeechDisplay, scribeSpeaker, usesScribeLine } from '../../claudeville/src/presentation/character-mode/ThoughtColumn.js';
+import { ambientCaptionLayout, paintSpeechLayer } from '../../claudeville/src/presentation/character-mode/WorldFrameRenderer.js';
 import { withPostcardFrame } from '../../claudeville/src/presentation/character-mode/Postcard.js';
 import { publishReservedBox, getReservedRect } from '../../claudeville/src/presentation/shared/ReservedRects.js';
 import { resetPersistedSettings, readPersistedSettings } from '../../claudeville/src/presentation/shared/TopBar.js';
@@ -243,6 +243,36 @@ test('overview speaks once with a three-dot pip, below higher captions and above
     assert.equal(usesScribeLine(1.6, false, false), false);
     assert.equal(usesScribeLine(2, false, true), true);
     assert.equal(usesScribeLine(1, true, false), false);
+    assert.deepEqual(resolveSpeechDisplay(2, false, true, 'bubbles'), {
+        drawBubbles: false, useScribe: true, drawPip: true, overviewCompact: false,
+    });
+    assert.deepEqual(resolveSpeechDisplay(1, true, false, 'spoken'), {
+        drawBubbles: true, useScribe: false, drawPip: false, overviewCompact: true,
+    });
+    // Both mode snapshots the SPOKEN line with speaker attribution before drawThought clears _statusThread.
+    const bothDraws = [];
+    const bothSprite = {
+        agent: { id: 'a1', name: 'Atlas' },
+        x: 100, bubbleSlot: 0, bubbleBaseY: 80,
+        _statusThread: [{ text: 'Checking forge' }],
+        thoughtRepoAccent: () => '#654123',
+        drawThought(_c, _z, phase) {
+            bothDraws.push(phase);
+            if (phase === 2) this._statusThread = null;
+        },
+    };
+    const bothRenderer = {
+        _overlayBubbleOrder: [bothSprite],
+        getReadMode: () => false,
+        getSpeechDisplay: () => 'both',
+        camera: {},
+    };
+    paintSpeechLayer(ctx, bothRenderer, [bothSprite], { zoom: 1, restZoom: 1, theatreMode: false });
+    assert.equal(bothSprite._statusThread, null);
+    assert.deepEqual(bothDraws, [1, 2]);
+    const bothCaption = ambientCaptionLayout(ctx, bothRenderer, { width: 640, height: 320 });
+    assert.equal(bothCaption.text, 'Atlas · Checking forge');
+    assert.equal(bothCaption.style.eyebrow, 'SPOKEN');
 });
 
 test('the shell boots Strip without changing the requested renderer, and wires its own sound control', () => {

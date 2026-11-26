@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import {
-    createThoughtColumn, layoutThoughtColumn, needsConfidenceMark, speakerTagFor, speakerTagsFor, thoughtLeader,
-    THOUGHT_CANDIDATE_COUNT, THOUGHT_CANDIDATE_SLOT, THOUGHT_CANDIDATE_LATERAL, THOUGHT_HEAD,
+    createThoughtColumn, layoutThoughtColumn, needsConfidenceMark, resolveSpeechDisplay, speakerTagFor, speakerTagsFor, thoughtLeader,
+    THOUGHT_CANDIDATE_COUNT, THOUGHT_CANDIDATE_SLOT, THOUGHT_CANDIDATE_LATERAL, THOUGHT_COMPACT_MAX_TEXT, THOUGHT_HEAD,
 } from '../../claudeville/src/presentation/character-mode/ThoughtColumn.js';
 import { LABEL_INK, paintThoughtPlate } from '../../claudeville/src/presentation/character-mode/WorldLabelKit.js';
 
@@ -427,4 +427,18 @@ test("the renderer's tag table follows the live roster and holds between roster 
     t.mock.timers.tick(1000);
     renderer._speakerTagFor('lane-01-light');
     assert.equal(renderer._speakerTags.tags, table, 'an unchanged roster keeps its table');
+});
+
+test('layoutThoughtColumn accepts an optional compact headMaxText cap and resolveSpeechDisplay honours modes', () => {
+    const longLine = 'Reviewing the whole village terrain bake and lighting pipeline';
+    const full = layoutThoughtColumn(createThoughtColumn(), [entry(longLine)], false, true, 0, 1, 0);
+    const compact = layoutThoughtColumn(createThoughtColumn(), [entry(longLine)], false, true, 0, 1, 0, THOUGHT_COMPACT_MAX_TEXT);
+    assert.ok(compact.headWidth < full.headWidth, 'compact maxText narrows the laid-out bubble');
+    assert.ok(compact.textWidth <= THOUGHT_COMPACT_MAX_TEXT);
+    assert.deepEqual(resolveSpeechDisplay(1.0, false, false, 'bubbles'), {
+        drawBubbles: true, useScribe: false, drawPip: false, overviewCompact: true,
+    });
+    assert.deepEqual(resolveSpeechDisplay(1.0, false, false, 'both'), {
+        drawBubbles: true, useScribe: true, drawPip: false, overviewCompact: true,
+    });
 });

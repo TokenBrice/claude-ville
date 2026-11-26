@@ -8125,6 +8125,7 @@ export class AgentSprite {
             this._paintColumn || (this._paintColumn = createThoughtColumn()),
             thread, useClock, Boolean(repoAccent), tag.length, this.bubbleMergedCount || 1,
             this._thoughtHistoryLimit ?? THOUGHT_HISTORY_LIMIT,
+            this._thoughtHeadMaxText ?? THOUGHT_HEAD.maxText,
         );
         const shiftX = thoughtLateralShift(column, lateral) + clampX;
         const slotShift = -slot * THOUGHT_STACK_STEP;
@@ -8884,7 +8885,11 @@ export class AgentSprite {
     // W3.1 — a placed thought column owns the head space: its home bubble
     // covers the emote row and a displaced column's leader rises through it,
     // so the quiet head glyphs stand down rather than print dots on its text.
+    // When bubbles are hidden (spoken stream / overview auto), head glyphs stay visible.
     _thoughtOwnsHead() {
+        if (this._thoughtBubblesDrawn === false || this.renderer?._speechDisplayPlan?.drawBubbles === false) {
+            return false;
+        }
         return this.bubbleSlot != null && !this.bubbleMergedInto && !this.decisionFocusMuted;
     }
 

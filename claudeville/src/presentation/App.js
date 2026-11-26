@@ -63,7 +63,7 @@ import { avatarIdleCell } from './character-mode/AgentLayerRecords.js';
 import { DIRECTIONS, WALK_FRAMES } from './character-mode/SpriteSheet.js';
 import { precipitationIsFrozen } from './character-mode/GroundState.js';
 import { setRestSeatVisualBeat } from './character-mode/RestSeats.js';
-import { createAtmosphereSnapshot } from './character-mode/AtmosphereState.js';
+import { createLiveAtmosphereSnapshot } from './character-mode/AtmosphereState.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 import { paintRevealBands } from './character-mode/RevealBands.js';
 import { withPostcardFrame } from './character-mode/Postcard.js';
@@ -1008,13 +1008,13 @@ export class App {
     _currentChronicleSkyCode() {
         const snap = this.renderer?._lastAtmosphere
             || this.renderer?.atmosphereState?.snapshot?.()
-            || createAtmosphereSnapshot();
+            || createLiveAtmosphereSnapshot();
         return chronicleSkyCode(snap);
     }
 
     _readDashboardAtmosphere() {
         if (this.modeManager?.getCurrentMode() !== 'dashboard') return null;
-        return this.renderer?.atmosphereState?.snapshot() ?? createAtmosphereSnapshot();
+        return this.renderer?.atmosphereState?.snapshot() ?? createLiveAtmosphereSnapshot();
     }
 
     _bootFoundation() {
@@ -1109,7 +1109,11 @@ export class App {
                 spendLedger: this.spendLedger,
                 readDashboardAtmosphere: () => this._readDashboardAtmosphere(),
                 simulation: this.simMode,
-                refreshAtmosphere: snapshot => this.renderer?.atmosphereState?.update({ now: snapshot.effectiveDate }),
+                refreshAtmosphere: snapshot => {
+                    const next = this.renderer?.atmosphereState?.update({ now: snapshot?.effectiveDate });
+                    this.renderer?._invalidateIdleFrame?.();
+                    return next;
+                },
                 onVisualBeatChange,
                 onAudioReady: audio => {
                     onVisualBeatChange(audio?.getVisualBeat?.() ?? null);

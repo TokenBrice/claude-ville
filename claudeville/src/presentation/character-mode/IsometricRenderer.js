@@ -34,7 +34,18 @@ import { WorldHoverPlate, villagerHoverLine } from '../shared/WorldHoverPlate.js
 import { dialogueSourceLabel } from '../../config/dialogue.js';
 import { emitAgentSelected } from '../shared/AgentSelection.js';
 import { shortcutBlocked } from '../shared/ShortcutGuard.js';
-import { readSignageMode, SIGNAGE_EVENT, HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, readHdrHighlights } from '../shared/DisplaySettings.js';
+import {
+    DEFAULT_SPEECH_DISPLAY,
+    HDR_HIGHLIGHTS_EVENT,
+    SIGNAGE_EVENT,
+    SPEECH_DISPLAY_EVENT,
+    normalizeSpeechDisplay,
+    overlayContextAttributes,
+    publishDisplayStatus,
+    readHdrHighlights,
+    readSignageMode,
+    readSpeechDisplay,
+} from '../shared/DisplaySettings.js';
 import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
 import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem } from './ParticleSystem.js';
@@ -135,13 +146,17 @@ import {
     THOUGHT_CANDIDATE_COUNT,
     THOUGHT_CANDIDATE_LATERAL,
     THOUGHT_CANDIDATE_SLOT,
+    THOUGHT_COMPACT_MAX_TEXT,
+    THOUGHT_HEAD,
     THOUGHT_HISTORY_LIMIT,
     THOUGHT_LEADER_TIP,
+    THOUGHT_OVERVIEW_CANDIDATE_COUNT,
     THOUGHT_STACK_STEP,
     createThoughtCandidatePool,
     createThoughtColumn,
     layoutThoughtColumn,
     resetThoughtCandidateSlots,
+    resolveSpeechDisplay,
     speakerTagFor,
     speakerTagsFor,
     thoughtCandidateCost,
@@ -2388,6 +2403,8 @@ export class IsometricRenderer {
         this.inspectionGlass = new InspectionGlass({ enabled: readGlassSetting() === 'on' });
         this.councilRibbon = new CouncilRibbon();
         this.signageMode = readSignageMode();
+        this._speechDisplay = readSpeechDisplay();
+        this._speechDisplayPlan = null;
         this.buildingRenderer?.setSignageMode?.(this.signageMode);
         this.buildingRenderer?.setTheatreMode?.(Boolean(this.theatreMode));
         this.harborTraffic?.setTheatreMode?.(Boolean(this.theatreMode));
@@ -2538,6 +2555,9 @@ export class IsometricRenderer {
                 this.signageMode = mode;
                 this.buildingRenderer?.setSignageMode?.(mode);
                 this._invalidateIdleFrame();
+            }),
+            eventBus.on(SPEECH_DISPLAY_EVENT, ({ mode } = {}) => {
+                this.setSpeechDisplay(mode);
             }),
             eventBus.on(GLASS_EVENT, ({ mode }) => {
                 this.inspectionGlass.setEnabled(mode === 'on');
@@ -2708,6 +2728,19 @@ export class IsometricRenderer {
 
     getReadMode() {
         return !postcardFrame() && Boolean(this._readMode || this._readLocked);
+    }
+
+    getSpeechDisplay() {
+        return this._speechDisplay ?? DEFAULT_SPEECH_DISPLAY;
+    }
+
+    setSpeechDisplay(mode) {
+        const next = normalizeSpeechDisplay(mode);
+        if (this._speechDisplay === next) return next;
+        this._speechDisplay = next;
+        this._speechDisplayPlan = null;
+        this._invalidateIdleFrame();
+        return next;
     }
 
     _releaseWorldKeys(event) {
@@ -9493,7 +9526,10 @@ export class IsometricRenderer {
         }
 
         const focusId = this.selectedAgent?.id || this.cameraDirector?.attentionFrame?.focusedAgentId;
-        const routineZoom = (this.restZoom ?? zoom) >= ROUTINE_NAME_MIN_ZOOM;
+        const restZoom = this.restZoom ?? zoom;
+        const speechPlan = resolveSpeechDisplay(restZoom, readMode, effectiveTheatre, this.getSpeechDisplay());
+        this._speechDisplayPlan = speechPlan;
+        const routineZoom = restZoom >= ROUTINE_NAME_MIN_ZOOM;
         const perRegion = zoom >= ROUTINE_NAME_DETAIL_ZOOM ? ROUTINE_NAMES_PER_REGION_DETAIL : ROUTINE_NAMES_PER_REGION;
         const regionCounts = this._overlayRegionCounts;
         regionCounts.clear();
@@ -9502,6 +9538,7 @@ export class IsometricRenderer {
             const focused = sprite.selected || sprite.agent.id === focusId;
             const primary = focused || attention;
             sprite.theatreMode = effectiveTheatre;
+            sprite._thoughtBubblesDrawn = speechPlan.drawBubbles;
             sprite.decisionFocusMuted = Boolean(focusId && sprite.agent.id !== focusId);
             sprite.decisionFocusRoutine = sprite.decisionFocusMuted && !primary;
             sprite.readVerb = readMode && !primary ? sprite.readToolVerb || 'OTHER' : null;
@@ -9621,6 +9658,10 @@ export class IsometricRenderer {
             reservedRects,
             sharedGrid,
             now,
+            {
+                overviewCompact: Boolean(speechPlan.drawBubbles && speechPlan.overviewCompact),
+                speechPlan,
+            },
         );
     }
 
@@ -9651,13 +9692,32 @@ export class IsometricRenderer {
         const grid = externalSharedGrid ? occupiedGrid : occ.grid;
         const pool = occ.pool;
         const useMergeSpatialGrid = occupiedGrid !== false && Boolean(this._overlayClusterGrid);
-        const pad = Number.isFinite(options?.pad) ? options.pad : 2;
+        const speechPlan = options?.speechPlan
+            ?? (this._speechDisplay !== undefined
+                ? resolveSpeechDisplay(
+                    this.restZoom ?? zoom,
+                    this.getReadMode?.() ?? false,
+                    Boolean(this.theatreMode && !(this.getReadMode?.())),
+                    this._speechDisplay,
+                )
+                : this._speechDisplayPlan ?? null);
+        if (speechPlan) this._speechDisplayPlan = speechPlan;
+        const overviewCompact = options?.overviewCompact !== undefined
+            ? Boolean(options.overviewCompact)
+            : Boolean(speechPlan?.drawBubbles && speechPlan?.overviewCompact);
+        const s = 1 / (zoom || 1);
+        const pad = Number.isFinite(options?.pad)
+            ? options.pad
+            : (overviewCompact ? Math.max(2, Math.round(4 * s)) : 2);
+        const defaultBudget = overviewCompact
+            ? (zoom <= 0.75 ? 3 : zoom < 1.6 ? 5 : THOUGHT_BUDGET)
+            : THOUGHT_BUDGET;
         const budget = Number.isInteger(options?.budget)
             ? Math.max(0, Math.min(LABEL_MAX_SPEAKERS, options.budget))
-            : THOUGHT_BUDGET;
+            : defaultBudget;
         const shortlistLimit = Math.max(THOUGHT_SHORTLIST, budget);
-
-        const s = 1 / (zoom || 1);
+        const candidateLimit = overviewCompact ? THOUGHT_OVERVIEW_CANDIDATE_COUNT : THOUGHT_CANDIDATE_COUNT;
+        const headMaxText = overviewCompact ? THOUGHT_COMPACT_MAX_TEXT : THOUGHT_HEAD.maxText;
         const viewport = typeof this._screenViewport === 'function' ? this._screenViewport() : null;
         const hasView = Boolean(viewport?.width > 0 && viewport?.height > 0
             && this.camera?.worldToScreen && this.camera?.screenToWorld);
@@ -9687,6 +9747,7 @@ export class IsometricRenderer {
         const frame = this._thoughtFrame = (this._thoughtFrame || 0) + 1;
         for (const sprite of sprites || []) {
             if (!sprite?.agent) continue;
+            if (speechPlan) sprite._thoughtBubblesDrawn = speechPlan.drawBubbles;
             sprite._thoughtFrame = frame;
             if (hasView && !this._thoughtSpeakerOnScreen(sprite, viewport, zoom)) {
                 this._clearThoughtPlacement(sprite);
@@ -9712,7 +9773,10 @@ export class IsometricRenderer {
         const calm = order.length <= THOUGHT_CALM_SPEAKERS;
         let prepared = 0;
         for (const sprite of order) {
-            sprite._thoughtHistoryLimit = calm || sprite._thoughtRank >= 2 ? THOUGHT_HISTORY_LIMIT : 0;
+            sprite._thoughtHistoryLimit = overviewCompact
+                ? (sprite._thoughtRank >= 2 ? THOUGHT_HISTORY_LIMIT : 0)
+                : (calm || sprite._thoughtRank >= 2 ? THOUGHT_HISTORY_LIMIT : 0);
+            sprite._thoughtHeadMaxText = headMaxText;
             if (prepared < shortlistLimit && this._prepareThought(sprite, s)) {
                 order[prepared++] = sprite;
                 continue;
@@ -9883,8 +9947,8 @@ export class IsometricRenderer {
                 continue;
             }
 
-            const stickyKey = (sprite.selected ? 1 : 0) | (sprite.bubbleOccluded ? 2 : 0);
-            if (sprite._bubbleStickyKey !== stickyKey) {
+            const stickyKey = (sprite.selected ? 1 : 0) | (sprite.bubbleOccluded ? 2 : 0) | (overviewCompact ? 4 : 0);
+            if (sprite._bubbleStickyKey !== stickyKey || (sprite._bubbleCandidate != null && sprite._bubbleCandidate >= candidateLimit)) {
                 sprite._bubbleStickyKey = stickyKey;
                 sprite._bubbleCandidate = null;
                 sprite._bubbleClamped = false;
@@ -9933,7 +9997,7 @@ export class IsometricRenderer {
                 const wasClamped = Boolean(sprite._bubbleClamped);
                 let holdForReturn = false;
                 if (committed !== null && !sprite._bubbleBlockedSince && (wasClamped || committed > 0)) {
-                    const returnLimit = wasClamped ? THOUGHT_CANDIDATE_COUNT : committed;
+                    const returnLimit = wasClamped ? candidateLimit : Math.min(committed, candidateLimit);
                     let betterFree = false;
                     for (let c = 0; c < returnLimit; c++) {
                         const r = this._thoughtCandidateRects(sprite, c, s, 0);
@@ -9961,7 +10025,7 @@ export class IsometricRenderer {
                 spDesc.priorCandidate = committed !== null && !sprite._bubbleBlockedSince ? committed : -1;
 
                 const side = sprite._thoughtSide || 1;
-                for (let c = 0; c < THOUGHT_CANDIDATE_COUNT; c++) {
+                for (let c = 0; c < candidateLimit; c++) {
                     let clampX = 0;
                     let rects = this._thoughtCandidateRects(sprite, c, s, 0);
                     if (viewWorld) {
@@ -9991,6 +10055,9 @@ export class IsometricRenderer {
                         cost = 1e6;
                     }
                     cand.cost = cost;
+                }
+                for (let c = candidateLimit; c < THOUGHT_CANDIDATE_COUNT; c++) {
+                    spDesc.candidates[c] = null;
                 }
                 activeSpeakers.push(spDesc);
             }
@@ -10026,7 +10093,7 @@ export class IsometricRenderer {
                     let leastScore = Infinity;
                     let least = 0;
                     let leastClampX = 0;
-                    for (let c = 0; c < THOUGHT_CANDIDATE_COUNT; c++) {
+                    for (let c = 0; c < candidateLimit; c++) {
                         const r0 = this._thoughtCandidateRects(sprite, c, s, 0);
                         const ov0 = grid.overlapArea(r0.body.x, r0.body.y, r0.body.x + r0.body.w, r0.body.y + r0.body.h, 0)
                             + (r0.leader ? grid.overlapArea(r0.v.x, r0.v.y, r0.v.x + r0.v.w, r0.v.y + r0.v.h, 0) : 0)
@@ -10072,7 +10139,7 @@ export class IsometricRenderer {
             if (placedCount < budget) {
                 let found = -1;
                 let foundClampX = 0;
-                for (let c = 0; c < THOUGHT_CANDIDATE_COUNT; c++) {
+                for (let c = 0; c < candidateLimit; c++) {
                     const r = this._thoughtCandidateRects(sprite, c, s, 0);
                     if (!rectsOverlapGrid(r) && this._thoughtBoundsViolationArea(r.body, viewWorld, reservedWorld) === 0) {
                         found = c;
@@ -10080,7 +10147,7 @@ export class IsometricRenderer {
                     }
                 }
                 if (found < 0 && viewWorld) {
-                    for (let c = 0; c < THOUGHT_CANDIDATE_COUNT; c++) {
+                    for (let c = 0; c < candidateLimit; c++) {
                         const cx = this._thoughtClampX(sprite, c, s, viewWorld);
                         if (cx === 0) continue;
                         const r = this._thoughtCandidateRects(sprite, c, s, cx);
@@ -10189,8 +10256,9 @@ export class IsometricRenderer {
         const tagLength = clock ? 0 : (sprite.thoughtSpeakerTag?.() || '').length;
         const merged = sprite.bubbleMergedCount || 1;
         const history = sprite._thoughtHistoryLimit ?? THOUGHT_HISTORY_LIMIT;
-        sprite._thoughtColumn = layoutThoughtColumn(sprite._thoughtColumn || createThoughtColumn(), thread, clock, chip, 0, merged, history);
-        sprite._thoughtColumnTagged = layoutThoughtColumn(sprite._thoughtColumnTagged || createThoughtColumn(), thread, clock, chip, tagLength, merged, history);
+        const maxText = sprite._thoughtHeadMaxText ?? THOUGHT_HEAD.maxText;
+        sprite._thoughtColumn = layoutThoughtColumn(sprite._thoughtColumn || createThoughtColumn(), thread, clock, chip, 0, merged, history, maxText);
+        sprite._thoughtColumnTagged = layoutThoughtColumn(sprite._thoughtColumnTagged || createThoughtColumn(), thread, clock, chip, tagLength, merged, history, maxText);
     }
 
     _clearThoughtPlacement(sprite) {
@@ -10700,10 +10768,11 @@ export class IsometricRenderer {
     _collectAgentLabelHitRects(sprites) {
         const out = this._agentLabelHitRects;
         out.length = 0;
+        const drawBubbles = this._speechDisplayPlan?.drawBubbles !== false;
         for (const sprite of sprites) {
             if (!sprite.agent) continue;
             if (sprite.overlaySlot != null) out.push(this._agentIdentityRect(sprite, sprite.overlaySlot || 0));
-            if (sprite.bubbleSlot != null && !sprite.bubbleMergedInto && sprite._thoughtRects?.body?.w > 0) {
+            if (drawBubbles && sprite.bubbleSlot != null && !sprite.bubbleMergedInto && sprite._thoughtRects?.body?.w > 0) {
                 out.push(sprite._thoughtRects.body);
             }
             // VQ-14 — a T1 body is as hard an obstacle as its plate: a plaque
