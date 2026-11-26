@@ -2,6 +2,39 @@
 
 ---
 
+## v0.68.0 — *The Woven Isle* · Nov 26, 2026
+
+A seven-wave visual, architectural, and chronicle milestone that rebuilds ClaudeVille's ground, water, sky, lighting, village life, crowd motion, and daily memory from the texel up while preserving the zero-build Node and vanilla ES-module runtime.
+
+- **Sculpted terraces and lagoon spillway.**
+  - Five authored elevation sites — Command Keep Rise (`+8`), Archive Terrace (`+16`), Windmill Knoll (`+8`), Lighthouse Headland (`+8`), and rock-strata West Sea Cliffs (`+24`) — share one `SurfaceProjection` model across terrain baking, picking, lighting, rain receivers, volumetric shafts, and `(tile, surfaceId)` pathfinding and replay trails.
+  - Eight-riser stone stair flights and wall-height corner quoins (`TerraceWallPattern.js`) share masonry courses, coping highlights, and contact rows directly with the ground bake on every paved approach.
+  - A raised four-tile millpond basin spills 17 px down an animated isometric stone sluice into the lower Harbor canal, feeding live splash ripples on WebGPU.
+- **WebGPU-First Frontier tier (with dignified WebGL2 and Canvas2D fallbacks).**
+  - Planar water mirror reflections (with Harbor underside proxy and waterline tie-breaking), a 30 Hz ripple compute solver, `surface-v1` per-texel depth ordering, a 20 Hz obstacle-sheltered wind compute field, and depth-tested Bayer volumetric light shafts run inside a unified `72 B` GPU record ABI with automatic quality shedding and strict VRAM caps.
+  - Zero-LSB shader palette-LUT recoloring (`64×256`) and layered sprite channels preserve pixel-exact parity across backends.
+- **Artisanal ground, water, diurnal lighting, and four-season phenology.**
+  - `1×1` baked village ground with sunken banks, Forge mossy quay, a four-stop river, quiet sea with cumulus stamps, and contact reflections (`TerrainArtifactStore` v3).
+  - Face-keyed golden-hour and moonlight rim lighting, Afterglow and Blue Hour transitions, pixel-grammar sky, storm curtains, time-tinted fog, puddle ripples, and four-season turf, marcescent shed, icicles, and lagoon rim ice.
+- **Living village craft, open-front Forge, and lifted-roof cutaways.**
+  - The Forge opens onto a real two-arch open-front stone arcade revealing its recessed hearth, flagstone floor, and anvil, while Command, Archive, and Harbor lift cleanly with 4-layer Bayer cutaways.
+  - Forty-two Shadow-Theatre window panes, ScoreTap visual beat syncing village work gestures and smoke to the sounding Town Band, carried artifacts, earned patina, squall shelter routing, and snow/wet-sand footprints bring sessions to life without text clutter.
+  - Numeric 16-sink flow fields, an allocation-free 2D ORCA crowd solver with 12 px vertical terrace isolation, and shared-grid visit-slot and label auctions eliminate walker deadlocks and overlapping callouts in busy crowds.
+- **Keep-at-Night chrome, Inspection Glass, Theatre, Council Focus, and `/strip/`.**
+  - A disciplined Signage Diet pairs with Theatre Mode (`H`), the circular Inspection Glass (`G`), Council Focus (`C`), an isolated `/strip/` Promenade Rail profile, a compact 3-Tab Keep Activity Folio, and denser Dashboard styling.
+  - The Chronicle gains a 24-hour Sun-Arc ribbon, a Retold replay scrubber with chapters and pins, and a zero-PII Postcard and Tapestry Studio.
+- **The Loom of Days.**
+  - Every recorded day weaves into a 24-hour Bayeux frieze (`96×72` per hour panel) rendered with cached `14×16` model miniatures, event stamps, repo pennants, sky borders, and honest bare-warp uncovered quarters (zero horizontal weft, zero text calls).
+  - Live `coverage:<dateKey>` and `sky:<dateKey>` meta persistence (`DB_VERSION = 7`) powers the auto-scrolled Chronicle modal frieze, deterministic zero-PII Scroll PNG export, the `1152×216` Tapestry Loom band, and the sheared `48×36` rear-wall panel inside the Archive cutaway.
+- **Evensong, real lunar tide, and 2026–2027 astronomical sky keys.**
+  - At the 21:00 chime, Evensong composes a deterministic 16-bar score from the day's verified commits, pushes, releases, and open errors (closing on the same four states as the Loom), backed by an offline 10-day loudness-gated listening harness (`scripts/audio/evensong-harness.mjs`).
+  - A real equilibrium lunar tide (for the site's longitude, not a prediction for a real harbour) drives moored hull and reflection contact, `clamp(1 - L, 0, 3)` quay wet courses with high-water dry-stone masking, and a spring-low (`h <= -0.92`) World Ash sandbar spit.
+  - Astronomical sky keys add Lantern Night, Solstice Belfry Alignments, and 2026–2027 lunar and solar eclipses (including the 2027-02-06 annular eclipse and coarse solar-track visibility regions), reflected into GPU puddles.
+- **Verification and craft guardrails.**
+  - Adds the `Shift+O` debug overlay, ratcheted `art:gate` pixel-craft metrics, and a frozen-frame WebGPU `visual:gate` harness enforced in CI.
+
+---
+
 ## v0.67.2 — *The Herald's Echo* · Nov 25, 2026
 
 A thread you renamed in T3 Code now keeps its name under its villager at every zoom, as a Claude Code `/rename` has since v0.65.7. T3 Code hands its thread titles to the agents it runs as automatic names, so ClaudeVille could not tell your names from generated ones, and an Antigravity thread showed no name at all.
