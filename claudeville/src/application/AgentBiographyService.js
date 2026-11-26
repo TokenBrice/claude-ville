@@ -1,3 +1,4 @@
+import { REST_SEATS } from '../config/townPlan.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
 
@@ -6,6 +7,28 @@ const WRITE_LEASE_KEY = 'claudeville.biography.writeLease';
 const WRITE_LEASE_TTL_MS = 15000;
 const SESSION_PUSH_KEY_LIMIT = 96;
 export const BIOGRAPHY_CACHE_LIMIT = 256;
+
+// collaborators is the current RelationshipAffinityService.collaboratorsFor snapshot.
+export function patinaFor(biographyRecord, collaborators = biographyRecord?.collaborators ?? []) {
+    const seats = biographyRecord?.extensions?.seats;
+    let seatId = null;
+    let sits = 0;
+    for (const seat of REST_SEATS) {
+        const count = seats?.[seat.id];
+        if (Number.isSafeInteger(count) && count > sits) {
+            seatId = seat.id;
+            sits = count;
+        }
+    }
+    return {
+        mendedStitches: [1, 10, 50, 100].filter(count => biographyRecord?.errorsRecovered >= count).length,
+        saltCuff: (biographyRecord?.commitsPushed ?? biographyRecord?.pushes ?? 0) >= 25,
+        theirBench: { seatId, sits, hollow: sits >= 10, rune: sits >= 50,
+            repoColorIndex: biographyRecord?.extensions?.seatRepoColors?.[seatId] ?? 0 },
+        allyNodEligible: otherId => Boolean(otherId) && collaborators.some(
+            other => other.identityKey === otherId && other.tier === 'allies'),
+    };
+}
 
 function randomToken() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -191,6 +214,23 @@ export class AgentBiographyService {
         }
         this._pruneBiographyCache();
         return this._biographies.get(identityKey);
+    }
+
+    // Observe physical seat occupancy. A null seat ends the stay, even when
+    // the agent's next sit uses the same plank.
+    observeRestSeat(agent, seatId, repoColorIndex = 0) {
+        const session = this._sessions.get(agent?.id);
+        if (!this._accepting || !session || (session.seatId ?? null) === seatId || !this._holdsWriteLease()) return;
+        if (seatId != null && !REST_SEATS.some(seat => seat.id === seatId)) return;
+        session.seatId = seatId;
+        if (!seatId) return;
+        this._mutate(session.identityKey, biography => {
+            const seats = biography.extensions.seats ||= {};
+            const count = seats[seatId];
+            seats[seatId] = Number.isSafeInteger(count) && count > 0 ? count + 1 : 1;
+            const colors = biography.extensions.seatRepoColors ||= {};
+            colors[seatId] = Number.isSafeInteger(repoColorIndex) && repoColorIndex >= 0 ? repoColorIndex : 0;
+        });
     }
 
     /** Founding record (`{ identityKey, name, foundedAt }`) or null. */

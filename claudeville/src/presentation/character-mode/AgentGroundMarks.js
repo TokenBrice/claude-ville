@@ -20,6 +20,7 @@ import { ART_RAMPS, EFFECT_COLORS, RESERVED_STATUS } from '../../config/artPalet
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
 import { frameCastLighting, pointCastFor, rasterizeCourses, villagerCastLighting, villagerCastStamps } from './RakingLight.js';
+import { admitRoutineStatusArc, stillWorkState } from './MarkGovernor.js';
 import { LABEL_INK } from './WorldLabelKit.js';
 
 // Warm near-black shared with the body rim (plan 2.4).
@@ -288,6 +289,16 @@ export function actionNeededRingColor(status) {
     return ACTION_NEEDED_RING[status] || null;
 }
 
+// AgentSprite consumes a falsy gate when a regular arc loses its region slot.
+export function routineStatusGate(governor, agent, x, y, nowMs) {
+    const status = agent?.status;
+    if (status !== AgentStatus.WORKING && status !== AgentStatus.WAITING) return null;
+    const stillWork = stillWorkState(agent, nowMs);
+    if (!governor && !stillWork) return { draw: true, alpha: 0.78 };
+    const gate = admitRoutineStatusArc(governor, status, x, y, stillWork);
+    return gate.draw ? gate : null;
+}
+
 export function routineStatusRing(status) {
     return ROUTINE_STATUS_RING[status] || null;
 }
@@ -497,7 +508,9 @@ export function resolveGroundMarks({
     const clipTrail = cast?.clip === true && !pointCast;
     push(contactShadowStamp(shadowW, clipTrail ? cast.base : cast, pointCast), 'shadow');
     if (clipTrail) push(sunTrailStamp(shadowW, cast), 'cast', true);
-    const arcAlpha = quantizeRoutineAlpha(routineAlpha);
+    const stillWork = status === AgentStatus.WORKING && stillWorkState(owner?.agent, Date.now());
+    const arcAlpha = stillWork ? Math.round(0.78 * 255) : quantizeRoutineAlpha(routineAlpha);
+    if (stillWork) routineStatus = true;
     for (const ring of groundRingPlan({ status, selected, hovered, repo, routineStatus })) {
         const width = shadowW + ring.pad;
         if (ring.kind === 'repo') {

@@ -20,6 +20,9 @@
 //              for a last pint, then waits inside the gate. Removal is never
 //              delayed: the departure sigil lands wherever the body stands.
 
+import { BUILDING_DEFS } from '../../config/buildings.js';
+import { REST_SEATS, REST_STANDS, VILLAGE_GATE } from '../../config/townPlan.js';
+import { stillWorkState } from './MarkGovernor.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { isBlockingMcpDelegationTool, isWaitingOnCrew, TurnState } from '../../domain/services/StatusResolver.js';
 
@@ -173,4 +176,50 @@ export function errandChoice({
     }
     const last = table[table.length - 1];
     return { kind: last.kind, building: last.building };
+}
+
+// Keep this anchor fixed for the whole think, including the return half of each pace.
+export function stillWorkRoutine(agent, nowMs, building, { station, previousPose, reducedMotion = false } = {}) {
+    const state = stillWorkState(agent, nowMs);
+    if (!state) {
+        return previousPose && agent?.status === AgentStatus.WORKING && agent.pendingTool
+            ? { stillWorkPose: null, gait: 'run', visitRole: 'work' } : null;
+    }
+    if (!building || building.type === 'tavern') return null;
+    const tiles = (building.visitTiles || []).filter(tile =>
+        !REST_SEATS.some(seat => seat.tileX === tile.tileX && seat.tileY === tile.tileY));
+    const work = tiles.filter(tile => tile.role === 'work' || !tile.role);
+    const home = work.find(tile => tile.tileX === station?.tileX && tile.tileY === station?.tileY)
+        || work[routineHash(agent.id) % work.length];
+    if (!home) return null;
+
+    const pacing = state.kind === 'composing' && !state.showTurnSand;
+    let target = home;
+    if (pacing && !reducedMotion && Math.floor((state.elapsedMs - 30_000) / 8_000) % 2) {
+        // The entire segment stays on this building's visit tiles. If the work
+        // tile is isolated, take a half-step within it rather than crossing a gap.
+        const adjacent = tile => tile !== home && Math.abs(tile.tileX - home.tileX) <= 1
+            && Math.abs(tile.tileY - home.tileY) <= 1;
+        target = work.find(adjacent) || tiles.find(adjacent) || { ...home, tileX: home.tileX + 0.25 };
+    }
+    return {
+        building: building.type, visitRole: 'work', target, facingPoint: home.facingPoint ?? building.entrance,
+        stillWorkPose: pacing ? 'pace-work' : 'sit-work', gait: pacing && !reducedMotion ? 'walk' : 'stand',
+    };
+}
+
+const archiveCloister = BUILDING_DEFS.find(building => building.type === 'archive')
+    .visitTiles.find(tile => tile.queueGroup === 'archive-alcove');
+const SHELTERS = [
+    { building: 'tavern', target: REST_STANDS.tavern.tiles[0] },
+    { building: 'gate', target: { tileX: VILLAGE_GATE.tileX, tileY: VILLAGE_GATE.tileY } },
+    { building: 'archive', target: archiveCloister },
+];
+
+export function squallShelter(agent, weather, position = agent?.position) {
+    if (agent?.status !== AgentStatus.IDLE || agent.isDeparted || !position) return null;
+    if (weather?.type !== 'storm' && !(weather?.type === 'rain' && weather.intensity >= 0.72)) return null;
+    const distance = ({ target }) => Math.hypot(target.tileX - position.tileX, target.tileY - position.tileY);
+    const shelter = SHELTERS.reduce((near, next) => distance(next) < distance(near) ? next : near);
+    return { ...shelter, visitRole: 'rest', gait: 'run' };
 }

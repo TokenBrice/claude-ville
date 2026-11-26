@@ -2,8 +2,21 @@ const HOUR_MS = 60 * 60_000;
 const MAX_STALE_MS = 3 * HOUR_MS;
 const MAX_BYTES = 64 * 1024;
 const HOURLY_FIELDS = ['weather_code', 'cloud_cover', 'precipitation', 'snowfall', 'wind_speed_10m', 'wind_direction_10m', 'visibility'];
+const OPTIONAL_FIELDS = ['temperature_2m'];
+const FREEZING_C = 0.0;
+const FREEZING_EXIT_C = 1.0;
 const PAST_HOURS = 72;
 const FORECAST_HOURS = 48;
+
+function isFreezingBreathTemp({
+  temperatureC, wasFreezing = false, stale = false, modelledSky = false,
+  frostQuarters = 0, snowBucket = 0, isNightOrDawn = false,
+} = {}) {
+  if (stale || modelledSky || !Number.isFinite(temperatureC)) {
+    return frostQuarters > 0 || (snowBucket >= 1 && isNightOrDawn);
+  }
+  return wasFreezing ? temperatureC < FREEZING_EXIT_C : temperatureC <= FREEZING_C;
+}
 
 function readHourly(hourly) {
   const time = hourly?.time;
@@ -18,6 +31,10 @@ function readHourly(hourly) {
         || !values.every(value => value === null || Number.isFinite(value))) return null;
     result[field] = values;
   }
+  const temps = hourly.temperature_2m;
+  result.temperature_2m = Array.isArray(temps) && temps.length === time.length
+    && Array.from(temps).every(value => value === null || (Number.isFinite(value) && value >= -90 && value <= 60))
+    ? temps : null;
   return result.weather_code.some(Number.isFinite) ? result : null;
 }
 
@@ -26,7 +43,7 @@ async function downloadForecast(site, fetchImpl) {
   url.search = new URLSearchParams({
     latitude: site.lat,
     longitude: site.lon,
-    hourly: HOURLY_FIELDS.join(','),
+    hourly: [...HOURLY_FIELDS, ...OPTIONAL_FIELDS].join(','),
     timeformat: 'unixtime',
     past_hours: PAST_HOURS,
     forecast_hours: FORECAST_HOURS,
@@ -87,4 +104,4 @@ function createVillageWeather({
   };
 }
 
-module.exports = { createVillageWeather, getForecast: createVillageWeather() };
+module.exports = { FREEZING_C, FREEZING_EXIT_C, isFreezingBreathTemp, readHourly, createVillageWeather, getForecast: createVillageWeather() };

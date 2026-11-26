@@ -1,4 +1,39 @@
 export const MarkTier = Object.freeze({ PRIMARY: 'primary', RECENT: 'recent', WORKING: 'working', SECONDARY: 'working', AMBIENT: 'ambient' });
+const SHELL_TOOLS = new Set(['bash', 'shell', 'exec', 'run_command']);
+const STILL_WORK_ARC = Object.freeze({ draw: true, alpha: 0.78, unconditional: true });
+const TURN_SAND_MS = 120_000;
+
+export function stillWorkState(agent, nowMs) {
+    if (agent?.status !== 'working' || agent.isDeparted || !Number.isFinite(nowMs)) return null;
+    if (agent.pendingTool) {
+        if (!SHELL_TOOLS.has(String(agent.pendingTool).toLowerCase())
+            || !Number.isFinite(agent.pendingSince) || agent.pendingSince < 0) return null;
+        const elapsedMs = nowMs - agent.pendingSince;
+        return elapsedMs >= 60_000 ? { kind: 'watching', elapsedMs } : null;
+    }
+    // Adapters publish lastSessionActivity; replay records may carry the finer clocks.
+    const last = Math.max(...[agent.lastActivityAt, agent.lastToolAt, agent.statusChangedAt,
+        agent.lastSessionActivity, agent.turnStartedAt].filter(at => Number.isFinite(at) && at >= 0));
+    const since = Number.isFinite(last) ? last : agent.lastActive;
+    if (!Number.isFinite(since) || since < 0) return null;
+    const elapsedMs = nowMs - since;
+    return elapsedMs >= 30_000 ? {
+        kind: 'composing', elapsedMs, showTurnSand: elapsedMs >= TURN_SAND_MS,
+        hasPlan: Boolean(agent.hasPlan || agent.plan?.length),
+    } : null;
+}
+
+export function admitRoutineStatusArc(governor, status, x, y, stillWork) {
+    if (stillWork != null) return STILL_WORK_ARC;
+    return governor.admit(MarkTier.WORKING, x, y);
+}
+
+export function formatComposingSliver(elapsedMs) {
+    if (!Number.isFinite(elapsedMs) || elapsedMs < TURN_SAND_MS) return null;
+    const seconds = Math.floor(elapsedMs / 1000);
+    return `composing ${Math.floor(seconds / 60)}m${seconds % 60}s`;
+}
+
 export const SALIENCE_ORDER = Object.freeze([MarkTier.PRIMARY, MarkTier.RECENT, MarkTier.WORKING, MarkTier.AMBIENT]);
 const POLICY = Object.freeze({ primary: { alphaCap: 1, soft: Infinity, hard: Infinity }, recent: { alphaCap: .92, soft: 4, hard: 8 }, working: { alphaCap: .78, soft: 3, hard: 7 }, ambient: { alphaCap: .5, soft: 2, hard: 5 } });
 const DEFAULT_REGION_SIZE = 200;

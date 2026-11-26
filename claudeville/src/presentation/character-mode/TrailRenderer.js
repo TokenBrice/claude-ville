@@ -2,6 +2,8 @@ import { trailSampleId } from '../../infrastructure/ChronicleStore.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { tileToWorld, worldToTile } from './Projection.js';
+import { ART_RAMPS } from '../../config/artPalette.js';
+import { groundOptionsFor, groundStateAt, liquidPrecipitation, snowBucketOf } from './GroundState.js';
 import { dottedCurve } from './EffectStamps.js';
 
 const CAPTURE_INTERVAL_MS = 1000;
@@ -12,6 +14,7 @@ const RETAIN_MS = 60 * 60 * 1000;
 const MIN_SAMPLE_DISTANCE_TILES = 0.2;
 const MAX_SAMPLES_PER_AGENT = 720;
 const MAX_TOTAL_SAMPLES = 12000;
+const MAX_FOOTPRINTS = 600;
 const MAX_PENDING_SAMPLES = 4000;
 const COMPACT_TO_RATIO = 0.8;
 const MAX_RENDER_SAMPLES_PER_AGENT = 240;
@@ -160,11 +163,15 @@ export function drawAgedTrailDots(ctx, points, {
 }
 
 export class TrailRenderer {
-    constructor({ store = null, world = null, sprites = null, motionScale = 1 } = {}) {
+    constructor({ store = null, world = null, sprites = null, motionScale = 1, surfaceAt = null } = {}) {
         this.store = store;
         this.world = world;
         this.sprites = sprites;
         this.motionScale = motionScale;
+        this.surfaceAt = surfaceAt; // (worldX, worldY) => land material, 'sand', or 'wet-shore'
+        this.footprints = [];
+        this.snowBucket = 0;
+        this.surfaceWetness = 0;
         this.samplesByAgent = new Map();
         this.pending = [];
         this.cache = null;
@@ -266,8 +273,9 @@ export class TrailRenderer {
         }
         if (this.lease && !this.lease.renew()) this.lease = null;
 
+        this._updateFootprintWeather(atmosphere, now, visible && this.lease);
         if (visible && this.lease && now - this.lastCaptureAt >= CAPTURE_INTERVAL_MS) {
-            this.capture(agents, now, atmosphere);
+            this._capturePositions(agents, now, atmosphere);
         }
         if (visible && this.lease && now - this.lastFlushAt >= FLUSH_INTERVAL_MS) {
             await this.flush(now);
@@ -278,6 +286,39 @@ export class TrailRenderer {
 
     capture(agents, now = Date.now(), atmosphere = null) {
         if (this._disposed || this._paused) return;
+        this._updateFootprintWeather(atmosphere, now, true);
+        this._capturePositions(agents, now, atmosphere);
+    }
+
+    _updateFootprintWeather(atmosphere, now, persist) {
+        const date = atmosphere?.effectiveDate;
+        const ground = date instanceof Date && Number.isFinite(date.getTime())
+            ? groundStateAt(date, groundOptionsFor(atmosphere)) : null;
+        if (!ground && !Number.isFinite(atmosphere?.snowBucket) && !Number.isFinite(atmosphere?.surfaceWetness)) return;
+        this.snowBucket = atmosphere?.snowBucket ?? snowBucketOf(ground?.snowCover);
+        this.surfaceWetness = atmosphere?.surfaceWetness ?? Math.max(ground?.wetness || 0, liquidPrecipitation(atmosphere));
+        // Clear impressions as the last snow melts or the sand finishes drying.
+        if (!this.footprints.length) return;
+        this.footprints = this.footprints.filter(print => {
+            if (now - print.ts >= RETAIN_MS) return false;
+            if (this._footprintStrength(print) > 0) return true;
+            this._eraseFootprint(print, persist);
+            return false;
+        });
+    }
+
+    _footprintStrength(print) {
+        if (print.footprint === 'snow') return Math.min(1, this.snowBucket / 2);
+        if (print.footprint === 'wet-shore') {
+            const at = tileToWorld(print.tileX, print.tileY);
+            const surface = this.surfaceAt?.(at.x, at.y);
+            if (surface === 'wet-shore') return 1;
+            if (surface === 'water' || surface === 'shallow' || surface === 'deep') return 0;
+        }
+        return Math.min(1, this.surfaceWetness / 0.35);
+    }
+
+    _capturePositions(agents, now, atmosphere) {
         this.lastCaptureAt = now;
         const list = agents?.values ? agents.values() : (agents || []);
         for (const agent of list) {
@@ -297,6 +338,15 @@ export class TrailRenderer {
                 dayProgress: Number(atmosphere?.dayProgress ?? 0),
                 phase: atmosphere?.phase || this._phaseFromDate(now),
             };
+            const sprite = this.sprites?.get?.(agent.id);
+            if (this.motionScale && sprite?.moving && sprite._stepLength > 0 && !agent.isDeparted) {
+                const surface = this.surfaceAt?.(sprite.x, sprite.y) ?? sprite.getTileType?.(tileX, tileY);
+                if (surface !== 'shallow' && surface !== 'deep' && surface !== 'water') {
+                    if (this.snowBucket >= 1) sample.footprint = 'snow';
+                    else if (surface === 'wet-shore') sample.footprint = surface;
+                    else if (surface === 'sand' && this.surfaceWetness >= 0.35) sample.footprint = 'sand';
+                }
+            }
             if (this._addSample(sample, true)) this._stats.capturedSamples++;
         }
         this._enforceGlobalCap();
@@ -473,6 +523,10 @@ export class TrailRenderer {
                 return false;
             }
         }
+        if (['snow', 'sand', 'wet-shore'].includes(normalized.footprint)) {
+            this.footprints.push(normalized);
+            if (this.footprints.length > MAX_FOOTPRINTS) this._eraseFootprint(this.footprints.shift(), pending);
+        }
         list.push(normalized);
         this._totalSamples++;
         if (list.length > MAX_SAMPLES_PER_AGENT) {
@@ -483,17 +537,26 @@ export class TrailRenderer {
             list = compacted;
         }
         this.samplesByAgent.set(agentId, list);
-        if (pending && this.store) {
-            this.pending.push(normalized);
-            if (this.pending.length > MAX_PENDING_SAMPLES) {
-                const excess = this.pending.length - MAX_PENDING_SAMPLES;
-                this.pending.splice(0, excess);
-                this._stats.pendingDrops += excess;
-            }
-        }
+        if (pending && this.store) this._queueSample(normalized);
         this._stats.highWaterSamples = Math.max(this._stats.highWaterSamples, this._totalSamples);
         this._needsRepaint = true;
         return true;
+    }
+
+    _eraseFootprint(sample, persist) {
+        // Overwrite just the impression in the same trail row. Later snow or
+        // rain must not bring it back when another tab restores the hour.
+        delete sample.footprint;
+        if (persist && this.store) this._queueSample(sample);
+    }
+
+    _queueSample(sample) {
+        this.pending.push(sample);
+        if (this.pending.length > MAX_PENDING_SAMPLES) {
+            const excess = this.pending.length - MAX_PENDING_SAMPLES;
+            this.pending.splice(0, excess);
+            this._stats.pendingDrops += excess;
+        }
     }
 
     _shouldRepaint(now) {
@@ -506,6 +569,20 @@ export class TrailRenderer {
         let drewAny = false;
         ctx.save();
         if (!preserveTransform) camera.applyTransform?.(ctx);
+        if (this.footprints.length) {
+            const alpha = ctx.globalAlpha;
+            for (const print of this.footprints) {
+                const age = 1 - Math.max(0, now - print.ts) / RETAIN_MS;
+                const strength = this._footprintStrength(print);
+                if (age <= 0 || strength <= 0) continue;
+                const at = tileToWorld(print.tileX, print.tileY);
+                ctx.globalAlpha = alpha * 0.45 * age * strength;
+                ctx.fillStyle = print.footprint === 'snow' ? ART_RAMPS.slate[1] : ART_RAMPS.dirt[0];
+                ctx.fillRect(Math.round(at.x) - 1, Math.round(at.y) - 1, 1, 2);
+                ctx.fillRect(Math.round(at.x) + 1, Math.round(at.y), 1, 2);
+            }
+            ctx.globalAlpha = alpha;
+        }
         for (const [agentId, samples] of this.samplesByAgent) {
             if (samples.length < 2) continue;
             const importance = this._trailImportance(agentId);

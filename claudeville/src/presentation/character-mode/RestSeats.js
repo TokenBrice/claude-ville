@@ -733,6 +733,28 @@ function drawTavernGlow(ctx, x, y, seat, assets) {
     if (glow) ctx.drawImage(glow, Math.round(x) - ax, Math.round(y) - ay);
 }
 
+const RUNE_COLORS = [
+    ART_RAMPS.clothCrimson[0], ART_RAMPS.leafMarcescent[2], ART_RAMPS.grassDormant[2], ART_RAMPS.foliage[2],
+    ART_RAMPS.surfGlow[0], ART_RAMPS.shallowWater[0], ART_RAMPS.slate[3], ART_RAMPS.ashlar[2],
+];
+
+// The table top hides most of the oak bench. The cut at its near end stays
+// visible on both authored facings after the front slice goes on.
+export function drawBenchPatina(ctx, x, y, seat, patina) {
+    if (!patina || patina.seatId !== seat.id || !(patina.sits >= 10) || isStoneSeat(seat)) return;
+    const side = seat.facing === 'south-east' ? -1 : 1;
+    const oak = isArtSeat(seat);
+    const dx = Math.round(x) + (oak ? 11 * side : 0);
+    const dy = Math.round(y) + (oak ? -2 : seatLineOffset(seat) - 2);
+    ctx.fillStyle = TIMBER[1];
+    ctx.fillRect(dx - (side < 0 ? 2 : 1), dy - 1, 2, 1);
+    if (patina.sits < 50) return;
+    ctx.fillStyle = RUNE_COLORS[patina.repoColorIndex] || TIMBER[0];
+    ctx.fillRect(dx, dy, 1, 3);
+    ctx.fillRect(dx + side, dy + 1, 1, 1);
+    ctx.fillRect(dx + 2 * side, dy, 1, 1);
+}
+
 // Two sorted props per timber seat. The back slice sorts one texel behind the
 // seat point and the front slice two texels in front, so the seated body
 // (sorted at its foot, the seat point) paints between them on Canvas and on
@@ -742,7 +764,7 @@ function drawTavernGlow(ctx, x, y, seat, assets) {
 // trestle (`assets`, the AssetManager, when given; else its own pixels);
 // with `lampsLit` (the village lamp clock, `() => boolean`) its front slice
 // also carries the candle's emissive channel, gated on that clock.
-export function buildRestSeatPropSprites({ assets = null, lampsLit = null } = {}) {
+export function buildRestSeatPropSprites({ assets = null, lampsLit = null, patinaForSeat = null } = {}) {
     const sprites = [];
     for (const seat of REST_SEATS) {
         if (isStoneSeat(seat)) continue;
@@ -762,10 +784,11 @@ export function buildRestSeatPropSprites({ assets = null, lampsLit = null } = {}
                 drawFn: (ctx, x, y) => {
                     if (art) {
                         drawTavernSlice(ctx, x, y, seat, part, assets);
-                        return;
+                    } else {
+                        const stamp = seatStamp(seat, part);
+                        if (stamp) ctx.drawImage(stamp.canvas, Math.round(x) + stamp.x, Math.round(y) + stamp.y);
                     }
-                    const stamp = seatStamp(seat, part);
-                    if (stamp) ctx.drawImage(stamp.canvas, Math.round(x) + stamp.x, Math.round(y) + stamp.y);
+                    if (part === 'back' && patinaForSeat) drawBenchPatina(ctx, x, y, seat, patinaForSeat(seat.id));
                 },
             });
             if (glow) sprite.emitterGate = () => (lampsLit() === true ? 1 : 0);

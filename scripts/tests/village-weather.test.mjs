@@ -211,6 +211,7 @@ test('server shares hourly attempts, retains good data on failure and expires it
             assert.equal(url.searchParams.get('latitude'), '44.8');
             assert.equal(url.searchParams.get('longitude'), '20.5');
             assert.ok(url.searchParams.get('hourly').split(',').includes('snowfall'));
+            assert.ok(url.searchParams.get('hourly').split(',').includes('temperature_2m'));
             assert.deepEqual([...url.searchParams.keys()],
                 ['latitude', 'longitude', 'hourly', 'timeformat', 'past_hours', 'forecast_hours']);
             assert.equal(options.redirect, 'error');
@@ -224,7 +225,7 @@ test('server shares hourly attempts, retains good data on failure and expires it
     const [first, joined] = await Promise.all([getForecast(), getForecast()]);
     assert.deepEqual(first, joined);
     assert.equal(attempts, 1);
-    assert.deepEqual(first, { hourly: fixture.hourly, fetchedAt: observed, refreshAt: observed + HOUR });
+    assert.deepEqual(first, { hourly: { ...fixture.hourly, temperature_2m: null }, fetchedAt: observed, refreshAt: observed + HOUR });
     now += HOUR - 1;
     assert.deepEqual(await getForecast(), first);
     assert.equal(attempts, 1);

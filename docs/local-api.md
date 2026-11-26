@@ -55,6 +55,8 @@ The Chronicle's spend ledger lives in the browser's IndexedDB. The panel reads t
 
 Opted-in responses are `{ fetchedAt, hourly, refreshAt }` with `Cache-Control: no-store`. The timestamps are epoch milliseconds. `refreshAt` is the earliest next upstream attempt. `hourly` contains parallel arrays for `time` (epoch seconds in UTC), `weather_code`, `cloud_cover` (%), `precipitation` (mm), `snowfall` (cm), `wind_speed_10m` (km/h), `wind_direction_10m` (degrees from north), and `visibility` (m). A null `hourly` means the forecast is unavailable or expired. `fetchedAt` retains the last successful fetch time for the timezone if the forecast expires.
 
+The same request includes optional `hourly.temperature_2m` for cold breath. It contains 120 hourly air temperatures at two metres in °C. Each entry is a finite number from −90 through 60 or `null`. A missing or malformed temperature series yields `temperature_2m: null` while the other weather fields remain usable. Breath starts at or below 0 °C and stops at or above 1 °C. For an unknown hour, expired forecast, or modelled sky, frost or nighttime/dawn snow determines breath.
+
 The village adapts forecast data from [Open-Meteo](https://open-meteo.com/) under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The keyless endpoint is for [non-commercial use](https://open-meteo.com/en/terms).
 
 ## WebSocket messages
