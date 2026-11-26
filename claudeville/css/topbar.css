@@ -458,7 +458,25 @@ button.topbar__spend-session:hover {
 }
 
 .topbar__sound-panel .topbar__sound-action {
-    box-shadow: inset 0 0 0 1px var(--line-2);
+    color: var(--ink-2);
+    background: var(--bg-2);
+    box-shadow:
+        inset 0 1px 0 var(--line-2),
+        inset 0 -1px 0 var(--seam),
+        0 0 0 1px var(--line-1);
+}
+
+.topbar__sound-panel .topbar__sound-action:hover:not(:disabled) {
+    color: var(--ink-1);
+    background: var(--bg-3);
+    box-shadow:
+        inset 0 1px 0 var(--brass),
+        inset 0 -1px 0 var(--seam),
+        0 0 0 1px var(--line-2);
+}
+
+.topbar__sound-panel .topbar__sound-action:active:not(:disabled) {
+    transform: translateY(1px);
 }
 
 .topbar__sound-footer {
@@ -837,34 +855,58 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
         linear-gradient(currentColor, currentColor) 4px 11px / 3px 5px no-repeat;
 }
 
-/* Level sliders (steps 0–10) in the SOUND popover. */
+/* Level sliders (steps 0–10) in the SOUND popover, unified with .settings-range
+   (2px gold/brass track and crisp 8x8 gold-hi square thumb). */
 .topbar__sound-vol {
-    width: 100%;
-    height: 4px;
     appearance: none;
     -webkit-appearance: none;
-    background: var(--bg-0);
+    width: 100%;
+    height: 16px;
+    margin: 0;
+    background: transparent;
     border: 0;
-    box-shadow: inset 0 0 0 1px var(--line-2);
     cursor: pointer;
+}
+
+.topbar__sound-vol::-webkit-slider-runnable-track {
+    height: 2px;
+    background: linear-gradient(90deg, var(--gold) 0 var(--fill, 0px), var(--line-2) var(--fill, 0px) 100%);
+}
+
+.topbar__sound-vol::-moz-range-track {
+    height: 2px;
+    background: linear-gradient(90deg, var(--gold) 0 var(--fill, 0px), var(--line-2) var(--fill, 0px) 100%);
+}
+
+.topbar__sound-vol::-moz-range-progress {
+    height: 2px;
+    background: var(--gold);
 }
 
 .topbar__sound-vol::-webkit-slider-thumb {
     appearance: none;
     -webkit-appearance: none;
     width: 8px;
-    height: 12px;
+    height: 8px;
+    margin-top: -3px;
     border: 0;
-    background: var(--ink-2);
-    box-shadow: inset 0 1px 0 var(--ink-1), inset 0 -1px 0 var(--ink-3);
+    border-radius: 0;
+    background: var(--gold-hi);
+    box-shadow: 0 0 0 1px var(--seam);
 }
 
 .topbar__sound-vol::-moz-range-thumb {
     width: 8px;
-    height: 12px;
+    height: 8px;
     border: 0;
     border-radius: 0;
-    background: var(--ink-2);
+    background: var(--gold-hi);
+    box-shadow: 0 0 0 1px var(--seam);
+}
+
+.topbar__sound-vol:focus-visible {
+    outline: 2px solid var(--cv-focus);
+    outline-offset: 2px;
 }
 
 /* A segmented well: the frame kit's recessed slice (2px, so the well stays

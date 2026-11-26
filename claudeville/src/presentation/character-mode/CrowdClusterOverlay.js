@@ -1,7 +1,6 @@
 import { TILE_HALF_WIDTH, TILE_HALF_HEIGHT } from './Projection.js';
-import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
-import { BUILDING_ACCENTS_RGB, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
+import { BUILDING_ACCENTS_RGB, STATUS_VISUALS, WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 import { worldToTile } from './Projection.js';
 import { isAttentionStatus } from './AttentionPlates.js';
 import { paintWalnutBoard, snapScreenOrigin } from './WorldLabelKit.js';
@@ -47,31 +46,25 @@ const STATUS_AURA_FALLBACK = Object.freeze({
     badge: BADGE_BORDER,
 });
 
-const STATUS_AURA = Object.freeze({
-    [AgentStatus.WORKING]: STATUS_AURA_FALLBACK,
-    [AgentStatus.IDLE]: STATUS_AURA_FALLBACK,
-    [AgentStatus.COMPLETED]: STATUS_AURA_FALLBACK,
-    [AgentStatus.WAITING]: Object.freeze({
-        fill: 'rgba(111, 179, 217, 1)',
-        stroke: 'rgba(91, 150, 190, 1)',
-        badge: 'rgba(91, 150, 190, 0.8)',
-    }),
-    [AgentStatus.WAITING_ON_USER]: Object.freeze({
-        fill: 'rgba(111, 179, 217, 1)',
-        stroke: 'rgba(91, 150, 190, 1)',
-        badge: 'rgba(91, 150, 190, 0.8)',
-    }),
-    [AgentStatus.RATE_LIMITED]: Object.freeze({
-        fill: 'rgba(251, 146, 60, 1)',
-        stroke: 'rgba(234, 88, 12, 1)',
-        badge: 'rgba(234, 88, 12, 0.82)',
-    }),
-    [AgentStatus.ERRORED]: Object.freeze({
-        fill: 'rgba(239, 68, 68, 1)',
-        stroke: 'rgba(185, 28, 28, 1)',
-        badge: 'rgba(185, 28, 28, 0.84)',
-    }),
-});
+function auraFromHex(hex, badgeAlpha = 0.8) {
+    const value = parseInt(String(hex || '').replace(/^#/, ''), 16);
+    if (!Number.isFinite(value)) return STATUS_AURA_FALLBACK;
+    const r = (value >> 16) & 255;
+    const g = (value >> 8) & 255;
+    const b = value & 255;
+    const rim = `${Math.round(r * 0.78)}, ${Math.round(g * 0.78)}, ${Math.round(b * 0.78)}`;
+    return Object.freeze({
+        fill: `rgba(${r}, ${g}, ${b}, 1)`,
+        stroke: `rgba(${rim}, 1)`,
+        badge: `rgba(${rim}, ${badgeAlpha})`,
+    });
+}
+
+// Derived directly from STATUS_VISUALS (theme.js / DESIGN.md) so cluster auras
+// and pips stay locked to the single canonical status palette.
+export const STATUS_AURA = Object.freeze(Object.fromEntries(
+    Object.entries(STATUS_VISUALS).map(([status, visual]) => [status, auraFromHex(visual.color)]),
+));
 
 const PIP_RADIUS = 3;
 const PIP_GAP = 4;

@@ -59,7 +59,7 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>` (ids in `c
 
 - Run `npm run world:validate-buildings` and confirm all nine types have valid grounding profiles.
 - Run `npm run sprites:capture-baseline` and `npm run sprites:capture-fresh`; every named day/night closeup must assert its target near frame center before `npm run sprites:visual-diff`.
-- Press `Shift+D`: cyan is the logical footprint, white is the sprite anchor/world center, magenta is the sprite canvas, yellow is `horizonY`, red is structural contact/shadow extent, and green is the entrance marker and its line to the anchor.
+- Press `Shift+D` (World mode, outside inputs/modals): cyan is the logical footprint, white is the sprite anchor/world center, magenta is the sprite canvas, yellow is `horizonY`, red is structural contact/shadow extent, and green is the entrance marker and its line to the anchor. Press `Shift+O` for the pathfinding debug overlay (moved from `Shift+P`; both `Shift+D` and `Shift+O` are blocked while typing or under an open modal/popover).
 - At zoom 1 and 2, no land building shows a continuous raised lawn/stone perimeter or a renderer pad outside its site.
 - Roads meet the physical threshold, stairs, rails, or posts. Terrain texture remains visible between sparse apron marks and reaches structure footings.
 - Shadows begin under structural mass, not at the footprint edge. Harbor uses piling/water contacts; Lighthouse keeps a supported quay; Portal keeps a stair-connected dais.

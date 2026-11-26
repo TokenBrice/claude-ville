@@ -643,7 +643,7 @@
 .chronicle__life-empty,
 .chronicle__life-chapter-date { color: var(--ink-3); }
 
-.chronicle__life-nickname { font-style: italic; }
+/* Nickname emphasis stays on quieter --ink-3 rather than synthesized bitmap italic. */
 
 .chronicle__life-meta,
 .chronicle__life-empty { margin: 0; }

@@ -31,6 +31,7 @@ import { HarborFleetCard, isInFleetCard } from '../shared/HarborFleetCard.js';
 import { WorldHoverPlate, villagerHoverLine } from '../shared/WorldHoverPlate.js';
 import { dialogueSourceLabel } from '../../config/dialogue.js';
 import { emitAgentSelected } from '../shared/AgentSelection.js';
+import { shortcutBlocked } from '../shared/ShortcutGuard.js';
 import { HDR_HIGHLIGHTS_EVENT, overlayContextAttributes, publishDisplayStatus, readHdrHighlights } from '../shared/DisplaySettings.js';
 import { installP3OverlayInks, readDisplayMedia, setOverlayInksP3, watchDisplayMedia } from './DisplayColor.js';
 import { CameraDirector } from './CameraDirector.js';
@@ -2311,8 +2312,7 @@ export class IsometricRenderer {
         this.camera.onTouchLongPress = (x, y) => this._showTouchInfo(x, y);
         this.camera.onTouchDismiss = () => this._dismissTouchInfo();
         this._onKeyDown = (e) => {
-            if (e.code === 'KeyD' && e.shiftKey) void this._toggleDebugOverlay('toggle');
-            if (e.code === 'KeyP' && e.shiftKey) void this._toggleDebugOverlay('togglePathDebug');
+            this._handleDebugShortcut(e);
             this._handleWorldKeyboardCommand(e);
         };
         window.addEventListener('keydown', this._onKeyDown);
@@ -2328,6 +2328,21 @@ export class IsometricRenderer {
         this.running = true;
         this._startLoop();
         return true;
+    }
+
+    _handleDebugShortcut(event, { doc } = {}) {
+        if (!event || !this._worldModeActive) return false;
+        if (!event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return false;
+        if (shortcutBlocked(event, doc ? { doc } : undefined)) return false;
+        if (event.code === 'KeyD') {
+            void this._toggleDebugOverlay('toggle');
+            return true;
+        }
+        if (event.code === 'KeyO') {
+            void this._toggleDebugOverlay('togglePathDebug');
+            return true;
+        }
+        return false;
     }
 
     setReadMode(on) {
