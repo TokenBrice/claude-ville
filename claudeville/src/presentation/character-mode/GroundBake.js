@@ -107,6 +107,7 @@ import {
     hasTerrainCellLuma, readTerrainCellLuma, specularCorner, stoneAt, stoneFrame, stoneRole,
 } from './TerrainTileset.js';
 import { buildingCenterToWorld, tileToWorld } from './Projection.js';
+import { wallCourseStop } from './TerraceWallPattern.js';
 import { planeHeight, tileCoords } from './SurfaceProjection.js';
 import { getCoastField } from './CoastBake.js';
 import { frostQuarterOf, frostRisingOf, snowBucketOf } from './GroundState.js';
@@ -1515,17 +1516,26 @@ function* terraceBands(registry, pixels, pass) {
             const backH = planeHeight(surface.plane16, Math.max(0, q), Math.max(0, -q));
             const a = 1 + Math.min(0, q), b = 1 - Math.max(0, q);
             const frontH = planeHeight(surface.plane16, a, b);
-            const top = start - backH, bottom = end - frontH;
-            const lip = Math.ceil(bottom - 0.5);
+            const lip = Math.ceil(end - frontH - 0.5);
             const edgeRow = Math.ceil(end - 0.5) - 1;
             if (edgeRow < 0 || edgeRow >= rows) continue;
-            for (let row = Math.max(0, Math.ceil(top - 0.5)); row < lip; row++) {
-                const srcRow = Math.floor(start + (row + 0.5 - top) * (end - start) / (bottom - top));
+            let previous = -1;
+            for (let srcRow = Math.max(0, Math.ceil(start - 0.5)); srcRow <= edgeRow; srcRow++) {
+                const fraction = (srcRow + 0.5 - start) / (end - start);
+                const lift = Math.round(backH + fraction * (frontH - backH));
+                const row = srcRow - lift;
                 const src = srcRow * cols + col, dest = row * cols + col;
-                if (surfaces[src] === 255) continue;
+                if (row < 0 || surfaces[src] === 255) continue;
                 rgba[dest] = rgba[src];
                 surfaces[dest] = surfaces[src]; stepBuf[dest] = stepBuf[src];
                 aoBuf[dest] = aoBuf[src]; sdBuf[dest] = sdBuf[src];
+                if (previous >= 0 && row > previous + 1) {
+                    const riser = 4 * (dest - cols);
+                    pixels.set(ASHLAR[2], riser);
+                    pixels[riser + 3] = 255;
+                    surfaces[dest - cols] = S_FLAG;
+                }
+                previous = row;
             }
             const east = q > 0;
             const nx = tx + Number(east), ny = ty + Number(!east);
@@ -1535,14 +1545,63 @@ function* terraceBands(registry, pixels, pass) {
             const last = Math.min(rows, Math.ceil(end - adjacent - 0.5));
             for (let row = Math.max(0, lip); row < last; row++) {
                 const course = row - lip;
-                const joint = course % 4 === 3 || (col + (course >> 2) * 5) % 11 === 0;
-                const stop = course === 0 ? 6 : joint ? 3 : east ? 4 : 5;
+                const stop = wallCourseStop(x + dx, course, last - lip, east);
                 const i = row * cols + col, color = ASHLAR[stop];
                 pixels[4*i] = color[0]; pixels[4*i+1] = color[1]; pixels[4*i+2] = color[2]; pixels[4*i+3] = 255;
                 surfaces[i] = S_FLAG; stepBuf[i] = FOOTING_FLAG; sdBuf[i] = -1; aoBuf[i] = 255;
             }
         }
         if (due()) yield;
+    }
+}
+
+// CoastBake paints after the ground bake. These raised rock and water tiles
+// must cover the flat beach/water underneath, before bridges and scenery.
+export function drawRaisedCoast(ctx, registry) {
+    if (!registry) return;
+    const neighborHeight = (x, y) => x < 0 || y < 0 || x >= MAP_SIZE || y >= MAP_SIZE ? 0 : registry.aggregateHeightAt(x, y);
+    const raised = registry.surfaces.filter(s => s.route === 'westSeaCliffs' || (s.kind === 'water' && s.plane16[0] > 0))
+        .map(s => ({ s, ...tileCoords(s.tile) })).sort((a, b) => a.tx + a.ty - b.tx - b.ty);
+    for (const { s, tx, ty } of raised) {
+        const rock = s.route === 'westSeaCliffs';
+        const h = planeHeight(s.plane16);
+        const center = tileToWorld(tx, ty);
+        for (let dx = -HALF_W; dx < HALF_W; dx++) {
+            const x = center.x + dx, east = dx >= 0;
+            const span = HALF_H * (1 - Math.abs((dx + 0.5) / HALF_W));
+            const top = Math.ceil(center.y - span - h - 0.5);
+            const front = Math.ceil(center.y + span - h - 0.5);
+            const lower = neighborHeight(tx + Number(east), ty + Number(!east));
+            const end = Math.ceil(center.y + span - lower - 0.5);
+            const grain = Math.floor(hash2(x >> 2, tx + ty, 83) * 3);
+            const backExposed = neighborHeight(tx - Number(!east), ty - Number(east)) < h;
+            const crest = front - (rock && end > front ? grain : 0);
+            const skyline = top - (rock && backExposed ? grain : 0);
+            for (let y = skyline; y < Math.max(crest, end); y++) {
+                const row = y - crest;
+                let color;
+                if (rock) {
+                    // Fractures run across tiles, with broader weathered plates on top.
+                    const plate = (x + (y >> 1) * 3 + 2 * grain) & 15;
+                    const seam = (y + (x >> 2) + grain) & 7;
+                    let stop;
+                    if (row < 0) {
+                        stop = plate < 2 && seam < 5 ? 2 : seam === 0 && plate < 10 ? 4 : 3;
+                        if ((row >= -grain - 1 && end > front) || (y === skyline && backExposed)) stop = 4;
+                    } else {
+                        const bed = (row + (x >> 4) + grain) & 7;
+                        stop = row === 0 ? 4 : bed < 2 || (plate === 0 && bed < 6) ? 1 : east ? 2 : 3;
+                    }
+                    color = ART_RAMPS.cliff[stop];
+                } else if (row < 0) {
+                    const rim = (y === top && backExposed)
+                        || (y === crest - 1 && lower < h);
+                    color = rim ? ART_RAMPS.ashlar[5] : ART_RAMPS.shallowWater[Number(((x >> 2) + 3 * y) % 11 === 0)];
+                } else color = ART_RAMPS.ashlar[wallCourseStop(x, row, end - crest, east)];
+                ctx.fillStyle = color;
+                ctx.fillRect(x, y, 1, 1);
+            }
+        }
     }
 }
 
@@ -2027,7 +2086,10 @@ function* groundBands(r, withWeather = false, options = {}) {
     pass.edge = null;
 
     pause(); yield 'footings'; resume();
-    if (r.surfaceRegistry) yield* run(terraceBands(r.surfaceRegistry, D, pass), 'terraces');
+    if (r.surfaceRegistry) {
+        yield* run(terraceBands(r.surfaceRegistry, D, pass), 'terraces');
+        pause(); yield 'terraces'; resume();
+    }
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;

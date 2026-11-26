@@ -7,6 +7,7 @@ import {
     materialClassId,
 } from './GpuWorldPolicy.js';
 import { sourceEnergyFor } from '../AtmosphereState.js';
+import { MAP_SIZE } from '../../../config/constants.js';
 import { buildingCenterToWorld, tileToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from '../Projection.js';
 import { offshoreSceneryRecords } from '../OffshoreScenery.js';
 import { landmarkFootprint } from '../FootprintField.js';
@@ -349,6 +350,23 @@ function terrainMaterialSidecar(renderer, cached) {
 // GPU reports this bake's upload, the CPU canvas is released and a same-size
 // GPU-resident stand-in keys the record; if that texture is gone (context
 // loss, eviction) the stand-in is dropped and the canvas re-bakes here.
+// The village's full-tile solid planes fit in one 40×40 RGBA8 lookup.
+const terrainPlanes = new WeakMap();
+export function terrainPlaneTexture(registry) {
+    if (!registry) return null;
+    if (terrainPlanes.has(registry)) return terrainPlanes.get(registry);
+    const data = new Uint8Array(MAP_SIZE * MAP_SIZE * 4);
+    for (const surface of registry.surfaces) {
+        if (!surface.plane16.some(Boolean) || surface.underside16 !== null) continue;
+        const [base, du, dv] = surface.plane16;
+        data.set([128 + base / 16, 128 + du / 16, 128 + dv / 16,
+            surface.kind === 'water' ? 2 : 1], 4 * surface.tile);
+    }
+    const texture = { width: MAP_SIZE, height: MAP_SIZE, format: 'rgba8', revision: registry.revision, data };
+    terrainPlanes.set(registry, texture);
+    return texture;
+}
+
 function recordForTerrain(renderer) {
     let cached = renderer?._getTerrainCache?.({ allowResident: true });
     if (!cached?.canvas || !cached?.bounds) return null;
@@ -369,6 +387,8 @@ function recordForTerrain(renderer) {
     return {
         id: 'terrain:static',
         stableKey: 'terrain:static',
+        terrainPlanes: terrainPlaneTexture(renderer.surfaceRegistry),
+        surfaceOffset: renderer.surfaceRegistry?.heightRange,
         frontierCoast: renderer._coastBake?.exposure ? renderer._coastBake : null,
         spillwaySplashes: renderer._spillwaySplashes,
         harborTiles: renderer.harborWaterApronTiles,
@@ -1088,7 +1108,9 @@ function recordForProp(renderer, drawable, sequence) {
         const frame = sprite.terraceFrame();
         if (!frame) return null;
         return { ...frame, id: `${sprite.id}:${sprite.tileX},${sprite.tileY}`, textureKey: sprite.id,
-            sourceWidth: frame.source.width, sourceHeight: frame.source.height, supportH: sprite.supportH,
+            sourceWidth: frame.source.width, sourceHeight: frame.source.height, supportH: sprite.surfaceBaseH ?? sprite.supportH,
+            sublayerRank: 1, surfaceCode: true, pageable: false,
+            materialSource: sidecarFor(renderer.assets, sprite.id), occluderSource: sidecarFor(renderer.assets, sprite.id, 'occluder'),
             material: materialClassId(sprite.materialClass), footY: sprite.y, sequence };
     }
     if (!sprite?._getCachedCanvas) return null;
@@ -1299,6 +1321,7 @@ function recordsForAgent(drawable, sequence) {
         elevation: record.elevation ?? 0.52,
         occluder: record.occluder ?? 0.58,
         supportH,
+        sublayerRank: 7,
         footY: record.footY ?? footY,
         frontCornerX: record.frontCornerX ?? axisX,
         ownerSlot: record.ownerSlot ?? ownerSlot,

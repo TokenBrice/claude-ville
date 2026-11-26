@@ -1113,7 +1113,9 @@ export class WeatherRenderer {
             frameDt,
             atmosphere,
         });
-        if (!(overlayShare > 0)) return;
+        // Flat GPU rain reserves raised receivers for their projected Canvas crowns.
+        const drawRaised = overlayShare < 1 && this.sceneContext?.gpuRainProjectsTerraces?.() === false;
+        if (!(overlayShare > 0) && !drawRaised) return;
         const camera = grid.camera;
         const tiles = this.sceneContext?.openGroundTiles?.() || null;
         if (!camera?.worldToScreen || !camera?.screenToWorld || !tiles?.length) return;
@@ -1125,7 +1127,8 @@ export class WeatherRenderer {
             // Reduced motion: a static ring on a fixed share of the visible
             // open tiles, chosen by each tile's own hash so it never re-rolls.
             for (const tile of tiles) {
-                if (tile.seed >= SPLASH_STATIC_SHARE * overlayShare || !inRect(tile, view)) continue;
+                const share = drawRaised && tile.supportH > 0 ? 1 : overlayShare;
+                if (tile.seed >= SPLASH_STATIC_SHARE * share || !inRect(tile, view)) continue;
                 this._stampSplash(ctx, grid, tile.x, tile.y, 2, alpha);
             }
             return;
@@ -1140,10 +1143,11 @@ export class WeatherRenderer {
             for (const tile of tiles) if (inRect(tile, view)) visible.push(tile);
             if (visible.length) {
                 let count = Math.round(SPLASH_STAMP_MIN_COUNT + (SPLASH_STAMP_MAX_COUNT - SPLASH_STAMP_MIN_COUNT) * driveT);
-                if (overlayShare < 1) count = Math.round(count * overlayShare);
+                if (!drawRaised && overlayShare < 1) count = Math.round(count * overlayShare);
                 const stampSeed = (seed + Math.imul(this._splashStampSeed + 1, 0x85ebca6b)) >>> 0;
                 for (let i = 0; i < count; i++) {
                     const tile = visible[Math.floor(random01(stampSeed, i + 11) * visible.length)];
+                    if (drawRaised && !(tile.supportH > 0) && random01(stampSeed, i + 71) >= overlayShare) continue;
                     // Anywhere near the middle of the tile's diamond.
                     const u = random01(stampSeed, i + 29) - 0.5;
                     const v = random01(stampSeed, i + 53) - 0.5;
@@ -1613,17 +1617,21 @@ export function gpuRainField(atmosphere, camera, { timeMs = 0, on = true, splash
  * the overlay would splash (`openGroundTiles`). Cached per tile list.
  */
 const _splashMasks = new WeakMap();
+const _raisedSplashMasks = new WeakMap();
 let _splashMaskRevision = 0;
-export function rainSplashMask(tiles) {
+export function rainSplashMask(tiles, projectsTerraces = false) {
     if (!Array.isArray(tiles) || !tiles.length) return null;
-    let mask = _splashMasks.get(tiles);
+    const cache = projectsTerraces ? _raisedSplashMasks : _splashMasks;
+    let mask = cache.get(tiles);
     if (mask) return mask;
     const data = new Uint8Array(MAP_SIZE * MAP_SIZE);
     for (const tile of tiles) {
-        if (tile.tileX >= 0 && tile.tileY >= 0 && tile.tileX < MAP_SIZE && tile.tileY < MAP_SIZE) data[tile.tileY * MAP_SIZE + tile.tileX] = 255;
+        if (tile.tileX < 0 || tile.tileY < 0 || tile.tileX >= MAP_SIZE || tile.tileY >= MAP_SIZE) continue;
+        if (!projectsTerraces && tile.supportH > 0) continue;
+        data[tile.tileY * MAP_SIZE + tile.tileX] = 255 - Math.min(126, Math.max(0, Math.round(tile.supportH || 0)));
     }
     mask = Object.freeze({ width: MAP_SIZE, height: MAP_SIZE, format: 'r8', data, revision: `rain-splash-${++_splashMaskRevision}` });
-    _splashMasks.set(tiles, mask);
+    cache.set(tiles, mask);
     return mask;
 }
 

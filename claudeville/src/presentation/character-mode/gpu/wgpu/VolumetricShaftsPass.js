@@ -28,6 +28,7 @@
 import { BUILDING_DEFS } from '../../../../config/buildings.js';
 import { RECEIVER_LUMA_CEILING } from '../../../../config/artPalette.js';
 import { BUILDING_VISUAL_REGISTRY } from '../../BuildingVisualRegistry.js';
+import { supportHeight } from '../../SurfaceProjection.js';
 import { tileToWorld } from '../../Projection.js';
 import { createUniformViews, uniformLayout, writeUniforms } from '../wgsl/common.js';
 import { BLEND_NORMAL, SCENE_COLOR_FORMAT, SCENE_EMISSION_FORMAT } from './GpuWgpuPipelines.js';
@@ -542,10 +543,11 @@ export function buildShaftInstances(sceneState = {}) {
         const archiveDef = sceneState.archiveBuilding || findBuildingDef('archive');
         const archiveVisual = BUILDING_VISUAL_REGISTRY.archive;
         if (archiveDef && archiveVisual?.windowRects?.length) {
-            const center = tileToWorld(
-                finite(archiveDef.x, 3) + finite(archiveDef.width, 5) * 0.5,
-                finite(archiveDef.y, 15) + finite(archiveDef.height, 3) * 0.5,
-            );
+            const tx = finite(archiveDef.position?.tileX ?? archiveDef.x, 3) + finite(archiveDef.width, 5) * 0.5;
+            const ty = finite(archiveDef.position?.tileY ?? archiveDef.y, 15) + finite(archiveDef.height, 3) * 0.5;
+            const supportH = supportHeight(tx, ty, sceneState.surfaceRegistry);
+            const center = tileToWorld(tx, ty);
+            center.y -= supportH;
             const [ax, ay] = ARCHIVE_SPRITE_ANCHOR;
             // Solar angle controls beam reach & horizontal slant; lower sun stretches beams further.
             const reachLen = clamp(42 + (1 - clamp(sunElevation, 0.1, 1.1)) * 34, 34, 78);
@@ -564,9 +566,9 @@ export function buildShaftInstances(sceneState = {}) {
                 const originX = Math.round(center.x - ax + win.at[0]);
                 const originY = Math.round(center.y - ay + win.at[1]);
                 // Near-order depth D = Y + H/2 (specs/01 §4): aperture sits just behind the stone lintel.
-                const heightAboveGround = Math.max(8, (ay + 30) - win.at[1]);
+                const heightAboveGround = supportH + Math.max(8, (ay + 30) - win.at[1]);
                 const depthOriginD = 2 * (originY + heightAboveGround) + heightAboveGround * 0.5 - 6;
-                const depthEndD = 2 * (originY + slantY) + 4;
+                const depthEndD = 2 * (originY + slantY) + 2.5 * supportH + 4;
                 const lintelDepthD = depthOriginD + 12;
 
                 instances.push({

@@ -79,7 +79,7 @@ import { COMPOSITE_ROLES_BINDING } from './wgsl/composite.js';
 import { HDR_HIGHLIGHT_MODES, HDR_HIGHLIGHTS_DEFAULT, hdrLampsLit, resolveDisplayColor } from '../DisplayColor.js';
 import { adapterInfo, probeWebGpu, requestWebGpuDevice } from './wgpu/GpuDeviceManager.js';
 import {
-    BLEND_NORMAL,
+    BLEND_NORMAL, BLEND_NORMAL_ROLE,
     BLOOM_FORMAT,
     LIGHT_RECORD_BUFFER_BYTES,
     SCENE_COLOR_FORMAT,
@@ -110,7 +110,7 @@ import { resolveSunShade } from './SunShade.js';
 import { GpuFrameReuse, stageGpuFrameBindings } from './GpuFrameReuse.js';
 import { createGpuRainField, gpuRainField, rainSplashMask } from '../WeatherRenderer.js';
 import { lookStrength } from '../LookStrengths.js';
-import { RAIN_BINDING, RAIN_UNIFORM_BYTES } from './wgsl/rain.js';
+import { assembleRain, RAIN_BINDING, RAIN_UNIFORM_BYTES } from './wgsl/rain.js';
 
 export { probeWebGpu };
 
@@ -153,7 +153,42 @@ function rainCellHash(value) {
     return (x ^ (x >>> 16)) >>> 0;
 }
 
-function waterInputs(terrain) {
+// The Frontier variant keeps the flat rain field's hash, shape and admission,
+// and reconstructs each exposed landing before projecting its fall and depth.
+async function prepareTerraceRain(device, layouts, roles, pipelines) {
+    const code = assembleRain()
+        .replace('let ground =', 'let plan =')
+        .replace('  let phase =', `
+  let isoPlan = vec2f(plan.y * 2.0 + plan.x, plan.y * 2.0 - plan.x) / 64.0;
+  let planTile = vec2i(floor(isoPlan + 0.5));
+  var supportH = 0.0;
+  if (all(planTile >= vec2i(0)) && all(planTile < vec2i(textureDimensions(rainMask)))) {
+    let receiver = round(textureLoad(rainMask, planTile, 0).r * 255.0);
+    if (receiver > 127.0) { supportH = 255.0 - receiver; }
+  }
+  let ground = plan - vec2f(0.0, supportH);
+  let phase =`)
+        .replace('let tile = vec2i(floor(iso + 0.5));', 'let tile = planTile;')
+        .replace('1.0 - key / 65535.0', 'clamp((6144.0 - (2.0 * world.y + 2.5 * (supportH + max(0.0, ground.y - world.y)))) / 8192.0, 0.000001, 0.999999)');
+    const module = device.createShaderModule({ label: 'terrace-rain', code });
+    for (const attachment of roles ? [true] : [false, true]) {
+        const targets = [{ format: SCENE_COLOR_FORMAT, blend: BLEND_NORMAL }];
+        if (attachment) targets.push({ format: roles || SCENE_EMISSION_FORMAT, blend: roles ? BLEND_NORMAL_ROLE : BLEND_NORMAL });
+        pipelines.set('rain' + attachment, await device.createRenderPipelineAsync({
+            label: 'terrace-rain', layout: layouts.rainPipeline, primitive: { topology: 'triangle-list' },
+            vertex: { module, entryPoint: 'rainVs' }, fragment: { module, entryPoint: 'rainFs', targets },
+            depthStencil: { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'less-equal' },
+        }));
+    }
+}
+
+export function planarMirrorFoot(record, waterZ) {
+    // Unproject the final visible hull row, which already includes its tide.
+    if (waterZ && record.id?.startsWith('harbor:hull:')) return record.y + record.height - 1 + waterZ;
+    return record.mirrorFootY ?? record.footY ?? record.y + record.height;
+}
+
+export function waterInputs(terrain) {
     const { coast, contacts } = terrain.frontierCoast;
     const basin = new Uint16Array(coast.cols * coast.rows);
     let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
@@ -161,7 +196,8 @@ function waterInputs(terrain) {
     for (let ty = 0; ty < MAP_SIZE; ty++) for (let tx = 0; tx < MAP_SIZE; tx++) {
         const key = tx + ',' + ty;
         const meta = terrain.waterMeta?.get(key);
-        const harbor = terrain.harborTiles?.has(key) || meta?.region === 'harbor';
+        const harbor = terrain.harborTiles?.has(key) || meta?.region === 'harbor'
+            || terrain.spillwaySplashes?.some(p => p.receivingTile === ty * MAP_SIZE + tx);
         if (!meta && !harbor) continue;
         const cx = (tx - ty) * TILE_WIDTH / 2, cy = (tx + ty) * TILE_HEIGHT / 2;
         wetLeft = Math.min(wetLeft, cx - TILE_WIDTH / 2); wetRight = Math.max(wetRight, cx + TILE_WIDTH / 2);
@@ -229,6 +265,22 @@ function waterInputs(terrain) {
             const aboveY = y - d - 1;
             const wetAbove = exposure[(aboveY >> 1) * (w / 2) + (x >> 1)] & (1 << ((x & 1) + 2 * (aboveY & 1)));
             if (contactStarts || !wetAbove) { mask[i] = d + 1; break; }
+        }
+    }
+    // The sluice cuts a real opening in the receiving bank. Preserve that
+    // opening when the coarse coast grid or the dithered planar collar misses it.
+    for (const p of terrain.spillwaySplashes || []) {
+        for (let dx = -9; dx < 9; dx++) for (let depth = 0; depth < 8; depth++) {
+            const x = p.x + dx - ox, y = p.y - Math.floor((dx + 1) / 2) + depth - oy;
+            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            const cell = (y >> 1) * (w / 2) + (x >> 1);
+            localBasin[cell] = 1;
+            exposure[cell] |= 1 << ((x & 1) + 2 * (y & 1));
+            mask[y * w + x] = 4;
+            const rx = Math.floor((x + ox - rippleOrigin[0]) * rippleScale);
+            const ry = Math.floor((y + oy - rippleOrigin[1]) * rippleScale);
+            if (rx >= 0 && ry >= 0 && rx < RIPPLE_GRID_WIDTH && ry < RIPPLE_GRID_HEIGHT)
+                boundary.set([255, 128, 128, 255], 4 * (ry * RIPPLE_GRID_WIDTH + rx));
         }
     }
     return { bake: terrain.frontierCoast, mask, contact, exposure, basin: localBasin, planarRect: rect, rippleScale, rippleOrigin, boundary, spillwaySplashes: terrain.spillwaySplashes };
@@ -1088,6 +1140,7 @@ export class GpuWorldRendererWebGPU {
                     if (name === 'mirror' && this._frontierPasses.get(name) === entry) await prepareWorldWaterResolve(device, pass, this.pipelines.layouts, roles);
                 } else {
                     entry.pipelines = await prepareSurfacePipelines(device, this.pipelines.layouts, roles);
+                    await prepareTerraceRain(device, this.pipelines.layouts, roles, entry.pipelines);
                 }
             };
             // The synchronous GPU allocations belong to this optional pass's validation scope.
@@ -1471,7 +1524,8 @@ export class GpuWorldRendererWebGPU {
                 ? this._textureFor(`emissive:${sidecar}`, batch.emissiveSource, first?.emissiveRevision ?? first?.sidecarRevision, first?.emissiveTextureUpdates)
                 : null;
             if (!occluderChannelEnabled && batch.occluderSource) this.skippedOccluderUploads++;
-            batch.occluderTexture = occluderChannelEnabled && batch.occluderSource
+            batch.occluderTexture = first?.terrainPlanes ? this.uploadTypedTexture('terrain:planes', first.terrainPlanes)
+                : (occluderChannelEnabled || (this._frontierMask & 4 && first?.flags & GPU_RECORD_FLAGS.surfaceCode)) && batch.occluderSource
                 ? this._textureFor(`occluder:${sidecar}`, batch.occluderSource, first?.sidecarRevision, first?.occluderTextureUpdates)
                 : null;
         }
@@ -1493,7 +1547,7 @@ export class GpuWorldRendererWebGPU {
         s.resolution = [this.width, this.height];
         s.packedGeometry = !this._occluderChannelSkipped;
         Object.assign(s, resolveDiurnalFrame(feed, grade), resolveFrontierFrame(this._frontierMask, {
-            planarRect: this._waterInputs?.planarRect, waterH: finite(feed.waterH), basinHandle: this._frontierMask & 1,
+            planarRect: this._waterInputs?.planarRect, waterH: finite(feed.atmosphere?.lunarTide?.level ?? feed.waterH), basinHandle: this._frontierMask & 1,
             fieldRevision: this._frontierRevision ?? 0,
         }));
         s.gradeExposure = grade.exposure;
@@ -1945,7 +1999,7 @@ export class GpuWorldRendererWebGPU {
     // off at MINIMAL, where the overlay keeps the whole field) and its
     // open-ground splash mask (GpuWorldRenderer `_prepareRain`'s twin).
     _prepareRain(feed, camera, qualityLevel) {
-        const mask = lookStrength('rn1') > 0 ? rainSplashMask(feed?.rainSplashTiles?.()) : null;
+        const mask = lookStrength('rn1') > 0 ? rainSplashMask(feed?.rainSplashTiles?.(), Boolean(this._frontierMask & 4)) : null;
         this._rainMaskView = mask ? this.uploadTypedTexture('rain:splash-mask', mask) : null;
         const field = gpuRainField(feed?.atmosphere, camera, {
             timeMs: feed?.timeMs,
@@ -2079,9 +2133,9 @@ export class GpuWorldRendererWebGPU {
                 }
             } else {
                 const u0 = sx / r.sourceWidth, u1 = (sx + sw) / r.sourceWidth;
-                const foot = r.mirrorFootY ?? r.footY ?? r.y + r.height;
+                const foot = planarMirrorFoot(r, waterZ);
                 add(r.x, r.y, r.width, r.height, r.flipX ? u1 : u0, sy / r.sourceHeight, r.flipX ? u0 : u1,
-                    (sy + sh) / r.sourceHeight, foot + (r.id?.startsWith('harbor:hull:') ? waterZ : 0), false);
+                    (sy + sh) / r.sourceHeight, foot, false);
             }
             if (count === first) return;
             let group = this._mirrorGroups.get(view);
@@ -2329,7 +2383,8 @@ export class GpuWorldRendererWebGPU {
                 const cleanBed = Boolean(mask & 1) && batch.records[0]?.id === 'terrain:static';
                 const planarBatch = mask & 1 && (cleanBed || batch.records.some(r => r.flags & GPU_RECORD_FLAGS.reflect));
                 const waterPass = planarBatch && this._frontierPasses.get('mirror').pass;
-                const pipeline = surface ? surface.get([writeEmission, batch.writesDepth === true, cue, batch.blend === 'add', Boolean(emitterRoles),
+                const depthWriter = batch.writesDepth === true || Boolean(batch.records[0]?.terrainPlanes);
+                const pipeline = surface ? surface.get([writeEmission, depthWriter, cue, batch.blend === 'add', Boolean(emitterRoles),
                     batch.writesDepth === true && Boolean(batch.records[0]?.flags & GPU_RECORD_FLAGS.surfacePage)].join())
                     : waterPass ? (writeEmission ? waterPass.bedPipeline : waterPass.bedColorPipeline)
                     : emitterRoles ? display.emitterRoles[Number(batch.writesDepth === true)]

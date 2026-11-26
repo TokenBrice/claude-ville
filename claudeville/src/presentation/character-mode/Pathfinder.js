@@ -45,6 +45,7 @@ const DIR_OPPOSITE = Int8Array.from(DIRS, ([dx, dy]) => DIRS.findIndex(([ox, oy]
 // (dy + 1) * 3 + (dx + 1) → the DIRS index of that unit step (-1 for none),
 // so a straight-line walk can test each step against stepMask.
 const STEP_DIR = Int8Array.from({ length: 9 }, (_, cell) => DIRS.findIndex(([dx, dy]) => dx === (cell % 3) - 1 && dy === Math.floor(cell / 3) - 1));
+const MASK_DIRS = Array.from({ length: 256 }, (_, mask) => DIRS.map((_, dir) => dir).filter(dir => mask & (1 << dir)));
 const OCTILE_DIAGONAL_EXTRA = Math.SQRT2 - 1;
 const IndexArray = CELLS <= 0xffff ? Uint16Array : Uint32Array;
 const SlotArray = CELLS <= 0x7fff ? Int16Array : Int32Array;
@@ -238,13 +239,39 @@ export class Pathfinder {
     // on, so a new window's crowd always finds its sinks free to rebuild.
     constructor(grid, { clock = null, surfaceRegistry = null } = {}) {
         this.surfaceRegistry = surfaceRegistry;
-        this._surfaceHeights = surfaceRegistry && Float32Array.from({ length: CELLS },
-            (_, i) => surfaceRegistry.aggregateHeightAt(i % MAP_N, Math.floor(i / MAP_N)));
-        this._surfaceLinks = new Set();
-        for (const link of surfaceRegistry?.links || []) {
-            this._surfaceLinks.add(link.from[0] * CELLS + link.to[0]);
-            if (link.bidirectional) this._surfaceLinks.add(link.to[0] * CELLS + link.from[0]);
+        // Keep the flat grid's dense slots. Only a second walkable floor on
+        // the same tile needs another slot in the heap and integration fields.
+        const nodeTiles = Array.from({ length: CELLS }, (_, tile) => tile);
+        const ids = new Array(CELLS).fill(0);
+        this._layers = new Map();
+        this._links = new Map();
+        this._inclines = new Set();
+        for (const surface of surfaceRegistry?.surfaces || []) {
+            if (!surface.walk) continue;
+            const tile = surface.tile;
+            const layers = this._layers.get(tile);
+            const node = layers ? nodeTiles.length : tile;
+            if (layers) {
+                nodeTiles.push(tile);
+                layers.push(node);
+            } else this._layers.set(tile, [node]);
+            ids[node] = surface.id;
+            if (surface.plane16[1] || surface.plane16[2]) this._inclines.add(node);
         }
+        this._nodeTiles = nodeTiles.length > CELLS ? Uint32Array.from(nodeTiles) : null;
+        this._surfaceIds = surfaceRegistry && Uint16Array.from(ids);
+        this._nodeCount = nodeTiles.length;
+        this._surfaceHeights = surfaceRegistry && Float32Array.from(nodeTiles, (tile, node) =>
+            surfaceRegistry.heightAt(tile % MAP_N, Math.floor(tile / MAP_N), ids[node]) ?? 0);
+        for (const link of surfaceRegistry?.links || []) {
+            const a = this._nodeFor(...link.from), b = this._nodeFor(...link.to);
+            this._links.set(a * this._nodeCount + b, true);
+            if (link.bidirectional || !this._links.has(b * this._nodeCount + a))
+                this._links.set(b * this._nodeCount + a, link.bidirectional);
+        }
+        const nodes = this._nodeCount;
+        const NodeArray = nodes > 65535 ? Uint32Array : IndexArray;
+        const ParentArray = nodes > 32767 ? Int32Array : SlotArray;
         this._clock = typeof clock === 'function' ? clock : Date.now;
         this._perfNow = () => (globalThis.performance?.now?.() ?? Date.now());
 
@@ -261,16 +288,16 @@ export class Pathfinder {
         this.congestionRaw = new Uint8Array(CELLS);
         this.congestionBlur = new Float32Array(CELLS);
         // Sink registry: integrated cost to each sink's nearest seed.
-        this.sinkIntegration = new Float32Array(SINK_COUNT * CELLS).fill(Infinity);
-        this._sinkViews = Array.from({ length: SINK_COUNT }, (_, sink) => this.sinkIntegration.subarray(sink * CELLS, (sink + 1) * CELLS));
-        this.sinkOf = new Uint8Array(CELLS);
+        this.sinkIntegration = new Float32Array(SINK_COUNT * nodes).fill(Infinity);
+        this._sinkViews = Array.from({ length: SINK_COUNT }, (_, sink) => this.sinkIntegration.subarray(sink * nodes, (sink + 1) * nodes));
+        this.sinkOf = new Uint8Array(nodes);
         // One preallocated indexed binary min-heap shared by every search.
         // heapIdx doubles as the BFS queue and trace scratch, heapPos as the
         // BFS parent link and heapCost as A*'s per-tile f score.
-        this.heapIdx = new IndexArray(CELLS);
-        this.heapPos = new SlotArray(CELLS);
-        this.heapCost = new Float32Array(CELLS);
-        this.visited = new Uint8Array(CELLS);
+        this.heapIdx = new NodeArray(nodes);
+        this.heapPos = new ParentArray(nodes);
+        this.heapCost = new Float32Array(nodes);
+        this.visited = new Uint8Array(nodes);
         this._heapSize = 0;
 
         this._targets = new Int32Array(9);
@@ -363,32 +390,83 @@ export class Pathfinder {
         return !floors?.length || floors.some(s => s.walk);
     }
 
+    _tileFor(node) {
+        return this._nodeTiles ? this._nodeTiles[node] : node;
+    }
+
+    _nodeFor(tile, id, hint) {
+        if (tile < 0) return -1;
+        if (id == null && this.surfaceRegistry && this._layers.has(tile)) {
+            const legacy = this.surfaceRegistry.resolveLegacySurface(tile % MAP_N, Math.floor(tile / MAP_N), hint);
+            if (!legacy) return -1;
+            tile = legacy.tile;
+            id = legacy.surfaceId;
+        }
+        const layers = this._layers.get(tile);
+        if (layers) return layers.find(node => this._surfaceIds[node] === id) ?? -1;
+        return id == null || id === 0 ? tile : -1;
+    }
+
+    _waypoint(node) {
+        const tile = this._tileFor(node);
+        const point = { tileX: tile % MAP_N, tileY: Math.floor(tile / MAP_N) };
+        if (this.surfaceRegistry) point.surfaceId = this._surfaceIds[node];
+        return point;
+    }
+
     _surfaceStep(from, to) {
-        if (this._surfaceHeights[from] === this._surfaceHeights[to]) return true;
-        return this._surfaceLinks.has(from * CELLS + to);
+        const linked = this._links.get(from * this._nodeCount + to);
+        return linked ?? (this._surfaceIds[from] === this._surfaceIds[to]
+            && this._surfaceHeights[from] === this._surfaceHeights[to]
+            && !this._inclines.has(from) && !this._inclines.has(to));
+    }
+
+    _edges(node, reverse = false) {
+        if (this._outgoing) return (reverse ? this._incoming : this._outgoing)[node];
+        return MASK_DIRS[reverse && this._incomingMask ? this._incomingMask[node] : this.stepMask[node]];
+    }
+
+    _neighbor(node, edge) {
+        return this._outgoing ? Math.floor(edge / 8) : node + DIR_OFFSET[edge];
     }
 
     // Visit each cell that the actual foot segment enters. Bresenham alone
     // can miss a short visit to the lower bank beside a stair landing.
-    surfaceSegmentClear(x0, y0, x1, y1) {
+    surfaceSegmentClear(x0, y0, x1, y1, startId, endId) {
         if (!this.surfaceRegistry) return true;
         let x = Math.round(x0), y = Math.round(y0);
         const endX = Math.round(x1), endY = Math.round(y1);
         if (!(Math.min(x, y, endX, endY) >= 0 && Math.max(x, y, endX, endY) < MAP_N)) return false;
         const dx = x1 - x0, dy = y1 - y0;
         const sx = Math.sign(dx), sy = Math.sign(dy);
+        let node = y * MAP_N + x;
+        if (this._outgoing) {
+            node = this._nodeFor(node, startId);
+            if (node < 0) return false;
+        }
         while (x !== endX || y !== endY) {
             const crossX = x === endX ? Infinity : (x + 0.5 * sx - x0) / dx;
             const crossY = y === endY ? Infinity : (y + 0.5 * sy - y0) / dy;
             const nx = crossX <= crossY ? x + sx : x;
             const ny = crossY <= crossX ? y + sy : y;
-            const from = y * MAP_N + x;
-            if (!this._surfaceStep(from, ny * MAP_N + nx)) return false;
-            if (nx !== x && ny !== y
-                && (!this._surfaceStep(from, y * MAP_N + nx) || !this._surfaceStep(from, ny * MAP_N + x))) return false;
+            const tile = ny * MAP_N + nx;
+            const dir = STEP_DIR[(ny - y + 1) * 3 + nx - x + 1];
+            if (this._outgoing) {
+                let next = -1;
+                for (const edge of this._outgoing[node]) {
+                    if ((edge & 7) !== dir) continue;
+                    const dest = Math.floor(edge / 8);
+                    if (next < 0 || this._surfaceIds[dest] === endId) next = dest;
+                }
+                if (next < 0) return false;
+                node = next;
+            } else {
+                if (!(this.stepMask[node] & (1 << dir))) return false;
+                node = tile;
+            }
             x = nx; y = ny;
         }
-        return true;
+        return endId == null || this._surfaceIds[node] === endId;
     }
 
     _stepLength(from, to, dir) {
@@ -399,8 +477,7 @@ export class Pathfinder {
     // Walk bit + per-tile legal step mask under findPath's step rule: an
     // in-bounds walkable neighbour; a diagonal needs both axis neighbours
     // walkable (no corner cut across water or a wall); a tier change needs
-    // an orthogonal stair pair (none until Wave 6). The rule is symmetric, so
-    // stepMask also answers "may a neighbour step onto me".
+    // an orthogonal stair pair. Directed surfaces also keep incoming steps.
     _rebuildTopology() {
         this._snapshotGrid();
         const flags = this.staticFlags;
@@ -428,8 +505,6 @@ export class Pathfinder {
                     const next = ny * MAP_N + nx;
                     if (!(flags[next] & FLAG_WALK)) continue;
                     if (dx !== 0 && dy !== 0 && (!(flags[y * MAP_N + nx] & FLAG_WALK) || !(flags[ny * MAP_N + x] & FLAG_WALK))) continue;
-                    if (this.surfaceRegistry && (!this._surfaceStep(index, next)
-                        || (dx && dy && (!this._surfaceStep(index, y * MAP_N + nx) || !this._surfaceStep(index, ny * MAP_N + x))))) continue;
                     if (tier[next] !== tier[index]) {
                         const stair = dx === 0 || dy === 0
                             ? Math.abs(tier[next] - tier[index]) === 1 && (flags[next] & FLAG_STAIR) && (flags[index] & FLAG_STAIR)
@@ -439,6 +514,34 @@ export class Pathfinder {
                     bits |= 1 << dir;
                 }
                 mask[index] = bits;
+            }
+        }
+        if (this.surfaceRegistry) {
+            const multi = this._nodeCount > CELLS;
+            this._incomingMask = new Uint8Array(CELLS);
+            this._outgoing = multi && Array.from({ length: this._nodeCount }, () => []);
+            this._incoming = multi && Array.from({ length: this._nodeCount }, () => []);
+            const physicalMask = mask.slice();
+            mask.fill(0);
+            for (let from = 0; from < this._nodeCount; from++) {
+                const tile = this._tileFor(from);
+                for (const dir of MASK_DIRS[physicalMask[tile]]) {
+                    const [dx, dy] = DIRS[dir];
+                    const dest = tile + DIR_OFFSET[dir];
+                    const axisClear = axis => (this._layers.get(axis) || [axis]).some(n => this._surfaceStep(from, n));
+                    if (dx && dy && !(axisClear(tile + dx) && axisClear(tile + dy * MAP_N))) continue;
+                    for (const to of this._layers.get(dest) || [dest]) {
+                        if (!this._surfaceStep(from, to)) continue;
+                        if (multi) {
+                            this._outgoing[from].push(to * 8 + dir);
+                            this._incoming[to].push(from * 8 + DIR_OPPOSITE[dir]);
+                        }
+                        if (from === tile && to === dest) {
+                            mask[tile] |= 1 << dir;
+                            this._incomingMask[dest] |= 1 << DIR_OPPOSITE[dir];
+                        }
+                    }
+                }
             }
         }
         this._topologyVersion = (this._topologyVersion + 1) >>> 0;
@@ -488,7 +591,7 @@ export class Pathfinder {
 
     _copyPath(path) {
         return Array.isArray(path)
-            ? path.map(tile => ({ tileX: tile.tileX, tileY: tile.tileY }))
+            ? path.map(tile => ({ ...tile }))
             : [];
     }
 
@@ -664,18 +767,16 @@ export class Pathfinder {
         if (!start) return 0;
         const reached = this.visited;
         const queue = this.heapIdx;
-        const mask = this.stepMask;
         reached.fill(0);
         let tail = 0;
-        queue[tail++] = start.tileY * MAP_N + start.tileX;
+        const seed = this._nodeFor(start.tileY * MAP_N + start.tileX, from.surfaceId, from);
+        if (seed < 0) return 0;
+        queue[tail++] = seed;
         reached[queue[0]] = 1;
         for (let head = 0; head < tail; head++) {
             const current = queue[head];
-            const bits = mask[current];
-            // Corner-cut guard, as in findPath (folded into stepMask).
-            for (let dir = 0; dir < DIR_COUNT; dir++) {
-                if (!(bits & (1 << dir))) continue;
-                const next = current + DIR_OFFSET[dir];
+            for (const edge of this._edges(current)) {
+                const next = this._neighbor(current, edge);
                 if (reached[next]) continue;
                 reached[next] = 1;
                 queue[tail++] = next;
@@ -683,7 +784,7 @@ export class Pathfinder {
         }
         let closed = 0;
         for (let index = 0; index < CELLS; index++) {
-            if (this.grid[index] === 1 && !reached[index]) {
+            if (this.grid[index] === 1 && !reached[index] && !this._layers.get(index)?.some(n => reached[n])) {
                 this.grid[index] = 0;
                 closed++;
             }
@@ -697,8 +798,8 @@ export class Pathfinder {
     // sampled at tile granularity), returns the single waypoint [to].
     findPath(from, to, bridgeTiles, options = null) {
         this._syncGrid();
-        const fx = Math.round(from.tileX);
-        const fy = Math.round(from.tileY);
+        let fx = Math.round(from.tileX);
+        let fy = Math.round(from.tileY);
         const pathOptions = this._normalizePathOptions(options, bridgeTiles);
 
         // Guard: if the start tile is unwalkable (e.g., agent currently
@@ -706,10 +807,11 @@ export class Pathfinder {
         // 8 cardinal and diagonal neighbors for a walkable foothold and recurse from
         // there. Prevents agents from getting permanently stuck.
         if (!this.isWalkable(fx, fy)) {
+            if (from.surfaceId != null) return [];
             const nearest = this.nearestWalkable(fx, fy, 8);
             if (nearest) {
                 const sub = this.findPath(nearest, to, bridgeTiles, options);
-                if (sub.length > 0) return [nearest, ...sub];
+                if (sub.length > 0) return [this._waypoint(this._nodeFor(nearest.tileY * MAP_N + nearest.tileX)), ...sub];
             }
             console.warn('[Pathfinder] stuck: no walkable tile near', fx, fy);
             return [];
@@ -718,9 +820,19 @@ export class Pathfinder {
         const tx = Math.round(to.tileX);
         const ty = Math.round(to.tileY);
         if (!this._collectTargets(tx, ty)) return [];
-        const startIdx = fy * MAP_N + fx;
+        const startIdx = this._nodeFor(fy * MAP_N + fx, from.surfaceId, from);
+        if (startIdx < 0 || (to.surfaceId != null && !this.isWalkable(tx, ty))) return [];
+        if (this.isWalkable(tx, ty)) {
+            const end = this._nodeFor(ty * MAP_N + tx, to.surfaceId, to);
+            if (end < 0) return [];
+            this._targets[0] = end;
+        }
+        const startTile = this._tileFor(startIdx);
+        fx = startTile % MAP_N;
+        fy = Math.floor(startTile / MAP_N);
+        if (this._nodeCount > CELLS && this._isTarget(startIdx)) return [this._waypoint(startIdx)];
 
-        if (pathOptions.weighted && !this._isTarget(startIdx)) {
+        if ((pathOptions.weighted || this._nodeCount > CELLS) && !this._isTarget(startIdx)) {
             const t0 = this._perfNow();
             const weightedResult = this._findWeightedPath(startIdx, bridgeTiles, pathOptions);
             const ms = this._perfNow() - t0;
@@ -731,10 +843,12 @@ export class Pathfinder {
             if (this._lastLookupKind === 1) flow.traceMs += ms;
             else if (this._lastLookupKind === 2) flow.guidedMs += ms;
             else flow.adhocMs += ms;
-            if (weightedResult.length > 0) return weightedResult;
+            if (weightedResult.length > 0 || this._nodeCount > CELLS) return weightedResult;
         }
 
-        return this._findUnweightedPath(fx, fy, tx, ty, bridgeTiles, pathOptions.routeVersion);
+        const targetTile = this._targetCount === 1 ? this._tileFor(this._targets[0]) : null;
+        return this._findUnweightedPath(fx, fy, targetTile == null ? tx : targetTile % MAP_N,
+            targetTile == null ? ty : Math.floor(targetTile / MAP_N), bridgeTiles, pathOptions.routeVersion);
     }
 
     // Target candidates into `_targets`: the tile itself when walkable, else
@@ -788,10 +902,10 @@ export class Pathfinder {
             const lineTiles = this._lineWalkableTiles(fx, fy, targetX, targetY);
             if (lineTiles) {
                 const fastTiles = lineTiles.slice(1);
-                const crossesBridge = fastTiles.some((t) => bridgeTiles?.has(`${t.tileX},${t.tileY}`));
+                const crossesBridge = fastTiles.some((t) => (this.surfaceRegistry && t.surfaceId !== this._surfaceIds[startIdx]) || bridgeTiles?.has(`${t.tileX},${t.tileY}`));
                 const fastResult = crossesBridge
                     ? this._lookahead(this._simplify(fastTiles, bridgeTiles), bridgeTiles)
-                    : [{ tileX: targetX, tileY: targetY }];
+                    : [this._waypoint(target)];
                 if (cacheKey >= 0) this._cacheResult(cacheKey, fastResult);
                 return fastResult;
             }
@@ -836,7 +950,7 @@ export class Pathfinder {
         const tiles = [];
         let cur = foundIdx;
         while (cur !== -1 && cur !== startIdx) {
-            tiles.push({ tileX: cur % MAP_N, tileY: (cur - (cur % MAP_N)) / MAP_N });
+            tiles.push(this._waypoint(cur));
             cur = parent[cur];
         }
         tiles.reverse();
@@ -910,7 +1024,7 @@ export class Pathfinder {
             tiles = this._search(startIdx, policy, staticMask, crowdMask, HEUR_OCTILE, -1);
         }
         if (!tiles || tiles.length === 0) return [];
-        return this._simplify(tiles, bridgeTiles);
+        return this._nodeCount > CELLS ? tiles : this._simplify(tiles, bridgeTiles);
     }
 
     // ---- Static route layers -------------------------------------------------
@@ -1206,8 +1320,9 @@ export class Pathfinder {
     // Cost of stepping from `from` (weight `fromWeight`) onto `to` along
     // `dir`: distance × the cheaper surface, a soft standing-body cost unless
     // `to` is a goal, and the blurred crowd cost of the tile entered.
-    _stepCost(fromWeight, to, dir, staticMask, crowdMask, policy, goal) {
-        const length = this._stepLength(to - DIR_OFFSET[dir], to, dir);
+    _stepCost(from, fromWeight, to, dir, staticMask, crowdMask, policy, goal) {
+        const length = this._stepLength(from, to, dir);
+        to = this._tileFor(to);
         const toWeight = this._tileWeight(to, staticMask, policy);
         let cost = length * (fromWeight < toWeight ? fromWeight : toWeight);
         if ((crowdMask & CROWD_STANDING) && !goal && this.standingGrid[to]) cost += TILE_WEIGHTS.standing;
@@ -1231,9 +1346,10 @@ export class Pathfinder {
         const seen = new Set();
         for (const tile of tiles || []) {
             const index = this._tileIndex(tile?.tileX ?? tile?.x, tile?.tileY ?? tile?.y);
-            if (index >= 0) seen.add(index);
+            const node = this._nodeFor(index, tile?.surfaceId, tile);
+            if (node >= 0) seen.add(node);
         }
-        return IndexArray.from([...seen].sort((a, b) => a - b));
+        return this.heapIdx.constructor.from([...seen].sort((a, b) => a - b));
     }
 
     // A tile in several sinks belongs to the smallest (the tightest field).
@@ -1272,22 +1388,22 @@ export class Pathfinder {
     getSinkTiles(sink) {
         const id = this._resolveSinkId(sink);
         if (id < 0) return [];
-        return Array.from(this._sinkSeeds[id], (index) => ({ tileX: index % MAP_N, tileY: Math.floor(index / MAP_N) }));
+        return Array.from(this._sinkSeeds[id], index => this._waypoint(index));
     }
 
     // The sink a tile seeds (the smallest when several do), else -1.
-    sinkIdAt(tileX, tileY) {
-        const index = this._tileIndex(tileX, tileY);
+    sinkIdAt(tileX, tileY, surfaceId) {
+        const index = this._nodeFor(this._tileIndex(tileX, tileY), surfaceId);
         return index < 0 ? -1 : this.sinkOf[index] - 1;
     }
 
     // Integrated walk cost from a tile to the sink's nearest seed under the
     // current routing context (canal- and crowd-aware); Infinity when the
     // sink is unknown or unreachable from the tile.
-    sinkCostAt(sink, tileX, tileY) {
+    sinkCostAt(sink, tileX, tileY, surfaceId) {
         this._syncGrid();
         const id = this._resolveSinkId(sink);
-        const index = this._tileIndex(tileX, tileY);
+        const index = this._nodeFor(this._tileIndex(tileX, tileY), surfaceId);
         if (id < 0 || index < 0) return Infinity;
         if (!this._ensurePrimarySink(id) && !this._sinkBuilt[id]) return Infinity;
         return this._sinkViews[id][index];
@@ -1297,14 +1413,15 @@ export class Pathfinder {
     // the sink from (tileX, tileY), or -1 at a seed or with no route. It scores
     // each legal, strictly-descending neighbour by its integrated cost plus
     // this personality's step cost; ties keep the lowest direction index.
-    sampleFlowDirection(sink, tileX, tileY, personality = null) {
+    sampleFlowDirection(sink, tileX, tileY, personality = null, surfaceId) {
         this._syncGrid();
         const id = this._resolveSinkId(sink);
-        const index = this._tileIndex(tileX, tileY);
+        const index = this._nodeFor(this._tileIndex(tileX, tileY), surfaceId);
         if (id < 0 || index < 0) return -1;
         if (!this._ensurePrimarySink(id) && !this._sinkBuilt[id]) return -1;
         const primary = this._primary;
-        return this._flowDirection(id, index, this._personalityPolicy(personality), primary?.staticMask || 0, primary?.crowdMask || 0);
+        const edge = this._flowDirection(id, index, this._personalityPolicy(personality), primary?.staticMask || 0, primary?.crowdMask || 0);
+        return edge < 0 ? -1 : edge & 7;
     }
 
     _ensurePrimarySink(id) {
@@ -1341,7 +1458,6 @@ export class Pathfinder {
         this._ensureBaseCost(staticMask, staticKey);
         const field = this._sinkViews[sink];
         const base = this.baseCostLayer;
-        const mask = this.stepMask;
         const flags = this.staticFlags;
         const visited = this.visited;
         const standing = (crowdMask & CROWD_STANDING) ? this.standingGrid : null;
@@ -1353,26 +1469,25 @@ export class Pathfinder {
         const seeds = this._sinkSeeds[sink];
         for (let i = 0; i < seeds.length; i++) {
             const seed = seeds[i];
-            if (!(flags[seed] & FLAG_WALK) || field[seed] === 0) continue;
+            if (!(flags[this._tileFor(seed)] & FLAG_WALK) || field[seed] === 0) continue;
             field[seed] = 0;
             this._heapPush(field, seed);
         }
         while (this._heapSize > 0) {
             const v = this._heapPop(field);
             visited[v] = 1;
-            const bits = mask[v];
-            if (!bits) continue;
+            const tile = this._tileFor(v);
             const costV = field[v];
-            const weightV = base[v];
+            const weightV = base[tile];
             // Entering v: a standing body there costs unless v is a seed.
-            const standingCost = standing && costV !== 0 && standing[v] ? TILE_WEIGHTS.standing : 0;
-            const crowd = blur && blur[v] > 0 ? Math.min(TILE_WEIGHTS.congestionMax, blur[v] * TILE_WEIGHTS.congestionStep) : 0;
-            for (let dir = 0; dir < DIR_COUNT; dir++) {
-                if (!(bits & (1 << dir))) continue;
-                const u = v + DIR_OFFSET[dir];
+            const standingCost = standing && costV !== 0 && standing[tile] ? TILE_WEIGHTS.standing : 0;
+            const crowd = blur && blur[tile] > 0 ? Math.min(TILE_WEIGHTS.congestionMax, blur[tile] * TILE_WEIGHTS.congestionStep) : 0;
+            for (const edge of this._edges(v, true)) {
+                const dir = edge & 7;
+                const u = this._neighbor(v, edge);
                 if (visited[u]) continue;
                 const length = this._stepLength(u, v, dir);
-                const weightU = base[u];
+                const weightU = base[this._tileFor(u)];
                 const next = costV + length * (weightU < weightV ? weightU : weightV) + standingCost + length * crowd;
                 if (next < field[u]) {
                     field[u] = next;
@@ -1398,20 +1513,19 @@ export class Pathfinder {
     _flowDirection(sink, index, policy, staticMask, crowdMask) {
         const field = this._sinkViews[sink];
         const here = field[index];
-        const bits = this.stepMask[index];
-        if (!bits || !(here > 0) || here === Infinity) return -1;
-        const fromWeight = this._tileWeight(index, staticMask, policy);
+        if (!(here > 0) || here === Infinity) return -1;
+        const fromWeight = this._tileWeight(this._tileFor(index), staticMask, policy);
         let best = -1;
         let bestScore = Infinity;
-        for (let dir = 0; dir < DIR_COUNT; dir++) {
-            if (!(bits & (1 << dir))) continue;
-            const next = index + DIR_OFFSET[dir];
+        for (const edge of this._edges(index)) {
+            const dir = edge & 7;
+            const next = this._neighbor(index, edge);
             const remaining = field[next];
             if (!(remaining < here)) continue;
-            const score = remaining + this._stepCost(fromWeight, next, dir, staticMask, crowdMask, policy, remaining === 0);
+            const score = remaining + this._stepCost(index, fromWeight, next, dir, staticMask, crowdMask, policy, remaining === 0);
             if (score < bestScore) {
                 bestScore = score;
-                best = dir;
+                best = edge;
             }
         }
         return best;
@@ -1430,14 +1544,13 @@ export class Pathfinder {
             if (steps >= FLOW_TRACE_STEP_LIMIT || field[cur] === 0) return null;
             const dir = this._flowDirection(sink, cur, policy, staticMask, crowdMask);
             if (dir < 0) return null;
-            cur += DIR_OFFSET[dir];
+            cur = this._neighbor(cur, dir);
             scratch[steps++] = cur;
         }
         const tiles = new Array(steps);
         for (let i = 0; i < steps; i++) {
             const index = scratch[i];
-            const x = index % MAP_N;
-            tiles[i] = { tileX: x, tileY: (index - x) / MAP_N };
+            tiles[i] = this._waypoint(index);
         }
         return tiles;
     }
@@ -1460,11 +1573,12 @@ export class Pathfinder {
     }
 
     _octileToTargets(index, policy) {
+        index = this._tileFor(index);
         const x = index % MAP_N;
         const y = (index - x) / MAP_N;
         let best = Infinity;
         for (let i = 0; i < this._targetCount; i++) {
-            const target = this._targets[i];
+            const target = this._tileFor(this._targets[i]);
             const tx = target % MAP_N;
             const dx = Math.abs(tx - x);
             const dy = Math.abs((target - tx) / MAP_N - y);
@@ -1481,7 +1595,6 @@ export class Pathfinder {
         const f = this.heapCost;
         const visited = this.visited;
         const heapPos = this.heapPos;
-        const mask = this.stepMask;
         f.fill(Infinity);
         visited.fill(0);
         heapPos.fill(-1);
@@ -1498,17 +1611,15 @@ export class Pathfinder {
                 found = cur;
                 break;
             }
-            const bits = mask[cur];
-            if (!bits) continue;
             const g = f[cur] - this._heuristic(cur, mode, policy, sink);
-            const fromWeight = this._tileWeight(cur, staticMask, policy);
-            for (let dir = 0; dir < DIR_COUNT; dir++) {
-                if (!(bits & (1 << dir))) continue;
-                const next = cur + DIR_OFFSET[dir];
+            const fromWeight = this._tileWeight(this._tileFor(cur), staticMask, policy);
+            for (const edge of this._edges(cur)) {
+                const dir = edge & 7;
+                const next = this._neighbor(cur, edge);
                 if (visited[next]) continue;
                 const h = this._heuristic(next, mode, policy, sink);
                 if (h === Infinity) continue;
-                const score = g + this._stepCost(fromWeight, next, dir, staticMask, crowdMask, policy, this._isTarget(next)) + h;
+                const score = g + this._stepCost(cur, fromWeight, next, dir, staticMask, crowdMask, policy, this._isTarget(next)) + h;
                 if (score < f[next]) {
                     f[next] = score;
                     if (heapPos[next] < 0) this._heapPush(f, next);
@@ -1526,26 +1637,24 @@ export class Pathfinder {
     _reconstruct(found, startIdx, policy, staticMask, crowdMask, mode, sink) {
         const f = this.heapCost;
         const visited = this.visited;
-        const mask = this.stepMask;
         const scratch = this.heapIdx;
         let count = 0;
         let cur = found;
         let g = f[cur] - this._heuristic(cur, mode, policy, sink);
         while (cur !== startIdx) {
             scratch[count++] = cur;
-            if (count > CELLS) return null;
-            const bits = mask[cur];
+            if (count > this._nodeCount) return null;
             let best = -1;
             let bestValue = Infinity;
             let bestG = Infinity;
-            for (let dir = 0; dir < DIR_COUNT; dir++) {
-                if (!(bits & (1 << dir))) continue;
-                const prev = cur + DIR_OFFSET[dir];
+            for (const edge of this._edges(cur, true)) {
+                const dir = edge & 7;
+                const prev = this._neighbor(cur, edge);
                 if (!visited[prev]) continue;
                 const prevG = f[prev] - this._heuristic(prev, mode, policy, sink);
                 if (!(prevG < g)) continue;
                 // The step prev → cur runs along the opposite direction.
-                const value = prevG + this._stepCost(this._tileWeight(prev, staticMask, policy), cur, DIR_OPPOSITE[dir], staticMask, crowdMask, policy, this._isTarget(cur));
+                const value = prevG + this._stepCost(prev, this._tileWeight(this._tileFor(prev), staticMask, policy), cur, DIR_OPPOSITE[dir], staticMask, crowdMask, policy, this._isTarget(cur));
                 if (value < bestValue) {
                     bestValue = value;
                     best = prev;
@@ -1559,8 +1668,7 @@ export class Pathfinder {
         const tiles = new Array(count);
         for (let i = 0; i < count; i++) {
             const index = scratch[count - 1 - i];
-            const x = index % MAP_N;
-            tiles[i] = { tileX: x, tileY: (index - x) / MAP_N };
+            tiles[i] = this._waypoint(index);
         }
         return tiles;
     }
@@ -1812,7 +1920,7 @@ export class Pathfinder {
         const tiles = [];
         while (true) {
             if (!this.isWalkable(cx, cy)) return null;
-            tiles.push({ tileX: cx, tileY: cy });
+            tiles.push(this._waypoint(cy * MAP_N + cx));
             if (cx === x1 && cy === y1) return tiles;
             const e2 = 2 * err;
             let stepX = 0;
@@ -1852,7 +1960,7 @@ export class Pathfinder {
                 break;
             }
             const dir = `${Math.sign(next.tileX - t.tileX)},${Math.sign(next.tileY - t.tileY)}`;
-            if (onBridge || bridgeLanding || dir !== prevDir) {
+            if (onBridge || bridgeLanding || t.surfaceId !== prev?.surfaceId || t.surfaceId !== next.surfaceId || dir !== prevDir) {
                 out.push(t);
             }
             prevDir = dir;
@@ -1871,7 +1979,8 @@ export class Pathfinder {
                 // Never skip over bridge deck or landing tiles — they must remain explicit waypoints.
                 const hasBridge = tiles.slice(i + 1, j).some((t, offset) => {
                     const idx = i + 1 + offset;
-                    return bridgeTiles?.has(`${t.tileX},${t.tileY}`)
+                    return t.surfaceId !== tiles[i].surfaceId || t.surfaceId !== tiles[j].surfaceId
+                        || bridgeTiles?.has(`${t.tileX},${t.tileY}`)
                         || this._isBridgeCrossingTile(tiles[idx - 1], bridgeTiles)
                         || this._isBridgeCrossingTile(tiles[idx + 1], bridgeTiles);
                 });

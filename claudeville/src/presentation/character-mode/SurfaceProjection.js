@@ -76,6 +76,20 @@ const EDGE_EPS = 1e-9;
 
 // ------------------------------------------------------------------ E2 sculpted sites
 
+const SITE_ROWS = {
+    commandKeepRise: [[14, 19, 13, 18]],
+    windmillKnoll: [[0, 0, 9, 11], [1, 1, 9, 13], [2, 2, 11, 13]],
+    lighthouseHeadland: [[8, 10, 27, 29], [11, 12, 26, 29], [13, 13, 26, 28]],
+    archiveTerrace: [[15, 18, 3, 9]],
+    westSeaCliffs: [[12, 16, 0, 1], [17, 21, 0, 0]],
+};
+
+function siteBounds(name) {
+    const rows = SITE_ROWS[name];
+    return Object.freeze({ x0: Math.min(...rows.map(row => row[2])), x1: Math.max(...rows.map(row => row[3])),
+        y0: Math.min(...rows.map(row => row[0])), y1: Math.max(...rows.map(row => row[1])) });
+}
+
 export const E2_SCULPTED_SITES = Object.freeze({
     commandKeepRise: Object.freeze({
         id: 'commandKeepRise',
@@ -85,7 +99,7 @@ export const E2_SCULPTED_SITES = Object.freeze({
         elevation16: 128,
         walkable: true,
         stairFlights: 1,
-        bounds: Object.freeze({ x0: 12, y0: 13, x1: 18, y1: 18 }),
+        bounds: siteBounds('commandKeepRise'),
     }),
     windmillKnoll: Object.freeze({
         id: 'windmillKnoll',
@@ -95,7 +109,7 @@ export const E2_SCULPTED_SITES = Object.freeze({
         elevation16: 128,
         walkable: true,
         stairFlights: 1,
-        bounds: Object.freeze({ x0: 8, y0: 0, x1: 11, y1: 3 }),
+        bounds: siteBounds('windmillKnoll'),
     }),
     lighthouseHeadland: Object.freeze({
         id: 'lighthouseHeadland',
@@ -105,7 +119,7 @@ export const E2_SCULPTED_SITES = Object.freeze({
         elevation16: 128,
         walkable: true,
         stairFlights: 1,
-        bounds: Object.freeze({ x0: 26, y0: 7, x1: 30, y1: 13 }),
+        bounds: siteBounds('lighthouseHeadland'),
     }),
     archiveTerrace: Object.freeze({
         id: 'archiveTerrace',
@@ -115,7 +129,7 @@ export const E2_SCULPTED_SITES = Object.freeze({
         elevation16: 256,
         walkable: true,
         stairFlights: 2,
-        bounds: Object.freeze({ x0: 2, y0: 14, x1: 8, y1: 19 }),
+        bounds: siteBounds('archiveTerrace'),
     }),
     westSeaCliffs: Object.freeze({
         id: 'westSeaCliffs',
@@ -125,7 +139,7 @@ export const E2_SCULPTED_SITES = Object.freeze({
         elevation16: 384,
         walkable: false,
         stairFlights: 0,
-        bounds: Object.freeze({ x0: 0, y0: 12, x1: 1, y1: 27 }),
+        bounds: siteBounds('westSeaCliffs'),
     }),
 });
 
@@ -1251,18 +1265,20 @@ export function createSurfaceRegistry(terrainDef) {
         if (!list || list.length === 0) {
             return surfaceId === FLAT_GROUND_ID ? 0 : null;
         }
-        const surf = surfacesByKey.get(surfaceKeyString(idx, surfaceId));
-        if (!surf) return null;
-        return planeHeight(surf.plane16, a, b);
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].id === surfaceId) return planeHeight(list[i].plane16, a, b);
+        }
+        return null;
     }
 
     /** Legacy planar caller helper: always reads default route id=0 (or implicit 0). */
     function aggregateHeightAt(tx, ty, a = 0.5, b = 0.5) {
         const idx = tileIndex(tx, ty);
-        const ground = surfacesByKey.get(surfaceKeyString(idx, FLAT_GROUND_ID));
-        if (ground) return planeHeight(ground.plane16, a, b);
         const list = surfacesByTile.get(idx);
-        if (!list || list.length === 0) return 0;
+        if (!list?.length) return 0;
+        if (list.length === 1) return planeHeight(list[0].plane16, a, b);
+        const ground = list.find(s => s.id === FLAT_GROUND_ID);
+        if (ground) return planeHeight(ground.plane16, a, b);
         const firstWalk = list.find((s) => s.walk && s.underside16 === null);
         return firstWalk ? planeHeight(firstWalk.plane16, a, b) : planeHeight(list[0].plane16, a, b);
     }
@@ -1287,7 +1303,7 @@ export function createSurfaceRegistry(terrainDef) {
      * Chooses greatest near-order `d = 32*(u+v) + h/2`; ties break deterministically
      * by higher `sublayer`, higher `h`, higher `surfaceId`, then higher `tile`.
      * If the topmost intersected surface is opaque and nonselectable (`selectable: false`),
-     * it blocks picks behind it and returns `null`.
+     * its hit retains depth and has no selectable identity.
      */
     function pickTopSurface(sx, sy, candidateTiles = null, options = {}) {
         const includeImplicitGround = Boolean(options?.includeImplicitGround);
@@ -1301,16 +1317,17 @@ export function createSurfaceRegistry(terrainDef) {
 
             if (!list || list.length === 0) {
                 if (!includeImplicitGround) continue;
-                const hit = pickSurfaceIntersection(sx, sy, tx, ty, ZERO_PLANE16, FULL_TILE_POLY);
+                const water = options.waterTiles?.has(tx + ',' + ty);
+                const hit = pickSurfaceIntersection(sx, sy, tx, ty, water ? WATER_PLANE16 : ZERO_PLANE16, FULL_TILE_POLY);
                 if (!hit) continue;
                 const cand = {
                     tile: idx,
                     tx,
                     ty,
-                    surfaceId: FLAT_GROUND_ID,
+                    surfaceId: water ? DEFAULT_WATER_ID : FLAT_GROUND_ID,
                     surface: null,
                     sublayer: 0,
-                    selectable: true,
+                    selectable: !water,
                     ...hit,
                 };
                 if (!best || comparePickHits(cand, best) > 0) best = cand;
@@ -1320,7 +1337,7 @@ export function createSurfaceRegistry(terrainDef) {
             for (let j = 0; j < list.length; j++) {
                 const surf = list[j];
                 let hit = pickSurfaceIntersection(sx, sy, tx, ty, surf.plane16, surf.poly);
-                if (options.includeFaces && isFullTilePoly(surf.poly) && surf.kind !== 'water') {
+                if (options.includeFaces && isFullTilePoly(surf.poly)) {
                     // On a front edge one tile coordinate is fixed. Intersect the
                     // ray there and clip its height between the two adjoining planes.
                     const flat = screenRayToTile(sx, sy);
@@ -1346,15 +1363,14 @@ export function createSurfaceRegistry(terrainDef) {
                     surfaceId: surf.id,
                     surface: surf,
                     sublayer: surf.sublayer,
-                    selectable: surf.selectable,
+                    selectable: surf.selectable && !hit.face,
                     ...hit,
                 };
                 if (!best || comparePickHits(cand, best) > 0) best = cand;
             }
         }
 
-        if (!best || !best.selectable) return null;
-        return best;
+        return best && { ...best, selectableId: best.selectable ? best.surfaceId : null, blockerDepth: best.d };
     }
 
     function linksFrom(tx, ty, surfaceId) {
@@ -1469,11 +1485,10 @@ export function createSurfaceRegistry(terrainDef) {
 
         // 5. Never teleport onto a disconnected elevated terrace!
         //    Only accept a non-ground surface on this tile if it is link-reachable
-        //    from the legacy ground network AND at ground level (or connected stair).
+        //    from the legacy ground network.
         const connectedLocal = list.find((s) => (
             s.walk
             && legacyGroundReachable.has(surfaceKeyString(idx, s.id))
-            && (s.kind === 'stair' || planeHeight16(s.plane16, 0.5, 0.5) === 0)
         ));
         if (connectedLocal) {
             return formatResult(connectedLocal, idx, 'connected-legacy-route', false);
@@ -1562,6 +1577,7 @@ export function createSurfaceRegistry(terrainDef) {
 }
 
 const EMPTY_SURFACES = Object.freeze([]);
+const WATER_PLANE16 = Object.freeze([-16, 0, 0]);
 const ZERO_PLANE16 = Object.freeze([0, 0, 0]);
 
 // ------------------------------------------------------------------ E2 pilot preset
@@ -1786,20 +1802,13 @@ export function createE2PilotTerrain() {
 
 // The shoulders follow the dry shoreline and the public approaches around each
 // landmark. Each row is [first y, last y, first x, last x], inclusive.
-const SITE_ROWS = {
-    commandKeepRise: [[14, 19, 13, 18]],
-    windmillKnoll: [[0, 0, 9, 11], [1, 1, 9, 10]],
-    lighthouseHeadland: [[8, 10, 27, 29], [11, 12, 26, 29], [13, 13, 26, 28]],
-    archiveTerrace: [[15, 19, 3, 9]],
-    westSeaCliffs: [[12, 16, 0, 1], [17, 21, 0, 0]],
-};
-
 // Low approach, ascending unit vector, number of eight-pixel flights.
 const ASCENTS = [
-    [14, 21, 0, -1, 1],
-    [13, 0, -1, 0, 1],
-    [24, 12, 1, 0, 1],
-    [9, 12, 0, 1, 2],
+    [20, 19, -1, 0, 1],
+    [9, 2, 1, 0, 1],
+    [15, 2, -1, 0, 1],
+    [24, 13, 1, 0, 1],
+    [9, 20, 0, -1, 2],
 ];
 
 export function createVillageTerrain() {
@@ -1815,7 +1824,7 @@ export function createVillageTerrain() {
         for (const [y0, y1, x0, x1] of rows) {
             for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
                 put(x, y, 2, 'floor', [site.elevation16, 0, 0], {
-                    route, material: 'ashlar', walk: site.walkable, landmark: site.landmark,
+                    route, material: site.walkable ? 'ashlar' : 'slate', legacy: site.walkable, selectable: site.walkable, walk: site.walkable, landmark: site.landmark,
                 });
             }
         }
@@ -1833,18 +1842,32 @@ export function createVillageTerrain() {
             from = to;
         }
     }
-    // The west Archive bank drains its raised pocket into the main river.
-    const upper = put(1, 22, 1, 'water', [112, 0, 0], { basin: 2, walk: false, material: 'shallowWater' });
-    const lower = put(1, 23, 1, 'water', [-16, 0, 0], { basin: 1, walk: false, material: 'shallowWater' });
-    return { version: 1, revision: 'village-e2-1', tiles: [...tiles.values()], links,
-        pools: [{ id: 2, h16: 112 }, { id: 1, h16: -16 }],
-        spills: [{ id: 'lagoon-canal-spillway', upper, lower, edge: [FULL_TILE_POLY[2], FULL_TILE_POLY[3]], frames: 4 }] };
+    // A millpond along the north bank of the lower river, just upstream of
+    // Harbor. All four basin tiles and its receiving channel are river water.
+    const pool = (x, y, basin, h) => put(x, y, 1, 'water', [h * 16, 0, 0],
+        { basin, walk: false, selectable: false, material: 'shallowWater' });
+    pool(27, 22, 2, 16); pool(28, 22, 2, 16); pool(27, 23, 2, 16);
+    const upper = pool(28, 23, 2, 16), lower = pool(29, 23, 1, -1);
+    return { version: 1, revision: 'village-e2-2', tiles: [...tiles.values()], links,
+        pools: [{ id: 2, h16: 256 }, { id: 1, h16: -16 }],
+        spills: [{ id: 'lagoon-canal-spillway', upper, lower, edge: [FULL_TILE_POLY[1], FULL_TILE_POLY[2]], frames: 4 }] };
 }
 
 export const VILLAGE_SURFACES = createSurfaceRegistry(createVillageTerrain());
 
+export function spillContact(spill, registry) {
+    const { tx, ty } = tileCoords(spill.upper[0]);
+    const [a, b] = spill.edge;
+    const u = tx - 0.5 + (a[0] + b[0]) / (2 * POLY_SCALE);
+    const v = ty - 0.5 + (a[1] + b[1]) / (2 * POLY_SCALE);
+    const upperH = planeHeight(registry.getSurfaceByKey(spill.upper).plane16);
+    const lowerH = planeHeight(registry.getSurfaceByKey(spill.lower).plane16);
+    return { u, v, upperH, lowerH, lip: projectSurface(u, v, upperH), pool: projectSurface(u, v, lowerH) };
+}
+
 export function supportHeight(u, v, registry = VILLAGE_SURFACES, surfaceId) {
-    const { tx, ty, tile, a, b } = canonicalTile(u, v);
-    if (tile < 0 || !registry) return 0;
+    const tx = Math.floor(u + 0.5), ty = Math.floor(v + 0.5);
+    if (!registry || tx < 0 || ty < 0 || tx >= MAP_SIZE || ty >= MAP_SIZE) return 0;
+    const a = u - tx + 0.5, b = v - ty + 0.5;
     return surfaceId == null ? registry.aggregateHeightAt(tx, ty, a, b) : registry.heightAt(tx, ty, surfaceId, a, b);
 }

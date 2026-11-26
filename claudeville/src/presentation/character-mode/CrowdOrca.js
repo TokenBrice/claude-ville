@@ -326,7 +326,6 @@ export function computePreferredVelocity(
 
     const ax = agent.x;
     const ay = agent.y;
-    const aTier = agent.surfaceTier ?? 0;
     const aRadius = agent.radius > 0 ? agent.radius : ORCA_AGENT_RADIUS;
     const neighborLimit = options && options.neighborCount !== undefined
         ? options.neighborCount
@@ -366,7 +365,7 @@ export function computePreferredVelocity(
         for (let i = 0; i < obstacles.length; i++) {
             const obs = obstacles[i];
             if (!obs || obs.kind === 'boundary') continue;
-            if (!obs.allTiers && (obs.surfaceTier ?? 0) !== aTier) continue;
+            if (!obs.allTiers && !sharesAvoidancePlane(agent, obs)) continue;
             const oRadius = resolveObstacleRadius(obs);
             const ovx = obs.vx || 0;
             const ovy = obs.vy || 0;
@@ -849,7 +848,6 @@ export function solveOrcaVelocity(
 
     const ax = agent.x;
     const ay = agent.y;
-    const aTier = agent.surfaceTier ?? 0;
     const aRadius = Number.isFinite(agent.radius) && agent.radius > 0 ? agent.radius : ORCA_AGENT_RADIUS;
     const dt = Math.max(1 / 60, (options && Number.isFinite(options.dt) ? options.dt : Number(agent.dt) || 0.05));
     const invTimeStep = 1 / dt;
@@ -891,7 +889,7 @@ export function solveOrcaVelocity(
         for (let i = 0; i < obstacles.length; i++) {
             const obs = obstacles[i];
             if (!obs) continue;
-            if (!obs.allTiers && (obs.surfaceTier ?? 0) !== aTier) continue;
+            if (!obs.allTiers && !sharesAvoidancePlane(agent, obs)) continue;
             if (obs.kind === 'boundary') {
                 if (coastCount >= ORCA_MAX_COAST_LINES || lineCount >= ORCA_MAX_LINES) continue;
                 const nx = Number(obs.nx) || 0;

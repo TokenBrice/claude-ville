@@ -9,6 +9,7 @@
 // is only cached once every building mask has loaded.
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { buildingCenterToWorld } from './Projection.js';
+import { supportHeight } from './SurfaceProjection.js';
 import { getCoastField } from './CoastBake.js';
 
 // Texels above the ground point a mark occupies (splash crown, firefly hover).
@@ -60,9 +61,10 @@ function classify(host) {
             if (coast && coast.signedDistance(tileX, tileY) > SPLASH_SHORE_MARGIN) continue;
             if (ground[tileY * MAP_SIZE + tileX] !== 1) continue;
             const x = (tileX - tileY) * TILE_WIDTH / 2;
-            const y = (tileX + tileY) * TILE_HEIGHT / 2;
+            const supportH = supportHeight(tileX, tileY, host.surfaceRegistry);
+            const y = (tileX + tileY) * TILE_HEIGHT / 2 - supportH;
             if (covered(occluders, x, y, SPLASH_REACH)) continue;
-            const tile = Object.freeze({ tileX, tileY, x, y, seed: hashTile(tileX, tileY) });
+            const tile = Object.freeze({ tileX, tileY, x, y, supportH, seed: hashTile(tileX, tileY) });
             open.push(tile);
             if (pathSets.some(set => set.has(key))) continue;
             if (!nearWater(host, tileX, tileY)) continue;

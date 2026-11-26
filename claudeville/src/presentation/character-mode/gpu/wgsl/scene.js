@@ -595,6 +595,31 @@ ${cleanBed ? `fn planarOwns(world: vec2f) -> bool {
   let p = vec2i(floor(world - frame.planarRect.xy));
   return (frame.frontier.x & 1u) != 0u && all(p >= vec2i(0)) && all(p < vec2i(frame.planarRect.zw)) && textureLoad(motifs, p, 0).r > 0.0;
 }` : ''}
+// x is absolute surface height. y identifies a visible wall (1) or pool (2).
+// Along an orthographic view ray both plan coordinates advance by H / 32.
+var<private> terraceHit: vec2f;
+fn terrainHit(world: vec2f) -> vec2f {
+  let uv0 = vec2f(world.y * 2.0 + world.x, world.y * 2.0 - world.x) / 64.0;
+  let lo = vec2i(floor(uv0 + 0.5 + f32(batch.surfaceOffset.x) / 32.0));
+  let hi = vec2i(floor(uv0 + 0.5 + f32(batch.surfaceOffset.y) / 32.0));
+  var best = vec2f(-2048.0, 0.0);
+  for (var j = lo.y; j <= hi.y; j++) {
+    for (var i = lo.x; i <= hi.x; i++) {
+      let cell = vec2i(i,j);
+      if (any(cell < vec2i(0)) || any(cell >= vec2i(textureDimensions(occluderMap)))) { continue; }
+      let raw = round(textureLoad(occluderMap, cell, 0) * 255.0);
+      let local = uv0 - vec2f(cell) + 0.5;
+      let plane = select(vec3f(0.0), raw.rgb - 128.0, raw.a > 0.0);
+      let top = (plane.x + dot(plane.yz, local)) / (1.0 - (plane.y + plane.z) / 32.0);
+      let front = (1.0 - max(local.x, local.y)) * 32.0;
+      let h = min(top, front);
+      if (h > best.x && h >= -min(local.x, local.y) * 32.0 && (h >= -1.0 || h == top)) {
+        best = vec2f(h, select(select(0.0, 2.0, raw.a == 2.0), 1.0, h < top));
+      }
+    }
+  }
+  return select(best, vec2f(0.0), best.x == -2048.0);
+}
 fn sceneSurface() -> SurfaceSample {
   // V9 — sample inside the record's own source rect.
   var uv = clamp(v_uv, v_uvClamp.xy, v_uvClamp.zw);
@@ -604,6 +629,11 @@ fn sceneSurface() -> SurfaceSample {
   fatTexelFw = max(fwidth(v_texel), vec2f(1e-5));
   fatWorldFw = max(fwidth(v_world), vec2f(1e-5));
   fatOn = batch.fatPixels != 0u && (v_flags & RECORD_FLAG_FAT_OPT_OUT) == 0u;
+  terraceHit = vec2f(0.0);
+  if (batch.terrainBatch != 0u && batch.hasOccluderMap != 0u) {
+    terraceHit = terrainHit(floor(v_world) + 0.5);
+    if (terraceHit.y == 1.0) { fatOn = false; }
+  }
   // 3.8 / 3.11 — reflect records.
   let reflectRecord = (v_flags & RECORD_FLAG_REFLECT) != 0u;
   var reflectRow = 0.0;
@@ -641,7 +671,7 @@ fn sceneSurface() -> SurfaceSample {
       uv.x = clamp(uv.x - castWobble * uvStepX, v_uvClamp.x, v_uvClamp.z);
     }
   }
-  if (batch.terrainBatch != 0u && frame.waterFx.x > 0.0) { uv = reflectionRippleUv(uv, uvStepX); }
+  if (batch.terrainBatch != 0u && terraceHit.y == 0.0 && frame.waterFx.x > 0.0) { uv = reflectionRippleUv(uv, uvStepX); }
   ${capture ? 'captureCastOnWater = castOnWater;' : ''}
   var albedoRgba = sampleAlbedo(uv);
   var recordAlpha = v_alpha;
@@ -659,6 +689,8 @@ fn sceneSurface() -> SurfaceSample {
   let packedMap = (v_flags & RECORD_FLAG_PACKED_GEOMETRY) != 0u;
   let materialId = floor(sidecar.r * 255.0 + 0.5);
   var material = select(v_material, materialId, sidecar.a > 0.0 && !(packedMap && materialId > 254.5));
+  if (terraceHit.y == 1.0) { material = 1.0; }
+  if (terraceHit.y == 2.0) { material = 8.0; }
   var emissive = v_emissive;
   var emissionColor = albedoRgba.rgb;
   var unlitPane = false;
@@ -680,7 +712,7 @@ fn sceneSurface() -> SurfaceSample {
   if (packedMap) {
     let strength = select(sidecar.b, f32(u32(sidecar.b * 255.0 + 0.5) & 1u), recolorRecord);
     if (frame.packedGeometry != 0u && strength > 0.0) { geometry = vec4f(sidecar.g, strength, 0.0, 1.0); }
-  } else if (batch.hasOccluderMap != 0u) {
+  } else if (batch.hasOccluderMap != 0u && batch.terrainBatch == 0u) {
     geometry = textureSampleLevel(occluderMap, albedoSampler, uv, 0.0);
   }
   // 2.3 — a surface-coded landmark carries its true height in R.
@@ -705,7 +737,7 @@ fn sceneSurface() -> SurfaceSample {
     var mirrorGone = false;
     color = mirrorStormColour(color, v_world, &mirrorGone);
     // 3.6 — the swash laps the baked shore before any weather darkening.
-    if (batch.terrainBatch != 0u && frame.waterFx.w > 0.0) { color = applyCoastSwash(color, v_world); }
+    if (batch.terrainBatch != 0u && terraceHit.y == 0.0 && frame.waterFx.w > 0.0) { color = applyCoastSwash(color, v_world); }
     if (batch.terrainBatch != 0u && sidecar.g > 0.0 && wetSandColour(color)) { material = wetSandMaterial(sidecar, vec2i(v_texel)); }
     waterMaterial = materialNear(material, 8.0) > 0.5 || mirrorGone;
     // W6.11 — the grass gust course steps the authored albedo first.
@@ -791,9 +823,9 @@ fn sceneSurface() -> SurfaceSample {
   // BI-8 — the summer surf glow over the graded crest (albedo only).
   if (surfGlowTexel) { color = mix(color, SURF_GLOW, frame.surfGlow); }
   // GW-1 — wet paving tops take one course of the graded sky.
-  color = applyWetSheen(color, v_world);
+  if (terraceHit.y != 1.0) { color = applyWetSheen(color, v_world); }
   // 5.2 — puddles take the graded sky over the graded street.
-  if (batch.puddleGround != 0u && frame.puddles > 0.0) { color = applyPuddle(color, v_world); }
+  if (terraceHit.y != 1.0 && batch.puddleGround != 0u && frame.puddles > 0.0) { color = applyPuddle(color, v_world); }
   color = applyGradeVignette(color, px, frame.resolution);
   // 1.3 / NE P1.3 — emitters keep their own light, and at night lift off dark
   // slate glass albedo toward their authored emissive colour (day stays identical).
@@ -1544,7 +1576,13 @@ fn surfaceFragment(in: VsOut, roles: bool) -> SurfaceOut {
   let shaded = renderScene(in, roles);
   if (shaded.color.a <= 0.0 || (batch.writesDepth != 0u && shaded.color.a < 0.5)) { discard; }
   var color = shaded.color;
-  var h = max(0.0, in.receiver.x - in.world.y);
+  var h = batch.supportH + max(0.0, in.receiver.x - in.world.y);
+  if (batch.terrainBatch != 0u) {
+    h = terraceHit.x;
+  } else if ((v_flags & RECORD_FLAG_SURFACE_CODE) != 0u && batch.hasOccluderMap != 0u) {
+    let pixel = textureSampleLevel(occluderMap, albedoSampler, clamp(in.uv, in.uvClamp.xy, in.uvClamp.zw), 0.0);
+    if (pixel.a > 0.0) { h = batch.supportH + round(pixel.r * 255.0); }
+  }
   if ((v_flags & RECORD_FLAG_SURFACE_DEPTH) != 0u && (frame.frontier.x & 4u) != 0u) {
     let uv = clamp(in.uv, in.uvClamp.xy, in.uvClamp.zw);
     let coord = vec2i(uv * batch.albedoSize) + batch.surfaceOffset;

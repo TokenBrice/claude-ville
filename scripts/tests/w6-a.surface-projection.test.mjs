@@ -372,7 +372,11 @@ test('overlap tile [820, 0] ground + [820, 2] slab [96, 128] queries, bounds, an
         ],
     });
     const blockedReg = createSurfaceRegistry(blockedTerrain);
-    assert.equal(blockedReg.pickTopSurface(screenAtCenter.x, screenAtCenter.y, [820]), null);
+    const blocker = blockedReg.pickTopSurface(screenAtCenter.x, screenAtCenter.y, [820]);
+    assert.equal(blocker.selectableId, null);
+    assert.equal(blocker.blockerDepth, blocker.d);
+    assert.equal(blocker.blockerDepth, topPick.d);
+    assert.equal(blocker.surfaceId, 2);
 });
 
 // ------------------------------------------------------------------ 3. Link validation (exact height, no diagonal cuts)

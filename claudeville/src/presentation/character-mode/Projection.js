@@ -30,11 +30,14 @@ export function tileToWorld(tileOrX, tileY) {
     };
 }
 
+export const worldTileX = (x, y) => (x / TILE_HALF_WIDTH + y / TILE_HALF_HEIGHT) / 2;
+export const worldTileY = (x, y) => (y / TILE_HALF_HEIGHT - x / TILE_HALF_WIDTH) / 2;
+
 export function worldToTile(pointOrX, y) {
     const point = pointArgs(pointOrX, y);
     return {
-        tileX: (point.x / TILE_HALF_WIDTH + point.y / TILE_HALF_HEIGHT) / 2,
-        tileY: (point.y / TILE_HALF_HEIGHT - point.x / TILE_HALF_WIDTH) / 2,
+        tileX: worldTileX(point.x, point.y),
+        tileY: worldTileY(point.x, point.y),
     };
 }
 
@@ -45,16 +48,16 @@ export function tileToWorldElevated(tx, ty, surfaceId, registry = VILLAGE_SURFAC
     return { x, y };
 }
 
-export function pickSurfaceAtWorld(wx, wy, registry = VILLAGE_SURFACES) {
+export function pickSurfaceAtWorld(wx, wy, registry = VILLAGE_SURFACES, waterTiles) {
     const [lo, hi] = registry.heightRange;
-    const near = screenRayToTile(wx, wy, hi), far = screenRayToTile(wx, wy, lo);
+    const near = screenRayToTile(wx, wy, hi), far = screenRayToTile(wx, wy, waterTiles ? Math.min(-1, lo) : lo);
     const candidates = [];
     for (let y = Math.max(0, Math.round(far.v)); y <= Math.min(MAP_SIZE - 1, Math.round(near.v)); y++) {
         for (let x = Math.max(0, Math.round(far.u)); x <= Math.min(MAP_SIZE - 1, Math.round(near.u)); x++) {
             candidates.push(y * MAP_SIZE + x);
         }
     }
-    return registry.pickTopSurface(wx, wy, candidates, { includeImplicitGround: true, includeFaces: true });
+    return registry.pickTopSurface(wx, wy, candidates, { includeImplicitGround: true, includeFaces: true, waterTiles });
 }
 
 // Anonymous rectangles describe plan geometry (including the War Table map).
