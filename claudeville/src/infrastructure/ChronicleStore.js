@@ -989,25 +989,26 @@ export class ChronicleStore {
             const tx = this.db.transaction('biographies', 'readonly');
             const store = tx.objectStore('biographies');
             const hasIndex = store.indexNames.contains('lastSeenAt');
-            const source = hasIndex ? store.index('lastSeenAt') : store;
-            const range = hasIndex && scanBoundary
-                ? IDBKeyRange.upperBound(scanBoundary.lastSeenAt, false)
-                : null;
-            let jumpedPrimary = false;
 
-            await new Promise((resolve, reject) => {
-                const request = source.openCursor(range, 'prev');
-                request.onerror = () => reject(request.error);
-                request.onsuccess = () => {
-                    const cur = request.result;
-                    if (!cur) {
-                        resolve();
-                        return;
-                    }
-                    const record = cur.value;
-                    const primaryKey = String(cur.primaryKey ?? record?.identityKey ?? '');
+            if (hasIndex) {
+                const source = store.index('lastSeenAt');
+                const range = scanBoundary
+                    ? IDBKeyRange.upperBound(scanBoundary.lastSeenAt, false)
+                    : null;
+                let jumpedPrimary = false;
 
-                    if (hasIndex) {
+                await new Promise((resolve, reject) => {
+                    const request = source.openCursor(range, 'prev');
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => {
+                        const cur = request.result;
+                        if (!cur) {
+                            resolve();
+                            return;
+                        }
+                        const record = cur.value;
+                        const primaryKey = String(cur.primaryKey ?? record?.identityKey ?? '');
+
                         if (typeof cur.key !== 'number' || !Number.isFinite(cur.key)) {
                             cur.continue();
                             return;
@@ -1035,27 +1036,78 @@ export class ChronicleStore {
                                 return;
                             }
                         }
-                    }
 
-                    if (durableOnly && !isDurableBiographyKey(primaryKey)) {
-                        cur.continue();
-                        return;
-                    }
+                        if (durableOnly && !isDurableBiographyKey(primaryKey)) {
+                            cur.continue();
+                            return;
+                        }
 
-                    if (collected.length < pageLimit) {
-                        collected.push(record);
-                        lastEntryCursor = {
-                            lastSeenAt: hasIndex ? cur.key : Number(record?.lastSeenAt ?? 0),
-                            identityKey: primaryKey,
+                        if (collected.length < pageLimit) {
+                            collected.push(record);
+                            lastEntryCursor = {
+                                lastSeenAt: cur.key,
+                                identityKey: primaryKey,
+                            };
+                            cur.continue();
+                            return;
+                        }
+
+                        hasMore = true;
+                        resolve();
+                    };
+                });
+            } else {
+                const allRows = typeof store.getAll === 'function'
+                    ? await requestToPromise(store.getAll())
+                    : await new Promise((resolve, reject) => {
+                        const rows = [];
+                        const request = store.openCursor(null, 'prev');
+                        request.onerror = () => reject(request.error);
+                        request.onsuccess = () => {
+                            const cur = request.result;
+                            if (!cur) {
+                                resolve(rows);
+                                return;
+                            }
+                            rows.push(cur.value);
+                            cur.continue();
                         };
-                        cur.continue();
-                        return;
-                    }
+                    });
 
-                    hasMore = true;
-                    resolve();
-                };
-            });
+                const matched = [];
+                for (const record of Array.isArray(allRows) ? allRows : []) {
+                    const lastSeenAt = record?.lastSeenAt;
+                    if (typeof lastSeenAt !== 'number' || !Number.isFinite(lastSeenAt)) continue;
+                    const primaryKey = String(record?.identityKey ?? '');
+                    if (durableOnly && !isDurableBiographyKey(primaryKey)) continue;
+                    if (scanBoundary) {
+                        if (lastSeenAt > scanBoundary.lastSeenAt) continue;
+                        if (lastSeenAt === scanBoundary.lastSeenAt && primaryKey >= scanBoundary.identityKey) continue;
+                    }
+                    matched.push({ record, lastSeenAt, identityKey: primaryKey });
+                }
+
+                matched.sort((a, b) => {
+                    if (a.lastSeenAt !== b.lastSeenAt) return b.lastSeenAt - a.lastSeenAt;
+                    if (a.identityKey === b.identityKey) return 0;
+                    return a.identityKey < b.identityKey ? 1 : -1;
+                });
+
+                const remaining = pageLimit - collected.length;
+                const slice = matched.slice(0, remaining + 1);
+                for (const entry of slice) {
+                    if (collected.length < pageLimit) {
+                        collected.push(entry.record);
+                        lastEntryCursor = {
+                            lastSeenAt: entry.lastSeenAt,
+                            identityKey: entry.identityKey,
+                        };
+                    } else {
+                        hasMore = true;
+                        break;
+                    }
+                }
+            }
         }
 
         return {

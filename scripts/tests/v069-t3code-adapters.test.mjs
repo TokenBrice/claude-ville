@@ -24,6 +24,7 @@ import { resolveCarriedArtifact } from '../../claudeville/src/presentation/chara
 import { RitualConductor } from '../../claudeville/src/presentation/character-mode/RitualConductor.js';
 import { resolveAgentStatus } from '../../claudeville/src/domain/services/StatusResolver.js';
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
+import { AgentBiography } from '../../claudeville/src/domain/value-objects/AgentBiography.js';
 
 const require = createRequire(import.meta.url);
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
@@ -1091,5 +1092,592 @@ test('ToolIdentity, CarriedArtifact, and RitualConductor recognize update_steps,
     assert.equal(doneRitual?.taskKey, 'text:ship lane a');
   } finally {
     conductor.dispose();
+  }
+});
+
+// ─── 7. v0.69 Council Fix Lane 1 Regressions ─────────────
+
+test('[P0 #1] T3 query failures (SQLite disabled or incompatible schema) never cache null or break native discovery across all 4 adapters', () => {
+  const tmp = makeTempDir('cv-v069-t3-fail-resilience-');
+  try {
+    const now = Date.now();
+    const iso = (msAgo) => new Date(now - msAgo).toISOString();
+    const project = path.join(tmp, 'work', 'repo');
+    fs.mkdirSync(project, { recursive: true });
+
+    // Seed 1 native session for each of the 4 providers.
+    // 1. Claude
+    const claudeId = 'claude-native-1';
+    const claudeProjDir = path.join(tmp, '.claude', 'projects', project.replaceAll('/', '-'));
+    writeFile(path.join(tmp, '.claude', 'history.jsonl'), `${JSON.stringify({
+      sessionId: claudeId, project, timestamp: now - 5_000, model: 'claude-sonnet-4-6', display: 'Native claude',
+    })}\n`, now - 5_000);
+    writeFile(path.join(claudeProjDir, `${claudeId}.jsonl`), `${JSON.stringify({
+      type: 'assistant', timestamp: iso(5_000),
+      message: { role: 'assistant', model: 'claude-sonnet-4-6', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Ready.' }] },
+    })}\n`, now - 5_000);
+
+    // 2. Codex
+    const codexUuid = '019a0000-0000-7000-8000-000000000099';
+    writeFile(path.join(tmp, '.codex', 'sessions', '2026', '11', '26', `rollout-2026-11-26T20-00-00-${codexUuid}.jsonl`), `${[
+      { timestamp: iso(10_000), type: 'session_meta', payload: { id: codexUuid, cwd: project, model: 'gpt-5.4' } },
+      { timestamp: iso(5_000), type: 'event_msg', payload: { type: 'task_started' } },
+    ].map(r => JSON.stringify(r)).join('\n')}\n`, now - 5_000);
+
+    // 3. GLM standalone ACP JSON
+    const glmId = '11111111-2222-4333-8444-555555555555';
+    writeFile(path.join(tmp, '.local', 'state', 'glm-acp-agent', 'sessions', `${glmId}.json`), JSON.stringify({
+      sessionId: glmId, cwd: project, model: 'glm-5.4', updatedAt: iso(5_000),
+      messages: [
+        { role: 'user', content: 'Native GLM work' },
+        { role: 'assistant', content: 'Working on it.' },
+      ],
+    }), now - 5_000);
+
+    // 4. Antigravity native CLI
+    const agyId = '22222222-3333-4444-8555-666666666666';
+    const agyRoot = path.join(tmp, '.gemini', 'antigravity-cli');
+    writeFile(path.join(agyRoot, 'history.jsonl'), `${JSON.stringify({
+      timestamp: now - 5_000, workspace: project, conversationId: agyId, display: 'Native agy',
+    })}\n`, now - 5_000);
+    writeFile(path.join(agyRoot, 'brain', agyId, '.system_generated', 'logs', 'transcript.jsonl'), `${JSON.stringify({
+      step_index: 0, type: 'USER_INPUT', created_at: iso(5_000), content: 'Native agy',
+    })}\n`, now - 5_000);
+
+    // Present a T3 DB file on disk so cachedT3Query actually takes the DB path.
+    const dbPath = path.join(tmp, '.t3', 'userdata', 'statev2.sqlite');
+    writeFile(dbPath, 'placeholder-for-sqlite-disabled-test', now - 1_000);
+
+    const probeScript = (disableSqlite) => `
+      const Module = require('node:module');
+      if (${Boolean(disableSqlite)}) {
+        const origLoad = Module._load;
+        Module._load = function(request, parent, isMain) {
+          if (request === 'node:sqlite') throw new Error('ERR_UNKNOWN_BUILTIN_MODULE: node:sqlite disabled');
+          return origLoad.apply(this, arguments);
+        };
+      }
+      const { ClaudeAdapter } = require('./claudeville/adapters/claude');
+      const { CodexAdapter } = require('./claudeville/adapters/codex');
+      const { GlmAdapter } = require('./claudeville/adapters/glm');
+      const { AntigravityAdapter } = require('./claudeville/adapters/antigravity');
+      const t3code = require('./claudeville/adapters/t3code');
+
+      const claude = new ClaudeAdapter();
+      const codex = new CodexAdapter();
+      const glm = new GlmAdapter();
+      const agy = new AntigravityAdapter({ readLocks: () => '' });
+
+      // Call twice so a poisoned null cache on call 1 would crash call 2.
+      const runOnce = () => ({
+        claude: claude.getActiveSessions(2 * 60 * 1000).map(s => s.sessionId),
+        codex: codex.getActiveSessions(2 * 60 * 1000, { force: true }).map(s => s.agentId),
+        glm: glm.getActiveSessions(2 * 60 * 1000).map(s => s.sessionId),
+        agy: agy.getActiveSessions(2 * 60 * 1000).map(s => s.sessionId),
+        delegatesSize: t3code.readT3ActiveDelegates().size,
+        lineageSize: t3code.readT3Lineage('antigravity', ['${agyId}']).size,
+        rootStateSize: t3code.readT3RootThreadState('antigravity', ['${agyId}']).size,
+        activeRunSize: t3code.readT3ActiveRunNativeIds('antigravity').size,
+      });
+
+      const first = runOnce();
+      const second = runOnce();
+      claude.shutdown();
+      process.stdout.write(JSON.stringify({ first, second }));
+    `;
+
+    // Case A: node:sqlite disabled while statev2.sqlite exists on disk.
+    const disabledOut = JSON.parse(execFileSync(process.execPath, ['-e', probeScript(true)], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, HOME: tmp, USERPROFILE: tmp, CLAUDEVILLE_GLM_STATE_DIR: path.join(tmp, 'no-mcp') },
+      encoding: 'utf8',
+    }));
+    for (const pass of [disabledOut.first, disabledOut.second]) {
+      assert.ok(pass.claude.includes(claudeId), 'Claude discovers native session with SQLite disabled');
+      assert.ok(pass.codex.includes(codexUuid), 'Codex discovers native session with SQLite disabled');
+      assert.ok(pass.glm.includes(`zai-${glmId}`), 'GLM discovers native session with SQLite disabled');
+      assert.ok(pass.agy.includes(`antigravity-${agyId}`), 'Antigravity discovers native session with SQLite disabled');
+      assert.equal(pass.delegatesSize, 0);
+      assert.equal(pass.lineageSize, 0);
+      assert.equal(pass.rootStateSize, 0);
+      assert.equal(pass.activeRunSize, 0);
+    }
+
+    // Case B: real SQLite DB with reduced/incompatible schema (missing payload_json columns).
+    if (nodeSqlite?.DatabaseSync) {
+      fs.rmSync(dbPath, { force: true });
+      const badDb = new nodeSqlite.DatabaseSync(dbPath);
+      badDb.exec(`
+        CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, title TEXT, default_provider TEXT);
+        CREATE TABLE orchestration_v2_projection_runs (run_id TEXT PRIMARY KEY, thread_id TEXT, status TEXT);
+        CREATE TABLE orchestration_v2_projection_run_attempts (attempt_id TEXT PRIMARY KEY, thread_id TEXT, run_id TEXT, provider TEXT);
+      `);
+      badDb.close();
+
+      const incompatOut = JSON.parse(execFileSync(process.execPath, ['-e', probeScript(false)], {
+        cwd: REPO_ROOT,
+        env: { ...process.env, HOME: tmp, USERPROFILE: tmp, CLAUDEVILLE_GLM_STATE_DIR: path.join(tmp, 'no-mcp') },
+        encoding: 'utf8',
+      }));
+      for (const pass of [incompatOut.first, incompatOut.second]) {
+        assert.ok(pass.claude.includes(claudeId), 'Claude survives incompatible T3 schema');
+        assert.ok(pass.codex.includes(codexUuid), 'Codex survives incompatible T3 schema');
+        assert.ok(pass.glm.includes(`zai-${glmId}`), 'GLM survives incompatible T3 schema');
+        assert.ok(pass.agy.includes(`antigravity-${agyId}`), 'Antigravity survives incompatible T3 schema');
+        assert.equal(pass.delegatesSize, 0);
+      }
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('[P1 #2] GLM T3 discovery skips archived history in SQL, materializes zero archived items, and completes under 50 ms', {
+  skip: !nodeSqlite?.DatabaseSync && 'node:sqlite unavailable',
+}, () => {
+  withTempHome('cv-v069-glm-perf-', (tmp) => {
+    const dbPath = path.join(tmp, '.t3', 'userdata', 'statev2.sqlite');
+    const now = Date.parse('2026-11-26T22:00:00Z');
+    const iso = (msAgo) => new Date(now - msAgo).toISOString();
+    const db = createFullT3Db(dbPath);
+
+    // Seed an archived GLM thread with 5,000 turn_items, 200 messages, and 50 provider_turns.
+    const archivedNative = '99999999-1111-4111-8111-111111111111';
+    db.prepare(`INSERT INTO orchestration_v2_projection_threads
+      (thread_id, project_id, title, default_provider, active_provider_thread_id, created_at, updated_at, archived_at, payload_json)
+      VALUES ('th-glm-archived-huge', 'proj-1', 'Huge Archived GLM', 'acpRegistry_glm_agent', 'pt-arch', ?, ?, ?, ?)`).run(
+      iso(86_400_000), iso(7_200_000), iso(3_600_000),
+      JSON.stringify({ modelSelection: { model: 'glm-5.4' } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_provider_threads
+      (provider_thread_id, thread_id, provider, status, updated_at, payload_json, driver)
+      VALUES ('pt-arch', 'th-glm-archived-huge', 'acpRegistry_glm_agent', 'active', ?, ?, 'acpRegistry')`).run(
+      iso(7_200_000),
+      JSON.stringify({ nativeThreadRef: { nativeId: archivedNative } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, completed_at, payload_json)
+      VALUES ('run-arch', 'th-glm-archived-huge', 1, 'acpRegistry_glm_agent', 'pt-arch', 'completed', ?, ?, ?)`).run(
+      iso(86_400_000), iso(7_200_000), JSON.stringify({ startedAt: iso(86_400_000) }),
+    );
+
+    db.exec('BEGIN');
+    const insItem = db.prepare(`INSERT INTO orchestration_v2_projection_turn_items
+      (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+      VALUES (?, 'th-glm-archived-huge', 'run-arch', ?, 'command_execution', 'completed', ?, ?)`);
+    const archivedPayload = JSON.stringify({ type: 'command_execution', input: 'echo __ARCHIVED_SENTINEL__', output: 'x'.repeat(256), exitCode: 0 });
+    for (let i = 1; i <= 5000; i++) {
+      insItem.run(`arch-it-${i}`, i, iso(7_200_000 - i), archivedPayload);
+    }
+    const insMsg = db.prepare(`INSERT INTO orchestration_v2_projection_messages
+      (message_id, thread_id, run_id, role, created_at, updated_at, payload_json)
+      VALUES (?, 'th-glm-archived-huge', 'run-arch', 'assistant', ?, ?, ?)`);
+    for (let i = 1; i <= 200; i++) {
+      insMsg.run(`arch-msg-${i}`, iso(7_200_000 - i), iso(7_200_000 - i), JSON.stringify({ role: 'assistant', text: `__ARCHIVED_SENTINEL__ msg ${i}` }));
+    }
+    const insTurn = db.prepare(`INSERT INTO orchestration_v2_projection_provider_turns
+      (provider_turn_id, thread_id, provider_thread_id, ordinal, status, started_at, completed_at, payload_json)
+      VALUES (?, 'th-glm-archived-huge', 'pt-arch', ?, 'completed', ?, ?, ?)`);
+    for (let i = 1; i <= 50; i++) {
+      insTurn.run(`arch-turn-${i}`, i, iso(7_200_000 - i * 1000), iso(7_200_000 - i * 1000), JSON.stringify({
+        marker: '__ARCHIVED_SENTINEL__',
+        turnTokenUsage: { inputTokens: 10_000, cachedInputTokens: 5_000, outputTokens: 500 },
+      }));
+    }
+
+    // Seed 1 active GLM thread with 3 items.
+    const activeNative = '88888888-2222-4222-8222-222222222222';
+    db.prepare(`INSERT INTO orchestration_v2_projection_threads
+      (thread_id, project_id, title, default_provider, active_provider_thread_id, created_at, updated_at, payload_json)
+      VALUES ('th-glm-live', 'proj-1', 'Live GLM', 'acpRegistry_glm_agent', 'pt-live', ?, ?, ?)`).run(
+      iso(30_000), iso(2_000),
+      JSON.stringify({ modelSelection: { model: 'glm-5.4' } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_provider_threads
+      (provider_thread_id, thread_id, provider, status, updated_at, payload_json, driver)
+      VALUES ('pt-live', 'th-glm-live', 'acpRegistry_glm_agent', 'active', ?, ?, 'acpRegistry')`).run(
+      iso(2_000),
+      JSON.stringify({ nativeThreadRef: { nativeId: activeNative } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, payload_json)
+      VALUES ('run-live', 'th-glm-live', 1, 'acpRegistry_glm_agent', 'pt-live', 'running', ?, ?)`).run(
+      iso(30_000), JSON.stringify({ startedAt: iso(29_000) }),
+    );
+    const insLiveItem = db.prepare(`INSERT INTO orchestration_v2_projection_turn_items
+      (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+      VALUES (?, 'th-glm-live', 'run-live', ?, 'command_execution', 'completed', ?, ?)`);
+    for (let i = 1; i <= 3; i++) {
+      insLiveItem.run(`live-it-${i}`, i, iso(5_000 - i * 1000), JSON.stringify({ type: 'command_execution', input: `step ${i}`, exitCode: 0 }));
+    }
+    db.exec('COMMIT');
+    db.close();
+
+    // Cold discovery with 5,000 archived items must ignore archived history,
+    // materialize zero archived payloads in JS, and finish < 50 ms.
+    t3code.clearT3Cache();
+    const origJsonParse = JSON.parse;
+    let archivedPayloadsParsed = 0;
+    JSON.parse = function patchedParse(text, ...rest) {
+      if (typeof text === 'string' && text.includes('__ARCHIVED_SENTINEL__')) archivedPayloadsParsed++;
+      return origJsonParse.call(this, text, ...rest);
+    };
+    let sessions;
+    let elapsedMs;
+    try {
+      const start = performance.now();
+      sessions = t3code.readT3AcpGlmSessions(2 * 60_000, { now });
+      elapsedMs = performance.now() - start;
+    } finally {
+      JSON.parse = origJsonParse;
+    }
+
+    assert.equal(archivedPayloadsParsed, 0, 'zero archived items/messages/turns may be materialized during discovery');
+    assert.equal(sessions.length, 1, 'archived GLM thread must not be returned');
+    assert.equal(sessions[0].sessionId, `zai-${activeNative}`);
+    assert.equal(sessions[0].lastToolInput, 'step 3');
+    assert.ok(elapsedMs < 50, `Expected cold GLM discovery with 5k archived items < 50 ms, took ${elapsedMs.toFixed(1)} ms`);
+
+    // Explicit detail lookup still resolves archived threads with bounded history.
+    const detail = t3code.readT3AcpGlmSessionDetail(archivedNative);
+    assert.ok(detail, 'explicit detail lookup still reads archived GLM thread');
+    assert.equal(detail.toolHistory.length, 120);
+    assert.equal(detail.messages.length, 50);
+  });
+});
+
+test('[P1 #3] Native Antigravity /rename sets userNamed: true and preserves named:antigravity:merlin Hall of Lives lineage', () => {
+  const tmp = makeTempDir('cv-v069-agy-rename-lineage-');
+  try {
+    const now = Date.parse('2026-11-26T22:15:00Z');
+    const project = path.join(tmp, 'work', 'merlin-tower');
+    const rootDir = path.join(tmp, 'antigravity-cli');
+    fs.mkdirSync(project, { recursive: true });
+
+    const merlinId = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+    const unnamedId = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
+    const iso = (msAgo) => new Date(now - msAgo).toISOString();
+
+    writeFile(path.join(rootDir, 'history.jsonl'), `${[
+      { timestamp: now - 20_000, workspace: project, conversationId: merlinId, display: 'Begin spellwork' },
+      { timestamp: now - 10_000, workspace: project, conversationId: merlinId, type: 'slash_command', display: '/rename Merlin' },
+      { timestamp: now - 15_000, workspace: project, conversationId: unnamedId, display: 'Routine patrol' },
+    ].map(r => JSON.stringify(r)).join('\n')}\n`, now - 10_000);
+    writeFile(path.join(rootDir, 'annotations', `${unnamedId}.pbtxt`), 'title: "Auto Generated Title"\n', now - 15_000);
+    for (const id of [merlinId, unnamedId]) {
+      writeFile(path.join(rootDir, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl'), `${JSON.stringify({
+        step_index: 0, type: 'USER_INPUT', created_at: iso(15_000), content: 'Hello',
+      })}\n`, now - 15_000);
+    }
+
+    const adapter = new AntigravityAdapter({ rootDir, now: () => now, readLocks: () => '' });
+    const sessions = adapter.getActiveSessions(2 * 60_000);
+    const merlin = sessions.find(s => s.sessionId === `antigravity-${merlinId}`);
+    const unnamed = sessions.find(s => s.sessionId === `antigravity-${unnamedId}`);
+
+    assert.ok(merlin);
+    assert.equal(merlin.agentName, 'Merlin');
+    assert.equal(merlin.userNamed, true, 'native /rename must propagate userNamed: true');
+    assert.equal(
+      AgentBiography.identityKeyFor({ ...merlin, id: merlin.sessionId, projectPath: merlin.project }),
+      'named:antigravity:merlin',
+    );
+    assert.equal(AgentBiography.identityKeyFor(merlin), 'named:antigravity:merlin');
+
+    assert.ok(unnamed);
+    assert.equal(unnamed.agentName, null);
+    assert.equal(unnamed.userNamed, false);
+    assert.equal(
+      AgentBiography.identityKeyFor({ ...unnamed, id: unnamed.sessionId, projectPath: unnamed.project }),
+      'project:antigravity:merlin-tower',
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('[P1 #4] Active Antigravity delegate retry on a new native ID does not revive earlier attempt and reports backgroundPending.count === 1', {
+  skip: !nodeSqlite?.DatabaseSync && 'node:sqlite unavailable',
+}, () => {
+  withTempHome('cv-v069-agy-retry-native-', (tmp) => {
+    const now = Date.parse('2026-11-26T22:30:00Z');
+    const quietMs = 15 * 60_000;
+    const iso = (msAgo) => new Date(now - msAgo).toISOString();
+    const acpDir = path.join(tmp, '.t3', 'userdata', 'providers', 'antigravity', 'inst1', 'antigravity-acp');
+    const transcript = (id) => path.join(acpDir, 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');
+    const dbFile = (id) => path.join(acpDir, 'conversations', `${id}.db`);
+    const lines = (steps) => `${steps.map(s => JSON.stringify(s)).join('\n')}\n`;
+
+    const parentId = '11111111-aaaa-4aaa-8aaa-111111111111';
+    const attemptA = '22222222-aaaa-4aaa-8aaa-222222222222';
+    const attemptB = '33333333-aaaa-4aaa-8aaa-333333333333';
+
+    writeFile(transcript(parentId), lines([
+      { step_index: 0, type: 'USER_INPUT', created_at: iso(quietMs + 10_000), content: 'Delegate task' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: iso(quietMs), model: 'gemini-4-neon-xhigh', content: 'Delegated.' },
+    ]), now - quietMs);
+    // Attempt A completed 15 min ago; Attempt B is actively running (silent xhigh think).
+    writeFile(transcript(attemptA), lines([
+      { step_index: 0, type: 'USER_INPUT', created_at: iso(quietMs + 20_000), content: 'First try' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: iso(quietMs), model: 'gemini-4-neon-xhigh', content: 'Failed once.' },
+    ]), now - quietMs);
+    writeFile(transcript(attemptB), lines([
+      { step_index: 0, type: 'USER_INPUT', created_at: iso(quietMs - 60_000), content: 'Retry try' },
+    ]), now - (quietMs - 60_000));
+
+    // Even with leaked .db locks on all 3 files, attemptA must never revive.
+    const lockLines = [parentId, attemptA, attemptB].map((id, idx) => {
+      const p = dbFile(id);
+      writeFile(p, 'sqlite-dummy', now - quietMs);
+      return `${idx + 1}: POSIX  ADVISORY  READ 9001 103:06:${fs.statSync(p).ino} 1073741826 1073742335`;
+    });
+
+    const dbPath = path.join(tmp, '.t3', 'userdata', 'statev2.sqlite');
+    const db = createFullT3Db(dbPath);
+    db.prepare(`INSERT INTO orchestration_v2_projection_threads
+      (thread_id, project_id, title, default_provider, active_provider_thread_id, created_at, updated_at, payload_json)
+      VALUES ('th-parent', 'proj-1', 'Lead', 'antigravity', 'pt-parent', ?, ?, ?)`).run(iso(quietMs), iso(quietMs), JSON.stringify({}));
+    db.prepare(`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, completed_at, payload_json)
+      VALUES ('run-parent-1', 'th-parent', 1, 'antigravity', 'pt-parent', 'completed', ?, ?, ?)`).run(iso(quietMs), iso(quietMs), JSON.stringify({}));
+    db.prepare(`INSERT INTO orchestration_v2_projection_run_attempts
+      (attempt_id, thread_id, run_id, attempt_ordinal, provider, provider_thread_id, payload_json)
+      VALUES ('att-parent-1', 'th-parent', 'run-parent-1', 1, 'antigravity', 'pt-parent', ?)`).run(JSON.stringify({ nativeThreadId: parentId }));
+
+    // Single delegate thread with Run 1 (completed -> attemptA) and Run 2 (running -> attemptB).
+    db.prepare(`INSERT INTO orchestration_v2_projection_threads
+      (thread_id, project_id, title, default_provider, active_provider_thread_id, created_at, updated_at, payload_json)
+      VALUES ('th-del-retry', 'proj-1', 'Retry Worker', 'antigravity', 'pt-del-b', ?, ?, ?)`).run(
+      iso(quietMs), iso(quietMs - 60_000),
+      JSON.stringify({ lineage: { parentThreadId: 'th-parent', relationshipToParent: 'subagent' } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, completed_at, payload_json)
+      VALUES ('run-del-1', 'th-del-retry', 1, 'antigravity', 'pt-del-a', 'completed', ?, ?, ?)`).run(iso(quietMs + 20_000), iso(quietMs), JSON.stringify({}));
+    db.prepare(`INSERT INTO orchestration_v2_projection_run_attempts
+      (attempt_id, thread_id, run_id, attempt_ordinal, provider, provider_thread_id, payload_json)
+      VALUES ('att-del-1', 'th-del-retry', 'run-del-1', 1, 'antigravity', 'pt-del-a', ?)`).run(JSON.stringify({ nativeThreadId: attemptA }));
+    db.prepare(`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, payload_json)
+      VALUES ('run-del-2', 'th-del-retry', 2, 'antigravity', 'pt-del-b', 'running', ?, ?)`).run(
+      iso(quietMs - 60_000), JSON.stringify({ startedAt: iso(quietMs - 60_000) }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_run_attempts
+      (attempt_id, thread_id, run_id, attempt_ordinal, provider, provider_thread_id, payload_json)
+      VALUES ('att-del-2', 'th-del-retry', 'run-del-2', 1, 'antigravity', 'pt-del-b', ?)`).run(JSON.stringify({ nativeThreadId: attemptB }));
+    db.close();
+
+    const activeIds = t3code.readT3ActiveRunNativeIds('antigravity');
+    assert.equal(activeIds.has(attemptB), true);
+    assert.equal(activeIds.has(attemptA), false, 'completed earlier attempt native ID must not be marked active');
+
+    const rootStates = t3code.readT3RootThreadState('antigravity', [attemptA, attemptB]);
+    assert.equal(rootStates.get(attemptA)?.activeRun, false, 'root state must not mark old attempt active');
+    assert.equal(rootStates.get(attemptB)?.activeRun, true);
+
+    const adapter = new AntigravityAdapter({ now: () => now, readLocks: () => `${lockLines.join('\n')}\n` });
+    const sessions = adapter.getActiveSessions(2 * 60_000);
+    const parent = sessions.find(s => s.sessionId === `antigravity-${parentId}`);
+    const oldSess = sessions.find(s => s.sessionId === `antigravity-${attemptA}`);
+    const newSess = sessions.find(s => s.sessionId === `antigravity-${attemptB}`);
+
+    assert.ok(parent);
+    assert.equal(oldSess, undefined, 'old completed attempt must NOT be revived by retry run');
+    assert.ok(newSess, 'active retry attempt stays alive');
+    assert.equal(parent.backgroundPending?.count, 1, 'parent backgroundPending counts only the 1 live retry');
+
+    // When a queued active run has NO attempt row yet, active-run discovery falls back
+    // to that run's provider_thread nativeThreadRef without reviving completed attemptA.
+    const queuedNative = '44444444-aaaa-4aaa-8aaa-444444444444';
+    const db2 = new nodeSqlite.DatabaseSync(dbPath);
+    db2.prepare(`INSERT INTO orchestration_v2_projection_provider_threads
+      (provider_thread_id, thread_id, provider, status, updated_at, payload_json)
+      VALUES ('pt-del-queued', 'th-del-retry', 'antigravity', 'active', ?, ?)`).run(
+      iso(10_000), JSON.stringify({ nativeThreadRef: { nativeId: queuedNative } }),
+    );
+    db2.prepare("UPDATE orchestration_v2_projection_runs SET status = 'completed', completed_at = ? WHERE run_id = 'run-del-2'").run(iso(20_000));
+    db2.prepare(`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, payload_json)
+      VALUES ('run-del-3', 'th-del-retry', 3, 'antigravity', 'pt-del-queued', 'queued', ?, ?)`).run(
+      iso(10_000), JSON.stringify({ startedAt: iso(10_000) }),
+    );
+    db2.close();
+    t3code.clearT3Cache();
+
+    const queuedActiveIds = t3code.readT3ActiveRunNativeIds('antigravity');
+    assert.equal(queuedActiveIds.has(queuedNative), true, 'falls back to active provider_thread when active run has no attempt ID yet');
+    assert.equal(queuedActiveIds.has(attemptA), false, 'older completed attemptA stays inactive');
+    assert.equal(queuedActiveIds.has(attemptB), false, 'older completed attemptB stays inactive');
+  });
+});
+
+test('[P1 #5] Archived GLM thread with completed run and stale provider_threads.status=active is never live or working', {
+  skip: !nodeSqlite?.DatabaseSync && 'node:sqlite unavailable',
+}, () => {
+  withTempHome('cv-v069-glm-archived-state-', (tmp) => {
+    const dbPath = path.join(tmp, '.t3', 'userdata', 'statev2.sqlite');
+    const now = Date.parse('2026-11-26T22:45:00Z');
+    const iso = (msAgo) => new Date(now - msAgo).toISOString();
+    const db = createFullT3Db(dbPath);
+
+    // 1. Archived thread + completed run + stale provider_threads.status = 'active'
+    const archivedNative = '11111111-aaaa-4111-8111-111111111111';
+    db.prepare(`INSERT INTO orchestration_v2_projection_threads
+      (thread_id, project_id, title, default_provider, active_provider_thread_id, created_at, updated_at, archived_at, payload_json)
+      VALUES ('th-arch', 'p1', 'Archived Done', 'acpRegistry_glm_agent', 'pt-arch', ?, ?, ?, ?)`).run(
+      iso(600_000), iso(10_000), iso(5_000), JSON.stringify({ modelSelection: { model: 'glm-5.4' } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_provider_threads
+      (provider_thread_id, thread_id, provider, status, updated_at, payload_json, driver)
+      VALUES ('pt-arch', 'th-arch', 'acpRegistry_glm_agent', 'active', ?, ?, 'acpRegistry')`).run(
+      iso(10_000), JSON.stringify({ nativeThreadRef: { nativeId: archivedNative } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, completed_at, payload_json)
+      VALUES ('run-arch', 'th-arch', 1, 'acpRegistry_glm_agent', 'pt-arch', 'completed', ?, ?, ?)`).run(
+      iso(600_000), iso(10_000), JSON.stringify({ startedAt: iso(600_000) }),
+    );
+
+    // 2. Non-archived recent thread + completed run + stale pt.status = 'active' -> awaiting_input (NOT working)
+    const doneRecentNative = '22222222-bbbb-4222-8222-222222222222';
+    db.prepare(`INSERT INTO orchestration_v2_projection_threads
+      (thread_id, project_id, title, default_provider, active_provider_thread_id, created_at, updated_at, payload_json)
+      VALUES ('th-done-recent', 'p1', 'Done Recent', 'acpRegistry_glm_agent', 'pt-dr', ?, ?, ?)`).run(
+      iso(60_000), iso(10_000), JSON.stringify({ modelSelection: { model: 'glm-5.4' } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_provider_threads
+      (provider_thread_id, thread_id, provider, status, updated_at, payload_json, driver)
+      VALUES ('pt-dr', 'th-done-recent', 'acpRegistry_glm_agent', 'active', ?, ?, 'acpRegistry')`).run(
+      iso(10_000), JSON.stringify({ nativeThreadRef: { nativeId: doneRecentNative } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, completed_at, payload_json)
+      VALUES ('run-dr', 'th-done-recent', 1, 'acpRegistry_glm_agent', 'pt-dr', 'completed', ?, ?, ?)`).run(
+      iso(60_000), iso(10_000), JSON.stringify({ startedAt: iso(60_000) }),
+    );
+
+    // 3. Non-archived old thread + completed run + stale pt.status = 'active' -> NOT kept alive past threshold
+    const doneOldNative = '33333333-cccc-4333-8333-333333333333';
+    db.prepare(`INSERT INTO orchestration_v2_projection_threads
+      (thread_id, project_id, title, default_provider, active_provider_thread_id, created_at, updated_at, payload_json)
+      VALUES ('th-done-old', 'p1', 'Done Old', 'acpRegistry_glm_agent', 'pt-do', ?, ?, ?)`).run(
+      iso(900_000), iso(600_000), JSON.stringify({ modelSelection: { model: 'glm-5.4' } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_provider_threads
+      (provider_thread_id, thread_id, provider, status, updated_at, payload_json, driver)
+      VALUES ('pt-do', 'th-done-old', 'acpRegistry_glm_agent', 'active', ?, ?, 'acpRegistry')`).run(
+      iso(600_000), JSON.stringify({ nativeThreadRef: { nativeId: doneOldNative } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, provider_thread_id, status, requested_at, completed_at, payload_json)
+      VALUES ('run-do', 'th-done-old', 1, 'acpRegistry_glm_agent', 'pt-do', 'completed', ?, ?, ?)`).run(
+      iso(900_000), iso(600_000), JSON.stringify({ startedAt: iso(900_000) }),
+    );
+
+    // 4. Non-archived thread with NO run row + pt.status = 'active' -> falls back to pt.status === 'active'
+    const noRunActiveNative = '44444444-dddd-4444-8444-444444444444';
+    db.prepare(`INSERT INTO orchestration_v2_projection_threads
+      (thread_id, project_id, title, default_provider, active_provider_thread_id, created_at, updated_at, payload_json)
+      VALUES ('th-no-run', 'p1', 'No Run Fallback', 'acpRegistry_glm_agent', 'pt-nr', ?, ?, ?)`).run(
+      iso(600_000), iso(600_000), JSON.stringify({ modelSelection: { model: 'glm-5.4' } }),
+    );
+    db.prepare(`INSERT INTO orchestration_v2_projection_provider_threads
+      (provider_thread_id, thread_id, provider, status, updated_at, payload_json, driver)
+      VALUES ('pt-nr', 'th-no-run', 'acpRegistry_glm_agent', 'active', ?, ?, 'acpRegistry')`).run(
+      iso(600_000), JSON.stringify({ nativeThreadRef: { nativeId: noRunActiveNative } }),
+    );
+    db.close();
+
+    const sessions = t3code.readT3AcpGlmSessions(2 * 60_000, { now });
+    const byNative = (id) => sessions.find(s => s.sessionId === `zai-${id}`);
+
+    assert.equal(byNative(archivedNative), undefined, 'archived GLM thread must never appear in live discovery');
+    assert.equal(byNative(doneOldNative), undefined, 'old completed GLM thread must not stay live via stale pt.status');
+    assert.equal(byNative(doneRecentNative)?.turnState, 'awaiting_input', 'completed run overrides stale pt.status=active');
+    assert.equal(byNative(noRunActiveNative)?.turnState, 'working', 'thread without run lifecycle rows falls back to pt.status=active');
+  });
+});
+
+test('[P1 #11] Claude TaskCreate correlates tool_result IDs on shared task lists and omits failed creates', () => {
+  const tmp = makeTempDir('cv-v069-claude-task-result-');
+  try {
+    const project = path.join(tmp, 'work', 'repo');
+    const projDir = path.join(tmp, '.claude', 'projects', project.replaceAll('/', '-'));
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.mkdirSync(project, { recursive: true });
+
+    const now = Date.now();
+    const iso = (msAgo) => new Date(now - msAgo).toISOString();
+    const file = path.join(projDir, 'shared-task-list.jsonl');
+
+    writeFile(file, `${[
+      {
+        type: 'assistant',
+        timestamp: iso(20_000),
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-4-6',
+          content: [
+            { type: 'tool_use', id: 'tu_create_1', name: 'TaskCreate', input: { subject: 'Fix shared board' } },
+            { type: 'tool_use', id: 'tu_create_fail', name: 'TaskCreate', input: { subject: 'Broken task' } },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        timestamp: iso(19_000),
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'tu_create_1', is_error: false, content: 'Task #7 created successfully: Fix shared board' },
+            { type: 'tool_result', tool_use_id: 'tu_create_fail', is_error: true, content: 'Error: task creation rejected' },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        timestamp: iso(15_000),
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-4-6',
+          content: [
+            { type: 'tool_use', id: 'tu_create_2', name: 'TaskCreate', input: { subject: 'Verify structured result' } },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        timestamp: iso(14_000),
+        toolUseResult: { task: { id: '12', subject: 'Verify structured result' } },
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'tu_create_2', is_error: false, content: 'Created' },
+          ],
+        },
+      },
+      {
+        type: 'assistant',
+        timestamp: iso(10_000),
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-4-6',
+          content: [
+            { type: 'tool_use', id: 'tu_upd_7', name: 'TaskUpdate', input: { taskId: '7', status: 'in_progress' } },
+            { type: 'tool_use', id: 'tu_upd_12', name: 'TaskUpdate', input: { taskId: '12', status: 'completed' } },
+          ],
+        },
+      },
+    ].map(r => JSON.stringify(r)).join('\n')}\n`, now - 5_000);
+
+    const proj = claudeTest.getTranscriptProjection(file, project, 'claude-sonnet-4-6');
+    assert.deepEqual(proj.todos, [
+      { subject: 'Fix shared board', status: 'in_progress', phase: null },
+      { subject: 'Verify structured result', status: 'completed', phase: null },
+    ]);
+    assert.equal(Object.hasOwn(proj, '_pendingTaskCreates'), false, 'internal _pendingTaskCreates stripped');
+    assert.equal(Object.hasOwn(proj, '_taskItems'), false, 'internal _taskItems stripped');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 });

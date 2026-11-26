@@ -45,7 +45,10 @@ const T3_FAILED_RUN_STATUSES = new Set(['failed']);
 const T3_ENDED_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'rolled_back']);
 
 const T3_TURN_ITEM_LIMIT = 500;
+const T3_MESSAGE_LIMIT = 60;
 const T3_TODO_LIMIT = 64;
+const T3_QUERY_FAILED = Symbol('T3_QUERY_FAILED');
+const T3_DISCOVERY_CACHE_MAX = 16;
 
 function t3UserDataDir() {
   return path.join(os.homedir(), '.t3', 'userdata');
@@ -93,10 +96,10 @@ function t3StateSignature() {
   return `${dbPath}|${main}|${wal}`;
 }
 
-let _cache = { sig: null, entries: new Map(), schema: null };
+let _cache = { sig: null, entries: new Map(), schema: null, glmDiscovery: new Map() };
 
 function clearT3Cache() {
-  _cache = { sig: null, entries: new Map(), schema: null };
+  _cache = { sig: null, entries: new Map(), schema: null, glmDiscovery: new Map() };
 }
 
 function syncCacheSignature() {
@@ -106,7 +109,7 @@ function syncCacheSignature() {
     return null;
   }
   if (_cache.sig !== sig) {
-    _cache = { sig, entries: new Map(), schema: null };
+    _cache = { sig, entries: new Map(), schema: null, glmDiscovery: new Map() };
   }
   return sig;
 }
@@ -135,8 +138,8 @@ function cachedT3Query(cacheKey, compute, fallback) {
   const value = withT3Db(db => {
     const schema = readSchemaInfo(db);
     return compute(db, schema);
-  }, undefined);
-  if (value === undefined) return fallback;
+  }, T3_QUERY_FAILED);
+  if (value === T3_QUERY_FAILED) return fallback;
   _cache.entries.set(cacheKey, value);
   return value;
 }
@@ -145,32 +148,30 @@ function readSchemaInfo(db) {
   if (_cache.schema) return _cache.schema;
   const tables = new Set();
   const columns = new Map();
-  try {
-    const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
-    for (const row of rows) {
-      if (typeof row?.name === 'string') tables.add(row.name);
-    }
-    const interesting = [
-      'orchestration_v2_projection_threads',
-      'orchestration_v2_projection_runs',
-      'orchestration_v2_projection_run_attempts',
-      'orchestration_v2_projection_provider_threads',
-      'orchestration_v2_projection_provider_turns',
-      'orchestration_v2_projection_turn_items',
-      'orchestration_v2_projection_messages',
-      'projection_projects',
-    ];
-    for (const tbl of interesting) {
-      if (!tables.has(tbl)) continue;
-      const cols = new Set();
-      try {
-        for (const info of db.prepare(`PRAGMA table_info(${tbl})`).all()) {
-          if (typeof info?.name === 'string') cols.add(info.name);
-        }
-      } catch { /* ignore */ }
-      columns.set(tbl, cols);
-    }
-  } catch { /* ignore */ }
+  const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
+  for (const row of rows) {
+    if (typeof row?.name === 'string') tables.add(row.name);
+  }
+  const interesting = [
+    'orchestration_v2_projection_threads',
+    'orchestration_v2_projection_runs',
+    'orchestration_v2_projection_run_attempts',
+    'orchestration_v2_projection_provider_threads',
+    'orchestration_v2_projection_provider_turns',
+    'orchestration_v2_projection_turn_items',
+    'orchestration_v2_projection_messages',
+    'projection_projects',
+  ];
+  for (const tbl of interesting) {
+    if (!tables.has(tbl)) continue;
+    const cols = new Set();
+    try {
+      for (const info of db.prepare(`PRAGMA table_info(${tbl})`).all()) {
+        if (typeof info?.name === 'string') cols.add(info.name);
+      }
+    } catch { /* ignore */ }
+    columns.set(tbl, cols);
+  }
   _cache.schema = { tables, columns };
   return _cache.schema;
 }
@@ -181,7 +182,7 @@ function queryT3State(sql, ...params) {
     try {
       return db.prepare(sql).all(...params);
     } catch {
-      return [];
+      return T3_QUERY_FAILED;
     }
   }, []);
 }
@@ -331,19 +332,19 @@ function readT3RenamedTitles(provider, nativeIds) {
 
 // ─── 2. Lineage ───────────────────────────────────────────
 
-function buildAttemptCte(schema) {
+function buildAttemptCteBody(schema) {
   const hasRuns = schema.tables.has('orchestration_v2_projection_runs');
   const attemptCols = schema.columns.get('orchestration_v2_projection_run_attempts') || new Set();
   const hasRunId = hasRuns && attemptCols.has('run_id');
   const hasAttemptOrdinal = attemptCols.has('attempt_ordinal');
   const orderBy = hasRunId
-    ? `r.ordinal DESC${hasAttemptOrdinal ? ', a.attempt_ordinal DESC' : ''}`
-    : (hasAttemptOrdinal ? 'a.attempt_ordinal DESC' : 'a.rowid DESC');
+    ? `r.ordinal DESC${hasAttemptOrdinal ? ', a.attempt_ordinal DESC' : ''}, a.rowid DESC`
+    : (hasAttemptOrdinal ? 'a.attempt_ordinal DESC, a.rowid DESC' : 'a.rowid DESC');
   const joinRuns = hasRunId
     ? 'JOIN orchestration_v2_projection_runs r ON r.run_id = a.run_id'
     : '';
   return `
-    WITH attempt AS (
+    attempt AS (
       SELECT a.thread_id, a.provider, json_extract(a.payload_json, '$.nativeThreadId') AS native,
         ROW_NUMBER() OVER (PARTITION BY a.thread_id ORDER BY ${orderBy}) AS rank
       FROM orchestration_v2_projection_run_attempts a
@@ -351,6 +352,75 @@ function buildAttemptCte(schema) {
       WHERE json_extract(a.payload_json, '$.nativeThreadId') IS NOT NULL
     )
   `;
+}
+
+function buildAttemptCte(schema) {
+  return `WITH ${buildAttemptCteBody(schema)}`;
+}
+
+function buildActiveRunNativeCte(schema) {
+  const runCols = schema.columns.get('orchestration_v2_projection_runs');
+  if (!runCols || !runCols.has('status')) return null;
+  const attemptCols = schema.columns.get('orchestration_v2_projection_run_attempts');
+  const threadCols = schema.columns.get('orchestration_v2_projection_threads');
+  const hasAttempts = Boolean(attemptCols && attemptCols.has('run_id'));
+  const hasThreads = Boolean(threadCols);
+  const hasProviderThreads = schema.tables.has('orchestration_v2_projection_provider_threads');
+  const ptKeyExpr = hasProviderThreads
+    ? (runCols.has('provider_thread_id') && hasThreads && threadCols.has('active_provider_thread_id')
+      ? 'COALESCE(r.provider_thread_id, t.active_provider_thread_id)'
+      : (runCols.has('provider_thread_id')
+        ? 'r.provider_thread_id'
+        : (hasThreads && threadCols.has('active_provider_thread_id') ? 't.active_provider_thread_id' : null)))
+    : null;
+  if (!hasAttempts && !ptKeyExpr) return null;
+
+  const attemptOrder = attemptCols?.has('attempt_ordinal')
+    ? 'a.attempt_ordinal DESC, a.rowid DESC'
+    : 'a.rowid DESC';
+  const providerParts = [];
+  if (hasAttempts) providerParts.push('ra.provider');
+  if (runCols.has('provider')) providerParts.push('r.provider');
+  if (ptKeyExpr) providerParts.push('pt.provider');
+  if (hasThreads && threadCols.has('default_provider')) providerParts.push('t.default_provider');
+  const providerExpr = providerParts.length > 1
+    ? `COALESCE(${providerParts.join(', ')})`
+    : (providerParts[0] || 'NULL');
+  const ptNativeExpr = ptKeyExpr ? "lower(json_extract(pt.payload_json, '$.nativeThreadRef.nativeId'))" : null;
+  const nativeExpr = hasAttempts && ptNativeExpr
+    ? `COALESCE(ra.native, ${ptNativeExpr})`
+    : (hasAttempts ? 'ra.native' : ptNativeExpr);
+  const deletedFilter = hasThreads && threadCols.has('deleted_at') ? 'AND t.deleted_at IS NULL' : '';
+
+  const attemptCte = hasAttempts ? `
+    active_run_attempt AS (
+      SELECT a.run_id,
+             a.provider,
+             lower(json_extract(a.payload_json, '$.nativeThreadId')) AS native,
+             ROW_NUMBER() OVER (PARTITION BY a.run_id ORDER BY ${attemptOrder}) AS rn
+      FROM orchestration_v2_projection_run_attempts a
+      WHERE json_extract(a.payload_json, '$.nativeThreadId') IS NOT NULL
+    ),` : '';
+
+  return `
+    ${attemptCte}
+    active_run_native AS (
+      SELECT DISTINCT
+        ${providerExpr} AS provider,
+        ${nativeExpr} AS native
+      FROM orchestration_v2_projection_runs r
+      ${hasAttempts ? 'LEFT JOIN active_run_attempt ra ON ra.run_id = r.run_id AND ra.rn = 1' : ''}
+      ${hasThreads ? 'LEFT JOIN orchestration_v2_projection_threads t ON t.thread_id = r.thread_id' : ''}
+      ${ptKeyExpr ? `LEFT JOIN orchestration_v2_projection_provider_threads pt ON pt.provider_thread_id = ${ptKeyExpr}` : ''}
+      WHERE r.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+        ${deletedFilter}
+        AND ${nativeExpr} IS NOT NULL
+    )
+  `;
+}
+
+function sqlEpochMsExpr(expr) {
+  return `(CASE WHEN typeof(${expr}) IN ('integer', 'real') THEN (CASE WHEN ${expr} > 1e12 THEN ${expr} ELSE ${expr} * 1000.0 END) ELSE COALESCE((julianday(${expr}) - 2440587.5) * 86400000.0, 0) END)`;
 }
 
 /**
@@ -428,18 +498,37 @@ function readT3ActiveDelegates() {
       : (runCols.has('requested_at') ? 'r.requested_at' : 'NULL');
     const childDeletedFilter = threadCols.has('deleted_at') ? 'AND t.deleted_at IS NULL' : '';
     const hasProviderThreads = schema.tables.has('orchestration_v2_projection_provider_threads');
+    const attemptCols = schema.columns.get('orchestration_v2_projection_run_attempts') || new Set();
+    const hasAttemptRunId = attemptCols.has('run_id');
+    const attemptOrder = attemptCols.has('attempt_ordinal') ? 'a.attempt_ordinal DESC, a.rowid DESC' : 'a.rowid DESC';
+    const ptJoinKey = runCols.has('provider_thread_id') && threadCols.has('active_provider_thread_id')
+      ? 'COALESCE(r.provider_thread_id, t.active_provider_thread_id)'
+      : (runCols.has('provider_thread_id') ? 'r.provider_thread_id' : 't.active_provider_thread_id');
     const ptJoin = hasProviderThreads
-      ? 'LEFT JOIN orchestration_v2_projection_provider_threads pt ON pt.provider_thread_id = t.active_provider_thread_id'
+      ? `LEFT JOIN orchestration_v2_projection_provider_threads pt ON pt.provider_thread_id = ${ptJoinKey}`
       : '';
     const ptNativeExpr = hasProviderThreads
       ? "COALESCE(child.native, json_extract(pt.payload_json, '$.nativeThreadRef.nativeId'))"
       : 'child.native';
     const childProviderExpr = runCols.has('provider')
-      ? 'COALESCE(r.provider, child.provider)'
+      ? 'COALESCE(child.provider, r.provider)'
       : 'child.provider';
+    const runAttemptCte = hasAttemptRunId
+      ? `,
+      run_attempt AS (
+        SELECT a.run_id, a.provider, json_extract(a.payload_json, '$.nativeThreadId') AS native,
+          ROW_NUMBER() OVER (PARTITION BY a.run_id ORDER BY ${attemptOrder}) AS rank
+        FROM orchestration_v2_projection_run_attempts a
+        WHERE json_extract(a.payload_json, '$.nativeThreadId') IS NOT NULL
+      )`
+      : '';
+    const childAttemptJoin = hasAttemptRunId
+      ? 'LEFT JOIN run_attempt child ON child.run_id = r.run_id AND child.rank = 1'
+      : 'LEFT JOIN attempt child ON child.thread_id = r.thread_id AND child.rank = 1';
 
     const sql = `
-      ${buildAttemptCte(schema)}
+      WITH ${buildAttemptCteBody(schema)}
+      ${runAttemptCte}
       SELECT r.thread_id AS childThreadId,
              r.status AS runStatus,
              ${startedExpr} AS startedAt,
@@ -451,7 +540,7 @@ function readT3ActiveDelegates() {
       FROM orchestration_v2_projection_runs r
       JOIN orchestration_v2_projection_threads t ON t.thread_id = r.thread_id
       JOIN attempt parent ON parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId') AND parent.rank = 1
-      LEFT JOIN attempt child ON child.thread_id = r.thread_id AND child.rank = 1
+      ${childAttemptJoin}
       ${ptJoin}
       WHERE r.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
         AND json_extract(t.payload_json, '$.lineage.parentThreadId') IS NOT NULL
@@ -533,8 +622,7 @@ function readT3RootThreadState(provider, nativeIds) {
     if (!threadCols || !schema.tables.has('orchestration_v2_projection_run_attempts')) {
       return states;
     }
-    const runCols = schema.columns.get('orchestration_v2_projection_runs');
-    const hasRunStatus = Boolean(runCols && runCols.has('status'));
+    const activeRunCte = buildActiveRunNativeCte(schema);
     const archivedExpr = threadCols.has('archived_at')
       ? "COALESCE(t.archived_at, json_extract(t.payload_json, '$.archivedAt'))"
       : "json_extract(t.payload_json, '$.archivedAt')";
@@ -542,15 +630,16 @@ function readT3RootThreadState(provider, nativeIds) {
       ? "COALESCE(t.deleted_at, json_extract(t.payload_json, '$.deletedAt'))"
       : "json_extract(t.payload_json, '$.deletedAt')";
     const updatedOrder = threadCols.has('updated_at') ? 'ORDER BY t.updated_at ASC' : '';
-    const activeRunExpr = hasRunStatus
+    const activeRunExpr = activeRunCte
       ? `EXISTS (
-          SELECT 1 FROM orchestration_v2_projection_runs r
-          WHERE r.thread_id = t.thread_id
-            AND r.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+          SELECT 1 FROM active_run_native arn
+          WHERE arn.provider = a.provider
+            AND arn.native = lower(json_extract(a.payload_json, '$.nativeThreadId'))
         )`
       : '0';
 
     const sql = `
+      ${activeRunCte ? `WITH ${activeRunCte}` : ''}
       SELECT DISTINCT lower(json_extract(a.payload_json, '$.nativeThreadId')) AS native,
              t.thread_id AS threadId,
              json_extract(t.payload_json, '$.settledAt') AS settledAt,
@@ -605,17 +694,13 @@ function readT3ActiveRunNativeIds(provider) {
   const key = `activeRunNatives:${provider}`;
   const result = cachedT3Query(key, (db, schema) => {
     const ids = new Set();
-    const runCols = schema.columns.get('orchestration_v2_projection_runs');
-    if (!runCols || !runCols.has('status') || !schema.tables.has('orchestration_v2_projection_run_attempts')) {
-      return ids;
-    }
+    const activeRunCte = buildActiveRunNativeCte(schema);
+    if (!activeRunCte) return ids;
     const sql = `
-      SELECT DISTINCT lower(json_extract(a.payload_json, '$.nativeThreadId')) AS native
-      FROM orchestration_v2_projection_runs r
-      JOIN orchestration_v2_projection_run_attempts a ON a.run_id = r.run_id
-      WHERE a.provider = ?
-        AND r.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
-        AND json_extract(a.payload_json, '$.nativeThreadId') IS NOT NULL
+      WITH ${activeRunCte}
+      SELECT DISTINCT native
+      FROM active_run_native
+      WHERE provider = ?
     `;
     for (const row of db.prepare(sql).all(provider)) {
       if (row.native) ids.add(row.native);
@@ -627,290 +712,526 @@ function readT3ActiveRunNativeIds(provider) {
 
 // ─── 5. ACP GLM-5.4 sessions from T3 SQLite ───────────────
 
-function readRawT3AcpGlmRecords() {
-  return cachedT3Query('acpGlmRecords', (db, schema) => {
-    const threadCols = schema.columns.get('orchestration_v2_projection_threads');
-    if (!threadCols || !threadCols.has('default_provider')) return [];
+function normalizeKeepGlmNativeIds(keepSessionIds) {
+  if (!keepSessionIds) return [];
+  const raw = [];
+  for (const id of keepSessionIds) {
+    if (typeof id !== 'string') continue;
+    const trimmed = id.trim();
+    if (!trimmed) continue;
+    raw.push(trimmed.startsWith('zai-') ? trimmed.slice(4) : trimmed);
+  }
+  return normalizedIdsKey(raw);
+}
 
-    const hasProviderThreads = schema.tables.has('orchestration_v2_projection_provider_threads');
-    const ptCols = schema.columns.get('orchestration_v2_projection_provider_threads') || new Set();
-    const hasRuns = schema.tables.has('orchestration_v2_projection_runs');
-    const runCols = schema.columns.get('orchestration_v2_projection_runs') || new Set();
-    const hasAttempts = schema.tables.has('orchestration_v2_projection_run_attempts');
-    const hasTurns = schema.tables.has('orchestration_v2_projection_provider_turns');
-    const hasItems = schema.tables.has('orchestration_v2_projection_turn_items');
-    const hasMessages = schema.tables.has('orchestration_v2_projection_messages');
-    const hasProjects = schema.tables.has('projection_projects');
+function queryT3AcpGlmRecords(db, schema, {
+  cutoffMs = null,
+  keepNativeIds = [],
+  includeArchived = false,
+  detailTarget = null,
+} = {}) {
+  const threadCols = schema.columns.get('orchestration_v2_projection_threads');
+  if (!threadCols || !threadCols.has('default_provider')) return [];
 
-    const ptJoin = hasProviderThreads
-      ? `LEFT JOIN orchestration_v2_projection_provider_threads pt
-           ON pt.provider_thread_id = t.active_provider_thread_id
-           OR (t.active_provider_thread_id IS NULL AND pt.thread_id = t.thread_id)`
-      : '';
-    const projJoin = hasProjects
-      ? 'LEFT JOIN projection_projects proj ON proj.project_id = t.project_id'
-      : '';
-    const glmFilter = hasProviderThreads && ptCols.has('driver')
-      ? `(t.default_provider = 'acpRegistry_glm_agent'
-          OR (pt.driver = 'acpRegistry' AND lower(COALESCE(json_extract(t.payload_json, '$.modelSelection.model'), '')) LIKE '%glm%'))`
-      : `(t.default_provider = 'acpRegistry_glm_agent'
-          OR (t.default_provider LIKE 'acpRegistry%' AND lower(COALESCE(json_extract(t.payload_json, '$.modelSelection.model'), '')) LIKE '%glm%'))`;
-    const deletedFilter = threadCols.has('deleted_at') ? 'AND t.deleted_at IS NULL' : '';
+  const hasProviderThreads = schema.tables.has('orchestration_v2_projection_provider_threads');
+  const ptCols = schema.columns.get('orchestration_v2_projection_provider_threads') || new Set();
+  const hasRuns = schema.tables.has('orchestration_v2_projection_runs');
+  const runCols = schema.columns.get('orchestration_v2_projection_runs') || new Set();
+  const hasLatestRun = hasRuns && runCols.has('status');
+  const hasAttempts = schema.tables.has('orchestration_v2_projection_run_attempts');
+  const hasTurns = schema.tables.has('orchestration_v2_projection_provider_turns');
+  const hasItems = schema.tables.has('orchestration_v2_projection_turn_items');
+  const hasMessages = schema.tables.has('orchestration_v2_projection_messages');
+  const hasProjects = schema.tables.has('projection_projects');
 
-    const threadsSql = `
+  const ptJoin = hasProviderThreads
+    ? `LEFT JOIN orchestration_v2_projection_provider_threads pt
+         ON pt.provider_thread_id = t.active_provider_thread_id
+         OR (t.active_provider_thread_id IS NULL AND pt.thread_id = t.thread_id)`
+    : '';
+  const projJoin = hasProjects
+    ? 'LEFT JOIN projection_projects proj ON proj.project_id = t.project_id'
+    : '';
+  const glmFilter = hasProviderThreads && ptCols.has('driver')
+    ? `(t.default_provider = 'acpRegistry_glm_agent'
+        OR (pt.driver = 'acpRegistry' AND lower(COALESCE(json_extract(t.payload_json, '$.modelSelection.model'), '')) LIKE '%glm%'))`
+    : `(t.default_provider = 'acpRegistry_glm_agent'
+        OR (t.default_provider LIKE 'acpRegistry%' AND lower(COALESCE(json_extract(t.payload_json, '$.modelSelection.model'), '')) LIKE '%glm%'))`;
+
+  const baseWhereParts = [glmFilter];
+  if (!includeArchived) {
+    const deletedExpr = threadCols.has('deleted_at')
+      ? "COALESCE(t.deleted_at, json_extract(t.payload_json, '$.deletedAt'), '')"
+      : "COALESCE(json_extract(t.payload_json, '$.deletedAt'), '')";
+    const archivedExpr = threadCols.has('archived_at')
+      ? "COALESCE(t.archived_at, json_extract(t.payload_json, '$.archivedAt'), '')"
+      : "COALESCE(json_extract(t.payload_json, '$.archivedAt'), '')";
+    baseWhereParts.push(`NULLIF(TRIM(${deletedExpr}), '') IS NULL`);
+    baseWhereParts.push(`NULLIF(TRIM(${archivedExpr}), '') IS NULL`);
+  }
+
+  const cteParts = [`
+    glm_threads AS (
       SELECT t.thread_id AS threadId,
              t.title AS title,
              t.default_provider AS defaultProvider,
              ${threadCols.has('updated_at') ? 't.updated_at' : 'NULL'} AS threadUpdatedAt,
              ${threadCols.has('created_at') ? 't.created_at' : 'NULL'} AS threadCreatedAt,
              ${threadCols.has('archived_at') ? 't.archived_at' : 'NULL'} AS archivedAt,
+             ${threadCols.has('deleted_at') ? 't.deleted_at' : 'NULL'} AS deletedAt,
              t.payload_json AS threadPayloadJson,
              ${hasProjects ? 'proj.workspace_root' : 'NULL'} AS workspaceRoot,
              ${hasProviderThreads ? 'pt.status' : 'NULL'} AS ptStatus,
-             ${hasProviderThreads ? 'pt.updated_at' : 'NULL'} AS ptUpdatedAt,
+             ${hasProviderThreads && ptCols.has('updated_at') ? 'pt.updated_at' : 'NULL'} AS ptUpdatedAt,
              ${hasProviderThreads ? 'pt.payload_json' : 'NULL'} AS ptPayloadJson
       FROM orchestration_v2_projection_threads t
       ${ptJoin}
       ${projJoin}
-      WHERE ${glmFilter}
-        ${deletedFilter}
+      WHERE ${baseWhereParts.join('\n        AND ')}
+    )
+  `];
+  if (hasLatestRun) {
+    const runOrder = runCols.has('ordinal') ? 'r.ordinal DESC, r.rowid DESC' : 'r.rowid DESC';
+    cteParts.push(`
+      latest_run AS (
+        SELECT r.run_id AS runId,
+               r.thread_id AS threadId,
+               ${runCols.has('ordinal') ? 'r.ordinal' : 'r.rowid'} AS ordinal,
+               r.status AS status,
+               ${runCols.has('requested_at') ? 'r.requested_at' : 'NULL'} AS requestedAt,
+               ${runCols.has('completed_at') ? 'r.completed_at' : 'NULL'} AS completedAt,
+               ${runCols.has('payload_json') ? 'r.payload_json' : 'NULL'} AS payloadJson,
+               ROW_NUMBER() OVER (PARTITION BY r.thread_id ORDER BY ${runOrder}) AS rn
+        FROM orchestration_v2_projection_runs r
+        WHERE r.thread_id IN (SELECT threadId FROM glm_threads)
+      )
+    `);
+  }
+  if (hasAttempts) {
+    const attemptCols = schema.columns.get('orchestration_v2_projection_run_attempts') || new Set();
+    const hasRunId = hasRuns && attemptCols.has('run_id');
+    const hasAttemptOrdinal = attemptCols.has('attempt_ordinal');
+    const orderBy = hasRunId
+      ? `r.ordinal DESC${hasAttemptOrdinal ? ', a.attempt_ordinal DESC' : ''}, a.rowid DESC`
+      : (hasAttemptOrdinal ? 'a.attempt_ordinal DESC, a.rowid DESC' : 'a.rowid DESC');
+    const joinRuns = hasRunId
+      ? 'JOIN orchestration_v2_projection_runs r ON r.run_id = a.run_id'
+      : '';
+    cteParts.push(`
+      glm_attempt AS (
+        SELECT a.thread_id, a.provider, json_extract(a.payload_json, '$.nativeThreadId') AS native,
+          ROW_NUMBER() OVER (PARTITION BY a.thread_id ORDER BY ${orderBy}) AS rank
+        FROM orchestration_v2_projection_run_attempts a
+        ${joinRuns}
+        WHERE a.thread_id IN (SELECT threadId FROM glm_threads)
+          AND json_extract(a.payload_json, '$.nativeThreadId') IS NOT NULL
+      )
+    `);
+  }
+
+  const filterParts = [];
+  const params = [];
+
+  if (detailTarget) {
+    const detailConds = ['lower(gt.threadId) = ?'];
+    params.push(detailTarget);
+    if (hasProviderThreads) {
+      detailConds.push("lower(COALESCE(json_extract(gt.ptPayloadJson, '$.nativeThreadRef.nativeId'), '')) = ?");
+      params.push(detailTarget);
+    }
+    if (hasAttempts) {
+      detailConds.push("lower(COALESCE(att.native, '')) = ?");
+      params.push(detailTarget);
+    }
+    filterParts.push(`(${detailConds.join(' OR ')})`);
+  } else if (cutoffMs !== null) {
+    const selectConds = [];
+    if (hasLatestRun) {
+      selectConds.push("lower(COALESCE(lr.status, '')) IN ('queued', 'preparing', 'starting', 'running', 'waiting')");
+      if (hasProviderThreads) {
+        selectConds.push("(lr.runId IS NULL AND lower(COALESCE(gt.ptStatus, '')) = 'active')");
+      }
+    } else if (hasProviderThreads) {
+      selectConds.push("lower(COALESCE(gt.ptStatus, '')) = 'active'");
+    }
+
+    const sqlCutoff = cutoffMs - 2000;
+    if (threadCols.has('updated_at')) {
+      selectConds.push(`${sqlEpochMsExpr('gt.threadUpdatedAt')} >= ?`);
+      params.push(sqlCutoff);
+    }
+    if (hasProviderThreads && ptCols.has('updated_at')) {
+      selectConds.push(`${sqlEpochMsExpr('gt.ptUpdatedAt')} >= ?`);
+      params.push(sqlCutoff);
+    }
+    if (hasLatestRun) {
+      if (runCols.has('completed_at')) {
+        selectConds.push(`${sqlEpochMsExpr('lr.completedAt')} >= ?`);
+        params.push(sqlCutoff);
+      }
+      if (runCols.has('requested_at')) {
+        selectConds.push(`${sqlEpochMsExpr('lr.requestedAt')} >= ?`);
+        params.push(sqlCutoff);
+      }
+      if (runCols.has('payload_json')) {
+        selectConds.push(`${sqlEpochMsExpr("json_extract(lr.payloadJson, '$.startedAt')")} >= ?`);
+        params.push(sqlCutoff);
+      }
+    }
+
+    if (keepNativeIds.length > 0) {
+      const keepJson = JSON.stringify(keepNativeIds);
+      selectConds.push('lower(gt.threadId) IN (SELECT value FROM json_each(?))');
+      params.push(keepJson);
+      if (hasProviderThreads) {
+        selectConds.push("lower(COALESCE(json_extract(gt.ptPayloadJson, '$.nativeThreadRef.nativeId'), '')) IN (SELECT value FROM json_each(?))");
+        params.push(keepJson);
+      }
+      if (hasAttempts) {
+        selectConds.push("lower(COALESCE(att.native, '')) IN (SELECT value FROM json_each(?))");
+        params.push(keepJson);
+      }
+    }
+
+    if (selectConds.length > 0) {
+      filterParts.push(`(${selectConds.join(' OR ')})`);
+    }
+  }
+
+  const threadsSql = `
+    WITH ${cteParts.join(',\n')}
+    SELECT gt.threadId,
+           gt.title,
+           gt.defaultProvider,
+           gt.threadUpdatedAt,
+           gt.threadCreatedAt,
+           gt.archivedAt,
+           gt.deletedAt,
+           gt.threadPayloadJson,
+           gt.workspaceRoot,
+           gt.ptStatus,
+           gt.ptUpdatedAt,
+           gt.ptPayloadJson,
+           ${hasLatestRun ? 'lr.runId' : 'NULL'} AS runId,
+           ${hasLatestRun ? 'lr.ordinal' : 'NULL'} AS runOrdinal,
+           ${hasLatestRun ? 'lr.status' : 'NULL'} AS runStatus,
+           ${hasLatestRun ? 'lr.requestedAt' : 'NULL'} AS runRequestedAt,
+           ${hasLatestRun ? 'lr.completedAt' : 'NULL'} AS runCompletedAt,
+           ${hasLatestRun ? 'lr.payloadJson' : 'NULL'} AS runPayloadJson,
+           ${hasAttempts ? 'att.provider' : 'NULL'} AS attemptProvider,
+           ${hasAttempts ? 'att.native' : 'NULL'} AS attemptNative
+    FROM glm_threads gt
+    ${hasLatestRun ? 'LEFT JOIN latest_run lr ON lr.threadId = gt.threadId AND lr.rn = 1' : ''}
+    ${hasAttempts ? 'LEFT JOIN glm_attempt att ON att.thread_id = gt.threadId AND att.rank = 1' : ''}
+    ${filterParts.length > 0 ? `WHERE ${filterParts.join('\n      AND ')}` : ''}
+  `;
+
+  const threadRows = db.prepare(threadsSql).all(...params);
+  if (!threadRows.length) return [];
+
+  // Deduplicate if a thread matched multiple provider_threads rows (keep newest).
+  const threadById = new Map();
+  for (const row of threadRows) {
+    const prev = threadById.get(row.threadId);
+    if (!prev || parseTs(row.ptUpdatedAt) >= parseTs(prev.ptUpdatedAt)) {
+      threadById.set(row.threadId, row);
+    }
+  }
+
+  const threadIds = [...threadById.keys()];
+  const idsJson = JSON.stringify(threadIds);
+
+  // Latest attempt nativeThreadId for parent threads (selected GLM threads already carry attemptNative)
+  const parentThreadIds = new Set();
+  for (const row of threadById.values()) {
+    const payload = safeJsonParse(row.threadPayloadJson);
+    if (isSubagentLineage(payload?.lineage)) {
+      parentThreadIds.add(payload.lineage.parentThreadId.trim());
+    }
+  }
+  const latestAttemptByThread = new Map();
+  if (hasAttempts && parentThreadIds.size > 0) {
+    const attemptSql = `
+      ${buildAttemptCte(schema)}
+      SELECT thread_id AS threadId, provider, native
+      FROM attempt
+      WHERE rank = 1
+        AND thread_id IN (SELECT value FROM json_each(?))
     `;
-
-    const threadRows = db.prepare(threadsSql).all();
-    if (!threadRows.length) return [];
-
-    // Deduplicate if a thread matched multiple provider_threads rows (keep newest).
-    const threadById = new Map();
-    for (const row of threadRows) {
-      const prev = threadById.get(row.threadId);
-      if (!prev || parseTs(row.ptUpdatedAt) >= parseTs(prev.ptUpdatedAt)) {
-        threadById.set(row.threadId, row);
-      }
+    for (const row of db.prepare(attemptSql).all(JSON.stringify([...parentThreadIds]))) {
+      latestAttemptByThread.set(row.threadId, row);
     }
+  }
 
-    const threadIds = [...threadById.keys()];
-    const idsJson = JSON.stringify(threadIds);
-
-    // Latest run per thread
-    const latestRunByThread = new Map();
-    if (hasRuns && runCols.has('status')) {
-      const runSql = `
-        WITH ranked AS (
-          SELECT r.run_id AS runId,
-                 r.thread_id AS threadId,
-                 r.ordinal AS ordinal,
-                 r.status AS status,
-                 ${runCols.has('requested_at') ? 'r.requested_at' : 'NULL'} AS requestedAt,
-                 ${runCols.has('completed_at') ? 'r.completed_at' : 'NULL'} AS completedAt,
-                 ${runCols.has('payload_json') ? 'r.payload_json' : 'NULL'} AS payloadJson,
-                 ROW_NUMBER() OVER (PARTITION BY r.thread_id ORDER BY r.ordinal DESC) AS rn
-          FROM orchestration_v2_projection_runs r
-          WHERE r.thread_id IN (SELECT value FROM json_each(?))
-        )
-        SELECT * FROM ranked WHERE rn = 1
-      `;
-      for (const row of db.prepare(runSql).all(idsJson)) {
-        latestRunByThread.set(row.threadId, row);
-      }
-    }
-
-    // Latest attempt nativeThreadId per thread + parent threads
-    const parentThreadIds = new Set();
-    for (const row of threadById.values()) {
-      const payload = safeJsonParse(row.threadPayloadJson);
-      if (isSubagentLineage(payload?.lineage)) {
-        parentThreadIds.add(payload.lineage.parentThreadId.trim());
-      }
-    }
-    const attemptThreadIds = [...new Set([...threadIds, ...parentThreadIds])];
-    const latestAttemptByThread = new Map();
-    if (hasAttempts && attemptThreadIds.length > 0) {
-      const attemptSql = `
-        ${buildAttemptCte(schema)}
-        SELECT thread_id AS threadId, provider, native
-        FROM attempt
-        WHERE rank = 1
-          AND thread_id IN (SELECT value FROM json_each(?))
-      `;
-      for (const row of db.prepare(attemptSql).all(JSON.stringify(attemptThreadIds))) {
-        latestAttemptByThread.set(row.threadId, row);
-      }
-    }
-
-    // Token usage per thread from provider_turns
-    const turnsByThread = new Map();
-    if (hasTurns) {
+  // Aggregated token usage per selected thread from provider_turns (SQL-side)
+  const tokenSummaryByThread = new Map();
+  if (hasTurns) {
+    const turnCols = schema.columns.get('orchestration_v2_projection_provider_turns') || new Set();
+    if (turnCols.has('payload_json')) {
+      const sortExpr = turnCols.has('ordinal') ? 'ordinal' : 'rowid';
       const turnsSql = `
-        SELECT thread_id AS threadId, status, started_at AS startedAt, completed_at AS completedAt, payload_json AS payloadJson
-        FROM orchestration_v2_projection_provider_turns
-        WHERE thread_id IN (SELECT value FROM json_each(?))
-        ORDER BY ordinal ASC
+        WITH parsed AS (
+          SELECT
+            thread_id AS threadId,
+            ${sortExpr} AS sortOrd,
+            rowid AS rid,
+            MAX(0, COALESCE(
+              CAST(json_extract(payload_json, '$.turnTokenUsage.inputTokens') AS REAL),
+              CAST(json_extract(payload_json, '$.turnTokenUsage.input_tokens') AS REAL),
+              0
+            )) AS rawIn,
+            MAX(0, COALESCE(
+              CAST(json_extract(payload_json, '$.turnTokenUsage.cachedInputTokens') AS REAL),
+              CAST(json_extract(payload_json, '$.turnTokenUsage.cached_input_tokens') AS REAL),
+              CAST(json_extract(payload_json, '$.turnTokenUsage.cacheReadInputTokens') AS REAL),
+              0
+            )) AS cachedIn,
+            MAX(0, COALESCE(
+              CAST(json_extract(payload_json, '$.turnTokenUsage.outputTokens') AS REAL),
+              CAST(json_extract(payload_json, '$.turnTokenUsage.output_tokens') AS REAL),
+              0
+            )) AS outTok,
+            MAX(0, COALESCE(
+              CAST(json_extract(payload_json, '$.turnTokenUsage.reasoningTokens') AS REAL),
+              CAST(json_extract(payload_json, '$.turnTokenUsage.reasoning_tokens') AS REAL),
+              0
+            )) AS reasoningTok
+          FROM orchestration_v2_projection_provider_turns
+          WHERE thread_id IN (SELECT value FROM json_each(?))
+            AND CASE WHEN json_valid(payload_json) THEN json_type(payload_json, '$.turnTokenUsage') END = 'object'
+        ),
+        nonzero AS (
+          SELECT *,
+            ROW_NUMBER() OVER (PARTITION BY threadId ORDER BY sortOrd DESC, rid DESC) AS rnDesc
+          FROM parsed
+          WHERE rawIn > 0 OR cachedIn > 0 OR outTok > 0 OR reasoningTok > 0
+        )
+        SELECT
+          threadId,
+          SUM(MAX(0, rawIn - cachedIn)) AS totalUncachedInput,
+          SUM(cachedIn) AS totalCacheRead,
+          SUM(outTok) AS totalOutput,
+          SUM(reasoningTok) AS totalReasoning,
+          COUNT(*) AS usageTurnCount,
+          MAX(CASE WHEN rnDesc = 1 THEN rawIn ELSE 0 END) AS lastTurnTotalInput
+        FROM nonzero
+        GROUP BY threadId
       `;
       for (const row of db.prepare(turnsSql).all(idsJson)) {
-        if (!turnsByThread.has(row.threadId)) turnsByThread.set(row.threadId, []);
-        turnsByThread.get(row.threadId).push(row);
+        tokenSummaryByThread.set(row.threadId, row);
       }
     }
+  }
 
-    // Turn items per thread (ordered by ordinal ASC, keep latest T3_TURN_ITEM_LIMIT)
-    const itemsByThread = new Map();
-    if (hasItems) {
-      const itemsSql = `
-        SELECT thread_id AS threadId, run_id AS runId, ordinal, type, status, updated_at AS updatedAt, payload_json AS payloadJson
+  // Bounded turn items per selected thread (newest T3_TURN_ITEM_LIMIT in SQL, returned ordinal ASC)
+  const itemsByThread = new Map();
+  if (hasItems) {
+    const itemCols = schema.columns.get('orchestration_v2_projection_turn_items') || new Set();
+    const ordCol = itemCols.has('ordinal') ? 'ordinal' : 'rowid';
+    const itemSelect = `thread_id AS threadId, ${itemCols.has('run_id') ? 'run_id' : 'NULL'} AS runId, ${ordCol} AS ordinal, ${itemCols.has('type') ? 'type' : "''"} AS type, ${itemCols.has('status') ? 'status' : "''"} AS status, ${itemCols.has('updated_at') ? 'updated_at' : 'NULL'} AS updatedAt, payload_json AS payloadJson`;
+    if (threadIds.length === 1) {
+      const rows = db.prepare(`
+        SELECT ${itemSelect}
         FROM orchestration_v2_projection_turn_items
-        WHERE thread_id IN (SELECT value FROM json_each(?))
-        ORDER BY ordinal ASC
+        WHERE thread_id = ?
+        ORDER BY ${ordCol} DESC, rowid DESC
+        LIMIT ?
+      `).all(threadIds[0], T3_TURN_ITEM_LIMIT);
+      rows.reverse();
+      if (rows.length) itemsByThread.set(threadIds[0], rows);
+    } else {
+      const itemsSql = `
+        WITH ranked AS (
+          SELECT ${itemSelect}, rowid AS rid,
+                 ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY ${ordCol} DESC, rowid DESC) AS rn
+          FROM orchestration_v2_projection_turn_items
+          WHERE thread_id IN (SELECT value FROM json_each(?))
+        )
+        SELECT threadId, runId, ordinal, type, status, updatedAt, payloadJson
+        FROM ranked
+        WHERE rn <= ?
+        ORDER BY threadId ASC, ordinal ASC, rid ASC
       `;
-      for (const row of db.prepare(itemsSql).all(idsJson)) {
+      for (const row of db.prepare(itemsSql).all(idsJson, T3_TURN_ITEM_LIMIT)) {
         let list = itemsByThread.get(row.threadId);
         if (!list) {
           list = [];
           itemsByThread.set(row.threadId, list);
         }
         list.push(row);
-        if (list.length > T3_TURN_ITEM_LIMIT) list.shift();
       }
     }
+  }
 
-    // Messages per thread for prompt / detail
-    const messagesByThread = new Map();
-    if (hasMessages) {
-      const msgSql = `
-        SELECT thread_id AS threadId, role, created_at AS createdAt, updated_at AS updatedAt, payload_json AS payloadJson
+  // Bounded messages per selected thread (newest T3_MESSAGE_LIMIT in SQL, returned created_at ASC)
+  const messagesByThread = new Map();
+  if (hasMessages) {
+    const msgCols = schema.columns.get('orchestration_v2_projection_messages') || new Set();
+    const createdCol = msgCols.has('created_at') ? 'created_at' : 'rowid';
+    const msgSelect = `thread_id AS threadId, ${msgCols.has('role') ? 'role' : "''"} AS role, ${msgCols.has('created_at') ? 'created_at' : 'NULL'} AS createdAt, ${msgCols.has('updated_at') ? 'updated_at' : 'NULL'} AS updatedAt, payload_json AS payloadJson`;
+    if (threadIds.length === 1) {
+      const rows = db.prepare(`
+        SELECT ${msgSelect}
         FROM orchestration_v2_projection_messages
-        WHERE thread_id IN (SELECT value FROM json_each(?))
-        ORDER BY created_at ASC
+        WHERE thread_id = ?
+        ORDER BY ${createdCol} DESC, rowid DESC
+        LIMIT ?
+      `).all(threadIds[0], T3_MESSAGE_LIMIT);
+      rows.reverse();
+      if (rows.length) messagesByThread.set(threadIds[0], rows);
+    } else {
+      const msgSql = `
+        WITH ranked AS (
+          SELECT ${msgSelect}, ${createdCol} AS sortCreated, rowid AS rid,
+                 ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY ${createdCol} DESC, rowid DESC) AS rn
+          FROM orchestration_v2_projection_messages
+          WHERE thread_id IN (SELECT value FROM json_each(?))
+        )
+        SELECT threadId, role, createdAt, updatedAt, payloadJson
+        FROM ranked
+        WHERE rn <= ?
+        ORDER BY threadId ASC, sortCreated ASC, rid ASC
       `;
-      for (const row of db.prepare(msgSql).all(idsJson)) {
+      for (const row of db.prepare(msgSql).all(idsJson, T3_MESSAGE_LIMIT)) {
         let list = messagesByThread.get(row.threadId);
         if (!list) {
           list = [];
           messagesByThread.set(row.threadId, list);
         }
         list.push(row);
-        if (list.length > 60) list.shift();
+      }
+    }
+  }
+
+  const records = [];
+  for (const row of threadById.values()) {
+    const threadPayload = safeJsonParse(row.threadPayloadJson) || {};
+    const ptPayload = safeJsonParse(row.ptPayloadJson) || {};
+    const latestRun = row.runId != null || row.runStatus != null
+      ? {
+        runId: row.runId,
+        ordinal: row.runOrdinal,
+        status: row.runStatus,
+        requestedAt: row.runRequestedAt,
+        completedAt: row.runCompletedAt,
+        payloadJson: row.runPayloadJson,
+      }
+      : null;
+    const runPayload = latestRun ? safeJsonParse(latestRun.payloadJson) || {} : {};
+
+    const nativeId = (typeof ptPayload?.nativeThreadRef?.nativeId === 'string' && ptPayload.nativeThreadRef.nativeId.trim())
+      || (typeof row.attemptNative === 'string' && row.attemptNative.trim())
+      || row.threadId;
+    const sessionId = `zai-${nativeId}`;
+
+    const archivedAt = (typeof row.archivedAt === 'string' && row.archivedAt.trim())
+      || (typeof threadPayload.archivedAt === 'string' && threadPayload.archivedAt.trim())
+      || null;
+    const deletedAt = (typeof row.deletedAt === 'string' && row.deletedAt.trim())
+      || (typeof threadPayload.deletedAt === 'string' && threadPayload.deletedAt.trim())
+      || null;
+    const isArchivedOrDeleted = Boolean(archivedAt || deletedAt);
+
+    // Run lifecycle: honor explicit terminal run status; only fall back to
+    // provider_threads.status === 'active' when no run lifecycle row exists.
+    const runStatus = latestRun && typeof latestRun.status === 'string' && latestRun.status.trim()
+      ? latestRun.status.trim().toLowerCase()
+      : null;
+    const runActive = Boolean(runStatus && T3_ACTIVE_RUN_STATUS_SET.has(runStatus));
+    const ptActive = !runStatus && String(row.ptStatus || '').toLowerCase() === 'active';
+    const isLive = !isArchivedOrDeleted && (runActive || ptActive);
+
+    const modelSelection = runPayload?.modelSelection || threadPayload?.modelSelection || null;
+    const model = (typeof modelSelection?.model === 'string' && modelSelection.model.trim()) || 'glm';
+    const reasoningEffort = extractThoughtLevel(modelSelection);
+
+    const rawProject = (typeof threadPayload.worktreePath === 'string' && threadPayload.worktreePath.trim())
+      || (typeof row.workspaceRoot === 'string' && row.workspaceRoot.trim())
+      || null;
+    const project = rawProject ? (normalizeProjectPath(rawProject) || rawProject) : null;
+    const gitBranch = typeof threadPayload.branch === 'string' && threadPayload.branch.trim()
+      ? threadPayload.branch.trim().slice(0, 256)
+      : null;
+
+    const rawTitle = typeof row.title === 'string' ? row.title.trim().slice(0, 128) : '';
+    const userNamed = threadPayload.titleRenamed === true;
+
+    // Parent lineage
+    let parentSessionId = null;
+    let agentType = 'main';
+    let subagentKind = null;
+    if (isSubagentLineage(threadPayload.lineage)) {
+      const parentAttempt = latestAttemptByThread.get(threadPayload.lineage.parentThreadId.trim());
+      const resolvedParent = parentAttempt ? parentSessionIdFor(parentAttempt.provider, parentAttempt.native) : null;
+      if (resolvedParent) {
+        parentSessionId = resolvedParent;
+        agentType = 'sub-agent';
+        subagentKind = 'delegate';
       }
     }
 
-    const records = [];
-    for (const row of threadById.values()) {
-      const threadPayload = safeJsonParse(row.threadPayloadJson) || {};
-      const ptPayload = safeJsonParse(row.ptPayloadJson) || {};
-      const latestRun = latestRunByThread.get(row.threadId) || null;
-      const runPayload = latestRun ? safeJsonParse(latestRun.payloadJson) || {} : {};
-      const attempt = latestAttemptByThread.get(row.threadId) || null;
+    // Token usage from aggregated provider_turns + contextUsage from provider_threads
+    const turnSummary = tokenSummaryByThread.get(row.threadId) || null;
+    const totalUncachedInput = Math.max(0, Number(turnSummary?.totalUncachedInput) || 0);
+    const totalOutput = Math.max(0, Number(turnSummary?.totalOutput) || 0);
+    const totalCacheRead = Math.max(0, Number(turnSummary?.totalCacheRead) || 0);
+    const totalReasoning = Math.max(0, Number(turnSummary?.totalReasoning) || 0);
+    const usageTurnCount = Math.max(0, Number(turnSummary?.usageTurnCount) || 0);
+    const lastTurnTotalInput = Math.max(0, Number(turnSummary?.lastTurnTotalInput) || 0);
 
-      const nativeId = (typeof ptPayload?.nativeThreadRef?.nativeId === 'string' && ptPayload.nativeThreadRef.nativeId.trim())
-        || (typeof attempt?.native === 'string' && attempt.native.trim())
-        || row.threadId;
-      const sessionId = `zai-${nativeId}`;
+    const ctxUsage = ptPayload?.contextUsage;
+    const contextWindowMax = (Number.isFinite(Number(ctxUsage?.maxTokens)) && Number(ctxUsage.maxTokens) > 0)
+      ? Number(ctxUsage.maxTokens)
+      : (contextWindowForModel(model, 'zai') || 1_000_000);
+    const contextWindow = (Number.isFinite(Number(ctxUsage?.usedTokens)) && Number(ctxUsage.usedTokens) > 0)
+      ? Number(ctxUsage.usedTokens)
+      : lastTurnTotalInput;
 
-      const modelSelection = runPayload?.modelSelection || threadPayload?.modelSelection || null;
-      const model = (typeof modelSelection?.model === 'string' && modelSelection.model.trim()) || 'glm';
-      const reasoningEffort = extractThoughtLevel(modelSelection);
+    const tokenUsage = usageTurnCount > 0 || contextWindow > 0 ? {
+      availability: 'observed',
+      input: totalUncachedInput,
+      output: totalOutput,
+      totalInput: totalUncachedInput,
+      totalOutput: totalOutput,
+      cacheRead: totalCacheRead,
+      cacheCreate: 0,
+      cacheWrite: 0,
+      reasoningTokens: totalReasoning,
+      reasoningInOutput: true,
+      turnCount: usageTurnCount,
+      contextWindow,
+      contextWindowMax,
+    } : null;
 
-      const rawProject = (typeof threadPayload.worktreePath === 'string' && threadPayload.worktreePath.trim())
-        || (typeof row.workspaceRoot === 'string' && row.workspaceRoot.trim())
-        || null;
-      const project = rawProject ? (normalizeProjectPath(rawProject) || rawProject) : null;
-      const gitBranch = typeof threadPayload.branch === 'string' && threadPayload.branch.trim()
-        ? threadPayload.branch.trim().slice(0, 256)
-        : null;
+    // Turn items reduction
+    const items = itemsByThread.get(row.threadId) || [];
+    const observedSources = emptyObservedSources();
+    const dialogueRaw = [];
+    const workingSetRaw = [];
+    const lastResults = [];
+    const gitEvents = [];
+    const toolHistory = [];
+    let todos = [];
+    let lastTool = null;
+    let lastToolInput = null;
+    let lastMessage = null;
+    let pendingTool = null;
+    let pendingSince = null;
+    let errorItem = null;
+    let latestItemTs = 0;
 
-      const rawTitle = typeof row.title === 'string' ? row.title.trim().slice(0, 128) : '';
-      const userNamed = threadPayload.titleRenamed === true;
+    for (const itemRow of items) {
+      const p = safeJsonParse(itemRow.payloadJson) || {};
+      const itemType = itemRow.type || p.type || '';
+      const itemStatus = String(itemRow.status || p.status || '').toLowerCase();
+      const startedAt = parseTs(p.startedAt);
+      const completedAt = parseTs(p.completedAt);
+      const updatedAt = parseTs(itemRow.updatedAt || p.updatedAt);
+      const itemTs = Math.max(completedAt, updatedAt, startedAt);
+      if (itemTs > latestItemTs) latestItemTs = itemTs;
 
-      // Parent lineage
-      let parentSessionId = null;
-      let agentType = 'main';
-      let subagentKind = null;
-      if (isSubagentLineage(threadPayload.lineage)) {
-        const parentAttempt = latestAttemptByThread.get(threadPayload.lineage.parentThreadId.trim());
-        const resolvedParent = parentAttempt ? parentSessionIdFor(parentAttempt.provider, parentAttempt.native) : null;
-        if (resolvedParent) {
-          parentSessionId = resolvedParent;
-          agentType = 'sub-agent';
-          subagentKind = 'delegate';
-        }
-      }
-
-      // Token usage from provider_turns + contextUsage from provider_threads
-      const turns = turnsByThread.get(row.threadId) || [];
-      let totalUncachedInput = 0;
-      let totalOutput = 0;
-      let totalCacheRead = 0;
-      let totalReasoning = 0;
-      let usageTurnCount = 0;
-      let lastTurnTotalInput = 0;
-      for (const turn of turns) {
-        const tp = safeJsonParse(turn.payloadJson);
-        const u = tp?.turnTokenUsage;
-        if (!u || typeof u !== 'object') continue;
-        const rawIn = Math.max(0, Number(u.inputTokens ?? u.input_tokens) || 0);
-        const cachedIn = Math.max(0, Number(u.cachedInputTokens ?? u.cached_input_tokens ?? u.cacheReadInputTokens) || 0);
-        const out = Math.max(0, Number(u.outputTokens ?? u.output_tokens) || 0);
-        const reasoning = Math.max(0, Number(u.reasoningTokens ?? u.reasoning_tokens) || 0);
-        if (rawIn === 0 && cachedIn === 0 && out === 0 && reasoning === 0) continue;
-        totalUncachedInput += Math.max(0, rawIn - cachedIn);
-        totalCacheRead += cachedIn;
-        totalOutput += out;
-        totalReasoning += reasoning;
-        usageTurnCount += 1;
-        lastTurnTotalInput = rawIn;
-      }
-      const ctxUsage = ptPayload?.contextUsage;
-      const contextWindowMax = (Number.isFinite(Number(ctxUsage?.maxTokens)) && Number(ctxUsage.maxTokens) > 0)
-        ? Number(ctxUsage.maxTokens)
-        : (contextWindowForModel(model, 'zai') || 1_000_000);
-      const contextWindow = (Number.isFinite(Number(ctxUsage?.usedTokens)) && Number(ctxUsage.usedTokens) > 0)
-        ? Number(ctxUsage.usedTokens)
-        : lastTurnTotalInput;
-
-      const tokenUsage = usageTurnCount > 0 || contextWindow > 0 ? {
-        availability: 'observed',
-        input: totalUncachedInput,
-        output: totalOutput,
-        totalInput: totalUncachedInput,
-        totalOutput: totalOutput,
-        cacheRead: totalCacheRead,
-        cacheCreate: 0,
-        cacheWrite: 0,
-        reasoningTokens: totalReasoning,
-        reasoningInOutput: true,
-        turnCount: usageTurnCount,
-        contextWindow,
-        contextWindowMax,
-      } : null;
-
-      // Turn items reduction
-      const items = itemsByThread.get(row.threadId) || [];
-      const observedSources = emptyObservedSources();
-      const dialogueRaw = [];
-      const workingSetRaw = [];
-      const lastResults = [];
-      const gitEvents = [];
-      const toolHistory = [];
-      let todos = [];
-      let lastTool = null;
-      let lastToolInput = null;
-      let lastMessage = null;
-      let pendingTool = null;
-      let pendingSince = null;
-      let errorItem = null;
-      let latestItemTs = 0;
-
-      for (const itemRow of items) {
-        const p = safeJsonParse(itemRow.payloadJson) || {};
-        const itemType = itemRow.type || p.type || '';
-        const itemStatus = String(itemRow.status || p.status || '').toLowerCase();
-        const startedAt = parseTs(p.startedAt);
-        const completedAt = parseTs(p.completedAt);
-        const updatedAt = parseTs(itemRow.updatedAt || p.updatedAt);
-        const itemTs = Math.max(completedAt, updatedAt, startedAt);
-        if (itemTs > latestItemTs) latestItemTs = itemTs;
-
-        const isActiveItem = T3_ACTIVE_ITEM_STATUSES.has(itemStatus)
-          && (!latestRun || !itemRow.runId || itemRow.runId === latestRun.runId);
+      const isActiveItem = isLive && T3_ACTIVE_ITEM_STATUSES.has(itemStatus)
+        && (!latestRun || !itemRow.runId || itemRow.runId === latestRun.runId);
 
         if (itemType === 'command_execution') {
           const cmd = typeof p.input === 'string' ? p.input : '';
@@ -1137,10 +1458,6 @@ function readRawT3AcpGlmRecords() {
       }
 
       // Run lifecycle & turn state
-      const runStatus = latestRun ? String(latestRun.status || '').toLowerCase() : null;
-      const runActive = Boolean(runStatus && T3_ACTIVE_RUN_STATUS_SET.has(runStatus));
-      const ptActive = String(row.ptStatus || '').toLowerCase() === 'active';
-      const isLive = runActive || ptActive;
       const turnStartedAt = parseTs(runPayload.startedAt || latestRun?.requestedAt) || null;
       const runCompletedAt = parseTs(latestRun?.completedAt || runPayload.completedAt) || null;
       const lastActivity = Math.max(
@@ -1153,7 +1470,7 @@ function readRawT3AcpGlmRecords() {
       );
 
       let turn;
-      if (runStatus === 'waiting') {
+      if (isLive && runStatus === 'waiting') {
         turn = deriveTurnState({
           pendingTool: pendingTool || lastTool || 'waiting',
           pendingSince: pendingSince || turnStartedAt || lastActivity,
@@ -1185,6 +1502,7 @@ function readRawT3AcpGlmRecords() {
         threadId: row.threadId,
         nativeId,
         isLive,
+        isArchivedOrDeleted,
         lastActivity,
         dialogueCandidates,
         session: {
@@ -1235,15 +1553,42 @@ function readRawT3AcpGlmRecords() {
       });
     }
 
-    return records;
-  }, []);
+  return records;
+}
+
+function readCachedT3AcpGlmDiscoveryRecords({ cutoffMs = null, keepNativeIds = [] } = {}) {
+  const sig = syncCacheSignature();
+  if (!sig) return [];
+  const keepKey = JSON.stringify(keepNativeIds);
+  const cached = _cache.glmDiscovery.get(keepKey);
+  if (cached && (cached.cutoffMs === null || (cutoffMs !== null && cutoffMs >= cached.cutoffMs))) {
+    return cached.records;
+  }
+  const value = withT3Db(db => {
+    const schema = readSchemaInfo(db);
+    return queryT3AcpGlmRecords(db, schema, {
+      cutoffMs,
+      keepNativeIds,
+      includeArchived: false,
+      detailTarget: null,
+    });
+  }, T3_QUERY_FAILED);
+  if (value === T3_QUERY_FAILED) return [];
+  if (_cache.glmDiscovery.size >= T3_DISCOVERY_CACHE_MAX) {
+    _cache.glmDiscovery.delete(_cache.glmDiscovery.keys().next().value);
+  }
+  _cache.glmDiscovery.set(keepKey, { cutoffMs, records: value });
+  return value;
 }
 
 function readT3AcpGlmSessions(activeThresholdMs, { now = Date.now(), keepSessionIds = null } = {}) {
-  const records = readRawT3AcpGlmRecords();
   const threshold = activeThresholdMs == null ? null : Math.max(0, Number(activeThresholdMs) || 0);
+  const cutoffMs = threshold == null ? null : (now - threshold);
+  const keepNativeIds = normalizeKeepGlmNativeIds(keepSessionIds);
+  const records = readCachedT3AcpGlmDiscoveryRecords({ cutoffMs, keepNativeIds });
   const sessions = [];
   for (const record of records) {
+    if (record.isArchivedOrDeleted) continue;
     const keep = record.isLive || Boolean(keepSessionIds?.has(record.session.sessionId));
     if (!keep && threshold != null && (now - record.lastActivity > threshold)) continue;
     const dialogue = pickDialogue(record.dialogueCandidates, { now });
@@ -1264,7 +1609,12 @@ function readT3AcpGlmSessions(activeThresholdMs, { now = Date.now(), keepSession
 function readT3AcpGlmSessionDetail(nativeId, project = null) {
   const target = String(nativeId || '').trim().toLowerCase();
   if (!target) return null;
-  const records = readRawT3AcpGlmRecords();
+  const records = cachedT3Query(`acpGlmDetail:${target}`, (db, schema) => queryT3AcpGlmRecords(db, schema, {
+    cutoffMs: null,
+    keepNativeIds: [],
+    includeArchived: true,
+    detailTarget: target,
+  }), []);
   const match = records.find(r => r.nativeId.toLowerCase() === target || r.threadId.toLowerCase() === target);
   if (!match) return null;
   return {

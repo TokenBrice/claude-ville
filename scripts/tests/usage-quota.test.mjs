@@ -11,27 +11,76 @@ import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentSta
 import { makeTempDir } from './support/tmp.mjs';
 
 const require = createRequire(import.meta.url);
-// The module resolves ~/.claude at load time. A temp HOME keeps fetchUsage()
-// away from the operator's real credentials, so no test can reach the network.
+// The module resolves ~/.claude at load time, and GLM/Antigravity quota read
+// env vars at call time. Isolate HOME plus provider quota env vars so tests
+// never inherit the developer's credentials or hit live hosts.
+const ISOLATED_ENV_KEYS = [
+  'GLM_MCP_API_KEY',
+  'ZAI_API_KEY',
+  'Z_AI_API_KEY',
+  'GLM_QUOTA_URL',
+  'ACP_GLM_BASE_URL',
+  'CLAUDEVILLE_T3_DIR',
+  'XDG_CONFIG_HOME',
+];
 const home = makeTempDir('claudeville-usage-quota-');
 const originalHome = process.env.HOME;
+const savedEnv = Object.fromEntries(ISOLATED_ENV_KEYS.map(key => [key, process.env[key]]));
 process.env.HOME = home;
+for (const key of ISOLATED_ENV_KEYS) delete process.env[key];
 const usageQuota = require('../../claudeville/services/usageQuota.js');
 if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
-test.after(() => fs.rmSync(home, { recursive: true, force: true }));
+test.after(() => {
+  usageQuota._test.resetQuotaCache();
+  for (const key of ISOLATED_ENV_KEYS) {
+    if (savedEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = savedEnv[key];
+  }
+  fs.rmSync(home, { recursive: true, force: true });
+});
 const {
   codexQuotaFromObservation,
   consumeQuotaResponse,
+  parseAntigravityOauthPayload,
+  parseAntigravityT3Cache,
+  parseGlmQuotaPayload,
   quotaRetryDelayMs,
+  readAntigravityQuota,
+  readGlmQuota,
   recordQuotaFailure,
   recordQuotaSuccess,
-  resetQuotaCache,
+  resetQuotaCache: rawResetQuotaCache,
   resetsAtMs,
+  setHooks,
   setQuotaChangeListener,
+  tryFetchAntigravityOauth,
+  tryFetchGlmQuota,
   QUOTA_API_TTL,
   QUOTA_MAX_STALE_MS,
   QUOTA_RESPONSE_MAX_BYTES,
 } = usageQuota._test;
+
+function unexpectedNetworkTransport(label) {
+  return (options) => {
+    assert.fail(`unexpected live ${label} request to ${options?.hostname || 'unknown host'}${options?.path || ''}`);
+  };
+}
+
+function resetQuotaCache(opts) {
+  rawResetQuotaCache(opts);
+  setHooks({
+    env: {},
+    homeDir: home,
+    glmRequest: unexpectedNetworkTransport('GLM'),
+    antigravityRequest: unexpectedNetworkTransport('Antigravity'),
+  });
+}
+
+function childEnvFor(root) {
+  const env = { ...process.env, HOME: root, USERPROFILE: root };
+  for (const key of ISOLATED_ENV_KEYS) delete env[key];
+  return env;
+}
 
 const NOW = Date.UTC(2026, 9, 27, 12, 0, 0);
 const WINDOWS = {
@@ -401,7 +450,7 @@ function codexQuotaProjection({ mtimeAgoMs = 0, newerStubAgoMs = null, firstRead
     `;
     const output = execFileSync(process.execPath, ['-e', script], {
       cwd: REPO_ROOT,
-      env: { ...process.env, HOME: root, USERPROFILE: root },
+      env: childEnvFor(root),
       encoding: 'utf8',
       maxBuffer: 4 * 1024 * 1024,
     });
@@ -427,6 +476,8 @@ test('SV-6: a live rollout feeds /api/usage.codex from its newest token_count', 
     usedPercent: 100,
     windowMinutes: 10080,
     resetsAt: FAR_RESET_MS,
+    weekly: { usedPercent: 100, windowMinutes: 10080, resetsAt: FAR_RESET_MS },
+    fiveHour: null,
     credits: { balance: 2510.32726225, hasCredits: true, unlimited: false },
     limitReached: true,
     observedAt,
@@ -539,6 +590,8 @@ test('PV-7 / Q3: LIMIT at 100 % or a reached type, the binding window, and reset
     usedPercent: null,
     windowMinutes: 10080,
     resetsAt: null,
+    weekly: null,
+    fiveHour: null,
     credits,
     limitReached: false,
     observedAt: NOW_MS - 1000,
@@ -548,10 +601,14 @@ test('PV-7 / Q3: LIMIT at 100 % or a reached type, the binding window, and reset
   assert.equal(partlyReset.usedPercent, 61);
   assert.equal(partlyReset.windowMinutes, 10080);
   assert.equal(partlyReset.limitReached, false);
+  assert.equal(partlyReset.fiveHour, null);
+  assert.equal(partlyReset.weekly?.usedPercent, 61);
 
   const bare = codexQuotaFromObservation(observe({ credits: null, reached: true }), NOW_MS);
   assert.deepEqual(bare.credits, { balance: null, hasCredits: null, unlimited: null });
   assert.equal(bare.usedPercent, null);
+  assert.equal(bare.weekly, null);
+  assert.equal(bare.fiveHour, null);
   assert.equal(bare.limitReached, true, 'a reached type alone is a LIMIT');
 });
 
@@ -608,11 +665,275 @@ test('PV-14: a Codex session detail borrows its model\'s observed context window
     `;
     const windows = JSON.parse(execFileSync(process.execPath, ['-e', script], {
       cwd: REPO_ROOT,
-      env: { ...process.env, HOME: root, USERPROFILE: root },
+      env: childEnvFor(root),
       encoding: 'utf8',
     }));
     assert.deepEqual(windows, [258_400, 475_000, 258_400]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ─── v0.69 Council Fix Lane 1 Quota Regressions ─────────────────
+
+class FakeHttpRequest extends EventEmitter {
+  constructor(onEnd) {
+    super();
+    this._onEnd = onEnd;
+    this.body = '';
+    this.destroyed = false;
+  }
+  destroy() { this.destroyed = true; }
+  end(chunk) {
+    if (chunk) this.body += String(chunk);
+    this._onEnd?.(this);
+  }
+}
+
+test('Codex quota exposes weekly and fiveHour windows separately while preserving binding usedPercent', () => {
+  const NOW_MS = Date.UTC(2026, 9, 27, 12, 0, 0);
+  const fiveHourReset = NOW_MS + 2 * 3_600_000;
+  const weeklyReset = NOW_MS + 5 * 86_400_000;
+  const observation = {
+    observedAt: NOW_MS - 1000,
+    primary: { usedPercent: 95, windowMinutes: 300, resetsAt: fiveHourReset },
+    secondary: { usedPercent: 10, windowMinutes: 10080, resetsAt: weeklyReset },
+    credits: { balance: 42, hasCredits: true, unlimited: false },
+    reached: false,
+  };
+
+  const codex = codexQuotaFromObservation(observation, NOW_MS);
+  assert.equal(codex.usedPercent, 95, 'binding window stays highest non-reset window');
+  assert.equal(codex.windowMinutes, 300);
+  assert.equal(codex.resetsAt, fiveHourReset);
+  assert.deepEqual(codex.fiveHour, { usedPercent: 95, windowMinutes: 300, resetsAt: fiveHourReset });
+  assert.deepEqual(codex.weekly, { usedPercent: 10, windowMinutes: 10080, resetsAt: weeklyReset });
+});
+
+test('Malformed GLM and Antigravity credentials never throw and record sanitized invalid-credential errors', () => {
+  const dir = makeTempDir('claudeville-bad-creds-');
+  try {
+    const missingCache = path.join(dir, 'absent-antigravity.json');
+    const tokenPath = path.join(dir, 'antigravity-oauth-token');
+    const badGlmSecret = 'glm-secret-value\nX-Injected: evil';
+    const badAgySecret = 'agy-secret-value\r\nX-Injected: evil';
+
+    // GLM embedded newline credential: zero network requests, no throw, sanitized error.
+    let glmCalls = 0;
+    resetQuotaCache({ nextAttemptAt: 0 });
+    setHooks({
+      env: { ZAI_API_KEY: badGlmSecret },
+      homeDir: dir,
+      glmRequest: () => { glmCalls++; return new FakeHttpRequest(); },
+    });
+    assert.doesNotThrow(() => tryFetchGlmQuota(NOW));
+    assert.equal(glmCalls, 0, 'malformed GLM credential must not hit transport');
+    const glmResult = readGlmQuota(NOW);
+    assert.deepEqual(glmResult?.error, { status: 'invalid-credential', at: NOW });
+    assert.doesNotMatch(JSON.stringify(glmResult), /glm-secret-value|X-Injected/);
+
+    // GLM synchronous transport throw: caught safely, records invalid-credential.
+    resetQuotaCache({ nextAttemptAt: 0 });
+    setHooks({
+      env: { ZAI_API_KEY: 'valid-looking-key' },
+      homeDir: dir,
+      glmRequest: () => { throw new TypeError('ERR_INVALID_CHAR: Invalid character in header'); },
+    });
+    assert.doesNotThrow(() => tryFetchGlmQuota(NOW));
+    assert.deepEqual(readGlmQuota(NOW)?.error, { status: 'invalid-credential', at: NOW });
+
+    // Antigravity embedded newline credential: zero network requests, no throw, sanitized error.
+    fs.writeFileSync(tokenPath, JSON.stringify({
+      token: {
+        access_token: badAgySecret,
+        expiry: new Date(NOW + 10 * 60_000).toISOString(),
+      },
+    }));
+    let agyCalls = 0;
+    resetQuotaCache({ nextAttemptAt: 0 });
+    setHooks({
+      antigravityCachePath: missingCache,
+      antigravityTokenPaths: [tokenPath],
+      antigravityRequest: () => { agyCalls++; return new FakeHttpRequest(); },
+    });
+    assert.doesNotThrow(() => tryFetchAntigravityOauth(NOW));
+    assert.equal(agyCalls, 0, 'malformed Antigravity credential must not hit transport');
+    const agyResult = readAntigravityQuota(NOW);
+    assert.deepEqual(agyResult?.error, { status: 'invalid-credential', at: NOW });
+    assert.doesNotMatch(JSON.stringify(agyResult), /agy-secret-value|X-Injected/);
+
+    // Antigravity synchronous transport throw: caught safely, records invalid-credential.
+    fs.writeFileSync(tokenPath, JSON.stringify({
+      token: {
+        access_token: 'valid-token-value',
+        expiry: new Date(NOW + 10 * 60_000).toISOString(),
+      },
+    }));
+    resetQuotaCache({ nextAttemptAt: 0 });
+    setHooks({
+      antigravityCachePath: missingCache,
+      antigravityTokenPaths: [tokenPath],
+      antigravityRequest: () => { throw new TypeError('ERR_INVALID_CHAR: Invalid character in header'); },
+    });
+    assert.doesNotThrow(() => tryFetchAntigravityOauth(NOW));
+    assert.deepEqual(readAntigravityQuota(NOW)?.error, { status: 'invalid-credential', at: NOW });
+
+    // Startup init() also survives a malformed GLM credential without throwing.
+    resetQuotaCache({ nextAttemptAt: 0 });
+    assert.doesNotThrow(() => usageQuota.init({
+      env: { GLM_MCP_API_KEY: badGlmSecret },
+      homeDir: dir,
+      glmRequest: unexpectedNetworkTransport('GLM'),
+      antigravityCachePath: missingCache,
+      antigravityTokenPaths: [],
+      antigravityRequest: unexpectedNetworkTransport('Antigravity'),
+      pollAntigravity: false,
+    }));
+  } finally {
+    resetQuotaCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Antigravity OAuth credential rotation immediately clears prior account quota and discards stale in-flight responses', () => {
+  const dir = makeTempDir('claudeville-ag-rotate-');
+  const origNow = Date.now;
+  try {
+    const missingCache = path.join(dir, 'absent-antigravity.json');
+    const tokenPath = path.join(dir, 'antigravity-oauth-token');
+    const futureWeek = new Date(NOW + 5 * 86_400_000).toISOString();
+    const writeToken = (accessToken) => {
+      fs.writeFileSync(tokenPath, JSON.stringify({
+        token: {
+          access_token: accessToken,
+          expiry: new Date(NOW + 30 * 60_000).toISOString(),
+        },
+      }));
+    };
+
+    // 1. Account A fetches and caches 71% usage.
+    writeToken('account-a-token');
+    resetQuotaCache({ nextAttemptAt: 0 });
+    const pendingCallbacks = [];
+    const seenAuth = [];
+    let currentClock = NOW;
+    Date.now = () => currentClock;
+    setHooks({
+      env: {},
+      homeDir: dir,
+      antigravityCachePath: missingCache,
+      antigravityTokenPaths: [tokenPath],
+      antigravityRequest: (options, cb) => {
+        seenAuth.push(options.headers.Authorization);
+        return new FakeHttpRequest(() => {
+          pendingCallbacks.push(cb);
+        });
+      },
+    });
+
+    assert.equal(readAntigravityQuota(NOW), null, 'in-flight initial fetch has no cached reading yet');
+    assert.equal(seenAuth.length, 1);
+    assert.equal(seenAuth[0], 'Bearer account-a-token');
+
+    // Account A responds with 71%.
+    const resA = new FakeResponse(200);
+    pendingCallbacks.shift()(resA);
+    resA.emit('data', Buffer.from(JSON.stringify({
+      buckets: [{ bucketId: 'gemini-weekly', usedPercent: 71, resetTime: futureWeek, windowDurationMins: 10080 }],
+    })));
+    resA.emit('end');
+
+    const readingA = readAntigravityQuota(NOW + 1000);
+    assert.equal(readingA?.geminiWeekly?.usedPercent, 71);
+    assert.equal(seenAuth.length, 1, 'same token stays cached within TTL');
+
+    // 2. Rotate fixture token to Account B well inside Account A's 5-minute TTL backoff.
+    writeToken('account-b-token');
+    currentClock = NOW + 5000;
+    const immediatelyAfterRotation = readAntigravityQuota(currentClock);
+    assert.equal(immediatelyAfterRotation, null, 'old account 71% reading must vanish immediately on rotation');
+    assert.equal(seenAuth.length, 2, 'rotation clears retry backoff and starts fetch for new account');
+    assert.equal(seenAuth[1], 'Bearer account-b-token');
+
+    // 3. While Account B's request is still in flight, rotate to Account C; then deliver Account B's stale response!
+    const cbB = pendingCallbacks.shift();
+    writeToken('account-c-token');
+    const staleResB = new FakeResponse(200);
+    cbB(staleResB);
+    staleResB.emit('data', Buffer.from(JSON.stringify({
+      buckets: [{ bucketId: 'gemini-weekly', usedPercent: 88, resetTime: futureWeek, windowDurationMins: 10080 }],
+    })));
+    staleResB.emit('end');
+
+    currentClock = NOW + 6000;
+    assert.equal(readAntigravityQuota(currentClock), null, 'in-flight response from rotated-away account must be discarded');
+    assert.equal(seenAuth.length, 3);
+    assert.equal(seenAuth[2], 'Bearer account-c-token');
+
+    // Account C responds with 14%, then token file is deleted -> reading vanishes immediately.
+    const resC = new FakeResponse(200);
+    pendingCallbacks.shift()(resC);
+    resC.emit('data', Buffer.from(JSON.stringify({
+      buckets: [{ bucketId: 'gemini-weekly', usedPercent: 14, resetTime: futureWeek, windowDurationMins: 10080 }],
+    })));
+    resC.emit('end');
+    assert.equal(readAntigravityQuota(NOW + 7000)?.geminiWeekly?.usedPercent, 14);
+
+    fs.rmSync(tokenPath, { force: true });
+    assert.equal(readAntigravityQuota(NOW + 8000), null, 'removing token immediately clears cached OAuth quota');
+  } finally {
+    Date.now = origNow;
+    resetQuotaCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Nullable and blank Antigravity percentages fall back to remainingFraction or stay null (never fake 0%)', () => {
+  const futureWeek = new Date(NOW + 5 * 86_400_000).toISOString();
+  const t3Parsed = parseAntigravityT3Cache({
+    usageLimits: {
+      checkedAt: new Date(NOW).toISOString(),
+      windows: [
+        { id: 'gemini-weekly', usedPercent: null, remainingFraction: 0.2, resetsAt: futureWeek, windowDurationMins: 10080 },
+        { id: 'gemini-5h', usedPercent: '   ', remainingFraction: 0.25, resetsAt: futureWeek, windowDurationMins: 300 },
+        { id: '3p-weekly', usedPercent: null, remainingFraction: null, resetsAt: futureWeek, windowDurationMins: 10080 },
+        { id: '3p-5h', usedPercent: '', usedFraction: '', remainingFraction: '', resetsAt: futureWeek, windowDurationMins: 300 },
+      ],
+    },
+  }, NOW);
+  assert.equal(t3Parsed.geminiWeekly?.usedPercent, 80, '{ usedPercent: null, remainingFraction: 0.2 } -> 80%');
+  assert.equal(t3Parsed.geminiFiveHour?.usedPercent, 75, 'blank usedPercent falls back to remainingFraction');
+  assert.equal(t3Parsed.sharedWeekly, null, '{ usedPercent: null, remainingFraction: null } -> null');
+  assert.equal(t3Parsed.sharedFiveHour, null, 'blank strings -> null');
+
+  const oauthParsed = parseAntigravityOauthPayload({
+    buckets: [
+      { bucketId: 'gemini-weekly', usedPercent: null, remainingFraction: 0.2, resetTime: futureWeek },
+      { bucketId: '3p-weekly', usedPercent: null, remainingFraction: null, resetTime: futureWeek },
+    ],
+  }, NOW);
+  assert.equal(oauthParsed.geminiWeekly?.usedPercent, 80);
+  assert.equal(oauthParsed.sharedWeekly, null);
+});
+
+test('Expired GLM CREDIT_LIMIT does not shadow a valid TOKENS_LIMIT for the same window', () => {
+  const futureWeek = NOW + 5 * 86_400_000;
+  const future5h = NOW + 3 * 3_600_000;
+  const pastReset = NOW - 60_000;
+  const parsed = parseGlmQuotaPayload({
+    code: 200,
+    success: true,
+    data: {
+      level: 'pro',
+      limits: [
+        { type: 'CREDIT_LIMIT', unit: 6, number: 1, currentValue: 9000, usage: 10000, nextResetTime: pastReset },
+        { type: 'TOKENS_LIMIT', unit: 6, number: 1, currentValue: 35, usage: 100, remaining: 65, nextResetTime: futureWeek },
+        { type: 'CREDIT_LIMIT', unit: 3, number: 5, currentValue: 1000, usage: 2000, nextResetTime: pastReset },
+        { type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 22, nextResetTime: future5h },
+      ],
+    },
+  }, NOW);
+  assert.equal(parsed.status, 'ok');
+  assert.equal(parsed.snapshot.weekly?.usedPercent, 35, 'falls back to usable TOKENS_LIMIT when CREDIT_LIMIT is expired');
+  assert.equal(parsed.snapshot.fiveHour?.usedPercent, 22);
 });

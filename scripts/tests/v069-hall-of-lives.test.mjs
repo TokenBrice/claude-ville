@@ -966,3 +966,77 @@ test('AgentBiography.identityKeyFor() blocks ephemeral subagent descriptions and
     });
     assert.equal(AgentBiography.identityKeyFor(unnamedMain), 'project:codex:claude-ville');
 });
+
+test('ChronicleStore.readBiographiesPage paginates indexless stores in descending (lastSeenAt, identityKey) order without repeating page 1', async () => {
+    const tiedTs = NOW - 5_000;
+    const rows = [
+        // Deliberately unsorted storage order and mixed anonymous + durable rows with timestamp ties.
+        { identityKey: 'project:claude:beta', lastSeenAt: tiedTs - 2_000, firstSeenAt: tiedTs - 10_000 },
+        { identityKey: 'anonymous:claude:ephemeral-1', lastSeenAt: NOW - 100, firstSeenAt: tiedTs },
+        { identityKey: 'named:claude:alpha', lastSeenAt: tiedTs, firstSeenAt: tiedTs - 10_000 },
+        { identityKey: 'named:claude:gamma', lastSeenAt: tiedTs, firstSeenAt: tiedTs - 10_000 },
+        { identityKey: 'named:claude:delta', lastSeenAt: tiedTs, firstSeenAt: tiedTs - 10_000 },
+        { identityKey: 'project:codex:zeta', lastSeenAt: NOW - 500, firstSeenAt: tiedTs - 10_000 },
+        { identityKey: 'project:antigravity:omega', lastSeenAt: tiedTs - 5_000, firstSeenAt: tiedTs - 10_000 },
+        { identityKey: 'named:claude:no-ts', firstSeenAt: tiedTs },
+    ];
+
+    const expectedOrder = [
+        'project:codex:zeta',
+        'named:claude:gamma',
+        'named:claude:delta',
+        'named:claude:alpha',
+        'project:claude:beta',
+        'project:antigravity:omega',
+    ];
+
+    for (const withGetAll of [true, false]) {
+        const baseDb = memoryBiographyDb(rows, { supportContinuePrimaryKey: false, supportGetAllRecords: false });
+        const indexlessDb = {
+            transaction(storeName, mode) {
+                const tx = baseDb.transaction(storeName, mode);
+                const origObjectStore = tx.objectStore.bind(tx);
+                tx.objectStore = (name) => {
+                    const obj = origObjectStore(name);
+                    obj.indexNames = { contains: () => false };
+                    obj.index = () => { throw new Error('index should not be accessed when missing'); };
+                    if (withGetAll) {
+                        obj.getAll = () => {
+                            const req = {};
+                            setImmediate(() => {
+                                req.result = [...rows];
+                                req.onsuccess?.();
+                            });
+                            return req;
+                        };
+                    }
+                    return obj;
+                };
+                return tx;
+            },
+        };
+
+        const store = Object.assign(Object.create(ChronicleStore.prototype), {
+            db: indexlessDb,
+            open: async () => {},
+        });
+
+        const seen = [];
+        let cursor = null;
+        let hasMore = true;
+        let pages = 0;
+        while (hasMore) {
+            const page = await store.readBiographiesPage({ limit: 2, cursor, durableOnly: true });
+            pages++;
+            assert.ok(pages <= 5, `indexless pagination (${withGetAll ? 'getAll' : 'cursor'}) must not loop`);
+            for (const rec of page.records) seen.push(rec.identityKey);
+            cursor = page.nextCursor;
+            hasMore = page.hasMore;
+        }
+        assert.deepEqual(
+            seen,
+            expectedOrder,
+            `indexless pagination (${withGetAll ? 'getAll' : 'cursor'}) must visit every durable row once in exact (lastSeenAt DESC, identityKey DESC) order`,
+        );
+    }
+});

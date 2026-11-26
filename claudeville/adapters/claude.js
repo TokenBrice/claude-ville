@@ -467,6 +467,7 @@ function createTranscriptProjection() {
     _allCompactionUuids: new Set(),
     _taskItems: [],
     _taskSeq: 0,
+    _pendingTaskCreates: new Map(),
   };
 }
 
@@ -490,6 +491,9 @@ function cloneTranscriptProjection(projection) {
       ? { _taskItems: projection._taskItems.map(item => ({ ...item })) }
       : {}),
     ...(projection._taskSeq !== undefined ? { _taskSeq: projection._taskSeq } : {}),
+    ...(projection._pendingTaskCreates instanceof Map
+      ? { _pendingTaskCreates: new Map([...projection._pendingTaskCreates].map(([k, v]) => [k, { ...v }])) }
+      : {}),
   };
 }
 
@@ -544,6 +548,77 @@ function addModelHistory(projection, entry, msg) {
 
 function isToolResultOnly(content) {
   return Array.isArray(content) && content.length > 0 && content.every(block => block?.type === 'tool_result');
+}
+
+function extractTaskResultText(block) {
+  if (!block || typeof block !== 'object') return '';
+  if (typeof block.content === 'string') return block.content;
+  if (Array.isArray(block.content)) {
+    return block.content
+      .map(item => (typeof item === 'string' ? item : (item?.type === 'text' && typeof item.text === 'string' ? item.text : '')))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+function normalizeTaskId(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const cleaned = String(value).trim().replace(/^#/, '');
+  return cleaned && cleaned.length <= 64 ? cleaned : null;
+}
+
+function extractCreatedTaskId(toolUseResult, block) {
+  if (toolUseResult && typeof toolUseResult === 'object' && !Array.isArray(toolUseResult)) {
+    const structured = normalizeTaskId(
+      toolUseResult.task?.id
+      ?? toolUseResult.task?.taskId
+      ?? toolUseResult.taskId
+      ?? toolUseResult.task_id
+      ?? toolUseResult.id,
+    );
+    if (structured) return structured;
+  }
+
+  const text = extractTaskResultText(block).trim();
+  if (!text) return null;
+
+  if (text.startsWith('{') && text.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(text);
+      const fromJson = normalizeTaskId(
+        parsed?.task?.id
+        ?? parsed?.task?.taskId
+        ?? parsed?.taskId
+        ?? parsed?.task_id
+        ?? parsed?.id,
+      );
+      if (fromJson) return fromJson;
+    } catch { /* fall through to text regexes */ }
+  }
+
+  const patterns = [
+    /\bTask\s*#?\s*([A-Za-z0-9_-]+)\s+created\b/i,
+    /\bCreated\s+task\s*#?\s*([A-Za-z0-9_-]+)\b/i,
+    /\btask(?:_?id|\s+id)\s*[:=#]\s*["']?#?([A-Za-z0-9_-]+)["']?/i,
+    /\bid\s*[:=]\s*["']?#?(\d+)["']?/i,
+    /\bTask\s+#([A-Za-z0-9_-]+)\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    const id = normalizeTaskId(match?.[1]);
+    if (id) return id;
+  }
+  return null;
+}
+
+function syncProjectionTaskTodos(projection) {
+  projection.todos = projection._taskItems.map(item => ({
+    subject: item.subject,
+    status: item.status,
+    phase: null,
+  }));
 }
 
 function addTranscriptProjectionEntry(projection, entry, msg, prompt) {
@@ -611,7 +686,58 @@ function addTranscriptProjectionEntry(projection, entry, msg, prompt) {
   }
 
   addModelHistory(projection, entry, msg);
-  if (msg?.role !== 'assistant' || !Array.isArray(msg.content)) return;
+  if (!Array.isArray(msg?.content)) return;
+
+  if (msg.role === 'user') {
+    if (!(projection._pendingTaskCreates instanceof Map) || projection._pendingTaskCreates.size === 0) return;
+    if (!Array.isArray(projection._taskItems)) projection._taskItems = [];
+    const resultBlocks = msg.content.filter(block => block?.type === 'tool_result' && typeof block.tool_use_id === 'string' && block.tool_use_id.trim());
+    const singleToolUseResult = resultBlocks.length === 1 ? entry.toolUseResult : null;
+    let changed = false;
+    for (const block of resultBlocks) {
+      const toolUseId = block.tool_use_id.trim();
+      const pending = projection._pendingTaskCreates.get(toolUseId);
+      if (!pending) continue;
+      projection._pendingTaskCreates.delete(toolUseId);
+      const idx = projection._taskItems.findIndex(item => item.toolUseId === toolUseId);
+      if (block.is_error === true) {
+        if (idx >= 0) {
+          projection._taskItems.splice(idx, 1);
+          changed = true;
+        }
+        continue;
+      }
+      if (idx < 0) continue;
+      const confirmedId = extractCreatedTaskId(singleToolUseResult, block);
+      const item = projection._taskItems[idx];
+      if (confirmedId) {
+        const collisionIdx = projection._taskItems.findIndex((other, i) => i !== idx && other.id === confirmedId);
+        if (collisionIdx >= 0) {
+          projection._taskItems[collisionIdx] = {
+            id: confirmedId,
+            subject: item.subject,
+            status: item.status,
+            toolUseId: null,
+          };
+          projection._taskItems.splice(idx, 1);
+        } else {
+          item.id = confirmedId;
+          item.toolUseId = null;
+        }
+        const numericId = Number(confirmedId);
+        if (Number.isInteger(numericId) && numericId > (projection._taskSeq || 0)) {
+          projection._taskSeq = numericId;
+        }
+        changed = true;
+      } else {
+        item.toolUseId = null;
+      }
+    }
+    if (changed) syncProjectionTaskTodos(projection);
+    return;
+  }
+
+  if (msg.role !== 'assistant') return;
   for (const block of msg.content) {
     if (block?.type !== 'tool_use' || !block.input || typeof block.input !== 'object') continue;
     if (block.name === 'TodoWrite') {
@@ -625,22 +751,35 @@ function addTranscriptProjectionEntry(projection, entry, msg, prompt) {
           : (typeof block.input.content === 'string' ? block.input.content : ''));
       const subject = rawSubject.trim().slice(0, 200);
       if (subject) {
-        projection._taskSeq = (projection._taskSeq || 0) + 1;
-        const id = String(block.input.taskId ?? block.input.id ?? projection._taskSeq).trim();
         if (!Array.isArray(projection._taskItems)) projection._taskItems = [];
+        if (!(projection._pendingTaskCreates instanceof Map)) projection._pendingTaskCreates = new Map();
+        const explicitId = normalizeTaskId(block.input.taskId ?? block.input.id);
+        let id = explicitId;
+        if (!id) {
+          do {
+            projection._taskSeq = (projection._taskSeq || 0) + 1;
+            id = String(projection._taskSeq);
+          } while (projection._taskItems.some(item => item.id === id));
+        }
+        const toolUseId = typeof block.id === 'string' && block.id.trim() ? block.id.trim() : null;
         const status = normalizeTodoStatus(block.input.status);
-        const existingIdx = projection._taskItems.findIndex(item => item.id === id);
+        const existingIdx = explicitId ? projection._taskItems.findIndex(item => item.id === id) : -1;
         if (existingIdx >= 0) {
-          projection._taskItems[existingIdx] = { id, subject, status };
+          projection._taskItems[existingIdx] = { id, subject, status, toolUseId };
         } else {
-          projection._taskItems.push({ id, subject, status });
+          projection._taskItems.push({ id, subject, status, toolUseId });
           if (projection._taskItems.length > 64) projection._taskItems.shift();
         }
-        projection.todos = projection._taskItems.map(item => ({ subject: item.subject, status: item.status, phase: null }));
+        if (toolUseId) {
+          projection._pendingTaskCreates.set(toolUseId, { id, subject, status });
+          if (projection._pendingTaskCreates.size > 64) {
+            projection._pendingTaskCreates.delete(projection._pendingTaskCreates.keys().next().value);
+          }
+        }
+        syncProjectionTaskTodos(projection);
       }
     } else if (block.name === 'TaskUpdate' && Array.isArray(projection._taskItems) && projection._taskItems.length > 0) {
-      const taskId = block.input.taskId != null ? String(block.input.taskId).trim()
-        : (block.input.id != null ? String(block.input.id).trim() : '');
+      const taskId = normalizeTaskId(block.input.taskId ?? block.input.id) || '';
       const rawStatus = typeof block.input.status === 'string' ? block.input.status.trim().toLowerCase() : '';
       const rawSubject = typeof block.input.subject === 'string' ? block.input.subject.trim().slice(0, 200) : '';
       const idx = taskId
@@ -653,7 +792,7 @@ function addTranscriptProjectionEntry(projection, entry, msg, prompt) {
           if (rawStatus) projection._taskItems[idx].status = normalizeTodoStatus(rawStatus);
           if (rawSubject) projection._taskItems[idx].subject = rawSubject;
         }
-        projection.todos = projection._taskItems.map(item => ({ subject: item.subject, status: item.status, phase: null }));
+        syncProjectionTaskTodos(projection);
       }
     }
     if (!['Edit', 'Write', 'Read'].includes(block.name)) continue;
@@ -2436,6 +2575,7 @@ function stripInternalProjectionFields(projection) {
     _allCompactionUuids,
     _taskItems,
     _taskSeq,
+    _pendingTaskCreates,
     ...publicFields
   } = projection;
   return publicFields;

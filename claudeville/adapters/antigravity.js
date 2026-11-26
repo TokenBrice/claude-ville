@@ -400,6 +400,7 @@ function reduceAntigravityTranscript(steps, {
   fallbackEffort = null,
   fallbackPrompt = null,
   fallbackAgentName = null,
+  fallbackUserNamed = false,
   exitedAt = 0,
   fileMtimeMs = 0,
   geminiRoot = null,
@@ -894,6 +895,7 @@ function reduceAntigravityTranscript(steps, {
       agentId: String(convId),
       agentType: 'main',
       agentName: fallbackAgentName || null,
+      userNamed: Boolean(fallbackUserNamed && fallbackAgentName),
       teamName,
       project: project || '',
       model: resolvedModel,
@@ -951,7 +953,7 @@ function presentReducedEntry(reduced, { now = Date.now(), lineage = null, backgr
       project,
       agentType: lineage?.agentType || reduced.session.agentType,
       agentName,
-      userNamed: Boolean(t3Title),
+      userNamed: Boolean(t3Title || reduced.session.userNamed),
       subagentKind: lineage?.subagentKind || null,
       workflowName: lineage?.workflowName || undefined,
       teamName: reduced.session.teamName || lineage?.teamName || null,
@@ -1295,6 +1297,7 @@ class AntigravityAdapter {
       meta?.workspace || '',
       meta?.display || '',
       meta?.agentName || '',
+      meta?.userNamed ? 1 : 0,
       meta?.exitedAt || 0,
       meta?.metaModifiedMs || 0,
       meta?.defaultModel || '',
@@ -1326,6 +1329,7 @@ class AntigravityAdapter {
       fallbackEffort: meta?.defaultEffort || null,
       fallbackPrompt: meta?.display || null,
       fallbackAgentName: meta?.agentName || null,
+      fallbackUserNamed: Boolean(meta?.userNamed),
       exitedAt: meta?.exitedAt || 0,
       fileMtimeMs: Math.max(stat.mtimeMs, meta?.metaModifiedMs || 0),
       geminiRoot: this._geminiRoot,
@@ -1429,6 +1433,7 @@ class AntigravityAdapter {
         workspace: convMeta?.workspace || null,
         display: convMeta?.display || null,
         agentName: convMeta?.agentName || null,
+        userNamed: Boolean(convMeta?.hasExplicitRename && convMeta?.agentName),
         exitedAt: convMeta?.exitedAt || 0,
         metaModifiedMs: convMeta?.metaModifiedMs || 0,
         defaultModel: surfaceMeta.defaultModel,
@@ -1498,12 +1503,11 @@ class AntigravityAdapter {
     }
 
     // Renames and root thread lifecycle state can change at any time; both are
-    // cached by statev2.sqlite + -wal signature inside t3code.js.
+    // cached by statev2.sqlite + -wal signature inside t3code.js. Active run
+    // native IDs come strictly from `readT3ActiveRunNativeIds` above so a retry
+    // on a new native conversation ID never revives an earlier completed attempt.
     const t3Titles = readT3RenamedTitles('antigravity', t3Ids);
     const t3RootStates = readT3RootThreadState('antigravity', t3Ids);
-    for (const [id, state] of t3RootStates) {
-      if (state?.activeRun) t3ActiveRunIds.add(id);
-    }
 
     // CRITICAL: `agy acp` never closes `.db` handles of finished native subagents,
     // so a `.db` POSIX lock counts as `held` ONLY for unsettled, non-archived,
@@ -1645,6 +1649,7 @@ class AntigravityAdapter {
       workspace: convMeta?.workspace || project || null,
       display: convMeta?.display || null,
       agentName: convMeta?.agentName || null,
+      userNamed: Boolean(convMeta?.hasExplicitRename && convMeta?.agentName),
       exitedAt: convMeta?.exitedAt || 0,
       metaModifiedMs: convMeta?.metaModifiedMs || 0,
       defaultModel: surfaceMeta.defaultModel,

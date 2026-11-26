@@ -42,7 +42,7 @@ const GLM_ALLOWED_HOSTS = Object.freeze(new Set([
   'dev.bigmodel.cn',
 ]));
 const GLM_MAX_LIMIT_ROWS = 64;
-const GLM_ERROR_STATUSES = new Set([401, 403, 429]);
+const GLM_ERROR_STATUSES = new Set([401, 403, 429, 'invalid-credential']);
 
 // Antigravity quota constants
 const ANTIGRAVITY_CACHE_POLL_MS = 30_000;
@@ -54,7 +54,7 @@ const ANTIGRAVITY_ALLOWED_HOSTS = Object.freeze(new Set([
   'daily-cloudcode-pa.googleapis.com',
   'cloudcode-pa.googleapis.com',
 ]));
-const ANTIGRAVITY_ERROR_STATUSES = new Set([401, 403, 429]);
+const ANTIGRAVITY_ERROR_STATUSES = new Set([401, 403, 429, 'invalid-credential']);
 
 // Cache store
 const cache = {
@@ -420,7 +420,7 @@ function tryFetchQuota(now = Date.now()) {
   if (!creds.subscriptionType) return;
 
   const accessToken = creds.accessToken;
-  if (!accessToken) return;
+  if (!accessToken || !isValidHeaderCredential(accessToken)) return;
 
   const options = {
     hostname: 'api.anthropic.com',
@@ -433,15 +433,19 @@ function tryFetchQuota(now = Date.now()) {
     timeout: 5000,
   };
 
-  const req = https.request(options, (res) => {
-    consumeQuotaResponse(res, data => recordQuotaSuccess(data, Date.now()), {
-      onFailure: (statusCode, headers) => recordQuotaFailure(statusCode, headers, Date.now()),
+  try {
+    const req = https.request(options, (res) => {
+      consumeQuotaResponse(res, data => recordQuotaSuccess(data, Date.now()), {
+        onFailure: (statusCode, headers) => recordQuotaFailure(statusCode, headers, Date.now()),
+      });
     });
-  });
 
-  req.on('error', () => { /* ignore network errors */ });
-  req.on('timeout', () => { req.destroy(); });
-  req.end();
+    req.on('error', () => { /* ignore network errors */ });
+    req.on('timeout', () => { req.destroy(); });
+    req.end();
+  } catch {
+    /* never crash startup on malformed credential or transport setup failure */
+  }
 }
 
 // ─── Codex quota (SV-6 / PV-7) ─────────────────────────────────
@@ -465,6 +469,18 @@ function codexQuotaFromObservation(observation, now = Date.now()) {
   const binding = highest(current);
   const shape = binding || highest(windows);
   const allReset = windows.length > 0 && current.length === 0;
+  const toCodexWindow = (window) => (window ? {
+    usedPercent: window.usedPercent,
+    windowMinutes: window.windowMinutes,
+    resetsAt: window.resetsAt,
+  } : null);
+  const isCurrent = (window) => Boolean(window) && current.includes(window);
+  const weeklyCandidates = current.filter(window => Number.isFinite(window.windowMinutes) && window.windowMinutes >= 1440);
+  const fiveHourCandidates = current.filter(window => Number.isFinite(window.windowMinutes) && window.windowMinutes > 0 && window.windowMinutes < 1440);
+  const weeklySource = highest(weeklyCandidates)
+    || (isCurrent(observation.secondary) && !Number.isFinite(observation.secondary.windowMinutes) ? observation.secondary : null);
+  const fiveHourSource = highest(fiveHourCandidates)
+    || (isCurrent(observation.primary) && !Number.isFinite(observation.primary.windowMinutes) ? observation.primary : null);
   const credits = observation.credits || {};
   const change = observation.creditChange;
   const ageMs = now - observation.observedAt;
@@ -474,6 +490,8 @@ function codexQuotaFromObservation(observation, now = Date.now()) {
     usedPercent: binding ? binding.usedPercent : null,
     windowMinutes: shape ? shape.windowMinutes : null,
     resetsAt: binding ? binding.resetsAt : null,
+    weekly: toCodexWindow(weeklySource),
+    fiveHour: toCodexWindow(fiveHourSource),
     credits: {
       balance: Number.isFinite(credits.balance) ? credits.balance : null,
       hasCredits: typeof credits.hasCredits === 'boolean' ? credits.hasCredits : null,
@@ -518,16 +536,29 @@ function secretFingerprint(secret) {
   return crypto.createHash('sha256').update(secret).digest('hex');
 }
 
-function clampPercent(value) {
+function isValidHeaderCredential(value) {
+  return typeof value === 'string'
+    && value.length > 0
+    && !/[\r\n\0]/.test(value)
+    && /^[\x21-\x7e]+(?:[ \x21-\x7e]*[\x21-\x7e])?$/.test(value);
+}
+
+function finiteNumericInput(value) {
+  if (value === null || value === undefined || typeof value === 'boolean') return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
   const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return null;
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function clampPercent(value) {
+  const numeric = finiteNumericInput(value);
+  if (numeric === null) return null;
   return Math.min(100, Math.max(0, numeric));
 }
 
 function nonNegativeFinite(value) {
-  if (value === null || value === undefined || value === '') return null;
-  const numeric = Number(value);
-  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+  const numeric = finiteNumericInput(value);
+  return numeric !== null && numeric >= 0 ? numeric : null;
 }
 
 function parseIsoOrEpochMs(value) {
@@ -652,19 +683,24 @@ function normalizeGlmWindow(row, now = Date.now()) {
   };
 }
 
-function selectGlmLimitRow(limits, matcher) {
-  let creditRow = null;
-  let tokenRow = null;
+function selectGlmWindow(limits, matcher, now) {
+  let matched = false;
+  let creditWindow = null;
+  let tokenWindow = null;
   for (const row of limits) {
     if (!row || typeof row !== 'object') continue;
     const unit = Number(row.unit);
     const number = Number(row.number);
     if (!Number.isFinite(unit) || !Number.isFinite(number)) continue;
     if (!matcher(unit, number)) continue;
-    if (row.type === 'CREDIT_LIMIT' && !creditRow) creditRow = row;
-    else if (row.type === 'TOKENS_LIMIT' && !tokenRow) tokenRow = row;
+    if (row.type !== 'CREDIT_LIMIT' && row.type !== 'TOKENS_LIMIT') continue;
+    matched = true;
+    const normalized = normalizeGlmWindow(row, now);
+    if (!normalized) continue;
+    if (row.type === 'CREDIT_LIMIT' && !creditWindow) creditWindow = normalized;
+    else if (row.type === 'TOKENS_LIMIT' && !tokenWindow) tokenWindow = normalized;
   }
-  return creditRow || tokenRow;
+  return { matched, window: creditWindow || tokenWindow };
 }
 
 function parseGlmQuotaPayload(payload, now = Date.now()) {
@@ -683,23 +719,25 @@ function parseGlmQuotaPayload(payload, now = Date.now()) {
     return { status: 'invalid' };
   }
 
-  const weeklyRow = selectGlmLimitRow(
+  const weekly = selectGlmWindow(
     limits,
     (unit, number) => (unit === 6 && number === 1) || (unit === 4 && number === 7),
+    now,
   );
-  const fiveHourRow = selectGlmLimitRow(
+  const fiveHour = selectGlmWindow(
     limits,
     (unit, number) => unit === 3 && number === 5,
+    now,
   );
-  if (!weeklyRow && !fiveHourRow) return { status: 'invalid' };
+  if (!weekly.matched && !fiveHour.matched) return { status: 'invalid' };
 
   const plan = typeof data.level === 'string' && data.level.trim() ? data.level.trim() : null;
   return {
     status: 'ok',
     snapshot: {
       plan,
-      weekly: weeklyRow ? normalizeGlmWindow(weeklyRow, now) : null,
-      fiveHour: fiveHourRow ? normalizeGlmWindow(fiveHourRow, now) : null,
+      weekly: weekly.window,
+      fiveHour: fiveHour.window,
       observedAt: new Date(now).toISOString(),
     },
   };
@@ -725,9 +763,11 @@ function recordGlmQuotaFailure(statusCode, headers = {}, now = Date.now()) {
   const previous = cache.glm.error;
   const hadSnapshot = cache.glm.data !== null;
   cache.glm.error = previous?.status === statusCode ? previous : { status: statusCode, at: now };
-  if (statusCode === 401 || statusCode === 403) {
+  if (statusCode === 401 || statusCode === 403 || statusCode === 'invalid-credential') {
     if (previous?.status !== statusCode) {
-      console.log(`[Usage] GLM quota API rejected credentials (${statusCode})`);
+      console.log(statusCode === 'invalid-credential'
+        ? '[Usage] GLM quota skipped: malformed credential'
+        : `[Usage] GLM quota API rejected credentials (${statusCode})`);
     }
     cache.glm.available = false;
     cache.glm.data = null;
@@ -743,7 +783,7 @@ function tryFetchGlmQuota(now = Date.now()) {
   const fingerprint = secretFingerprint(apiKey);
   if (fingerprint !== cache.glm.fingerprint) {
     // Credential rotation or removal invalidates prior cached state.
-    const hadState = cache.glm.available || cache.glm.error !== null;
+    const hadState = cache.glm.available || cache.glm.data !== null || cache.glm.error !== null;
     cache.glm.fingerprint = fingerprint;
     cache.glm.data = null;
     cache.glm.available = false;
@@ -755,9 +795,16 @@ function tryFetchGlmQuota(now = Date.now()) {
   if (!apiKey) return;
   if (now < cache.glm.nextAttemptAt) return;
 
+  if (!isValidHeaderCredential(apiKey)) {
+    cache.glm.nextAttemptAt = now + QUOTA_API_TTL;
+    recordGlmQuotaFailure('invalid-credential', {}, now);
+    return;
+  }
+
   const url = resolveGlmQuotaUrl();
   if (!url) return;
 
+  const requestFingerprint = fingerprint;
   cache.glm.nextAttemptAt = now + QUOTA_API_TTL;
 
   const options = {
@@ -774,15 +821,25 @@ function tryFetchGlmQuota(now = Date.now()) {
   };
 
   const requester = quotaHooks.glmRequest || https.request;
-  const req = requester(options, (res) => {
-    consumeQuotaResponse(res, data => recordGlmQuotaSuccess(data, Date.now()), {
-      onFailure: (statusCode, headers) => recordGlmQuotaFailure(statusCode, headers, Date.now()),
+  try {
+    const req = requester(options, (res) => {
+      consumeQuotaResponse(res, data => {
+        if (cache.glm.fingerprint !== requestFingerprint) return;
+        recordGlmQuotaSuccess(data, Date.now());
+      }, {
+        onFailure: (statusCode, headers) => {
+          if (cache.glm.fingerprint !== requestFingerprint) return;
+          recordGlmQuotaFailure(statusCode, headers, Date.now());
+        },
+      });
     });
-  });
 
-  req.on('error', () => { /* ignore network errors; never log key */ });
-  req.on('timeout', () => { req.destroy(); });
-  req.end();
+    req.on('error', () => { /* ignore network errors; never log key */ });
+    req.on('timeout', () => { req.destroy(); });
+    req.end();
+  } catch {
+    recordGlmQuotaFailure('invalid-credential', {}, now);
+  }
 }
 
 function readGlmQuota(now = Date.now()) {
@@ -1118,9 +1175,11 @@ function recordAntigravityOauthFailure(statusCode, headers = {}, now = Date.now(
   const previous = cache.antigravityOauth.error;
   const hadSnapshot = cache.antigravityOauth.data !== null;
   cache.antigravityOauth.error = previous?.status === statusCode ? previous : { status: statusCode, at: now };
-  if (statusCode === 401 || statusCode === 403) {
+  if (statusCode === 401 || statusCode === 403 || statusCode === 'invalid-credential') {
     if (previous?.status !== statusCode) {
-      console.log(`[Usage] Antigravity OAuth quota rejected credentials (${statusCode})`);
+      console.log(statusCode === 'invalid-credential'
+        ? '[Usage] Antigravity OAuth quota skipped: malformed credential'
+        : `[Usage] Antigravity OAuth quota rejected credentials (${statusCode})`);
     }
     cache.antigravityOauth.available = false;
     cache.antigravityOauth.data = null;
@@ -1135,20 +1194,44 @@ function recordAntigravityOauthFailure(statusCode, headers = {}, now = Date.now(
   }
 }
 
+function antigravityFingerprintMatches(requestFingerprint, requestNow) {
+  if (cache.antigravityOauth.fingerprint !== requestFingerprint) return false;
+  const checkNow = Math.abs(Date.now() - requestNow) < 60_000 ? Date.now() : requestNow;
+  const current = readAntigravityOauthToken(checkNow);
+  const currentFp = current ? secretFingerprint(current.accessToken) : null;
+  return currentFp === requestFingerprint;
+}
+
 function tryFetchAntigravityOauth(now = Date.now()) {
-  if (now < cache.antigravityOauth.nextAttemptAt) return;
+  if (cache.antigravityOauth.nextAttemptAt === Infinity) return;
   const token = readAntigravityOauthToken(now);
+  const fingerprint = token ? secretFingerprint(token.accessToken) : null;
+  if (fingerprint !== cache.antigravityOauth.fingerprint) {
+    // Credential rotation, expiry, or removal immediately clears cached OAuth state and backoff.
+    const hadState = cache.antigravityOauth.available
+      || cache.antigravityOauth.data !== null
+      || cache.antigravityOauth.error !== null;
+    cache.antigravityOauth.fingerprint = fingerprint;
+    cache.antigravityOauth.data = null;
+    cache.antigravityOauth.available = false;
+    cache.antigravityOauth.lastSuccessTs = 0;
+    cache.antigravityOauth.error = null;
+    cache.antigravityOauth.nextAttemptAt = 0;
+    if (hadState) notifyQuotaChange();
+  }
   if (!token) return;
+  if (now < cache.antigravityOauth.nextAttemptAt) return;
+
+  if (!isValidHeaderCredential(token.accessToken)) {
+    cache.antigravityOauth.nextAttemptAt = now + QUOTA_API_TTL;
+    recordAntigravityOauthFailure('invalid-credential', {}, now);
+    return;
+  }
 
   const url = resolveAntigravityOauthUrl();
   if (!url) return;
 
-  const fingerprint = secretFingerprint(token.accessToken);
-  if (fingerprint !== cache.antigravityOauth.fingerprint) {
-    cache.antigravityOauth.fingerprint = fingerprint;
-    cache.antigravityOauth.error = null;
-  }
-
+  const requestFingerprint = fingerprint;
   cache.antigravityOauth.nextAttemptAt = now + QUOTA_API_TTL;
   const body = '{}';
   const options = {
@@ -1165,15 +1248,25 @@ function tryFetchAntigravityOauth(now = Date.now()) {
   };
 
   const requester = quotaHooks.antigravityRequest || https.request;
-  const req = requester(options, (res) => {
-    consumeQuotaResponse(res, data => recordAntigravityOauthSuccess(data, Date.now()), {
-      onFailure: (statusCode, headers) => recordAntigravityOauthFailure(statusCode, headers, Date.now()),
+  try {
+    const req = requester(options, (res) => {
+      consumeQuotaResponse(res, data => {
+        if (!antigravityFingerprintMatches(requestFingerprint, now)) return;
+        recordAntigravityOauthSuccess(data, Date.now());
+      }, {
+        onFailure: (statusCode, headers) => {
+          if (!antigravityFingerprintMatches(requestFingerprint, now)) return;
+          recordAntigravityOauthFailure(statusCode, headers, Date.now());
+        },
+      });
     });
-  });
 
-  req.on('error', () => { /* ignore network errors; never log token */ });
-  req.on('timeout', () => { req.destroy(); });
-  req.end(body);
+    req.on('error', () => { /* ignore network errors; never log token */ });
+    req.on('timeout', () => { req.destroy(); });
+    req.end(body);
+  } catch {
+    recordAntigravityOauthFailure('invalid-credential', {}, now);
+  }
 }
 
 function readAntigravityQuota(now = Date.now()) {
