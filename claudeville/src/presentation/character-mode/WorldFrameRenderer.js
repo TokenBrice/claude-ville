@@ -636,7 +636,6 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     const motionTimeMs = renderer.motionTimeMs;
     for (const sprite of renderer.agentSprites?.values?.() || []) {
         sprite.overlayLightGrade = overlayLightGrade;
-        sprite._lightGrade = overlayLightGrade;
         sprite._motionTimeMs = motionTimeMs;
     }
     // #3 — grade authority: harbor anchorage glows lerp toward the time-of-day tint.

@@ -117,13 +117,13 @@ test('W3 Integration: AgentSprite._routineStatusGate delegates to routineStatusG
 });
 
 test('W3 Integration: BuildingSprite.triggerWatchtowerChecksFlash honors reduced motion', () => {
-    const mock = { motionScale: 1, _watchtowerChecksFlashUntil: 0 };
-    BuildingSprite.prototype.triggerWatchtowerChecksFlash.call(mock, 10_000);
-    assert.equal(mock._watchtowerChecksFlashUntil, 10_120);
+    const mock = { motionScale: 1, _watchtowerChecksFlash: false };
+    BuildingSprite.prototype.triggerWatchtowerChecksFlash.call(mock);
+    assert.equal(mock._watchtowerChecksFlash, true);
 
-    const reduced = { motionScale: 0, _watchtowerChecksFlashUntil: 0 };
-    BuildingSprite.prototype.triggerWatchtowerChecksFlash.call(reduced, 10_000);
-    assert.equal(reduced._watchtowerChecksFlashUntil, 0);
+    const reduced = { motionScale: 0, _watchtowerChecksFlash: false };
+    BuildingSprite.prototype.triggerWatchtowerChecksFlash.call(reduced);
+    assert.equal(reduced._watchtowerChecksFlash, false);
 });
 
 test('W3 Integration: One-of rule suppresses floating tool glyph while walking at z >= 2 with carried artifact', () => {
@@ -547,7 +547,7 @@ test('W3 Integration: _syncWave3LiveSystems wires mendLedger brokenProof notches
 
     // Deterministic clock & lightGrade propagation onto live sprites.
     assert.equal(brokenSprite._motionTimeMs, 12_345);
-    assert.deepEqual(brokenSprite._lightGrade, { cacheKey: 'dusk-grade' });
+    assert.deepEqual(brokenSprite.overlayLightGrade, { cacheKey: 'dusk-grade' });
     assert.equal(brokenSprite._weather.type, 'rain');
 
     // Expired cooldown pruned; live affinity queried ONLY for nearby pair and nods triggered on motionTimeMs.

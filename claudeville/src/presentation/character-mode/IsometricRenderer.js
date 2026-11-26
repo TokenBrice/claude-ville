@@ -120,7 +120,7 @@ import {
     thoughtLeader,
 } from './ThoughtColumn.js';
 import { StaticPropSprite, buildStaticPropDrawables, lineOcclusionColumns } from './StaticPropDrawables.js';
-import { buildRestSeatPropSprites } from './RestSeats.js';
+import { buildRestSeatPropSprites, setRestSeatVisualBeat } from './RestSeats.js';
 import { buildTavernArcadeSprites } from './TavernArcade.js';
 import { buildCentralBridgeParapetSprite } from './BridgeParapet.js';
 import { createDepthDrawable, propPartSortY } from './DrawablePass.js';
@@ -6330,7 +6330,7 @@ export class IsometricRenderer {
         const frameLightGrade = this._lastAtmosphere?.lightGrade || null;
         for (const sprite of this.agentSprites.values()) {
             sprite._motionTimeMs = frameMotionTimeMs;
-            sprite._lightGrade = frameLightGrade;
+            sprite.overlayLightGrade = frameLightGrade;
             const particleSink = this._agentVisibleOnScreen(sprite, viewport)
                 ? this.particleSystem
                 : null;
@@ -11634,6 +11634,7 @@ export class IsometricRenderer {
         this.ritualConductor?.setVisualBeat?.(this._visualBeat);
         this.chimneySmoke?.setVisualBeat?.(this._visualBeat);
         this.wildlifeRenderer?.setVisualBeat?.(this._visualBeat);
+        setRestSeatVisualBeat(this._visualBeat);
     }
 
     _trailSurfaceAt(worldX, worldY) {
@@ -11684,7 +11685,8 @@ export class IsometricRenderer {
             if (!agent?.id) continue;
             liveIds.add(agent.id);
             sprite._weather = weather;
-            sprite._lightGrade = lightGrade;
+            sprite._weatherDate = this._lastAtmosphere?.effectiveDate || null;
+            sprite.overlayLightGrade = lightGrade;
             if (hasMotionTime) sprite._motionTimeMs = motionTimeMs;
             const seatId = sprite._seatedSeat?.()?.id || null;
             if (!this._seatedSeatByAgent.has(agent.id)) {
