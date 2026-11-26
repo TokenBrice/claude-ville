@@ -29,9 +29,11 @@ import { pathForEntry, spritesRoot } from './manifest-utils.mjs';
 const TARGETS = Object.freeze([
     'prop.hourglassBelfry',
     'prop.windmill',
+    'prop.plazaFountain',
     'building.forge',
     'bridge.landmark.rustic.ns',
     'bridge.landmark.civic.ns',
+    'bridge.landmark.farm.ew',
 ]);
 
 const CHECK_EXTRA = Object.freeze([
