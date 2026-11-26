@@ -13,6 +13,8 @@ import {
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
+import { patinaFor } from '../../application/AgentBiographyService.js';
+import { repoProfile } from '../shared/RepoColor.js';
 import { Camera } from './Camera.js';
 import { createMotionClock, advanceMotionClock, virtualFramesFor, SPEED_RUNGS } from './MotionClock.js';
 import { AMBIENT_FRAME_PACING, admitFrame, ambientFrame, createFramePacing, resetFramePacing } from './FramePacing.js';
@@ -135,6 +137,14 @@ import { lookStrength } from './LookStrengths.js';
 import {
     LANTERN_COLOR, LANTERN_HEIGHT, LANTERN_ID_PREFIX, lanternCandidate, lanternIntensity, lanternPoolRadius, selectLanternCarriers,
 } from './CarriedLantern.js';
+import {
+    admitReportCairn,
+    assignWorkflowRibbons,
+    drawReportCairn,
+    reportCairnSpec,
+    resolveCarriedArtifact,
+    selectCarriedArtifacts,
+} from './CarriedArtifact.js';
 import {
     GPU_ATTENTION_LIGHT_PRIORITY,
     effectBudgetMode,
@@ -856,7 +866,17 @@ export class IsometricRenderer {
             world: this.world,
             sprites: this.agentSprites,
             motionScale: this.motionScale,
+            surfaceAt: (worldX, worldY) => this._trailSurfaceAt(worldX, worldY),
         });
+        this._visualBeat = null;
+        this._patinaByIdentity = new Map();
+        this._benchPatinaBySeat = new Map();
+        this._restSeatBackProps = new Map();
+        this._seatedSeatByAgent = new Map();
+        this._allyNodCooldowns = new Map();
+        this._admittedReportCairns = [];
+        this._workflowRibbons = new Map();
+        this._compactionsPrimedOnce = false;
         this.chronicler = new Chronicler({ motionScale: this.motionScale });
         this.particleSystem.setMotionEnabled(this.motionScale > 0);
         this._onMotionPreferenceChange = (event) => this._setMotionScale(event.matches ? 0 : 1);
@@ -1101,6 +1121,7 @@ export class IsometricRenderer {
         // 6.7 — occupancy-gated chimney smoke from the registry's chimney
         // anchors (one owner for every chimney column).
         this.chimneySmoke = new ChimneySmoke();
+        if (this._visualBeat) this.setVisualBeat(this._visualBeat);
 
         // Event subscriptions
         this._unsubscribers = [];
@@ -2288,13 +2309,14 @@ export class IsometricRenderer {
             // queries (a window moved to or from an HDR / P3 screen).
             eventBus.on(HDR_HIGHLIGHTS_EVENT, () => this._applyDisplayColor()),
             watchDisplayMedia(() => this._applyDisplayColor()),
-            // 4.8 — earned nicknames garnish agent name tags.
+            // 4.8 — earned nicknames & W3-D earned patina garnish agent sprites/benches.
             eventBus.on('biography:updated', (payload) => {
                 const identityKey = payload?.identityKey;
                 if (!identityKey) return;
                 this._invalidateIdleFrame();
                 const nickname = payload?.biography?.nickname || null;
                 this._cacheNickname(identityKey, nickname);
+                this._cachePatina(identityKey, payload?.biography || null);
                 this._applyNicknames();
             }),
         );
@@ -2312,6 +2334,7 @@ export class IsometricRenderer {
                     if (this._disposed || generation !== this._biographyReadGeneration) return;
                     const nickname = biography?.nickname || null;
                     this._cacheNickname(identityKey, nickname);
+                    this._cachePatina(identityKey, biography || null);
                     this._applyNicknames();
                     this._invalidateIdleFrame();
                 }).catch(() => {});
@@ -2778,6 +2801,7 @@ export class IsometricRenderer {
             world: this.world,
             sprites: this.agentSprites,
             motionScale: this.motionScale,
+            surfaceAt: (worldX, worldY) => this._trailSurfaceAt(worldX, worldY),
         });
     }
 
@@ -4259,12 +4283,34 @@ export class IsometricRenderer {
         }
     }
 
-    /** 4.8 — push cached earned nicknames onto every live sprite. */
+    /** 4.8 / W3-D — push cached earned nicknames and patina onto every live sprite. */
     _applyNicknames() {
         if (!this._nicknames) return;
         for (const sprite of this.agentSprites.values()) {
             const identityKey = AgentBiography.identityKeyFor(sprite.agent);
             sprite.setNickname?.(identityKey ? this._nicknames.get(identityKey) || null : null);
+            sprite._patina = identityKey ? this._patinaByIdentity?.get(identityKey) || null : null;
+        }
+    }
+
+    _cachePatina(identityKey, biography) {
+        if (!identityKey) return;
+        const collaborators = this.affinityService?.collaboratorsFor?.(identityKey) ?? [];
+        const patina = biography ? patinaFor(biography, collaborators) : null;
+        if (patina) this._patinaByIdentity.set(identityKey, patina);
+        else this._patinaByIdentity.delete(identityKey);
+        const bench = patina?.theirBench || null;
+        if (bench?.seatId) {
+            const prev = this._benchPatinaBySeat.get(bench.seatId);
+            const changed = !prev
+                || prev.hollow !== bench.hollow
+                || prev.rune !== bench.rune
+                || prev.repoColorIndex !== bench.repoColorIndex;
+            this._benchPatinaBySeat.set(bench.seatId, bench);
+            if (changed) {
+                this._restSeatBackProps?.get(bench.seatId)?.invalidateCache?.();
+                this._invalidateIdleFrame();
+            }
         }
     }
 
@@ -4310,6 +4356,8 @@ export class IsometricRenderer {
                 || AgentBiography.identityKeyFor(sprite.agent) !== identityKey
             ) return;
             const nickname = biography?.nickname || null;
+            this._cachePatina(identityKey, biography || null);
+            sprite._patina = this._patinaByIdentity.get(identityKey) || null;
             if (!nickname) return;
             this._cacheNickname(identityKey, nickname);
             sprite.setNickname?.(nickname);
@@ -6269,6 +6317,10 @@ export class IsometricRenderer {
                 failedPushActive: Boolean(this._harborFailedPushState?.hasFailedPush),
                 activeWorkingCount,
             });
+            if (this.harborTraffic?.consumeChecksPassFlash?.()) {
+                this.buildingRenderer?.triggerWatchtowerChecksFlash?.(Date.now());
+            }
+            this._syncWave3LiveSystems(agents, allSpritesSnapshot, Date.now());
         }
         // VB-9 — the clock advances every frame; reconcile (four observers per
         // agent and the building counts) runs on the 250 ms tick, where its
@@ -6277,7 +6329,7 @@ export class IsometricRenderer {
         if (slowSystemsTick) this.landmarkActivity?.reconcile?.(agents, allSpritesSnapshot, chronicleNow);
         const updateNow = Date.now();
         this.villageDirector?.update?.(this, dt, updateNow);
-        this.buildingRenderer?.setZoom?.(this.camera?.zoom);
+        this.buildingRenderer?.setZoom?.(this.camera?.zoom, this.camera?.targetZoom ?? this.camera?.zoom);
 
         // Update building renderer (pass agent sprite positions)
         this.buildingRenderer?.setAgentSprites(allSpritesSnapshot);
@@ -9808,9 +9860,19 @@ export class IsometricRenderer {
                 materialClass: (id) => this.assets?.getEntry?.(id)?.materialClass || null,
             },
         }));
-        // 7.1 / W1-D 1.6 — rest-seat furniture: authored oak trestle sheets
-        // (with night-only candle emissives on the lamp clock) and pier kerbs.
-        sprites.push(...buildRestSeatPropSprites({ assets: this.assets, lampsLit: () => this.villageLampsLit() }));
+        // 7.1 / W1-D 1.6 / W3-D — rest-seat furniture: authored oak trestle sheets
+        // (with night-only candle emissives on the lamp clock), pier kerbs, and earned bench patina.
+        this._restSeatBackProps = new Map();
+        const restSeatSprites = buildRestSeatPropSprites({
+            assets: this.assets,
+            lampsLit: () => this.villageLampsLit(),
+            patinaForSeat: (seatId) => this._benchPatinaBySeat?.get(seatId) || null,
+        });
+        for (const propSprite of restSeatSprites) {
+            const match = /^rest-seat\.[^.]+\.(.+)\.back$/.exec(propSprite.id || '');
+            if (match) this._restSeatBackProps.set(match[1], propSprite);
+        }
+        sprites.push(...restSeatSprites);
         const fountain = DISTRICT_PROPS.find(prop => prop.id === 'prop.plazaFountain' && prop.district === 'civic');
         if (fountain && this.assets?.has?.('prop.plazaFountainWater')) {
             sprites.push(new FountainWaterSprite(this, fountain));
@@ -11474,6 +11536,164 @@ export class IsometricRenderer {
     // cast on its own carrier), it never breathes (`fire` false), and status
     // never enters: only presence, place, the lamp clock and the round at its
     // tile.
+    setVisualBeat(beat) {
+        this._visualBeat = beat || null;
+        this.ritualConductor?.setVisualBeat?.(this._visualBeat);
+        this.chimneySmoke?.setVisualBeat?.(this._visualBeat);
+        this.wildlifeRenderer?.setVisualBeat?.(this._visualBeat);
+    }
+
+    _trailSurfaceAt(worldX, worldY) {
+        const cls = this.groundField?.classAt?.(worldX, worldY);
+        if (cls === 'sand') {
+            const dist = coastDistanceProbe?.(this.coastBake, worldX, worldY);
+            if (Number.isFinite(dist) && dist >= -2 && dist <= 14) return 'wet-shore';
+            return 'sand';
+        }
+        return cls || 'land';
+    }
+
+    _syncWave3LiveSystems(agents, allSprites, now) {
+        const weather = this._lastAtmosphere?.weather || null;
+        const archive = this.world?.buildings?.get?.('archive');
+        const archivePoint = archive ? buildingCenterToWorld(archive) : null;
+
+        // 1. Live-only compaction rites (never backfill on first sight).
+        if (!this._compactionsPrimedOnce && agents.length > 0) {
+            this._compactionsPrimedOnce = true;
+            this.arrivalDeparture?.primeCompactions?.(agents);
+        } else if (this.arrivalDeparture) {
+            for (const agent of agents) {
+                if (!agent?.compactions?.length) continue;
+                const sprite = this.agentSprites.get(agent.id);
+                if (sprite) this.arrivalDeparture.observeCompactions(agent, sprite, { archivePoint, now });
+            }
+        }
+
+        // 2. Weather ref on sprites + physical sit/leave bench patina observation.
+        const liveIds = new Set();
+        for (const sprite of allSprites) {
+            const agent = sprite?.agent;
+            if (!agent?.id) continue;
+            liveIds.add(agent.id);
+            sprite._weather = weather;
+            const seatId = sprite._seatedSeat?.()?.id || null;
+            const prevSeat = this._seatedSeatByAgent.get(agent.id) || null;
+            if (seatId !== prevSeat) {
+                this._seatedSeatByAgent.set(agent.id, seatId);
+                const repoSlot = agent.projectPath ? (repoProfile(agent.projectPath)?.slot ?? 0) : 0;
+                this.biographyService?.observeRestSeat?.(agent, seatId, repoSlot);
+            }
+        }
+        for (const id of this._seatedSeatByAgent.keys()) {
+            if (!liveIds.has(id)) this._seatedSeatByAgent.delete(id);
+        }
+
+        // 3. Carried artifacts (EFFECT_BUDGET['carried-artifacts']), workflow ribbons & Report Cairns.
+        const level = this.gpuWorld?._compositeQualityLevel
+            ?? (this.postFx?.isActive?.() === true ? (this.postFx?.ladder?.effectiveLevel ?? 0) : 0);
+        const artifactBudget = effectBudgetMode('carried-artifacts', level);
+        const zoom = this.camera?.zoom || 1;
+        const camera = this.camera;
+        const canvas = camera?.canvas;
+        const centre = camera ? {
+            x: -camera.x + (canvas?._claudeVilleCssWidth || canvas?.clientWidth || 0) / (2 * zoom),
+            y: -camera.y + (canvas?._claudeVilleCssHeight || canvas?.clientHeight || 0) / (2 * zoom),
+        } : null;
+        const mends = this.agentEventStream?._mends || null;
+        const artifactCandidates = [];
+        for (const sprite of allSprites) {
+            sprite.carriedArtifact = null;
+            if (!sprite?.agent?.id) continue;
+            const streak = mends?.failureStreakFor?.(sprite.agent.id) || 0;
+            const resolved = resolveCarriedArtifact(sprite.agent, {
+                now,
+                moving: sprite.moving,
+                failureStreak: streak,
+            });
+            if (resolved) {
+                artifactCandidates.push({
+                    id: sprite.agent.id,
+                    sprite,
+                    x: sprite.x,
+                    y: sprite.y,
+                    moving: sprite.moving,
+                    selected: sprite.selected,
+                    artifact: resolved,
+                });
+            }
+        }
+        const admittedArtifacts = selectCarriedArtifacts(artifactCandidates, {
+            budget: artifactBudget,
+            zoom,
+            centre,
+        });
+        for (const entry of admittedArtifacts) {
+            if (entry.sprite) entry.sprite.carriedArtifact = entry.artifact;
+        }
+        this._workflowRibbons = assignWorkflowRibbons(agents);
+
+        const cairns = [];
+        const gov = getActiveMarkGovernor();
+        for (const sprite of allSprites) {
+            const agent = sprite?.agent;
+            if (!agent?.id || sprite.moving || !sprite.hasLiveSubagents?.(agent.id)) continue;
+            const children = agents.filter(a => (a.parentSessionId || a.parentId) === agent.id);
+            const returned = children.filter(a => a.status === AgentStatus.COMPLETED || a.isDeparted);
+            const outstanding = Math.max(0, children.length - returned.length);
+            if (returned.length <= 0) continue;
+            const spec = reportCairnSpec({
+                returned: returned.length,
+                outstanding,
+                returnedTrims: returned.map(c => this.agentSprites.get(c.id)?._providerTrimColor?.() || null).filter(Boolean),
+            });
+            const west = /w$/.test(['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'][sprite.direction] || '');
+            const admitted = admitReportCairn({
+                id: agent.id,
+                spec,
+                footX: sprite._placeX ?? sprite.x,
+                footY: sprite._placeY ?? sprite.y,
+                west,
+                governor: gov,
+                existingCount: cairns.length,
+            });
+            if (admitted) cairns.push(admitted);
+        }
+        this._admittedReportCairns = cairns;
+
+        // 4. Passing PairAffinity ally nod (quiet 1px head dip with 30 s pair cooldown).
+        if (this.motionScale > 0 && allSprites.length >= 2) {
+            for (let i = 0; i < allSprites.length; i++) {
+                const a = allSprites[i];
+                const patinaA = a?._patina;
+                if (!patinaA || typeof patinaA.allyNodEligible !== 'function') continue;
+                const keyA = AgentBiography.identityKeyFor(a.agent);
+                if (!keyA) continue;
+                for (let j = i + 1; j < allSprites.length; j++) {
+                    const b = allSprites[j];
+                    if (!a.moving && !b.moving) continue;
+                    const dx = a.x - b.x;
+                    const dy = a.y - b.y;
+                    if (dx * dx + dy * dy > 38 * 38) continue;
+                    const keyB = AgentBiography.identityKeyFor(b.agent);
+                    if (!keyB || keyB === keyA || !patinaA.allyNodEligible(keyB)) continue;
+                    const pairKey = keyA < keyB ? `${keyA}|${keyB}` : `${keyB}|${keyA}`;
+                    if (now < (this._allyNodCooldowns.get(pairKey) || 0)) continue;
+                    this._allyNodCooldowns.set(pairKey, now + 30_000);
+                    a.triggerAllyNod?.(now);
+                    b.triggerAllyNod?.(now);
+                }
+            }
+        }
+    }
+
+    _drawReportCairns(ctx, zoom = 1) {
+        if (!ctx || zoom < 1.6 || !this._admittedReportCairns?.length) return;
+        for (const cairn of this._admittedReportCairns) {
+            drawReportCairn(ctx, cairn);
+        }
+    }
+
     _carriedLanternLightSources(lighting) {
         const sprites = this.agentSprites;
         if (!sprites?.size) return [];

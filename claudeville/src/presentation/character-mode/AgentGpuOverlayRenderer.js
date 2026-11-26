@@ -77,6 +77,7 @@ export class AgentGpuOverlayRenderer {
         // AgentSprite's Canvas body pass stands down while gpuWorldEnabled, so
         // the order here is the Canvas order and each mark is struck once.
         if (record.frameGeometry && !departedTableau(host)) {
+            host._drawPatinaAndWeatherBody?.(ctx, record.frameGeometry);
             host._drawSignatureMark(ctx, record.frameGeometry);
             host._drawReceiveBeat(ctx, record.frameGeometry);
             // Plan 2.7 — a half-scale crowd body keeps its identity plate and

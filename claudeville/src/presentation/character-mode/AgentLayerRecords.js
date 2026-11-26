@@ -486,7 +486,7 @@ export function layerRecord(body, stamp, name, g) {
 
 const LAYER_ORDER = [
     ['seatBack', 0], ['weaponBack', 1], ['body', 2], ['hat', 3], ['frost', 4], ['snow', 4],
-    ['weaponFront', 5], ['seatFront', 6], ['candle', 6], ['lantern', 6], ['tankard', 6],
+    ['weaponFront', 5], ['artifact', 5], ['seatFront', 6], ['candle', 6], ['lantern', 6], ['tankard', 6],
 ];
 
 export function agentLayerRecords(sources) {

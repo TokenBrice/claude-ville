@@ -295,7 +295,7 @@ export function connectionChip(state, now = Date.now()) {
 }
 
 export class TopBar {
-    constructor(world, { modal, attention, chronicle, spendLedger, frameAttention, readDashboardAtmosphere, refreshAtmosphere, simulation } = {}) {
+    constructor(world, { modal, attention, chronicle, spendLedger, frameAttention, readDashboardAtmosphere, refreshAtmosphere, simulation, onAudioReady } = {}) {
         this._motionOverride = installReducedMotionOverride();
         this.world = world;
         this.modal = modal || null;
@@ -305,6 +305,7 @@ export class TopBar {
         this.spendLedger = spendLedger || null;
         this.readDashboardAtmosphere = readDashboardAtmosphere;
         this.refreshAtmosphere = refreshAtmosphere;
+        this._onAudioReady = typeof onAudioReady === 'function' ? onAudioReady : null;
         // V8 — the top bar is chrome over (or above) the World: moments,
         // plates and director framing read its box as occluded screen.
         this._unpublishReservedRect = publishReservedRect('top-bar', document.getElementById('topbar'), {
@@ -855,6 +856,7 @@ export class TopBar {
                 // The views start from the controller's state, not only its
                 // next change.
                 this._applySoundView(this.audio.soundView?.());
+                this._onAudioReady?.(this.audio);
                 return this.audio;
             }).catch((error) => {
                 this._audioLoadPromise = null;

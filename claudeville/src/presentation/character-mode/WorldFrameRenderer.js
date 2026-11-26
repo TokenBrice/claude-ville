@@ -1072,6 +1072,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         now: perfNow,
         lighting: atmosphere?.lighting,
     });
+    renderer._drawReportCairns?.(overlayCtx, zoom);
     renderer.chronicleMonuments?.drawMoments?.(overlayCtx, zoom, renderNow);
     renderer.harborTraffic?.drawMoments?.(overlayCtx, zoom, renderNow);
     drawVillageDirectorOverlays(overlayCtx, villageSnapshot, perfNow, atmosphere?.grade);

@@ -742,6 +742,13 @@ export class BuildingSprite {
         };
     }
 
+    // Spec 04 §3.3 — one-frame cream keeper-lamp flash when a verified `gh pr checks`
+    // pass lands in HarborTraffic (no-op under reduced motion).
+    triggerWatchtowerChecksFlash(now = Date.now()) {
+        if ((this.motionScale ?? 1) <= 0) return;
+        this._watchtowerChecksFlashUntil = Math.max(this._watchtowerChecksFlashUntil || 0, now + 120);
+    }
+
     setBuildings(map) {
         // Accepts a Map (preferred — matches world.buildings) or an Array.
         this.buildings = map instanceof Map ? Array.from(map.values()) : Array.from(map);
@@ -5644,6 +5651,7 @@ export class BuildingSprite {
         const motionScale = this.motionScale ?? 1;
         const breath = fireBreath(ms, 'fire:watchtower', motionScale);
         const flash = pharosFlashCourseAt(ms, this._lighthouseWatched(), motionScale);
+        const checksCreamFlash = motionScale > 0 && Date.now() < (this._watchtowerChecksFlashUntil || 0);
         const ox = Math.round(beacon.x);
         const oy = Math.round(beacon.y);
         const [, , , rim, mid, hot, core] = ART_RAMPS.beaconFire;
@@ -5657,7 +5665,7 @@ export class BuildingSprite {
         this._fillDitheredCircle(ctx, ox, oy, 18 + course + flash, 12, 0.2 + 0.03 * flash, mid);
         for (const [radius, alpha, color] of [
             [10 + course + flash, 0.32 + 0.06 * flash, hot],
-            [5 + (flash >= 2 ? 1 : 0), 0.5 + 0.15 * flash, core],
+            [5 + (flash >= 2 || checksCreamFlash ? 1 : 0), checksCreamFlash ? 0.92 : (0.5 + 0.15 * flash), checksCreamFlash ? '#fff6d6' : core],
         ]) {
             ctx.globalAlpha = alpha;
             ctx.fillStyle = color;

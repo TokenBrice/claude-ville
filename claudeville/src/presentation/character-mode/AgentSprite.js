@@ -13,7 +13,7 @@ import { packGeometryPixels } from './gpu/GpuSceneBuilder.js';
 import { agentSignature, drawAgentSignature, clearAgentSignatureCache, getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
 import { agentTrimAccent } from '../shared/TeamColor.js';
 import { SpriteSheet, dirFromVelocity, resolveActionFrame, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS, DEFAULT_CELL } from './SpriteSheet.js';
-import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
+import { getActiveMarkGovernor, MarkTier, stillWorkState, formatComposingSliver } from './MarkGovernor.js';
 import { RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE, ritualPhaseOffset, workStripGroup } from './RitualConductor.js';
 import { drawWorkDownbeat } from './WorkDownbeats.js';
 import { pulseAlpha, pulseBand01Frame } from './PulsePolicy.js';
@@ -59,6 +59,7 @@ import {
     drawSelectionChevron,
     groundMarkDepth,
     resolveGroundMarks,
+    routineStatusGate,
     selectionChevronClearance,
 } from './AgentGroundMarks.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
@@ -87,6 +88,12 @@ import { gradeTone } from './EffectStamps.js';
 import { CANDLE_OFFSET, DRINK_FRAME_BY_STEP, FALLBACK_SEAT_DROP, SEAT_FACING_DIR, queueCandleStamp, seatLineOffset, seatStoneStamps, tankardLift, tankardSipStep, tankardStamp } from './RestSeats.js';
 import { materialClassId } from './MaterialRegistry.js';
 import { LANTERN_SET_DOWN, carriedLanternStamp } from './CarriedLantern.js';
+import {
+    artifactSetDownRect,
+    artifactWalkingAnchor,
+    carriedArtifactStamp,
+    shouldSuppressToolGlyphForArtifact,
+} from './CarriedArtifact.js';
 import { waitAgeTier, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { AMBIENT_SCENIC_POINTS } from '../../config/scenery.js';
 import { VILLAGE_GATE, inVillageMasonry } from '../../config/townPlan.js';
@@ -99,6 +106,8 @@ import {
     errandDwellMs,
     routineHash,
     sitDurationMs,
+    squallShelter,
+    stillWorkRoutine,
     strollDwellMs,
     strollRetryMs,
     advanceSubagentWait,
@@ -2151,6 +2160,27 @@ export class AgentSprite {
     _advanceIdleLoop(now) {
         const crowd = this._crowd;
         const id = this.agent.id;
+        // W3-D — heavy rain/storm drives idle villagers to the nearest shelter.
+        const shelter = this._weather
+            ? squallShelter(this.agent, this._weather, this._screenToTile(this.x, this.y))
+            : null;
+        if (shelter && this.motionScale > 0) {
+            const targetKey = `${shelter.building}:${shelter.target?.tileX},${shelter.target?.tileY}`;
+            if (crowd.phase !== 'shelter' || crowd.shelterKey !== targetKey) {
+                const shelterBuilding = this._buildingForType(shelter.building)
+                    || { type: shelter.building, visitTiles: [shelter.target] };
+                crowd.shelterKey = targetKey;
+                this._beginCrowdLeg({ role: 'rest', building: shelterBuilding, shelter: true, gait: shelter.gait }, 'shelter', now);
+            }
+            return;
+        }
+        if (crowd.phase === 'shelter') {
+            crowd.phase = 'sit';
+            crowd.place = null;
+            crowd.shelterKey = null;
+            crowd.sitSince = null;
+            crowd.arrivedAt = null;
+        }
         if (crowd.phase === 'stroll') {
             const dwelt = crowd.arrivedAt != null && now - crowd.arrivedAt >= strollDwellMs(id, crowd.cycle);
             const lost = crowd.arrivedAt == null && now - crowd.legStartedAt >= STROLL_LEG_TIMEOUT_MS;
@@ -2192,6 +2222,39 @@ export class AgentSprite {
     _advanceErrand(now) {
         const crowd = this._crowd;
         const id = this.agent.id;
+        // W3-D — Long Think (I2): keep still-work workers on their own
+        // building's visit tiles (never an errand, preserving room & tally).
+        const ownBuilding = this._buildingForType(this._lastBuildingType || 'archive') || this._buildingForType('archive');
+        const still = stillWorkRoutine(this.agent, now, ownBuilding, {
+            station: this._stillWorkStation,
+            previousPose: this._stillWorkPose,
+            reducedMotion: this.motionScale <= 0,
+        });
+        if (still) {
+            if (still.stillWorkPose) {
+                this._stillWorkPose = still.stillWorkPose;
+                if (!this._stillWorkStation && still.target) this._stillWorkStation = still.target;
+                crowd.place = null;
+                crowd.arrivedAt = null;
+                if (still.target && ownBuilding && !this.moving) {
+                    const cur = this._lastTargetTile;
+                    if (!cur || cur.tileX !== still.target.tileX || cur.tileY !== still.target.tileY) {
+                        this._routeToVisitTarget(ownBuilding, null, {
+                            ...still.target,
+                            facingPoint: still.facingPoint || still.target.facingPoint || null,
+                        }, { role: 'work', reason: 'still-work' });
+                    }
+                }
+                return;
+            }
+            // One-beat return boost when a real tool fires after still-work.
+            this._stillWorkPose = null;
+            this._stillWorkStation = null;
+            this._stillWorkRunBoostUntil = now + 900;
+        } else {
+            this._stillWorkPose = null;
+            this._stillWorkStation = null;
+        }
         if (this._activeVisitIntent()) {
             crowd.intentSeenAt = now;
             crowd.place = null;
@@ -4955,6 +5018,14 @@ export class AgentSprite {
                 this._handoffAckStart = 0;
             }
         }
+        if (this._allyNodStart && this.motionScale > 0) {
+            const nodAge = Date.now() - this._allyNodStart;
+            if (nodAge >= 0 && nodAge < 180) {
+                ackBobY += Math.round(Math.sin((nodAge / 180) * Math.PI));
+            } else {
+                this._allyNodStart = 0;
+            }
+        }
         // V7 — every cell of this facing (walk, idle, action strip, GPU
         // record) stands on one foot anchor at the frame's placement, so arm
         // swing or a lifted foot never shifts the whole body. The per-frame
@@ -5011,6 +5082,7 @@ export class AgentSprite {
             poseFrame: poseGripFrame,
         };
         this._layoutLanternMark(frameGeometry);
+        this._layoutArtifactMark(frameGeometry);
         this._setGpuFrameRecord({
             cell: pose ? cell : bodyCell,
             dx,
@@ -5105,15 +5177,18 @@ export class AgentSprite {
             if (tankard) ctx.drawImage(tankard.stamp, tankard.x, tankard.y);
             const lantern = this._lanternMark;
             if (lantern) ctx.drawImage(lantern.stamp, lantern.x, lantern.y);
+            const artifact = this._artifactMark;
+            if (artifact) ctx.drawImage(artifact.stamp, artifact.x, artifact.y);
         }
         if (departedBody) ctx.restore();
-        // These five marks belong to the body frame and have exactly one owner
+        // These marks belong to the body frame and have exactly one owner
         // per backend: this Canvas pass, or the resident renderer's ungraded
         // overlay (AgentGpuOverlayRenderer.draw), which replays the identical
         // geometry from the frame record. Running both would strike every mark
         // twice on the GPU path — compounded alpha on any frame where the
         // Canvas layer shows through, and double the annotation work always.
         if (!departedTableau(this) && !this.gpuWorldEnabled) {
+            this._drawPatinaAndWeatherBody(ctx, frameGeometry);
             this._drawSignatureMark(ctx, frameGeometry);
             this._drawReceiveBeat(ctx, frameGeometry);
             this._drawStanceOverlay(ctx, frameGeometry);
@@ -5452,10 +5527,7 @@ export class AgentSprite {
 
     _routineStatusGate(status) {
         if (status !== AgentStatus.WORKING && status !== AgentStatus.WAITING) return null;
-        const governor = getActiveMarkGovernor();
-        if (!governor) return { draw: true, alpha: 0.78 };
-        const gate = governor.admit(MarkTier.WORKING, this.x, this.y);
-        return gate?.draw ? gate : null;
+        return routineStatusGate(getActiveMarkGovernor(), this.agent, this.x, this.y, Date.now());
     }
 
     // 7.2 — a petitioner standing in its queue slot, or at an overflow place
@@ -5577,6 +5649,122 @@ export class AgentSprite {
             mark.y = Math.round(this._placeY + LANTERN_SET_DOWN.y) - stamp.height;
         }
         this._lanternMark = mark;
+    }
+
+    // Spec 04 §2.2 — carried artifact (6×6 code-drawn pixel stamp): held in
+    // the trailing hand while walking, set down beside the feet while standing.
+    _layoutArtifactMark(frameGeometry) {
+        const artifact = this.carriedArtifact;
+        if (!artifact?.kind || departedTableau(this) || (this._zoom || 1) < 1.6) {
+            this._artifactMark = null;
+            return;
+        }
+        const stamp = carriedArtifactStamp(artifact.kind, { notches: artifact.notches || 1 });
+        if (!stamp) {
+            this._artifactMark = null;
+            return;
+        }
+        const mark = this._artifactMarkState || (this._artifactMarkState = { kind: 'carried-artifact', stamp: null, x: 0, y: 0 });
+        mark.stamp = stamp;
+        const west = /w$/.test(DIRECTIONS[this.direction] || '');
+        const { dx, dy, bounds } = frameGeometry || {};
+        if (this.moving && bounds && Number.isFinite(dx) && Number.isFinite(dy)) {
+            const anchor = artifactWalkingAnchor({ bounds, west });
+            mark.x = Math.round(dx + anchor.x);
+            mark.y = Math.round(dy + anchor.y);
+        } else {
+            const rect = artifactSetDownRect({ footX: this._placeX, footY: this._placeY, west });
+            mark.x = rect.x;
+            mark.y = rect.y;
+        }
+        this._artifactMark = mark;
+    }
+
+    _artifactRecord() {
+        const mark = this._artifactMark;
+        if (!mark || !this._gpuFrameRecord) return null;
+        const stamp = mark.stamp;
+        const record = this._artifactGpuRecord || (this._artifactGpuRecord = {
+            sx: 0, sy: 0, alpha: 1, elevation: 0.34, occluder: 0, emissive: 0, ownerSlot: 0,
+            material: 0, materialSource: null, occluderSource: null, sourceKind: 'individual',
+        });
+        record.id = `carried-artifact:${this.agent?.id}`;
+        record.stableKey = record.id;
+        record.textureKey = stamp.__cvArtifactKey || stamp.__cvGroundKey || `artifact:${mark.kind}`;
+        record.textureRevision = record.textureKey;
+        record.source = stamp;
+        record.sourceWidth = stamp.width;
+        record.sourceHeight = stamp.height;
+        record.sw = record.width = stamp.width;
+        record.sh = record.height = stamp.height;
+        record.x = mark.x;
+        record.y = mark.y;
+        return record;
+    }
+
+    triggerAllyNod(now = Date.now()) {
+        if (this.motionScale <= 0) return;
+        this._allyNodStart = now;
+    }
+
+    // W3-D — strict-D8 earned patina (mended cloak hem stitches, salt at cuff)
+    // plus weather acting (rain-darkened shoulders, freezing breath puffs at z >= 2).
+    _drawPatinaAndWeatherBody(ctx, frameGeometry) {
+        const bounds = frameGeometry?.bounds;
+        if (!bounds || !Number.isFinite(frameGeometry.dx) || !Number.isFinite(frameGeometry.dy)) return;
+        const dx = frameGeometry.dx;
+        const dy = frameGeometry.dy;
+        const zoom = this._zoom || 1;
+        const spanW = Math.max(1, bounds.maxX - bounds.minX);
+        const spanH = Math.max(1, bounds.maxY - bounds.minY);
+        const patina = this._patina;
+        if (patina && zoom >= 1.6) {
+            const stitches = Math.min(4, Math.max(0, Number(patina.mendedStitches) || 0));
+            if (stitches > 0) {
+                const hemY = Math.round(dy + bounds.maxY - 2);
+                const startX = Math.round(dx + bounds.minX + Math.max(2, Math.floor((spanW - stitches * 2) / 2)));
+                ctx.fillStyle = ART_RAMPS.trimGold[2];
+                for (let i = 0; i < stitches; i++) {
+                    ctx.fillRect(startX + i * 2, hemY, 1, 1);
+                }
+            }
+            if (patina.saltCuff) {
+                const cuffY = Math.round(dy + bounds.maxY - 1);
+                const cx = Math.round(dx + bounds.minX + spanW * 0.35);
+                ctx.fillStyle = ART_RAMPS.snow[2];
+                ctx.fillRect(cx, cuffY, 1, 1);
+                ctx.fillRect(cx + 3, cuffY, 1, 1);
+            }
+        }
+        const weather = this._weather;
+        if (!weather) return;
+        const raining = (weather.type === 'rain' || weather.type === 'storm') && (Number(weather.precipitation) || 0) > 0.15;
+        if (raining && !this._seatedSeat()) {
+            const shY = Math.round(dy + bounds.minY + spanH * 0.28);
+            const shX = Math.round(dx + bounds.minX + spanW * 0.2);
+            const shW = Math.max(4, Math.round(spanW * 0.6));
+            ctx.save();
+            ctx.fillStyle = 'rgba(16, 22, 32, 0.24)';
+            ctx.fillRect(shX, shY, shW, 2);
+            ctx.restore();
+        }
+        if (weather.freezing === true && zoom >= 2 && this.motionScale > 0) {
+            const seed = routineHash(this.agent?.id || '');
+            const cycleMs = 3200;
+            const phaseMs = (Date.now() + (seed % cycleMs)) % cycleMs;
+            if (phaseMs < 520) {
+                const west = /w$/.test(DIRECTIONS[this.direction] || '');
+                const dirX = west ? -1 : 1;
+                const mouthX = Math.round(dx + bounds.minX + spanW * (west ? 0.3 : 0.7));
+                const mouthY = Math.round(dy + bounds.minY + spanH * 0.26);
+                const step2 = phaseMs >= 260;
+                ctx.save();
+                ctx.fillStyle = '#dce6f0';
+                ctx.globalAlpha = step2 ? 0.22 : 0.45;
+                ctx.fillRect(mouthX + dirX * (step2 ? 3 : 1), mouthY - (step2 ? 2 : 0), step2 ? 3 : 2, step2 ? 2 : 1);
+                ctx.restore();
+            }
+        }
     }
 
     _lanternRecord() {
@@ -5860,7 +6048,7 @@ export class AgentSprite {
             seatBack: stones && this._seatStoneRecord(stones.back, 'back'),
             weaponBack: weapon('back'), frost: this._frostTintRecord(), snow: this._snowCapRecord(),
             hat: layer?.hat && layerRecord(body, layer.hat, 'head', geometry),
-            weaponFront: weapon('front'), seatFront: stones && this._seatStoneRecord(stones.front, 'front'),
+            weaponFront: weapon('front'), artifact: this._artifactRecord(), seatFront: stones && this._seatStoneRecord(stones.front, 'front'),
             candle: this._queueCandleRecord(), tankard: this._tankardRecord(), lantern: this._lanternRecord(),
         });
     }
@@ -7870,6 +8058,7 @@ export class AgentSprite {
         if (Number.isFinite(contentTopY)) {
             if (zoom < 1 || zoom > 2) return false;
             if (status !== AgentStatus.WORKING || !tool) return false;
+            if (shouldSuppressToolGlyphForArtifact({ walking: this.moving, zoom, hasArtifact: Boolean(this._artifactMark) })) return false;
             if (this._thoughtOwnsHead() || this.chatting) return false;
             const step = zoom >= 1.5 ? 2 : 1;
             const motifSize = 8 * step;
@@ -8637,10 +8826,14 @@ export class AgentSprite {
             this._turnSandText = elapsed === null ? null : `${last ? 'Last turn ' : ''}${seconds >= 60 ? `${Math.floor(seconds / 60)}m ` : ''}${seconds % 60}s`;
         }
         if (!this._turnSandText) return;
+        const stillWork = stillWorkState(this.agent, now);
+        const composingSliver = Boolean(stillWork?.showTurnSand);
         const emphasized = this.selected || this.hovered;
         const LONG_TURN_MS = 5 * 60 * 1000;
-        if (!emphasized && !(this._turnSandAge >= LONG_TURN_MS)) return;
-        const gate = getActiveMarkGovernor()?.admit(emphasized ? MarkTier.PRIMARY : MarkTier.SECONDARY, this.x, this.y);
+        if (!emphasized && !composingSliver && !(this._turnSandAge >= LONG_TURN_MS)) return;
+        const gate = composingSliver
+            ? { draw: true, alpha: 1 }
+            : getActiveMarkGovernor()?.admit(emphasized ? MarkTier.PRIMARY : MarkTier.SECONDARY, this.x, this.y);
         if (gate && !gate.draw) return;
         ctx.save();
         const box = this._bodyBox || DEFAULT_BODY_BOX;
@@ -8652,7 +8845,8 @@ export class AgentSprite {
             ctx.font = WORLD_BODY_FONT_11;
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
-            if (!postcardFrame()) ctx.fillText(this._turnSandText, 10, 0);
+            const label = composingSliver ? formatComposingSliver(stillWork.elapsedMs) : this._turnSandText;
+            if (!postcardFrame() && label) ctx.fillText(label, 10, 0);
         } else ctx.fillRect(-2, -3, 2, 6);
         ctx.restore();
     }

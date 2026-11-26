@@ -499,6 +499,19 @@ export class App {
         }
         if (!this.chronicleLog) {
             this.chronicleLog = new ChronicleLog({ store: this.chronicleStore }).start();
+            this.chronicleLog.startMetaSampling?.({
+                skyProvider: () => {
+                    const snap = this.renderer?._lastAtmosphere;
+                    const wx = snap?.weather;
+                    if (!wx) return null;
+                    return {
+                        cloud: Math.round(Math.max(0, Math.min(1, Number(wx.cloudCover) || 0)) * 3),
+                        rain: wx.type === 'rain' || wx.type === 'storm' ? (wx.type === 'storm' ? 2 : 1) : 0,
+                        snow: wx.frozen === true ? 1 : 0,
+                        moon: Math.round(Math.max(0, Math.min(1, Number(snap?.sky?.moon?.illumination) || 0)) * 3),
+                    };
+                },
+            });
         }
         if (!this.spendLedger) {
             this.spendLedger = new SpendLedger(this.world, { store: this.chronicleStore });
@@ -520,6 +533,7 @@ export class App {
                 readDashboardAtmosphere: () => this._readDashboardAtmosphere(),
                 simulation: this.simMode,
                 refreshAtmosphere: snapshot => this.renderer?.atmosphereState?.update({ now: snapshot.effectiveDate }),
+                onAudioReady: (audio) => this.renderer?.setVisualBeat?.(audio?.getVisualBeat?.() ?? null),
                 frameAttention: () => {
                     if (this.modeManager?.getCurrentMode() === 'dashboard') return false;
                     this.renderer?.cameraDirector?.frameAttention(this.renderer.agentSprites);
@@ -1783,6 +1797,7 @@ export class App {
             }
             const previous = this.renderer;
             this.renderer = candidate;
+            candidate.setVisualBeat?.(this.topBar?.audio?.getVisualBeat?.() ?? null);
             previous?.hide?.();
             this._installPerfDebugHelper();
             // Framing waits one frame so the first update has placed the agent

@@ -555,6 +555,13 @@ function timelineStateAt(minute, knots, joined = false, realSky = false) {
             type = 'overcast';
         }
     }
+    const prevTemp = previous.temperatureC == null ? NaN : Number(previous.temperatureC);
+    const nextTemp = next.temperatureC == null ? NaN : Number(next.temperatureC);
+    const temperatureC = Number.isFinite(prevTemp) && Number.isFinite(nextTemp)
+        ? interpolateNumber(prevTemp, nextTemp, transitionProgress)
+        : Number.isFinite(nearer.temperatureC == null ? NaN : Number(nearer.temperatureC))
+            ? Number(nearer.temperatureC)
+            : null;
     return {
         previous,
         next,
@@ -565,8 +572,21 @@ function timelineStateAt(minute, knots, joined = false, realSky = false) {
         precipitation,
         fog,
         type,
+        ...(temperatureC != null ? { temperatureC } : {}),
         ...(realSky ? { frozen: precipitation > PRECIPITATING && wetKnot.frozen === true } : {}),
     };
+}
+
+// W3-D — 0.0 / 1.0 °C freezing hysteresis for visible breath puffs.
+// Returns boolean; never guesses freezing when temperature is absent unless
+// snow precipitation is actively frozen.
+export function resolveFreezingState(temperatureC, previousFreezing = false, frozenPrecip = false) {
+    if (frozenPrecip === true) return true;
+    const temp = temperatureC == null ? NaN : Number(temperatureC);
+    if (!Number.isFinite(temp)) return false;
+    if (temp <= 0.0) return true;
+    if (temp >= 1.0) return false;
+    return Boolean(previousFreezing);
 }
 
 // C-W3 — the timeline wind follows the resolved type, never the knot alone:
@@ -675,6 +695,7 @@ export function resolveWeatherAt(minute, timeline) {
         cloudCover: state.cloudCover,
         precipitation: state.precipitation,
         fog: state.fog,
+        ...(state.temperatureC != null ? { temperatureC: state.temperatureC } : {}),
         ...(timeline.realSky ? { frozen: state.frozen } : {}),
         windX: timeline.realSky
             ? interpolateNumber(state.previous.windX, state.next.windX, state.transitionProgress)
@@ -1034,6 +1055,7 @@ export function normalizeTimelineKnots(knots) {
         const preset = WEATHER_PRESETS[type];
         const pick = (key, fallback) => (Number.isFinite(Number(knot[key])) ? clamp(Number(knot[key])) : fallback);
         const windX = Number(knot.windX);
+        const temp = knot.temperatureC == null ? NaN : Number(knot.temperatureC);
         out.push({
             minute: clamp(Math.round(minute), 0, DAY_MINUTES - 1),
             type,
@@ -1043,6 +1065,7 @@ export function normalizeTimelineKnots(knots) {
             fog: pick('fog', preset.fog),
             windX: Number.isFinite(windX) ? clamp(windX, -WIND_MAX, WIND_MAX) : windSpeedForType(type),
             ...(typeof knot.frozen === 'boolean' ? { frozen: knot.frozen } : {}),
+            ...(Number.isFinite(temp) ? { temperatureC: temp } : {}),
             seed: 0,
         });
     }
@@ -1656,6 +1679,7 @@ export class AtmosphereState {
         this._timelineMode = 'auto';
         this._timelineKnots = null;
         this._frozenDate = null;
+        this._freezingState = false;
         this._lastSnapshot = null;
         this._previousHelper = null;
         this._debugHelperInstalled = false;
@@ -1675,6 +1699,15 @@ export class AtmosphereState {
             timelineKnots: this._timelineKnots,
             forecast,
         });
+        const weather = this._lastSnapshot.weather;
+        if (weather) {
+            this._freezingState = resolveFreezingState(
+                weather.temperatureC,
+                this._freezingState,
+                weather.frozen === true,
+            );
+            weather.freezing = this._freezingState;
+        }
         // C-W2 — everything `groundStateAt` needs to integrate the same
         // history the live weather resolves from.
         this._lastSnapshot.timeline = {

@@ -12,7 +12,7 @@ const TYPE_BY_CODE = new Map([
 
 const clamp01 = value => Math.max(0, Math.min(1, value));
 
-export function forecastKnot({ minute, code, cloud, mm, snowfall, visibility, windSpeed, windDirection }) {
+export function forecastKnot({ minute, code, cloud, mm, snowfall, visibility, windSpeed, windDirection, temperatureC }) {
     let type = TYPE_BY_CODE.get(code);
     if (!type) return null;
     const wet = type === 'rain' || type === 'storm';
@@ -26,6 +26,7 @@ export function forecastKnot({ minute, code, cloud, mm, snowfall, visibility, wi
     const windX = Number.isFinite(windSpeed) && Number.isFinite(windDirection)
         ? -Math.sin(windDirection * Math.PI / 180) * WIND_MAX * clamp01(windSpeed / 60)
         : 0;
+    const temp = temperatureC == null ? NaN : Number(temperatureC);
     return {
         minute,
         type,
@@ -35,6 +36,7 @@ export function forecastKnot({ minute, code, cloud, mm, snowfall, visibility, wi
         frozen: wet && (SNOW_CODES.has(code) || (Number.isFinite(snowfall) && snowfall > 0)),
         fog: type === 'fog' ? Math.max(0.55, fog) : fog,
         windX,
+        ...(Number.isFinite(temp) ? { temperatureC: temp } : {}),
     };
 }
 
@@ -54,6 +56,7 @@ export function forecastKnotsByDate(hourly) {
             visibility: hourly.visibility?.[i],
             windSpeed: hourly.wind_speed_10m?.[i],
             windDirection: hourly.wind_direction_10m?.[i],
+            temperatureC: hourly.temperature_2m?.[i],
         });
         if (!knot) continue;
         const key = localDateKey(date);
