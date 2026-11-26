@@ -31,3 +31,5 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Run validation
         run: npm run validate:full
+      - name: Run art and visual gates
+        run: npm run art:gate && npm run visual:gate

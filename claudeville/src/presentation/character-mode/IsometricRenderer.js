@@ -862,6 +862,7 @@ export class IsometricRenderer {
         this._worldResumeFailures = 0;
         // 0.3 — the boot reveal waits for the opening pose (App._openWorld).
         this._firstFrameReason = 'boot-pending';
+        this.presentGeneration = 0;
         this._worldSpritesDirty = false;
         // VB-4 — between pauseForVisibility and resumeFromVisibility the agent
         // handlers take the inactive branch: no frame would advance a walk.
@@ -3577,6 +3578,7 @@ export class IsometricRenderer {
                 return false;
             }
             this._recordIdleRenderState();
+            this.presentGeneration += 1;
             this._signalFirstFrame();
             this._recordFrameSuccess();
         } catch (error) {
@@ -5567,6 +5569,7 @@ export class IsometricRenderer {
             renderMs = afterRender - renderStart;
             if (painted !== false) {
                 this._recordIdleRenderState();
+                this.presentGeneration += 1;
                 this._signalFirstFrame();
             }
             if (renderToken) {
