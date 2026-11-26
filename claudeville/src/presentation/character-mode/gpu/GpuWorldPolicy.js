@@ -23,6 +23,33 @@ export const GPU_WORLD_RENDERER_MODES = Object.freeze({
     WEBGPU: 'webgpu',
 });
 
+export const FRONTIER_SHED_ORDER = Object.freeze(['shafts', 'gi', 'mirrorCadence', 'windRippleDensity']);
+
+/**
+ * Shed one active control per over-budget p95 window. Feed the returned flags
+ * into the next measurement; start from requested flags when the tier or gate changes.
+ */
+export function resolveFrontierPolicy({
+    backend, qualityTier = 'FULL', frontierFlags = {}, frameTimeMs = 0,
+    ultrawide = false, reducedMotion = false, giEvidencePromoted = false,
+} = {}) {
+    const full = qualityTier === 'FULL' || qualityTier === 0;
+    const reduced = qualityTier === 'REDUCED' || qualityTier === 1;
+    const gpu = backend === GPU_WORLD_RENDERER_MODES.WEBGPU;
+    const flags = {
+        ...frontierFlags,
+        giPilot: frontierFlags.giPilot === true,
+        shafts: gpu && full && frontierFlags.shafts !== false,
+        gi: gpu && full && frontierFlags.gi !== false && (giEvidencePromoted === true || frontierFlags.giPilot === true),
+        mirrorCadence: gpu && (full || reduced) && !reducedMotion && frontierFlags.mirrorCadence !== false,
+        windRippleDensity: gpu && (full || reduced) && !reducedMotion && frontierFlags.windRippleDensity !== false,
+    };
+    const frameCeilingMs = ultrawide ? 12.90 : 8.50;
+    const shed = frameTimeMs > frameCeilingMs ? FRONTIER_SHED_ORDER.find(key => flags[key]) : null;
+    if (shed) flags[shed] = false;
+    return { frontierFlags: flags, shed: shed ?? null, frameCeilingMs, depthCorrectness: true, waterlineContact: true };
+}
+
 // EFFECT_BUDGET — the optional work the resident renderer ships and what each
 // quality level keeps. Key order is the shedding order: embellishment first,
 // depth cues and the night's light last. Every level entry states what ships
