@@ -84,6 +84,12 @@ import { LABEL_INK, WALNUT, drawOutlinedMotif, fitLabelText, measureLabelText, o
 import { GPU_RECORD_FLAGS } from './gpu/GpuWorldPolicy.js';
 import { inGlass } from './InspectionGlass.js';
 import { postcardFrame } from './Postcard.js';
+import {
+    OVERLAY_LAYER_ATTENTION,
+    clusterAttentionBeacons,
+    getAttentionWordWidth,
+    reserveAttentionPlates,
+} from './SlotAuction.js';
 
 export const ATTENTION_STATUSES = Object.freeze([
     AgentStatus.WAITING_ON_USER,
@@ -244,12 +250,26 @@ function notchRows(tier) {
     return tier > 0 ? tier : 0;
 }
 
+// Preallocated cluster-ID buffer for allocation-free sweep-line union-find.
+let clusterIdScratch = new Int32Array(64);
+function ensureClusterIdScratch(count) {
+    if (count <= clusterIdScratch.length) return clusterIdScratch;
+    let next = clusterIdScratch.length;
+    while (next < count) next *= 2;
+    clusterIdScratch = new Int32Array(next);
+    return clusterIdScratch;
+}
+
 function plateWidths(ctx, word, text, tier = null) {
-    ctx.font = WORLD_DISPLAY_FONT_8;
-    const notchCell = notchRows(tier) ? AGE_NOTCH_GAP + AGE_NOTCH_W : 0;
-    const wordCell = measureLabelText(ctx, word) + WORD_PAD * 2 + notchCell;
+    // W5-C — O(1) precomputed status word cell width via SlotAuction lookup
+    // (zero per-frame measureText for NEEDS YOU / ERROR / LIMIT), adjusted from
+    // 8 px display advance to AttentionPlates' 7 px word cell advance (CHIP_GLYPH_W).
+    const wordStr = String(word || '');
+    const wordCell = getAttentionWordWidth(wordStr, notchRows(tier)) - wordStr.length;
     ctx.font = WORLD_BODY_FONT_11;
-    const textCell = measureLabelText(ctx, text) + TEXT_PAD * 2;
+    const textCell = (typeof ctx?.measureText === 'function'
+        ? measureLabelText(ctx, text)
+        : String(text || '').length * CHIP_GLYPH_W) + TEXT_PAD * 2;
     return { wordCell, textCell, width: 1 + wordCell + textCell + 1 };
 }
 
@@ -388,6 +408,7 @@ export function layoutAttentionPlates(ctx, {
     theatreMode = false,
     glassScreen = null,
     compact = true,
+    occupancyGrid = null,
 } = {}) {
     const layout = { plates: [], beacons: [], tallies: [], count: 0, offscreen: 0, theatre: Boolean(theatreMode) };
     if (!ctx || !camera?.worldToScreen || !viewport?.width) return layout;
@@ -512,36 +533,49 @@ export function layoutAttentionPlates(ctx, {
     // is one knot however far the plaza overflow stands from the line (7.2),
     // so the group carries the exact total. Kinds never mix, so a group word
     // is always true of every member it counts.
-    const parent = items.map((_, index) => index);
-    const find = (index) => {
-        while (parent[index] !== index) index = parent[index] = parent[parent[index]];
-        return index;
-    };
-    for (let i = 0; i < items.length; i++) {
-        for (let j = i + 1; j < items.length; j++) {
-            if (items[i].kind !== items[j].kind) continue;
-            if (items[i].queued && items[j].queued) {
-                parent[find(j)] = find(i);
-                continue;
-            }
-            const pKey = mem ? pairKeyFor(items[i].id, items[j].id) : null;
-            const wasNear = Boolean(pKey && mem.pairNear.get(pKey)?.value);
-            const pad = wasNear ? 2 + HYSTERESIS_PX : 2;
-            const radius = wasNear ? GROUP_RADIUS + HYSTERESIS_PX : GROUP_RADIUS;
-            const rawNear = rectsOverlap(items[i].natural, items[j].natural, pad)
-                || beaconsNear(items[i], items[j], radius);
-            if (stabilizeBool(mem?.pairNear, pKey, rawNear, clock)) {
-                parent[find(j)] = find(i);
+    let components;
+    if (!mem) {
+        // W5-C — stateless fast path: allocation-free X sweep-line union-find
+        // via SlotAuction.clusterAttentionBeacons (GROUP_RADIUS = 96 px).
+        const clusterIds = ensureClusterIdScratch(items.length);
+        const clusterCount = clusterAttentionBeacons(items, items.length, clusterIds, GROUP_RADIUS);
+        components = new Array(clusterCount);
+        for (let cid = 0; cid < clusterCount; cid++) components[cid] = { members: [], grouped: false, key: '' };
+        for (let i = 0; i < items.length; i++) {
+            components[clusterIds[i]].members.push(items[i]);
+        }
+    } else {
+        const parent = items.map((_, index) => index);
+        const find = (index) => {
+            while (parent[index] !== index) index = parent[index] = parent[parent[index]];
+            return index;
+        };
+        for (let i = 0; i < items.length; i++) {
+            for (let j = i + 1; j < items.length; j++) {
+                if (items[i].kind !== items[j].kind) continue;
+                if (items[i].queued && items[j].queued) {
+                    parent[find(j)] = find(i);
+                    continue;
+                }
+                const pKey = pairKeyFor(items[i].id, items[j].id);
+                const wasNear = Boolean(mem.pairNear.get(pKey)?.value);
+                const pad = wasNear ? 2 + HYSTERESIS_PX : 2;
+                const radius = wasNear ? GROUP_RADIUS + HYSTERESIS_PX : GROUP_RADIUS;
+                const rawNear = rectsOverlap(items[i].natural, items[j].natural, pad)
+                    || beaconsNear(items[i], items[j], radius);
+                if (stabilizeBool(mem.pairNear, pKey, rawNear, clock)) {
+                    parent[find(j)] = find(i);
+                }
             }
         }
+        const byRoot = new Map();
+        items.forEach((item, index) => {
+            const root = find(index);
+            if (!byRoot.has(root)) byRoot.set(root, { members: [], grouped: false });
+            byRoot.get(root).members.push(item);
+        });
+        components = [...byRoot.values()];
     }
-    const byRoot = new Map();
-    items.forEach((item, index) => {
-        const root = find(index);
-        if (!byRoot.has(root)) byRoot.set(root, { members: [], grouped: false });
-        byRoot.get(root).members.push(item);
-    });
-    const components = [...byRoot.values()];
     for (const component of components) {
         component.grouped = component.members.length >= GROUP_MIN;
         component.key = componentKeyFor(component.members);
@@ -561,7 +595,7 @@ export function layoutAttentionPlates(ctx, {
             grouped: entry.grouped,
             key: entry.key,
         }));
-        const probePlates = placeComponents(ctx, probeComponents, placed, layout.beacons, viewport, now, null, clock);
+        const probePlates = placeComponents(ctx, probeComponents, placed, layout.beacons, viewport, now, null, clock, occupancyGrid);
         for (const component of components) {
             if (component.members.length <= 1 || component.grouped) continue;
             const prev = mem.componentGrouped.get(component.key);
@@ -573,7 +607,7 @@ export function layoutAttentionPlates(ctx, {
     }
     let placedPlates = [];
     for (let pass = 0; pass <= items.length * 2; pass++) {
-        placedPlates = placeComponents(ctx, components, placed, layout.beacons, viewport, now, mem?.plateSlots, clock);
+        placedPlates = placeComponents(ctx, components, placed, layout.beacons, viewport, now, mem?.plateSlots, clock, occupancyGrid);
         let changed = false;
         for (const plate of placedPlates) {
             if (leaderLength(plate) <= LEADER_MAX) continue;
@@ -605,6 +639,7 @@ export function layoutAttentionPlates(ctx, {
         if (!changed) break;
     }
     for (const plate of placedPlates) layout.plates.push(plate);
+    if (occupancyGrid) reserveAttentionLayoutInGrid(occupancyGrid, layout);
     layout.tallies = theatreMode ? [] : layoutTallies(ctx, silent, viewport, [...layout.plates, ...layout.beacons, ...tallyAvoid]);
     if (glassScreen && Number.isFinite(glassScreen.cx) && Number.isFinite(glassScreen.cy)) {
         markGlassTwins(layout, [...items, ...edgeItems], glassScreen, viewport);
@@ -775,7 +810,7 @@ function nearestComponent(component, components) {
     return best;
 }
 
-function placeComponents(ctx, components, edgePlates, beacons, viewport, now, slotState = null, clock = 0) {
+function placeComponents(ctx, components, edgePlates, beacons, viewport, now, slotState = null, clock = 0, occupancyGrid = null) {
     const requests = [];
     for (const { members, grouped } of components) {
         if (grouped) requests.push(groupPlate(ctx, members, now));
@@ -789,7 +824,7 @@ function placeComponents(ctx, components, edgePlates, beacons, viewport, now, sl
     const placed = [...edgePlates];
     const out = [];
     for (const request of requests) {
-        const plate = placePlate(request, placed, beacons, viewport, slotState, clock);
+        const plate = placePlate(request, placed, beacons, viewport, slotState, clock, occupancyGrid);
         placed.push(plate);
         out.push(plate);
     }
@@ -1015,7 +1050,7 @@ function groupPlate(ctx, members, now) {
     };
 }
 
-function placePlate(request, placed, beacons, viewport, slotState = null, clock = 0) {
+function placePlate(request, placed, beacons, viewport, slotState = null, clock = 0, occupancyGrid = null) {
     const width = drawnWidth(request);
     const half = Math.round(width / 2) + 4;
     const candidates = [
@@ -1030,6 +1065,7 @@ function placePlate(request, placed, beacons, viewport, slotState = null, clock 
         let hits = 0;
         for (const other of placed) if (rectsOverlap(rect, other.rect, 2)) hits += 2;
         for (const beacon of beacons) if (rectsOverlap(rect, beacon, 1)) hits += 1;
+        if (occupancyGrid && occupancyGrid.overlaps(rect.left, rect.top, rect.right, rect.bottom, 2)) hits += 2;
         return { idx, rect, hits };
     };
     let best = null;
@@ -1096,6 +1132,36 @@ export function attentionScreenRects(layout, { includeTallies = false } = {}) {
         for (const tab of layout?.tallies || []) out.push(tab.rect);
     }
     return out;
+}
+
+/**
+ * W5-C — Reserve a laid-out AttentionPlates result (or unplaced plate requests
+ * via `reserveAttentionPlates`) at Layer 2 (`OVERLAY_LAYER_ATTENTION`) in the
+ * shared 96 px `OverlayOccupancyGrid`.
+ */
+export function reserveAttentionLayoutInGrid(grid, layout, { viewport = null, outRects = null, pad = 2 } = {}) {
+    if (!grid || !layout) return 0;
+    if (Array.isArray(layout)) {
+        return reserveAttentionPlates(grid, layout, viewport, outRects, pad);
+    }
+    let count = 0;
+    if (!layout.theatre) {
+        const plates = layout.plates || [];
+        for (let i = 0; i < plates.length; i++) {
+            const r = plates[i]?.rect;
+            if (!r) continue;
+            grid.reserve(r.left, r.top, r.right, r.bottom, OVERLAY_LAYER_ATTENTION, i);
+            count++;
+        }
+    }
+    const beacons = layout.beacons || [];
+    for (let i = 0; i < beacons.length; i++) {
+        const b = beacons[i];
+        if (!b) continue;
+        grid.reserve(b.left, b.top, b.right, b.bottom, OVERLAY_LAYER_ATTENTION, 10000 + i);
+        count++;
+    }
+    return count;
 }
 
 /**

@@ -9,6 +9,14 @@ import { projectKeyFor, updateHomeDistrictContext } from './HomeDistrict.js';
 import { errandCap, ROUTINE_ROLES, STROLL_CAP } from './CrowdRoutine.js';
 import { restSeatStepBias } from './DayRoutine.js';
 import { BUILDING_SINK_TYPES, buildingSinkTiles, fnv1a32, fnv1aString, SINK_IDS, tileKeyIndex } from './Pathfinder.js';
+import {
+    SLOT_FLOW_WEIGHT,
+    SLOT_HUNGARIAN_MAX,
+    SLOT_HYSTERESIS_FACTOR,
+    SLOT_OVERFLOW_PENALTY,
+    buildVisitSlotCost,
+    solveSlotAssignment,
+} from './SlotAuction.js';
 
 const DEFAULT_RESERVATION_TTL_MS = 20000;
 const TILE_OCCUPANCY_RADIUS = 0.78;
@@ -98,7 +106,7 @@ const fixtureFoot = (tileX, tileY, [half, rise], seatId = null, shiftPx = 0) => 
     frontPx: FIXTURE_BODY.heightPx - rise,
     seatId,
 });
-const FIXTURE_FEET = Object.freeze([
+export const FIXTURE_FEET = Object.freeze([
     ...DISTRICT_PROPS.map(prop => [prop, prop.id]),
     ...SCENIC_POINT_PROPS.map(prop => [prop, prop.id]),
     ...AMBIENT_GROUND_PROPS.map(prop => [prop, `prop.${prop.type}`]),
@@ -162,11 +170,23 @@ export class VisitTileAllocator {
             overCapacityAllocations: 0,
             clusterPressureAllocations: 0,
             routineRefusals: 0,
+            batchSolves: 0,
+            hungarianSolves: 0,
+            auctionSolves: 0,
+            hysteresisHolds: 0,
         };
         this._occupancyEntries = [];
         this._occupancyBuckets = new Map();
         this._crowdClusters = [];
         this._sinkSync = new Map();
+        // W5-C: reusable typed-array scratch for allocation-free batch slot solves.
+        this._batchCostMatrix = new Float64Array(256);
+        this._batchRawRow = new Float64Array(64);
+        this._batchTieRow = new Float64Array(64);
+        this._batchFlowRow = new Float64Array(64);
+        this._batchClusterRow = new Float64Array(64);
+        this._batchFacingRow = new Float64Array(64);
+        this._batchAssign = new Int32Array(64);
         this._disposed = false;
     }
 
@@ -520,6 +540,584 @@ export class VisitTileAllocator {
             facingPoint: reservation.facingPoint,
             line: reservation.line,
         };
+    }
+
+    // W5-C — batch min-cost visit-slot assignment via SlotAuction.js
+    // (exact Hungarian when max(m, n) <= 12, deterministic ε-auction when > 12,
+    // flow-field distance weight 4.0, overflow penalty 35, 15% hysteresis discount,
+    // and squad formation grouping).
+    _ensureBatchScratch(numAgents, numSlots) {
+        const matrixLen = Math.max(1, numAgents * numSlots);
+        if (!this._batchCostMatrix || this._batchCostMatrix.length < matrixLen) {
+            let cap = this._batchCostMatrix?.length || 256;
+            while (cap < matrixLen) cap *= 2;
+            this._batchCostMatrix = new Float64Array(cap);
+        }
+        if (!this._batchRawRow || this._batchRawRow.length < numSlots) {
+            let cap = this._batchRawRow?.length || 64;
+            while (cap < numSlots) cap *= 2;
+            this._batchRawRow = new Float64Array(cap);
+            this._batchTieRow = new Float64Array(cap);
+            this._batchFlowRow = new Float64Array(cap);
+            this._batchClusterRow = new Float64Array(cap);
+            this._batchFacingRow = new Float64Array(cap);
+        }
+        if (!this._batchAssign || this._batchAssign.length < numAgents) {
+            let cap = this._batchAssign?.length || 64;
+            while (cap < numAgents) cap *= 2;
+            this._batchAssign = new Int32Array(cap);
+        }
+    }
+
+    _squadKeyForItem(agentId, agent, intent, batchChildParentIds) {
+        const meta = this.agentMeta.get(agentId);
+        const teamName = agent?.teamName || meta?.teamName || null;
+        if (teamName) return `team:${teamName}`;
+        const squadId = agent?.squadId || intent?.squadId || null;
+        if (squadId) return `squad:${squadId}`;
+        const parentId = agent?.parentSessionId || meta?.parentSessionId || null;
+        if (parentId) return `fam:${parentId}`;
+        if (batchChildParentIds.has(agentId)) return `fam:${agentId}`;
+        const related = this._relatedAgentIds(agentId);
+        if (related && related.size > 0) return `fam:${agentId}`;
+        return null;
+    }
+
+    _facingMatchBonus(item, slot, sourceTile) {
+        if (!slot) return 0;
+        const desiredFacing = item.intent?.facing || item.sprite?.direction || item.agent?.facing || null;
+        if (slot.facing && desiredFacing && String(slot.facing) === String(desiredFacing)) {
+            return 2.0;
+        }
+        if (slot.facingPoint && sourceTile) {
+            const toSlotX = slot.tileX - sourceTile.tileX;
+            const toSlotY = slot.tileY - sourceTile.tileY;
+            const toFaceX = slot.facingPoint.x - slot.tileX;
+            const toFaceY = slot.facingPoint.y - slot.tileY;
+            const lenA = Math.hypot(toSlotX, toSlotY);
+            const lenB = Math.hypot(toFaceX, toFaceY);
+            if (lenA > 1e-4 && lenB > 1e-4) {
+                const dot = (toSlotX * toFaceX + toSlotY * toFaceY) / (lenA * lenB);
+                if (dot > 0) return dot * 1.5;
+            }
+        }
+        return 0;
+    }
+
+    allocateBuildingBatch(buildingType, requests = [], options = {}) {
+        if (this._disposed || !Array.isArray(requests) || requests.length === 0) return [];
+        const normalizedType = this._normalizeBuildingType(buildingType);
+        const building = options.building || (normalizedType ? this.buildings.get(normalizedType) || null : null);
+        const wrapped = requests.map((req) => (
+            req && !req.building && building
+                ? { ...req, building }
+                : req
+        ));
+        return this.allocateBatch(wrapped, options);
+    }
+
+    allocateBatch(requests = [], options = {}) {
+        if (this._disposed || !Array.isArray(requests) || requests.length === 0) return [];
+        const now = Number(options.now) || Date.now();
+        this.cleanup(now);
+
+        const results = new Array(requests.length).fill(null);
+        const groups = new Map();
+        const candidateRefs = [];
+
+        for (let index = 0; index < requests.length; index++) {
+            const req = requests[index];
+            if (!req) {
+                this.metrics.rejected++;
+                continue;
+            }
+            const agentId = this._agentId(req.agent, req.sprite, req.intent);
+            if (!agentId) {
+                this.metrics.rejected++;
+                continue;
+            }
+            if (req.building?.restSeats || req.building?.commandQueue || ROUTINE_ROLES.includes(req.role)) {
+                results[index] = this.allocate(req);
+                continue;
+            }
+
+            const resolvedBuilding = this._resolveBuilding(req.building, req.intent);
+            const buildingType = this._buildingType(resolvedBuilding, req.intent);
+            let groupKey = buildingType || '__scenic__';
+            const hasCandidates = Array.isArray(req.candidates) && req.candidates.length > 0;
+            if (hasCandidates) {
+                let refIndex = candidateRefs.indexOf(req.candidates);
+                if (refIndex === -1) {
+                    refIndex = candidateRefs.length;
+                    candidateRefs.push(req.candidates);
+                }
+                groupKey = `${groupKey}#cand:${refIndex}`;
+            }
+
+            let group = groups.get(groupKey);
+            if (!group) {
+                group = {
+                    buildingType,
+                    building: resolvedBuilding,
+                    candidates: hasCandidates ? req.candidates : null,
+                    items: [],
+                };
+                groups.set(groupKey, group);
+            } else if (!group.building && resolvedBuilding) {
+                group.building = resolvedBuilding;
+            }
+
+            group.items.push({
+                requestIndex: index,
+                request: req,
+                agentId,
+                agent: req.agent || null,
+                sprite: req.sprite || null,
+                building: resolvedBuilding,
+                intent: req.intent || null,
+            });
+        }
+
+        for (const group of groups.values()) {
+            const batchResults = this._solveBuildingBatch(
+                group.buildingType,
+                group.building,
+                group.candidates,
+                group.items,
+                now,
+                options,
+            );
+            for (let i = 0; i < group.items.length; i++) {
+                results[group.items[i].requestIndex] = batchResults[i] || null;
+            }
+        }
+        return results;
+    }
+
+    _solveBuildingBatch(buildingType, building, sharedCandidates, items, now, options = {}) {
+        const m = items.length;
+        const out = new Array(m).fill(null);
+        if (m === 0) return out;
+
+        const slots = this._candidateTiles({
+            building,
+            buildingType,
+            candidates: sharedCandidates,
+        });
+        if (slots.length === 0) {
+            this.metrics.rejected += m;
+            return out;
+        }
+
+        const standableFlags = new Uint8Array(slots.length);
+        let hasStandable = false;
+        for (let j = 0; j < slots.length; j++) {
+            const ok = this._isStandable(slots[j].tileX, slots[j].tileY);
+            standableFlags[j] = ok ? 1 : 0;
+            if (ok) hasStandable = true;
+        }
+
+        const eligibleSlots = [];
+        for (let j = 0; j < slots.length; j++) {
+            if (hasStandable && !standableFlags[j]) {
+                this.metrics.unwalkableSkipped++;
+                continue;
+            }
+            eligibleSlots.push(slots[j]);
+        }
+        const n = eligibleSlots.length;
+        if (n === 0) {
+            this.metrics.rejected += m;
+            return out;
+        }
+
+        const batchIds = new Set();
+        const batchChildParentIds = new Set();
+        for (let i = 0; i < m; i++) {
+            const it = items[i];
+            batchIds.add(it.agentId);
+            const parentId = it.agent?.parentSessionId || this.agentMeta.get(it.agentId)?.parentSessionId;
+            if (parentId) batchChildParentIds.add(String(parentId));
+        }
+
+        const heldByOutside = new Set();
+        let outsideInsideCount = 0;
+        for (const reservation of this.reservations.values()) {
+            if (reservation.expiresAt <= now) continue;
+            if (reservation.buildingType !== buildingType) continue;
+            if (batchIds.has(reservation.agentId)) continue;
+            if (!reservation.line) {
+                outsideInsideCount++;
+                heldByOutside.add(reservation.slotId);
+            }
+        }
+
+        const sourceTiles = new Array(m);
+        const walkDistanceRows = new Array(m);
+        const existingReservations = new Array(m);
+        const currentSlotIndices = new Int32Array(m);
+        const squadKeys = new Array(m);
+        const squadMembers = new Map();
+
+        for (let i = 0; i < m; i++) {
+            const it = items[i];
+            const src = this._spriteTile(it.sprite) || this._agentTile(it.agent);
+            sourceTiles[i] = src;
+            walkDistanceRows[i] = this._slotWalkDistances(src, eligibleSlots);
+            const existing = this._reservationForAgent(it.agentId);
+            existingReservations[i] = existing;
+
+            let curIdx = -1;
+            if (
+                existing
+                && existing.expiresAt > now
+                && existing.buildingType === buildingType
+                && !existing.line
+            ) {
+                for (let j = 0; j < n; j++) {
+                    if (eligibleSlots[j].slotId === existing.slotId) {
+                        curIdx = j;
+                        break;
+                    }
+                }
+            }
+            currentSlotIndices[i] = curIdx;
+
+            const squadKey = this._squadKeyForItem(it.agentId, it.agent, it.intent, batchChildParentIds);
+            squadKeys[i] = squadKey;
+            if (squadKey) {
+                let list = squadMembers.get(squadKey);
+                if (!list) {
+                    list = [];
+                    squadMembers.set(squadKey, list);
+                }
+                list.push(i);
+            }
+        }
+
+        // Squad formation anchors: when >= 2 squadmates arrive together without an
+        // existing squad reservation at this building, pick a shared free anchor
+        // slot that minimizes average squad flow cost and maximizes nearby free slots.
+        const squadAnchors = new Map();
+        const claimedAnchors = new Set();
+        for (const [squadKey, memberIndices] of squadMembers.entries()) {
+            if (memberIndices.length < 2) continue;
+            let existingAnchor = null;
+            for (const memberIdx of memberIndices) {
+                const cur = currentSlotIndices[memberIdx];
+                if (cur >= 0) {
+                    existingAnchor = eligibleSlots[cur];
+                    break;
+                }
+            }
+            if (!existingAnchor) {
+                for (const reservation of this.reservations.values()) {
+                    if (reservation.expiresAt <= now || reservation.buildingType !== buildingType || reservation.line) continue;
+                    const resSquad = this._squadKeyForItem(reservation.agentId, null, null, batchChildParentIds);
+                    if (resSquad === squadKey) {
+                        existingAnchor = reservation;
+                        break;
+                    }
+                }
+            }
+            if (existingAnchor) {
+                squadAnchors.set(squadKey, existingAnchor);
+                continue;
+            }
+
+            let bestAnchorIdx = -1;
+            let bestAnchorScore = Infinity;
+            for (let j = 0; j < n; j++) {
+                const slot = eligibleSlots[j];
+                if (heldByOutside.has(slot.slotId)) continue;
+                let distSum = 0;
+                for (let k = 0; k < memberIndices.length; k++) {
+                    const mi = memberIndices[k];
+                    const wRow = walkDistanceRows[mi];
+                    const d = Number.isFinite(wRow?.[j])
+                        ? wRow[j]
+                        : (sourceTiles[mi] ? this._distance(sourceTiles[mi], slot) : 0);
+                    distSum += d;
+                }
+                const avgDist = distSum / memberIndices.length;
+                let nearbyFree = 0;
+                for (let j2 = 0; j2 < n; j2++) {
+                    if (j2 === j || heldByOutside.has(eligibleSlots[j2].slotId)) continue;
+                    if (this._distance(slot, eligibleSlots[j2]) <= RELATED_CLUSTER_RADIUS) nearbyFree++;
+                }
+                const claimedPenalty = claimedAnchors.has(j) ? 18 : 0;
+                const score = avgDist * SLOT_FLOW_WEIGHT
+                    - Math.min(nearbyFree, memberIndices.length - 1) * 10
+                    + (slot.overflow ? SLOT_OVERFLOW_PENALTY : 0)
+                    + claimedPenalty;
+                if (score < bestAnchorScore) {
+                    bestAnchorScore = score;
+                    bestAnchorIdx = j;
+                }
+            }
+            if (bestAnchorIdx >= 0) {
+                claimedAnchors.add(bestAnchorIdx);
+                squadAnchors.set(squadKey, eligibleSlots[bestAnchorIdx]);
+            }
+        }
+
+        // Build row-major m x n cost matrix in reusable typed-array scratch.
+        this._ensureBatchScratch(m, n);
+        const costMatrix = this._batchCostMatrix;
+        const rawRow = this._batchRawRow;
+        const tieRow = this._batchTieRow;
+        const flowRow = this._batchFlowRow;
+        const clusterRow = this._batchClusterRow;
+        const facingRow = this._batchFacingRow;
+        const assign = this._batchAssign;
+
+        for (let i = 0; i < m; i++) {
+            const it = items[i];
+            const src = sourceTiles[i];
+            const wRow = walkDistanceRows[i];
+            const curIdx = currentSlotIndices[i];
+            const squadKey = squadKeys[i];
+            const squadAnchor = squadKey ? squadAnchors.get(squadKey) || null : null;
+            let bestAltCost = Infinity;
+
+            for (let j = 0; j < n; j++) {
+                const slot = eligibleSlots[j];
+                if (heldByOutside.has(slot.slotId)) {
+                    rawRow[j] = Infinity;
+                    continue;
+                }
+
+                const flowCost = Number.isFinite(wRow?.[j])
+                    ? wRow[j]
+                    : (src ? this._distance(src, slot) : 0);
+
+                let relatedClusterBonus = 0;
+                const existingRelatedDist = this._nearestRelatedReservationDistance(it.agentId, buildingType, slot);
+                if (existingRelatedDist <= RELATED_CLUSTER_RADIUS) {
+                    relatedClusterBonus = Math.max(
+                        relatedClusterBonus,
+                        (1 - existingRelatedDist / RELATED_CLUSTER_RADIUS) * 18 + 6,
+                    );
+                }
+                if (squadAnchor) {
+                    const anchorDist = this._distance(squadAnchor, slot);
+                    if (anchorDist <= RELATED_CLUSTER_RADIUS) {
+                        relatedClusterBonus = Math.max(
+                            relatedClusterBonus,
+                            (1 - anchorDist / RELATED_CLUSTER_RADIUS) * 18 + 6,
+                        );
+                    }
+                }
+
+                const facingMatchBonus = this._facingMatchBonus(it, slot, src);
+                let tieOffset = 0;
+                const intentBonus = this._intentSlotBonus(it.intent, slot);
+                if (intentBonus > 0) tieOffset -= intentBonus;
+                const targetSlotIndex = Number(it.intent?.targetSlotIndex ?? it.intent?.payload?.targetSlotIndex);
+                if (Number.isInteger(targetSlotIndex) && targetSlotIndex === slot.slotIndex) {
+                    tieOffset -= TARGET_SLOT_INDEX_BONUS;
+                }
+                tieOffset -= this._projectSlotBonus(it.agentId, buildingType, slot);
+                if (slot.scenic) tieOffset += it.intent?.source === 'ambient' ? -14 : 10;
+
+                flowRow[j] = flowCost;
+                clusterRow[j] = relatedClusterBonus;
+                facingRow[j] = facingMatchBonus;
+                tieRow[j] = tieOffset;
+
+                const rawCost = buildVisitSlotCost({
+                    flowCost,
+                    overflow: !!slot.overflow,
+                    relatedClusterBonus,
+                    facingMatchBonus,
+                    isCurrentSlot: false,
+                    bestAltCost: 0,
+                }) + tieOffset;
+                rawRow[j] = rawCost;
+                if (j !== curIdx && rawCost < bestAltCost) {
+                    bestAltCost = rawCost;
+                }
+            }
+
+            const rowOffset = i * n;
+            for (let j = 0; j < n; j++) {
+                if (!Number.isFinite(rawRow[j])) {
+                    costMatrix[rowOffset + j] = Infinity;
+                    continue;
+                }
+                if (j === curIdx && curIdx >= 0) {
+                    const altCost = Number.isFinite(bestAltCost)
+                        ? Math.max(0, bestAltCost)
+                        : Math.max(0, rawRow[j]);
+                    costMatrix[rowOffset + j] = buildVisitSlotCost({
+                        flowCost: flowRow[j],
+                        overflow: !!eligibleSlots[j].overflow,
+                        relatedClusterBonus: clusterRow[j],
+                        facingMatchBonus: facingRow[j],
+                        isCurrentSlot: true,
+                        bestAltCost: altCost,
+                    }) + tieRow[j];
+                } else {
+                    costMatrix[rowOffset + j] = rawRow[j];
+                }
+            }
+        }
+
+        const solverOptions = options.solverOptions || null;
+        solveSlotAssignment(costMatrix, m, n, assign, solverOptions);
+        const usedAuction = Boolean(solverOptions?.forceAuction) || Math.max(m, n) > SLOT_HUNGARIAN_MAX;
+        this.metrics.batchSolves++;
+        if (usedAuction) this.metrics.auctionSolves++;
+        else this.metrics.hungarianSolves++;
+
+        const buildingCapacity = this._buildingCapacity(building, buildingType, slots.length, items[0].intent);
+        const buildingOccupancy = this._buildingOccupancy(building, buildingType, null);
+        const hasApproachFile = Boolean(APPROACH_FILES[buildingType]) && !sharedCandidates;
+        let committedInside = outsideInsideCount;
+        const overflowIndices = [];
+
+        for (let i = 0; i < m; i++) {
+            const slotIdx = assign[i];
+            if (slotIdx < 0 || slotIdx >= n) {
+                overflowIndices.push(i);
+                continue;
+            }
+            const it = items[i];
+            const workingIntent = Boolean(it.intent) && String(it.intent.source || '').toLowerCase() !== 'ambient';
+            const existing = existingReservations[i];
+            const alreadyInside = existing?.buildingType === buildingType && existing.expiresAt > now && !existing.line;
+            if (hasApproachFile && workingIntent && !alreadyInside && committedInside >= buildingCapacity) {
+                overflowIndices.push(i);
+                continue;
+            }
+
+            const slot = eligibleSlots[slotIdx];
+            const score = costMatrix[i * n + slotIdx];
+            const hysteresisHeld = slotIdx === currentSlotIndices[i] && currentSlotIndices[i] >= 0;
+            if (hysteresisHeld) this.metrics.hysteresisHolds++;
+
+            const tileOccupancy = this._tileOccupancy(slot.tileX, slot.tileY, it.agentId);
+            const clusterPressure = this._clusterPressureAt(slot.tileX, slot.tileY, it.agentId);
+            const capacityLimit = Math.max(1, Number(slot.capacity) || buildingCapacity);
+            const projectedTileUse = tileOccupancy;
+            const projectedBuildingUse = buildingOccupancy + committedInside;
+            const overTileCapacity = Math.max(0, projectedTileUse - capacityLimit + 1);
+            const overBuildingCapacity = Math.max(0, projectedBuildingUse - buildingCapacity + 1);
+            const queueOverflow = !!slot.overflow || overTileCapacity > 0 || overBuildingCapacity > 0;
+            const queueGroup = this._slotQueueGroup(slot, buildingType);
+            const queueDepth = queueOverflow
+                ? this._queueDepth(queueGroup, it.agentId, now, { overflowOnly: true })
+                : 0;
+            const queueIndex = queueOverflow ? queueDepth : 0;
+            const squadAnchor = squadKeys[i] ? squadAnchors.get(squadKeys[i]) || null : null;
+            const relatedDistance = Math.min(
+                this._nearestRelatedReservationDistance(it.agentId, buildingType, slot),
+                squadAnchor ? this._distance(squadAnchor, slot) : Infinity,
+            );
+            const clustered = relatedDistance <= RELATED_CLUSTER_RADIUS;
+
+            const previousReservationId = this.agentReservationIds.get(it.agentId);
+            if (previousReservationId) this.reservations.delete(previousReservationId);
+
+            const reservationId = this._nextReservationId(it.agentId);
+            const expiresAt = now + this._reservationTtl(it.intent);
+            const reservation = {
+                id: reservationId,
+                agentId: it.agentId,
+                buildingType,
+                tileX: slot.tileX,
+                tileY: slot.tileY,
+                slotId: slot.slotId,
+                slotIndex: Number.isInteger(slot.slotIndex) ? slot.slotIndex : slotIdx,
+                intentId: it.intent?.id || null,
+                createdAt: now,
+                expiresAt,
+                score,
+                walkable: this._isStandable(slot.tileX, slot.tileY),
+                scenic: !!slot.scenic,
+                overflow: !!slot.overflow,
+                queueGroup,
+                queueIndex,
+                queueDepth,
+                queueOverflow,
+                buildingCapacity,
+                tileCapacity: capacityLimit,
+                buildingOccupancy,
+                tileOccupancy,
+                projectedBuildingUse,
+                projectedTileUse,
+                overBuildingCapacity,
+                overTileCapacity,
+                clusterPressure,
+                relatedCluster: clustered,
+                relatedDistance: Number.isFinite(relatedDistance) ? relatedDistance : null,
+                facingPoint: slot.facingPoint
+                    ? { x: slot.facingPoint.x, y: slot.facingPoint.y }
+                    : null,
+                routine: null,
+                line: false,
+                queuedAt: null,
+                queueSeq: null,
+                solver: usedAuction ? 'auction' : 'hungarian',
+                hysteresisHeld,
+                pose: slot.pose || null,
+                facing: slot.facing || null,
+            };
+            this.reservations.set(reservationId, reservation);
+            this.agentReservationIds.set(it.agentId, reservationId);
+            committedInside++;
+            this.metrics.allocations++;
+            if (reservation.scenic) this.metrics.scenicAllocations++;
+            if (reservation.overflow) this.metrics.overflowAllocations++;
+            if (clustered) this.metrics.clusteredAllocations++;
+            if (reservation.queueIndex > 0) this.metrics.queuedAllocations++;
+            if (reservation.queueOverflow) this.metrics.overCapacityAllocations++;
+            if (reservation.clusterPressure > 0) this.metrics.clusterPressureAllocations++;
+
+            out[i] = {
+                tileX: reservation.tileX,
+                tileY: reservation.tileY,
+                slotId: reservation.slotId,
+                slotIndex: reservation.slotIndex,
+                reservationId,
+                buildingType: reservation.buildingType,
+                expiresAt,
+                score: reservation.score,
+                walkable: reservation.walkable,
+                scenic: reservation.scenic,
+                overflow: reservation.overflow,
+                queueGroup: reservation.queueGroup,
+                queueIndex: reservation.queueIndex,
+                queueDepth: reservation.queueDepth,
+                queueOverflow: reservation.queueOverflow,
+                buildingCapacity: reservation.buildingCapacity,
+                tileCapacity: reservation.tileCapacity,
+                buildingOccupancy: reservation.buildingOccupancy,
+                tileOccupancy: reservation.tileOccupancy,
+                projectedBuildingUse: reservation.projectedBuildingUse,
+                projectedTileUse: reservation.projectedTileUse,
+                overBuildingCapacity: reservation.overBuildingCapacity,
+                overTileCapacity: reservation.overTileCapacity,
+                clusterPressure: reservation.clusterPressure,
+                relatedCluster: reservation.relatedCluster,
+                relatedDistance: reservation.relatedDistance,
+                facingPoint: reservation.facingPoint,
+                line: reservation.line,
+                solver: reservation.solver,
+                hysteresisHeld: reservation.hysteresisHeld,
+                pose: reservation.pose,
+                facing: reservation.facing,
+            };
+        }
+
+        // Route excess agents past slot/building capacity through single-agent
+        // line/overflow allocation so door-queue and outer-ring rules hold.
+        for (let k = 0; k < overflowIndices.length; k++) {
+            const idx = overflowIndices[k];
+            out[idx] = this.allocate(items[idx].request);
+        }
+
+        return out;
     }
 
     // W4.2 — door discipline (PL-P8 / P14). A working visitor that finds its
@@ -1065,6 +1663,16 @@ export class VisitTileAllocator {
             relatedCache: this._relatedCache.size,
             occupancyEntries: this._occupancyEntries.length,
             occupancyBuckets: this._occupancyBuckets.size,
+            auction: {
+                batchSolves: this.metrics.batchSolves,
+                hungarianSolves: this.metrics.hungarianSolves,
+                auctionSolves: this.metrics.auctionSolves,
+                hysteresisHolds: this.metrics.hysteresisHolds,
+                hungarianThreshold: SLOT_HUNGARIAN_MAX,
+                flowWeight: SLOT_FLOW_WEIGHT,
+                overflowPenalty: SLOT_OVERFLOW_PENALTY,
+                hysteresisFactor: SLOT_HYSTERESIS_FACTOR,
+            },
             disposed: this._disposed,
         };
     }
@@ -1256,6 +1864,11 @@ export class VisitTileAllocator {
             && Number.isFinite(Number(tile.facingPoint.y))
             ? { x: Number(tile.facingPoint.x), y: Number(tile.facingPoint.y) }
             : null;
+        const anchorPoint = tile.anchorPoint
+            && Number.isFinite(Number(tile.anchorPoint.x))
+            && Number.isFinite(Number(tile.anchorPoint.y))
+            ? { x: Number(tile.anchorPoint.x), y: Number(tile.anchorPoint.y) }
+            : null;
         return {
             tileX,
             tileY,
@@ -1268,6 +1881,13 @@ export class VisitTileAllocator {
             reason: tile.reason || null,
             intentId: tile.intentId || null,
             facingPoint,
+            // W5-C smart-object metadata (optional, backward compatible).
+            pose: tile.pose ? String(tile.pose) : null,
+            facing: tile.facing ? String(tile.facing) : null,
+            anchorPoint,
+            clearanceRadius: Number.isFinite(Number(tile.clearanceRadius)) ? Math.max(0, Number(tile.clearanceRadius)) : null,
+            propSocket: tile.propSocket ? String(tile.propSocket) : null,
+            duration: Number.isFinite(Number(tile.duration)) ? Math.max(0, Number(tile.duration)) : null,
         };
     }
 

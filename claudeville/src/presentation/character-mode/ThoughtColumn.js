@@ -362,3 +362,60 @@ export function drawQuillPip(ctx, sprite, zoom) {
     ctx.fillRect(2, -6, 2, 2);
     ctx.restore();
 }
+
+// W5-C — deterministic preference cost for a ThoughtColumn candidate index
+// (matches SlotAuction.solveLabelAuction's slot * 4 + |lateral| * 3 + index * 0.05).
+export function thoughtCandidateCost(
+    index,
+    lateral = THOUGHT_CANDIDATE_LATERAL[index],
+    slot = THOUGHT_CANDIDATE_SLOT[index],
+) {
+    return (slot || 0) * 4.0 + Math.abs(lateral || 0) * 3.0 + (index || 0) * 0.05;
+}
+
+// W5-C — preallocated reusable speaker & 30-candidate pool for zero-GC
+// `solveLabelAuction` passes in IsometricRenderer.
+export function createThoughtCandidatePool(maxSpeakers = 24) {
+    const cap = Math.max(1, maxSpeakers | 0);
+    const descriptors = new Array(cap);
+    for (let i = 0; i < cap; i++) {
+        const candSlots = new Array(THOUGHT_CANDIDATE_COUNT);
+        const candidates = new Array(THOUGHT_CANDIDATE_COUNT);
+        for (let c = 0; c < THOUGHT_CANDIDATE_COUNT; c++) {
+            const box = { left: 0, top: 0, right: 0, bottom: 0, cost: 0 };
+            candSlots[c] = box;
+            candidates[c] = box;
+        }
+        descriptors[i] = {
+            id: '',
+            priority: 0,
+            priorCandidate: -1,
+            candidates,
+            _candSlots: candSlots,
+            _clampX: new Float64Array(THOUGHT_CANDIDATE_COUNT),
+            sprite: null,
+            committed: null,
+            wasClamped: false,
+            focused: false,
+        };
+    }
+    return {
+        cap,
+        descriptors,
+        activeSpeakers: [],
+        assignments: new Int32Array(cap),
+        rects: new Float64Array(cap * 4),
+        stats: { iterations: 0, placed: 0, filtered: 0 },
+    };
+}
+
+export function resetThoughtCandidateSlots(descriptor) {
+    const slots = descriptor._candSlots;
+    const cands = descriptor.candidates;
+    const clampX = descriptor._clampX;
+    for (let c = 0; c < THOUGHT_CANDIDATE_COUNT; c++) {
+        cands[c] = slots[c];
+        clampX[c] = 0;
+    }
+    return descriptor;
+}

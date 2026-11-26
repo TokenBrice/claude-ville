@@ -84,7 +84,28 @@ import { VERIFIED_OUTCOME_EVENT } from '../../domain/services/VerifiedOutcome.js
 import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
-import VisitTileAllocator, { standsOnFixture } from './VisitTileAllocator.js';
+import VisitTileAllocator, { FIXTURE_FEET, standsOnFixture } from './VisitTileAllocator.js';
+import {
+    ORCA_AGENT_RADIUS,
+    ORCA_SWING_RADIUS,
+    ORCA_TAU,
+    ORCA_TAU_OBST,
+    ORCA_Y_SCALE,
+    computePreferredVelocity,
+    isAgentPlanted,
+    solveOrcaVelocity,
+    stepCrowdOrca,
+} from './CrowdOrca.js';
+import {
+    LABEL_MAX_SPEAKERS,
+    OVERLAY_GRID_CELL,
+    OVERLAY_LAYER_ATTENTION,
+    OVERLAY_LAYER_PLAQUE,
+    OVERLAY_LAYER_THOUGHT,
+    OverlayOccupancyGrid,
+    reserveAttentionPlates,
+    solveLabelAuction,
+} from './SlotAuction.js';
 import { scenicScoreBias } from './DayRoutine.js';
 import { getPulsePriority } from './PulsePolicy.js';
 import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
@@ -106,7 +127,7 @@ import { Chronicler } from './Chronicler.js';
 import { VillageDirector } from './VillageDirector.js';
 import { tileToWorld, worldToTile, buildingCenterToWorld } from './Projection.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
-import { attentionKeyAt, attentionScreenRects, isAttentionStatus, layoutAttentionPlates } from './AttentionPlates.js';
+import { attentionKeyAt, attentionScreenRects, isAttentionStatus, layoutAttentionPlates, reserveAttentionLayoutInGrid } from './AttentionPlates.js';
 import { IDENTITY_LABEL, identityLabelTop, identityLabelWidth } from './WorldLabelKit.js';
 import {
     THOUGHT_CANDIDATE_COUNT,
@@ -115,10 +136,13 @@ import {
     THOUGHT_HISTORY_LIMIT,
     THOUGHT_LEADER_TIP,
     THOUGHT_STACK_STEP,
+    createThoughtCandidatePool,
     createThoughtColumn,
     layoutThoughtColumn,
+    resetThoughtCandidateSlots,
     speakerTagFor,
     speakerTagsFor,
+    thoughtCandidateCost,
     thoughtLateralShift,
     thoughtLeader,
 } from './ThoughtColumn.js';
@@ -439,62 +463,18 @@ const LANE_STEERING = Object.freeze({
     // hint without one.
     bridgeOffsetPx: 10,
 });
-const LOCAL_AVOIDANCE = Object.freeze({
-    radiusPx: 28,
-    denseRadiusPx: 26,
-    strengthPx: 0.8,
-    denseStrengthPx: 0.62,
-    bucketPx: 40,
-});
-// 7.4 — foot traffic. Of two walkers within engagePx whose courses agree
-// (heading dot > headingDot), the trailing one walks one V7 rung down until
-// the gap opens to releasePx: a loose file, never a stack. A walker about to
-// come closer than yieldPx to a walker ahead of it (inside its aheadDot
-// cone, on a course within 90°: mergeDot) that is walking or giving way
-// itself plants and lets the other draw ahead (AgentSprite._yieldToLeader)
-// until the gap is back to releasePx; the trigger leads the pair's closing
-// speed by closingFrames refreshes. Within lookAheadPx of a corner a
-// walker's course is already its next leg.
-const FOLLOW_GAP = Object.freeze({
-    engagePx: 22,
-    releasePx: 24,
-    yieldPx: 20.5,
-    minYieldPx: 6,
-    closingFrames: 2,
-    lookAheadPx: 20,
-    headingDot: 0.7,
-    mergeDot: 0,
-    aheadDot: 0.5,
-    chainSteps: 12,
-});
-// 7.4 — a walker bends its course around a villager standing in its way
-// (performing, talking, seated, queued): inside this 2:1-ish clearance
-// ellipse (the body box |dx| < 14, |dy| < 8 plus two steps' margin) it is
-// pushed out along the ellipse normal at up to strength × the local-avoidance
-// push. The standing body never moves; a walker coming to stand beside that
-// body, or on its last lastLegPx, walks straight in.
-const STANDING_CLEARANCE = Object.freeze({ xPx: 28, yPx: 18, strength: 2.5, lastLegPx: 10 });
-// 7.4 — villagers at one building fan on a 2:1 ring in visit-slot order
-// instead of standing inside one another. The plan's ±6 × ±3 px ring left
-// neighbours 6–12 px apart: still one body box (|dx| < 14, |dy| < 8 world
-// px) and one clump on screen, so the ring is sized to the body box instead:
-// ±16 px across, ±8 px deep, the places beside the anchor first. A walker
-// whose stop lands on a standing body re-aims at a ring place while it is
-// still more than minApproachPx out (a re-picked visit that would walk a
-// fanned body back onto the anchor re-aims too), so it walks into the fan;
-// a body that stops inside another's box anyway (a chat approach stops
-// wherever it reaches its partner) steps onto the nearest free ring place
-// within settleHopPx; bodies already stacked (closer than stackPx) settle
-// onto the ring.
+const PAIR_BUCKET_DEFAULT_PX = 40;
+// W5-C — final slot-entry fan (`_fanArrivals`, trimmed to 10 px approach).
+// Walkers use 2D ORCA (`CrowdOrca.js`) for continuous avoidance; only the last
+// 10 px of slot entry fans around an already-occupied standing slot.
 const PERFORMING_FAN = Object.freeze({
     radiusXPx: 16,
     radiusYPx: 8,
     overlapXPx: 14,
     overlapYPx: 8,
     stackPx: 3,
-    settleHopPx: 12,
     minApproachPx: 1,
-    approachPx: 40,
+    approachPx: 10,
 });
 // Ring places after the anchor in units of the radii: beside it (east and
 // west, the stable hash mirroring the set), in front, behind, then the four
@@ -511,7 +491,7 @@ const FAN_EXEMPT_ROLES = new Set(['rest', 'queue']);
 // the arch's axis (tile column 19.0): both round to walkable column 19, stay
 // clear of the masonry jambs (`archHalfWidth - reach = 0.42`) and clear the
 // gate lantern fixture at (18, 37) on exit.
-const GATE_ENTRY_GAP_PX = FOLLOW_GAP.releasePx;
+const GATE_ENTRY_GAP_PX = 24;
 export const GATE_ENTRY_LANES = Object.freeze([
     Object.freeze({ tileX: 18.70, outsideY: 39.35, insideY: 36.6 }),
     Object.freeze({ tileX: 19.30, outsideY: 39.35, insideY: 36.6 }),
@@ -895,6 +875,26 @@ export class IsometricRenderer {
         this._overlayNameGrid = this._createRectGrid();
         this._overlayBubbleGrid = this._createRectGrid();
         this._overlayClusterGrid = this._createRectGrid();
+        // W5-C — shared 96 px flat typed-array overlay occupancy grids and
+        // reusable ThoughtColumn candidate pool (zero per-frame allocations).
+        this._overlayOccupancyGrid = new OverlayOccupancyGrid({ cellSize: OVERLAY_GRID_CELL });
+        this._attentionOccupancyGrid = new OverlayOccupancyGrid({ cellSize: OVERLAY_GRID_CELL });
+        this._thoughtCandidatePool = createThoughtCandidatePool(LABEL_MAX_SPEAKERS);
+        this._labelAuctionStats = {
+            frames: 0,
+            plaques: 0,
+            attention: 0,
+            speakers: 0,
+            placed: 0,
+            filtered: 0,
+            iterations: 0,
+            totalPlaced: 0,
+            totalFiltered: 0,
+        };
+        // W5-C — preallocated reusable ORCA crowd pools (zero per-frame heap churn).
+        this._orcaPools = null;
+        this._ensureOrcaPools();
+        this._cutawayContext = { harborPendingRepos: [], compactionEvents: [] };
         this._laneTiles = new Map();
         this._staticPropDrawables = [];
         this._drawables = [];
@@ -992,6 +992,11 @@ export class IsometricRenderer {
             separationPushes: 0,
             zeroDistancePairs: 0,
             progressClamps: 0,
+            orcaFrames: 0,
+            orcaLines: 0,
+            strideAdjustments: 0,
+            walkClamps: 0,
+            waypointAdvances: 0,
         };
         this._crowdStats = this._emptyCrowdStats();
         this._crowdStatsAccumulator = 0;
@@ -2688,18 +2693,27 @@ export class IsometricRenderer {
         this._invalidateIdleFrame();
     }
 
-    _updateGlassCutaway() {
+    _updateGlassCutaway(now = Date.now()) {
         const glass = this.inspectionGlass;
         const buildings = this.buildingRenderer;
-        if (!buildings || !glass?.enabled || postcardFrame()) return;
+        if (!buildings) return;
+        if (!glass?.enabled || postcardFrame()) {
+            buildings.setGlassCutawayTarget?.(null, now);
+            return;
+        }
         const zoom = this.restZoom;
         const center = glass.getCenter();
-        const point = center && zoom >= 2 && this.camera.screenToWorld(center.x, center.y);
-        const type = point && buildings.hitTest(point.x, point.y)?.type;
+        const point = center && zoom >= 2 && this.camera?.screenToWorld?.(center.x, center.y);
+        const type = point && buildings.hitTest?.(point.x, point.y)?.type;
+        const cutawayEligible = Boolean(type && (getBuildingApertureProfile(type) || buildings.supportsCutaway?.(type)));
         const cut = glass.updateCutaway({
-            buildingId: type && getBuildingApertureProfile(type) ? type : null,
-            zoom, selectionCutawayActive: Boolean(buildings.getApertureModel()),
+            buildingId: cutawayEligible ? type : null,
+            zoom,
+            selectionCutawayActive: Boolean(buildings.getApertureModel?.()),
+            nowMs: now,
         });
+        // W5-B — forward 300ms glass dwell cutaway target (optional chaining for cross-lane safety).
+        buildings.setGlassCutawayTarget?.(cut.buildingId || null, now);
         if (!cut.buildingId) return;
         // The existing inspection builder reads the selection synchronously. Keep real selection intact.
         const selected = buildings._selectedBuildingType;
@@ -2707,8 +2721,8 @@ export class IsometricRenderer {
         try {
             buildings._zoom = zoom;
             buildings._selectedBuildingType = cut.buildingId;
-            buildings._updateInspection();
-            const model = buildings.getApertureModel();
+            buildings._updateInspection?.();
+            const model = buildings.getApertureModel?.();
             if (model) model.source = cut.source;
         } finally {
             buildings._selectedBuildingType = selected;
@@ -2896,6 +2910,11 @@ export class IsometricRenderer {
         this._pairDuplicatePairs.clear();
         this._pairColumnPool.length = 0;
         this._pairBucketPool.length = 0;
+        if (this._orcaPools) {
+            this._orcaPools.agents.length = 0;
+            this._orcaPools.obstacles.length = 0;
+            this._orcaPools.seenSet.clear();
+        }
         this.foliageRenderer?.clear?.();
         this._atmosphereEffectSpriteCache.clear();
         this.weatherRenderer?.dispose?.();
@@ -4204,6 +4223,8 @@ export class IsometricRenderer {
             buildingCrowds: reservations.buildings || {},
             crowd: this._crowdStats || this._summarizeCrowdClusters(),
             localAvoidance: { ...this._localAvoidanceMetrics },
+            orca: this.getCrowdOrcaDiagnostics(),
+            labelAuction: this.getLabelAuctionDiagnostics(),
         };
     }
 
@@ -5147,7 +5168,6 @@ export class IsometricRenderer {
             agentSprites: this.agentSprites,
             pathfinder: this.pathfinder,
         });
-        this._fanStacks();
         this._markSpritesDirty();
     }
 
@@ -6614,8 +6634,8 @@ export class IsometricRenderer {
             this._markSpritesDirty();
         }
 
-        // Steering separation: keep lane corrections and local nudges conservative
-        // so AgentSprite remains the source of target ownership and arrival state.
+        // W5-C — allocation-free 2D ORCA crowd solver with Context Steering,
+        // V7 stride lock, WalkClearance walkability clamping, and 10 px final arrival fan.
         const movingSprites = this._movingSprites;
         movingSprites.length = 0;
         for (const sprite of this.agentSprites.values()) {
@@ -6623,7 +6643,6 @@ export class IsometricRenderer {
                 movingSprites.push(sprite);
             }
         }
-        this._applyLaneDiscipline(movingSprites, dt);
         this._applyLocalAvoidance(movingSprites, dt);
         this._crowdStatsAccumulator += dt;
         if (this._crowdStatsAccumulator >= 250 || this.agentSprites.size !== this._lastAgentCount) {
@@ -6632,15 +6651,10 @@ export class IsometricRenderer {
             this._crowdStats = this._summarizeCrowdClusters();
             this._sampleBehaviorTelemetry(Date.now());
         }
-        const walkerStopped = this._settleLandings(movingSprites);
         this._stationaryOverlapAccumulator += dt;
         if (this._stationaryOverlapAccumulator >= 420) {
             this._stationaryOverlapAccumulator = 0;
             if (!this.replay?.recorded) this._resolveStationaryOverlaps();
-        } else if (walkerStopped) {
-            // 7.4 — two bodies that land on one point the same refresh
-            // settle onto the fan ring at once, not up to 420 ms later.
-            this._fanStacks();
         }
 
         // These consumers need every live position but do not require painter
@@ -6683,10 +6697,20 @@ export class IsometricRenderer {
         this.villageDirector?.update?.(this, dt, updateNow);
         this.buildingRenderer?.setZoom?.(this.camera?.zoom, this.restZoom);
 
-        // Update building renderer (pass agent sprite positions)
+        // Update building renderer (pass agent sprite positions + optional W5-B cutaway context)
         this.buildingRenderer?.setAgentSprites(allSpritesSnapshot);
+        if (typeof this.buildingRenderer?.setCutawayAgents === 'function') {
+            const cutawayCtx = this._cutawayContext || (this._cutawayContext = { harborPendingRepos: [], compactionEvents: [] });
+            cutawayCtx.harborPendingRepos = this.harborTraffic?.pendingRepos
+                || this.harborTraffic?._pendingRepos
+                || cutawayCtx.harborPendingRepos;
+            cutawayCtx.compactionEvents = this.arrivalDeparture?.activeCompactions
+                || this.arrivalDeparture?._compactions
+                || cutawayCtx.compactionEvents;
+            this.buildingRenderer.setCutawayAgents(allSpritesSnapshot, cutawayCtx);
+        }
         this.buildingRenderer?.update(dt);
-        this._updateGlassCutaway();
+        this._updateGlassCutaway(updateNow);
         if (slowSystemsTick && this.focusedSquadIds) this._refreshCouncilFocus();
         this._updateAmbientEffects(dt);
         this._updateChimneySmoke();
@@ -6965,68 +6989,347 @@ export class IsometricRenderer {
         return (this._stableHash(sprite?.agent?.id || sprite?.id || '') % 2) === 0 ? 1 : -1;
     }
 
-    _applyLaneDiscipline(movingSprites, dt = 16) {
-        if (!movingSprites?.length || !this._laneTiles?.size) return;
-        const dense = this.agentSprites.size >= 50;
-        const frameScale = Math.max(0, Math.min(2.5, dt / 16));
-        const maxCorrection = (dense ? LANE_STEERING.denseCorrectionPx : LANE_STEERING.correctionPx) * frameScale;
-        let corrections = 0;
-        // FP-8 — allocation-free: indexed loop, one reused steering point,
-        // a lane mark object kept per body.
-        const steer = this._laneSteerScratch ||= { x: 0, y: 0, constrained: false };
-        for (let index = 0; index < movingSprites.length; index++) {
-            const sprite = movingSprites[index];
-            if (!sprite || sprite.chatPartner || sprite.chatting || sprite.isArrivalPending?.()) continue;
-            // 7.4 — a walker abreast of another on its course keeps its line
-            // while local avoidance opens the pair (see _applyLocalAvoidance).
-            if (this._abreastWalkers?.has(sprite)) continue;
-            const toTargetX = Number(sprite.targetX) - Number(sprite.x);
-            const toTargetY = Number(sprite.targetY) - Number(sprite.y);
-            const targetDistance = Math.sqrt(toTargetX * toTargetX + toTargetY * toTargetY);
-            if (!Number.isFinite(targetDistance) || targetDistance <= LANE_STEERING.arrivalDistancePx) {
-                delete sprite._laneDiscipline;
-                continue;
-            }
-            const lane = this._laneInfoForSprite(sprite);
-            if (!lane) {
-                delete sprite._laneDiscipline;
-                continue;
-            }
-            const side = this._laneSideForSprite(sprite, lane);
-            const center = tileToWorld(lane.tileX, lane.tileY);
-            const currentOffset = (sprite.x - center.x) * lane.perpX + (sprite.y - center.y) * lane.perpY;
-            const desiredOffset = lane.laneOffset * side;
-            const correction = desiredOffset - currentOffset;
-            if (Math.abs(correction) < LANE_STEERING.minimumCorrectionPx) {
-                this._markLaneDiscipline(sprite, lane.tileKey, side, desiredOffset);
-                continue;
-            }
-            const step = Math.max(-maxCorrection, Math.min(maxCorrection, correction));
-            const constrained = constrainSteeringInto(
-                steer,
-                sprite.x,
-                sprite.y,
-                sprite.x + lane.perpX * step,
-                sprite.y + lane.perpY * step,
-                sprite.targetX,
-                sprite.targetY,
-            );
-            const steered = this._strideKeptSteer(sprite, constrained);
-            if (!steered) continue;
-            if (!this._isSpritePositionWalkable(sprite, steered.x, steered.y)) continue;
-            const movedX = steered.x - sprite.x;
-            const movedY = steered.y - sprite.y;
-            if (Math.sqrt(movedX * movedX + movedY * movedY) <= 0.001) continue;
-            sprite.x = steered.x;
-            sprite.y = steered.y;
-            this._markLaneDiscipline(sprite, lane.tileKey, side, desiredOffset);
-            if (constrained.constrained) this._localAvoidanceMetrics.progressClamps++;
-            corrections++;
+    // W5-C — lazy-initialized preallocated pools for the 2D ORCA crowd solver.
+    // Reused across frames (zero per-frame heap allocations) and safe on
+    // `Object.create(IsometricRenderer.prototype)` test harnesses.
+    _ensureOrcaPools() {
+        if (this._orcaPools) return this._orcaPools;
+        const obstacles = [];
+        for (let i = 0; i < FIXTURE_FEET.length; i++) {
+            obstacles.push(FIXTURE_FEET[i]);
         }
-        if (corrections > 0) {
-            this._localAvoidanceMetrics.laneCorrections += corrections;
-            this._markSpritesDirty();
+        const pools = {
+            pool: [],
+            agents: [],
+            obstacles,
+            staticFixtureCount: obstacles.length,
+            wildlifePool: [],
+            seenSet: new Set(),
+            scratchSteer: { x: 0, y: 0 },
+            scratchOutVel: new Float64Array(2),
+            scratchPrefVel: new Float64Array(2),
+            compatNeighbors: [],
+            compatSolveOptions: { dt: 1 / 60, maxSpeed: 60, neighborCount: 0 },
+            frameWalkClamps: 0,
+            stats: {
+                frames: 0,
+                agents: 0,
+                moving: 0,
+                planted: 0,
+                obstacles: obstacles.length,
+                lines: 0,
+                totalLines: 0,
+                maxAgents: 0,
+                strideAdjustments: 0,
+                walkClamps: 0,
+                waypointAdvances: 0,
+                swingArcs: 0,
+                poolCapacity: 0,
+                tau: ORCA_TAU,
+                tauObst: ORCA_TAU_OBST,
+                yScale: ORCA_Y_SCALE,
+            },
+            stepOptions: null,
+        };
+        const strideSteer = (desc, proposedX, proposedY) => {
+            const sprite = desc.sprite;
+            if (!sprite) {
+                pools.scratchSteer.x = proposedX;
+                pools.scratchSteer.y = proposedY;
+                return pools.scratchSteer;
+            }
+            if (sprite._stopLookActiveMs > 0) return null;
+            if (typeof sprite.steeredPosition === 'function') {
+                const kept = sprite.steeredPosition(proposedX, proposedY);
+                if (!kept) return null;
+                if (this._isSpritePositionWalkable(sprite, kept.x, kept.y)) {
+                    pools.scratchSteer.x = kept.x;
+                    pools.scratchSteer.y = kept.y;
+                    return pools.scratchSteer;
+                }
+                const keptX = sprite.steeredPosition(proposedX, desc.y);
+                if (keptX && this._isSpritePositionWalkable(sprite, keptX.x, keptX.y)) {
+                    pools.scratchSteer.x = keptX.x;
+                    pools.scratchSteer.y = keptX.y;
+                    pools.frameWalkClamps++;
+                    return pools.scratchSteer;
+                }
+                const keptY = sprite.steeredPosition(desc.x, proposedY);
+                if (keptY && this._isSpritePositionWalkable(sprite, keptY.x, keptY.y)) {
+                    pools.scratchSteer.x = keptY.x;
+                    pools.scratchSteer.y = keptY.y;
+                    pools.frameWalkClamps++;
+                    return pools.scratchSteer;
+                }
+                if (desc.hasStep && this._isSpritePositionWalkable(sprite, desc.origX, desc.origY)) {
+                    pools.scratchSteer.x = desc.origX;
+                    pools.scratchSteer.y = desc.origY;
+                    pools.frameWalkClamps++;
+                    return pools.scratchSteer;
+                }
+                pools.frameWalkClamps++;
+                return null;
+            }
+            if (this._isSpritePositionWalkable(sprite, proposedX, proposedY)) {
+                pools.scratchSteer.x = proposedX;
+                pools.scratchSteer.y = proposedY;
+                return pools.scratchSteer;
+            }
+            if (this._isSpritePositionWalkable(sprite, proposedX, desc.y)) {
+                pools.scratchSteer.x = proposedX;
+                pools.scratchSteer.y = desc.y;
+                pools.frameWalkClamps++;
+                return pools.scratchSteer;
+            }
+            if (this._isSpritePositionWalkable(sprite, desc.x, proposedY)) {
+                pools.scratchSteer.x = desc.x;
+                pools.scratchSteer.y = proposedY;
+                pools.frameWalkClamps++;
+                return pools.scratchSteer;
+            }
+            pools.frameWalkClamps++;
+            return null;
+        };
+        const isWalkable = (desc, x, y) => {
+            const sprite = desc.sprite;
+            return !sprite || this._isSpritePositionWalkable(sprite, x, y);
+        };
+        pools.stepOptions = {
+            dt: 1 / 60,
+            integrate: true,
+            contextSteering: true,
+            arrivalRadius: 1.5,
+            queryCells: 1,
+            strideSteer,
+            isWalkable,
+        };
+        this._orcaPools = pools;
+        return pools;
+    }
+
+    _acquireOrcaDescriptor(pools, index) {
+        let desc = pools.pool[index];
+        if (!desc) {
+            desc = {
+                id: '',
+                sprite: null,
+                x: 0,
+                y: 0,
+                vx: 0,
+                vy: 0,
+                targetX: NaN,
+                targetY: NaN,
+                gaitSpeed: 45,
+                radius: ORCA_AGENT_RADIUS,
+                planted: false,
+                surfaceTier: 0,
+                swingActive: false,
+                swingRadius: ORCA_SWING_RADIUS,
+                swingX: NaN,
+                swingY: NaN,
+                swingOffsetX: NaN,
+                swingOffsetY: NaN,
+                direction: 'south',
+                hasStep: false,
+                stepLength: 0,
+                origX: 0,
+                origY: 0,
+            };
+            pools.pool[index] = desc;
+            pools.stats.poolCapacity = pools.pool.length;
         }
+        return desc;
+    }
+
+    _populateOrcaObstacles(pools, extraObstacles = null) {
+        const obstacles = pools.obstacles;
+        const includeFixtures = this._disableStaticOrcaFixtures !== true;
+        obstacles.length = includeFixtures ? pools.staticFixtureCount : 0;
+        let wildlifeIdx = 0;
+
+        const wildlife = this.wildlifeRenderer;
+        const livestock = wildlife?._livestockPoses;
+        if (Array.isArray(livestock)) {
+            for (let i = 0; i < livestock.length; i++) {
+                const pose = livestock[i];
+                if (!pose || !pose.route || !(pose.alpha > 0.05)) continue;
+                if (!Number.isFinite(pose.x) || !Number.isFinite(pose.y)) continue;
+                let obs = pools.wildlifePool[wildlifeIdx];
+                if (!obs) {
+                    obs = { x: 0, y: 0, radius: 10, tau: ORCA_TAU_OBST, surfaceTier: 0, kind: 'wildlife' };
+                    pools.wildlifePool[wildlifeIdx] = obs;
+                }
+                wildlifeIdx++;
+                obs.x = pose.x;
+                obs.y = pose.y;
+                obs.radius = 10;
+                obs.surfaceTier = 0;
+                obstacles.push(obs);
+            }
+        }
+        const deer = wildlife?._deerPose;
+        if (deer && deer.walking && deer.alpha > 0.05) {
+            const dx = Number.isFinite(deer.x)
+                ? deer.x
+                : (Number.isFinite(deer.tileX) && Number.isFinite(deer.tileY)
+                    ? (deer.tileX - deer.tileY) * (TILE_WIDTH * 0.5)
+                    : NaN);
+            const dy = Number.isFinite(deer.y)
+                ? deer.y
+                : (Number.isFinite(deer.tileX) && Number.isFinite(deer.tileY)
+                    ? (deer.tileX + deer.tileY) * (TILE_HEIGHT * 0.5)
+                    : NaN);
+            if (Number.isFinite(dx) && Number.isFinite(dy)) {
+                let obs = pools.wildlifePool[wildlifeIdx];
+                if (!obs) {
+                    obs = { x: 0, y: 0, radius: 11, tau: ORCA_TAU_OBST, surfaceTier: 0, kind: 'wildlife' };
+                    pools.wildlifePool[wildlifeIdx] = obs;
+                }
+                wildlifeIdx++;
+                obs.x = dx;
+                obs.y = dy;
+                obs.radius = 11;
+                obs.surfaceTier = 0;
+                obstacles.push(obs);
+            }
+        }
+        if (Array.isArray(extraObstacles)) {
+            for (let i = 0; i < extraObstacles.length; i++) {
+                if (extraObstacles[i]) obstacles.push(extraObstacles[i]);
+            }
+        }
+        return obstacles;
+    }
+
+    _fillOrcaDescriptor(desc, sprite, forcePlanted, dtSec, fallbackIdx) {
+        const hasSteerFn = typeof sprite.steeredPosition === 'function';
+        const planted = forcePlanted
+            || sprite.planted === true
+            || sprite.moving === false
+            || sprite.chatting === true
+            || sprite._stopLookActiveMs > 0
+            || Boolean(sprite.isArrivalPending?.())
+            || (hasSteerFn && !Number.isFinite(sprite._stepStartX));
+
+        const hasStep = !planted
+            && Number.isFinite(sprite._stepStartX)
+            && Number.isFinite(sprite._stepStartY)
+            && Number(sprite._stepLength) > 0;
+        const baseX = hasStep ? sprite._stepStartX : (Number(sprite.x) || 0);
+        const baseY = hasStep ? sprite._stepStartY : (Number(sprite.y) || 0);
+        const origX = Number(sprite.x) || baseX;
+        const origY = Number(sprite.y) || baseY;
+
+        let gaitSpeed = 45;
+        if (Number.isFinite(sprite.gaitSpeed) && sprite.gaitSpeed > 0) {
+            gaitSpeed = sprite.gaitSpeed;
+        } else if (Number.isFinite(sprite._gaitSpeed) && sprite._gaitSpeed > 0) {
+            gaitSpeed = sprite._gaitSpeed <= 10 ? sprite._gaitSpeed * 60 : sprite._gaitSpeed;
+        } else if (hasStep) {
+            gaitSpeed = sprite._stepLength / dtSec;
+        } else if (Number.isFinite(sprite.maxSpeed) && sprite.maxSpeed > 0) {
+            gaitSpeed = sprite.maxSpeed;
+        }
+
+        let tx = Number(sprite.targetX);
+        let ty = Number(sprite.targetY);
+        // Fold road/bridge lane lateral bias into Context Steering desired target.
+        if (
+            !planted
+            && Number.isFinite(tx)
+            && Number.isFinite(ty)
+            && this._laneTiles?.size > 0
+            && !sprite.chatPartner
+            && !sprite.chatting
+        ) {
+            const toTargetDist = Math.hypot(tx - baseX, ty - baseY);
+            if (toTargetDist > LANE_STEERING.arrivalDistancePx) {
+                const lane = this._laneInfoForSprite(sprite);
+                if (lane) {
+                    const side = this._laneSideForSprite(sprite, lane);
+                    const centerX = (lane.tileX - lane.tileY) * (TILE_WIDTH * 0.5);
+                    const centerY = (lane.tileX + lane.tileY) * (TILE_HEIGHT * 0.5);
+                    const currentOffset = (baseX - centerX) * lane.perpX + (baseY - centerY) * lane.perpY;
+                    const desiredOffset = lane.laneOffset * side;
+                    const correction = desiredOffset - currentOffset;
+                    if (Math.abs(correction) >= LANE_STEERING.minimumCorrectionPx) {
+                        const nudge = Math.max(-6, Math.min(6, correction));
+                        tx += lane.perpX * nudge;
+                        ty += lane.perpY * nudge;
+                        this._markLaneDiscipline(sprite, lane.tileKey, side, desiredOffset);
+                        if (this._localAvoidanceMetrics) this._localAvoidanceMetrics.laneCorrections++;
+                    } else {
+                        this._markLaneDiscipline(sprite, lane.tileKey, side, desiredOffset);
+                    }
+                } else {
+                    delete sprite._laneDiscipline;
+                }
+            } else {
+                delete sprite._laneDiscipline;
+            }
+        }
+
+        let vx = 0;
+        let vy = 0;
+        if (!planted) {
+            if (Number.isFinite(sprite._orcaVx) && Number.isFinite(sprite._orcaVy)) {
+                vx = sprite._orcaVx;
+                vy = sprite._orcaVy;
+            } else if (hasStep) {
+                vx = (origX - baseX) / dtSec;
+                vy = (origY - baseY) / dtSec;
+            } else if (Number.isFinite(sprite.vx) && Number.isFinite(sprite.vy)) {
+                vx = sprite.vx;
+                vy = sprite.vy;
+            } else if (Number.isFinite(tx) && Number.isFinite(ty)) {
+                const dx = tx - baseX;
+                const dy = ty - baseY;
+                const dist = Math.hypot(dx, dy);
+                if (dist > 1e-4) {
+                    vx = (dx / dist) * gaitSpeed;
+                    vy = (dy / dist) * gaitSpeed;
+                }
+            }
+        }
+
+        const poseCell = sprite._poseCell;
+        const swingActive = sprite.swingActive === true
+            || (sprite.activePose === 'strike'
+                && Number.isFinite(sprite.poseFrame)
+                && Number.isFinite(sprite.contactFrame)
+                && Math.abs(sprite.poseFrame - sprite.contactFrame) <= 1)
+            || (poseCell?.source === 'strip' && poseCell?.group === 'strike');
+
+        desc.id = this._spriteStableId(sprite, fallbackIdx);
+        desc.sprite = sprite;
+        desc.x = baseX;
+        desc.y = baseY;
+        desc.vx = vx;
+        desc.vy = vy;
+        desc.targetX = tx;
+        desc.targetY = ty;
+        desc.gaitSpeed = gaitSpeed;
+        desc.radius = Number.isFinite(sprite.orcaRadius) && sprite.orcaRadius > 0
+            ? sprite.orcaRadius
+            : (Number.isFinite(sprite.radius) && sprite.radius > 0 ? sprite.radius : ORCA_AGENT_RADIUS);
+        desc.planted = planted;
+        desc.surfaceTier = Number.isFinite(sprite.surfaceTier)
+            ? sprite.surfaceTier
+            : (Number.isFinite(sprite.agent?.surfaceTier) ? sprite.agent.surfaceTier : 0);
+        desc.swingActive = swingActive;
+        desc.swingRadius = Number.isFinite(sprite.swingRadius) && sprite.swingRadius > 0
+            ? sprite.swingRadius
+            : ORCA_SWING_RADIUS;
+        desc.swingX = Number.isFinite(sprite.swingX) ? sprite.swingX : NaN;
+        desc.swingY = Number.isFinite(sprite.swingY) ? sprite.swingY : NaN;
+        desc.swingOffsetX = Number.isFinite(sprite.swingOffsetX) ? sprite.swingOffsetX : NaN;
+        desc.swingOffsetY = Number.isFinite(sprite.swingOffsetY) ? sprite.swingOffsetY : NaN;
+        desc.direction = sprite.direction || 'south';
+        desc.hasStep = hasStep;
+        desc.stepLength = hasStep ? sprite._stepLength : 0;
+        desc.origX = origX;
+        desc.origY = origY;
+        return desc;
     }
 
     _markLaneDiscipline(sprite, tileKey, side, offsetPx) {
@@ -7049,384 +7352,309 @@ export class IsometricRenderer {
         return sprite.steeredPosition(proposed.x, proposed.y);
     }
 
-    _applyLocalAvoidance(movingSprites, dt = 16) {
-        // Trailing walker -> the slowest gait among the walkers it trails;
-        // and, for giving way, its smallest gap and that nearest leader.
-        const following = this._followGapNext ||= new Map();
-        const followGaps = this._followGapDistances ||= new Map();
-        const yieldLeaders = this._followYieldLeaders ||= new Map();
-        // Walkers abreast of one on the same course: lane discipline leaves
-        // them where they are next refresh, so it never squeezes the pair
-        // into one lane side while the push opens it.
-        const abreast = this._abreastWalkers ||= new Set();
-        following.clear();
-        followGaps.clear();
-        yieldLeaders.clear();
-        abreast.clear();
-        if (!movingSprites?.length) {
-            this._settleFollowGaps(following, followGaps);
-            return;
-        }
-        const headings = this._travelHeadings ||= new Map();
-        const courses = this._travelCourses ||= new Map();
-        headings.clear();
-        courses.clear();
-        for (let index = 0; index < movingSprites.length; index++) {
-            const sprite = movingSprites[index];
-            const heading = this._travelHeading(sprite);
-            if (!heading) continue;
-            headings.set(sprite, heading);
-            courses.set(sprite, this._travelCourse(sprite, heading));
-        }
-        // FP-8 — the pair step reuses these points; nothing in it allocates.
-        const pushA = this._avoidPushA ||= { x: 0, y: 0 };
-        const pushB = this._avoidPushB ||= { x: 0, y: 0 };
-        const nextA = this._avoidNextA ||= { x: 0, y: 0, constrained: false };
-        const nextB = this._avoidNextB ||= { x: 0, y: 0, constrained: false };
-        const dense = this.agentSprites.size >= 50;
-        const radius = dense ? LOCAL_AVOIDANCE.denseRadiusPx : LOCAL_AVOIDANCE.radiusPx;
-        const frameScale = Math.max(0, Math.min(2.5, dt / 16));
-        const baseStrength = (dense ? LOCAL_AVOIDANCE.denseStrengthPx : LOCAL_AVOIDANCE.strengthPx) * frameScale;
-        let pushes = 0;
-        let zeroDistancePairs = 0;
-        this._forEachNearbySpritePair(movingSprites, LOCAL_AVOIDANCE.bucketPx, (a, b) => {
-            const dx = a.x - b.x;
-            const dy = a.y - b.y;
-            let dist = Math.sqrt(dx * dx + dy * dy);
-            // 7.4 — a loose file: of two walkers on one course, the trailing
-            // one walks a V7 rung below its leader (AgentSprite._speedForState)
-            // until the gap opens to releasePx. Of two walkers merging or
-            // crossing at under 90° (mergeDot) closer than yieldPx, the one
-            // behind gives way the same way. A pair reads whichever of its
-            // current headings and look-ahead courses agree more.
-            const headingA = headings.get(a);
-            const headingB = headings.get(b);
-            let courseA = courses.get(a);
-            let courseB = courses.get(b);
-            let courseDot = -1;
-            if (headingA && headingB) {
-                const headingDot = headingA.x * headingB.x + headingA.y * headingB.y;
-                courseDot = courseA.x * courseB.x + courseA.y * courseB.y;
-                if (headingDot > courseDot) {
-                    courseDot = headingDot;
-                    courseA = headingA;
-                    courseB = headingB;
-                }
+    // W5-C — allocation-free 2D ORCA crowd step (`CrowdOrca.stepCrowdOrca`).
+    // Replaces legacy reactive avoidance, follow-gap queues, landing hops, and
+    // stack fans while preserving V7 stride lock, WalkClearance walkability,
+    // planted immobility, and 10 px final arrival fanning.
+    _stepOrcaCrowd(movingSprites, dt = 16, extraObstacles = null) {
+        const pools = this._ensureOrcaPools();
+        const metrics = this._localAvoidanceMetrics || (this._localAvoidanceMetrics = {
+            laneCorrections: 0,
+            separationPushes: 0,
+            zeroDistancePairs: 0,
+            progressClamps: 0,
+            orcaFrames: 0,
+            orcaLines: 0,
+            strideAdjustments: 0,
+            walkClamps: 0,
+            waypointAdvances: 0,
+        });
+        const agents = pools.agents;
+        const seen = pools.seenSet;
+        agents.length = 0;
+        seen.clear();
+        pools.frameWalkClamps = 0;
+
+        const dtMs = Math.max(1, Math.min(100, Number(dt) || 16.67));
+        const dtSec = dtMs / 1000;
+        let activeCount = 0;
+        let movingCount = 0;
+        let plantedCount = 0;
+        let swingArcCount = 0;
+
+        if (movingSprites?.length) {
+            for (let i = 0; i < movingSprites.length; i++) {
+                const sprite = movingSprites[i];
+                if (!sprite || seen.has(sprite)) continue;
+                seen.add(sprite);
+                // Clear legacy reactive queue flags cleanly.
+                sprite._followGap = false;
+                sprite._followYield = false;
+                const desc = this._acquireOrcaDescriptor(pools, activeCount);
+                this._fillOrcaDescriptor(desc, sprite, false, dtSec, activeCount);
+                agents[activeCount++] = desc;
+                if (desc.planted) plantedCount++;
+                else movingCount++;
+                if (desc.swingActive) swingArcCount++;
             }
-            const sameCourse = courseDot > FOLLOW_GAP.headingDot;
-            if (courseDot > FOLLOW_GAP.mergeDot && dist < FOLLOW_GAP.releasePx) {
-                const lead = dx * (courseA.x + courseB.x) + dy * (courseA.y + courseB.y);
-                const leadsA = lead > 0 || (lead === 0 && this._spriteStableId(a) < this._spriteStableId(b));
-                const trailing = leadsA ? b : a;
-                const leader = leadsA ? a : b;
-                const files = sameCourse && (dist < FOLLOW_GAP.engagePx || trailing._followGap);
-                // Only a walker ahead (inside the trailing one's 60° cone, not
-                // abreast) is given way to, until the gap is back to
-                // releasePx; the trigger leads the closing speed by
-                // closingFrames, so the gap never dips under yieldPx. A leader
-                // planted for its own reasons (a start beat, a pivot, a look
-                // at a landmark) is walked around instead; one that is giving
-                // way itself holds its file.
-                // The leader is ahead along the trailing walker's heading or
-                // its look-ahead course, whichever points at it more.
-                const toLeaderX = leadsA ? dx : -dx;
-                const toLeaderY = leadsA ? dy : -dy;
-                const trailingHeading = headings.get(trailing);
-                const trailingCourse = courses.get(trailing);
-                const ahead = Math.max(
-                    toLeaderX * trailingHeading.x + toLeaderY * trailingHeading.y,
-                    toLeaderX * trailingCourse.x + toLeaderY * trailingCourse.y,
-                );
-                const leaderPlanted = this._isPlanted(leader);
-                const leaderWalks = !leaderPlanted || leader._followYield;
-                const leaderAlong = leaderPlanted ? 0 : (leader._gaitSpeed || 0) * courseDot;
-                const closing = Math.max(0, (trailing._gaitSpeed || 0) - leaderAlong);
-                const trigger = trailing._followYield
-                    ? FOLLOW_GAP.releasePx
-                    : FOLLOW_GAP.yieldPx + closing * FOLLOW_GAP.closingFrames;
-                // A walker never plants to give way on a fixture, nor when two
-                // bodies are closer than minYieldPx (6 px): stacked bodies
-                // separate instead of freezing into a follow-yield knot.
-                const stackedClose = dist < FOLLOW_GAP.minYieldPx;
-                const givesWay = !stackedClose && leaderWalks && ahead >= FOLLOW_GAP.aheadDot * dist && dist < trigger
-                    && !standsOnFixture(trailing.x, trailing.y);
-                if (sameCourse && dist < FOLLOW_GAP.engagePx && (stackedClose || ahead < FOLLOW_GAP.aheadDot * dist)) {
-                    abreast.add(a);
-                    abreast.add(b);
+        }
+
+        if (this.agentSprites?.size > 0) {
+            for (const sprite of this.agentSprites.values()) {
+                if (!sprite || seen.has(sprite)) continue;
+                if (this._isGateTransit(sprite, 'departure') || sprite.isArrivalPending?.()) continue;
+                seen.add(sprite);
+                const desc = this._acquireOrcaDescriptor(pools, activeCount);
+                this._fillOrcaDescriptor(desc, sprite, true, dtSec, activeCount);
+                agents[activeCount++] = desc;
+                plantedCount++;
+                if (desc.swingActive) swingArcCount++;
+            }
+        }
+
+        const obstacles = this._populateOrcaObstacles(pools, extraObstacles);
+        let lines = 0;
+        let adjustments = 0;
+        let waypointAdvances = 0;
+
+        if (movingCount > 0) {
+            pools.stepOptions.dt = dtSec;
+            lines = stepCrowdOrca(agents, dtSec, obstacles, pools.stepOptions);
+
+            const obstructRadius = ORCA_AGENT_RADIUS * 2.0;
+            const obstructRadiusSq = obstructRadius * obstructRadius;
+
+            for (let i = 0; i < activeCount; i++) {
+                const desc = agents[i];
+                const sprite = desc.sprite;
+                if (!sprite) continue;
+                if (desc.planted || isAgentPlanted(desc)) {
+                    sprite._orcaVx = 0;
+                    sprite._orcaVy = 0;
+                    if (Number.isFinite(sprite.vx)) sprite.vx = 0;
+                    if (Number.isFinite(sprite.vy)) sprite.vy = 0;
+                    continue;
                 }
-                // A walker catching up with its own chat partner is meant to reach it.
-                if ((files || givesWay) && trailing.chatPartner !== leader) {
-                    const leaderGait = leader._gaitSpeed > 0 ? leader._gaitSpeed : Infinity;
-                    following.set(trailing, Math.min(following.get(trailing) ?? Infinity, leaderGait));
-                    if (givesWay && !(followGaps.get(trailing) <= dist)) {
-                        followGaps.set(trailing, dist);
-                        yieldLeaders.set(trailing, leader);
+                sprite._orcaVx = desc.vx;
+                sprite._orcaVy = desc.vy;
+                if (Number.isFinite(sprite.vx)) sprite.vx = desc.vx;
+                if (Number.isFinite(sprite.vy)) sprite.vy = desc.vy;
+
+                if (Math.hypot(desc.x - desc.origX, desc.y - desc.origY) > 0.001) {
+                    adjustments++;
+                }
+                sprite.x = desc.x;
+                sprite.y = desc.y;
+
+                // Advance past an obstructed non-crossing intermediate waypoint as
+                // soon as the line to the next waypoint is walkable so walkers
+                // never backtrack into a planted villager.
+                if (Array.isArray(sprite.waypoints) && sprite.waypoints.length > 1) {
+                    let targetObstructed = false;
+                    for (let j = 0; j < activeCount; j++) {
+                        if (j === i) continue;
+                        const other = agents[j];
+                        if (!other.planted || other.surfaceTier !== desc.surfaceTier) continue;
+                        const dx = sprite.targetX - other.x;
+                        const dy = (sprite.targetY - other.y) * ORCA_Y_SCALE;
+                        if (dx * dx + dy * dy < obstructRadiusSq) {
+                            targetObstructed = true;
+                            break;
+                        }
+                    }
+                    if (targetObstructed) {
+                        const wpTile = worldToTile(sprite.targetX, sprite.targetY);
+                        const wpKey = `${Math.round(wpTile.tileX)},${Math.round(wpTile.tileY)}`;
+                        const nextWp = sprite.waypoints[1];
+                        const onCrossing = sprite._crossingTiles?.().has(wpKey);
+                        if (!onCrossing && nextWp && sprite._isScreenSegmentWalkable?.(sprite.x, sprite.y, nextWp.x, nextWp.y)) {
+                            sprite.waypoints.shift();
+                            sprite.targetX = nextWp.x;
+                            sprite.targetY = nextWp.y;
+                            waypointAdvances++;
+                        }
                     }
                 }
             }
-            if (dist >= radius) return true;
+        }
 
-            let nx;
-            let ny;
-            if (dist <= 0.001) {
-                const angle = (this._stableHash(`${a.agent?.id || a.x}|${b.agent?.id || b.x}`) % 628) / 100;
-                nx = Math.cos(angle);
-                ny = Math.sin(angle);
-                dist = 0;
-                zeroDistancePairs++;
-            } else {
-                nx = dx / dist;
-                ny = dy / dist;
-            }
+        const stats = pools.stats;
+        stats.frames++;
+        stats.agents = activeCount;
+        stats.moving = movingCount;
+        stats.planted = plantedCount;
+        stats.obstacles = obstacles.length;
+        stats.lines = lines;
+        stats.totalLines += lines;
+        if (activeCount > stats.maxAgents) stats.maxAgents = activeCount;
+        stats.strideAdjustments += adjustments;
+        stats.walkClamps += pools.frameWalkClamps;
+        stats.waypointAdvances += waypointAdvances;
+        stats.swingArcs = swingArcCount;
+        stats.poolCapacity = pools.pool.length;
 
-            const overlap = dist > 0 ? (radius - dist) / radius : 1;
-            const sameLane = a._laneDiscipline?.tileKey && a._laneDiscipline.tileKey === b._laneDiscipline?.tileKey;
-            const opposingLanes = sameLane && a._laneDiscipline.side !== b._laneDiscipline.side;
-            const strength = baseStrength * (opposingLanes ? 0.55 : 1);
-            // Steering never pushes a walker back along its own course. Of a
-            // file (one course) only the push's lateral and forward parts
-            // reach the proposal; the gap belongs to the follow rung. Walkers
-            // on crossing or opposed courses — or stacked within minYieldPx —
-            // sidestep by the backward part so they peel apart immediately.
-            const sidestep = !sameCourse || dist < FOLLOW_GAP.minYieldPx;
-            this._forwardOnlyPush(nx * overlap * strength, ny * overlap * strength, headingA, sidestep, pushA);
-            this._forwardOnlyPush(-nx * overlap * strength, -ny * overlap * strength, headingB, sidestep, pushB);
-            constrainSteeringInto(nextA, a.x, a.y, a.x + pushA.x, a.y + pushA.y, a.targetX, a.targetY);
-            constrainSteeringInto(nextB, b.x, b.y, b.x + pushB.x, b.y + pushB.y, b.targetX, b.targetY);
-
-            let moved = false;
-            const keptA = this._strideKeptSteer(a, nextA);
-            if (
-                keptA
-                && (keptA.x - a.x) * (keptA.x - a.x) + (keptA.y - a.y) * (keptA.y - a.y) > 0.001 * 0.001
-                && this._isSpritePositionWalkable(a, keptA.x, keptA.y)
-            ) {
-                a.x = keptA.x;
-                a.y = keptA.y;
-                if (nextA.constrained) this._localAvoidanceMetrics.progressClamps++;
-                moved = true;
-            }
-            const keptB = this._strideKeptSteer(b, nextB);
-            if (
-                keptB
-                && (keptB.x - b.x) * (keptB.x - b.x) + (keptB.y - b.y) * (keptB.y - b.y) > 0.001 * 0.001
-                && this._isSpritePositionWalkable(b, keptB.x, keptB.y)
-            ) {
-                b.x = keptB.x;
-                b.y = keptB.y;
-                if (nextB.constrained) this._localAvoidanceMetrics.progressClamps++;
-                moved = true;
-            }
-            if (moved) {
-                pushes++;
-                this._emitCrowdBumpFeedback(a, b, overlap);
-            }
-            return true;
-        });
-        pushes += this._steerAroundStanding(movingSprites, headings, baseStrength * STANDING_CLEARANCE.strength);
-        if (pushes > 0) {
-            this._localAvoidanceMetrics.separationPushes += pushes;
+        metrics.orcaFrames = (metrics.orcaFrames || 0) + 1;
+        metrics.orcaLines = (metrics.orcaLines || 0) + lines;
+        metrics.strideAdjustments = (metrics.strideAdjustments || 0) + adjustments;
+        metrics.walkClamps = (metrics.walkClamps || 0) + pools.frameWalkClamps;
+        metrics.waypointAdvances = (metrics.waypointAdvances || 0) + waypointAdvances;
+        if (adjustments > 0) {
+            metrics.separationPushes = (metrics.separationPushes || 0) + adjustments;
             this._markSpritesDirty();
         }
-        if (zeroDistancePairs > 0) {
-            this._localAvoidanceMetrics.zeroDistancePairs += zeroDistancePairs;
+
+        if (movingSprites?.length) {
+            this._fanArrivals(movingSprites);
         }
-        this._settleFollowGaps(following, followGaps);
-        this._fanArrivals(movingSprites);
+        return lines;
     }
 
-    // 7.4 — walkers bend around villagers standing in their way. Returns the
-    // number of walkers steered.
-    _steerAroundStanding(movingSprites, headings, strength) {
-        const standing = this._standingObstacles ||= [];
-        standing.length = 0;
-        for (const sprite of this.agentSprites.values()) {
-            if (sprite && this._isPlanted(sprite) && !this._isGateTransit(sprite, 'departure')) standing.push(sprite);
+    _applyLocalAvoidance(movingSprites, dt = 16, extraObstacles = null) {
+        return this._stepOrcaCrowd(movingSprites, dt, extraObstacles);
+    }
+
+    getCrowdOrcaDiagnostics() {
+        const stats = this._orcaPools?.stats;
+        if (!stats) {
+            return {
+                frames: 0,
+                agents: 0,
+                moving: 0,
+                planted: 0,
+                obstacles: FIXTURE_FEET.length,
+                lines: 0,
+                totalLines: 0,
+                maxAgents: 0,
+                strideAdjustments: 0,
+                walkClamps: 0,
+                waypointAdvances: 0,
+                swingArcs: 0,
+                poolCapacity: 0,
+                tau: ORCA_TAU,
+                tauObst: ORCA_TAU_OBST,
+                yScale: ORCA_Y_SCALE,
+            };
         }
-        if (!standing.length) return 0;
-        const { xPx, yPx, lastLegPx } = STANDING_CLEARANCE;
+        return { ...stats };
+    }
+
+    // W5-C — thin ORCA-backed compatibility delegate for direct standing-avoidance
+    // callers; live simulation runs all planted + moving bodies inside `_stepOrcaCrowd`.
+    _steerAroundStanding(movingSprites, headings) {
+        if (!movingSprites?.length || !this.agentSprites?.size) return 0;
+        const pools = this._ensureOrcaPools();
+        const neighbors = pools.compatNeighbors;
+        neighbors.length = 0;
+        let poolIdx = 0;
+        const dtSec = 1 / 60;
+        for (const sprite of this.agentSprites.values()) {
+            if (!sprite || !this._isPlanted(sprite) || this._isGateTransit(sprite, 'departure')) continue;
+            const desc = this._acquireOrcaDescriptor(pools, poolIdx++);
+            this._fillOrcaDescriptor(desc, sprite, true, dtSec, poolIdx - 1);
+            neighbors.push(desc);
+        }
+        if (!neighbors.length) return 0;
+
         let steered = 0;
-        for (const walker of movingSprites) {
+        const obstructRadius = ORCA_AGENT_RADIUS * 2.0;
+        const obstructRadiusSq = obstructRadius * obstructRadius;
+        const solveOpts = pools.compatSolveOptions;
+        solveOpts.dt = dtSec;
+        solveOpts.neighborCount = neighbors.length;
+
+        for (let i = 0; i < movingSprites.length; i++) {
+            const walker = movingSprites[i];
             if (!walker || this._isPlanted(walker)) continue;
             const stop = this._fanStopOf(walker);
-            if (stop.reach <= lastLegPx) continue;
-            let px = 0;
-            let py = 0;
-            let targetInsideStanding = false;
-            const hasMoreWaypoints = Array.isArray(walker.waypoints) && walker.waypoints.length > 1;
-            for (const body of standing) {
-                const ex = (walker.x - body.x) / xPx;
-                const ey = (walker.y - body.y) / yPx;
-                const e = Math.hypot(ex, ey);
-                if (e >= 1) continue;
-                // A walker coming to stand beside this body (its fan place,
-                // box-clear by construction) walks straight in while it is
-                // no nearer the body than that place. A chat approach stops
-                // wherever it reaches its partner, so it always steers, unless
-                // it was re-aimed onto a fan place (it then walks on to it).
-                const standsBeside = !walker.chatPartner || walker._routeEndFanPlace?.();
-                if (standsBeside && e >= Math.hypot((stop.x - body.x) / xPx, (stop.y - body.y) / yPx)) continue;
-                if (hasMoreWaypoints) {
-                    const tx = (walker.targetX - body.x) / xPx;
-                    const ty = (walker.targetY - body.y) / yPx;
-                    if (tx * tx + ty * ty < 1) targetInsideStanding = true;
+            if (stop.reach <= PERFORMING_FAN.approachPx) continue;
+
+            const desc = this._acquireOrcaDescriptor(pools, poolIdx);
+            this._fillOrcaDescriptor(desc, walker, false, dtSec, poolIdx);
+            const heading = headings?.get?.(walker) || null;
+            const desVx = heading ? heading.x * desc.gaitSpeed : desc.vx;
+            const desVy = heading ? heading.y * desc.gaitSpeed : desc.vy;
+            solveOpts.maxSpeed = desc.gaitSpeed;
+
+            computePreferredVelocity(
+                desc,
+                desVx,
+                desVy,
+                desc.gaitSpeed,
+                neighbors,
+                null,
+                pools.scratchPrefVel,
+                solveOpts,
+            );
+            solveOrcaVelocity(
+                desc,
+                pools.scratchPrefVel[0],
+                pools.scratchPrefVel[1],
+                neighbors,
+                null,
+                pools.scratchOutVel,
+                solveOpts,
+            );
+
+            let outVx = pools.scratchOutVel[0];
+            let outVy = pools.scratchOutVel[1];
+            const hLen = Math.hypot(desVx, desVy);
+            if (hLen > 1e-6) {
+                const hx = desVx / hLen;
+                const hy = desVy / hLen;
+                const along = outVx * hx + outVy * hy;
+                const lateral = -outVx * hy + outVy * hx;
+                // When already inside the planted body's disc dead-on, peel out
+                // along the Context Steering starboard tangent instead of reversing.
+                if (along < 0 && Math.abs(lateral) < desc.gaitSpeed * 0.5) {
+                    const pLat = -pools.scratchPrefVel[0] * hy + pools.scratchPrefVel[1] * hx;
+                    const sideSign = pLat < -1e-6 ? -1 : 1;
+                    outVx = (-hy * sideSign) * desc.gaitSpeed;
+                    outVy = (hx * sideSign) * desc.gaitSpeed;
                 }
-                // Out along the ellipse normal; a walker standing exactly on
-                // the body takes the stable hash angle.
-                let gx = ex / xPx;
-                let gy = ey / yPx;
-                let g = Math.hypot(gx, gy);
-                if (!(g > 1e-9)) {
-                    const angle = (this._stableHash(`${this._spriteStableId(walker)}|${this._spriteStableId(body)}`) % 628) / 100;
-                    gx = Math.cos(angle);
-                    gy = Math.sin(angle);
-                    g = 1;
-                }
-                const weight = (1 - e) * strength / g;
-                px += gx * weight;
-                py += gy * weight;
             }
-            if (!px && !py) continue;
-            const push = this._forwardOnlyPush(px, py, headings.get(walker), true, this._standingPush ||= { x: 0, y: 0 });
-            // When an intermediate waypoint lies inside a standing body's
-            // clearance ellipse, projecting back toward that waypoint cancels
-            // the sidestep; bypass constrainSteeringToTarget while keeping the
-            // V7 stride lock (_strideKeptSteer).
-            const next = targetInsideStanding
-                ? { x: walker.x + push.x, y: walker.y + push.y, constrained: false }
-                : constrainSteeringToTarget({
-                    x: walker.x,
-                    y: walker.y,
-                    nextX: walker.x + push.x,
-                    nextY: walker.y + push.y,
-                    targetX: walker.targetX,
-                    targetY: walker.targetY,
-                });
-            const kept = this._strideKeptSteer(walker, next);
+
+            const proposedX = desc.x + outVx * dtSec;
+            const proposedY = desc.y + outVy * dtSec;
+            pools.scratchSteer.x = proposedX;
+            pools.scratchSteer.y = proposedY;
+            const kept = this._strideKeptSteer(walker, pools.scratchSteer);
             if (
                 !kept
                 || Math.hypot(kept.x - walker.x, kept.y - walker.y) <= 0.001
                 || !this._isSpritePositionWalkable(walker, kept.x, kept.y)
             ) continue;
+
             walker.x = kept.x;
             walker.y = kept.y;
-            if (next.constrained) this._localAvoidanceMetrics.progressClamps++;
-            // Advance past an obstructed non-crossing intermediate waypoint as
-            // soon as the line to the next waypoint is clear so the walker
-            // never backtracks into the standing body.
-            if (targetInsideStanding && hasMoreWaypoints) {
-                const wpTile = worldToTile(walker.targetX, walker.targetY);
-                const wpKey = `${Math.round(wpTile.tileX)},${Math.round(wpTile.tileY)}`;
-                const nextWp = walker.waypoints[1];
-                const onCrossing = walker._crossingTiles?.().has(wpKey);
-                if (!onCrossing && nextWp && walker._isScreenSegmentWalkable?.(kept.x, kept.y, nextWp.x, nextWp.y)) {
-                    walker.waypoints.shift();
-                    walker.targetX = nextWp.x;
-                    walker.targetY = nextWp.y;
+            walker._orcaVx = outVx;
+            walker._orcaVy = outVy;
+
+            if (Array.isArray(walker.waypoints) && walker.waypoints.length > 1) {
+                let targetObstructed = false;
+                for (let j = 0; j < neighbors.length; j++) {
+                    const body = neighbors[j];
+                    const dx = walker.targetX - body.x;
+                    const dy = (walker.targetY - body.y) * ORCA_Y_SCALE;
+                    if (dx * dx + dy * dy < obstructRadiusSq) {
+                        targetObstructed = true;
+                        break;
+                    }
+                }
+                if (targetObstructed) {
+                    const wpTile = worldToTile(walker.targetX, walker.targetY);
+                    const wpKey = `${Math.round(wpTile.tileX)},${Math.round(wpTile.tileY)}`;
+                    const nextWp = walker.waypoints[1];
+                    const onCrossing = walker._crossingTiles?.().has(wpKey);
+                    if (!onCrossing && nextWp && walker._isScreenSegmentWalkable?.(kept.x, kept.y, nextWp.x, nextWp.y)) {
+                        walker.waypoints.shift();
+                        walker.targetX = nextWp.x;
+                        walker.targetY = nextWp.y;
+                    }
                 }
             }
             steered++;
         }
         return steered;
-    }
-
-    // 7.4 — a walker's course: toward its current waypoint, else its last step.
-    // FP-8 — the heading and course are points kept per body, rewritten
-    // each refresh.
-    _travelHeading(sprite) {
-        let hx = Number(sprite.targetX) - sprite.x;
-        let hy = Number(sprite.targetY) - sprite.y;
-        let length = Math.sqrt(hx * hx + hy * hy);
-        if (!(length > 0.5)) {
-            hx = sprite.x - Number(sprite._stepStartX);
-            hy = sprite.y - Number(sprite._stepStartY);
-            length = Math.sqrt(hx * hx + hy * hy);
-        }
-        if (!(length > 1e-6)) return null;
-        const heading = sprite._travelHeadingPoint ||= { x: 0, y: 0 };
-        heading.x = hx / length;
-        heading.y = hy / length;
-        return heading;
-    }
-
-    // 7.4 — the course the file rule reads: within lookAheadPx of a corner it
-    // is already the next leg, so two walkers about to share a leg (one
-    // coming back from a hairpin, one merging) sort out who gives way before
-    // they meet on it.
-    _travelCourse(sprite, heading) {
-        const next = sprite.waypoints?.length > 1 ? sprite.waypoints[1] : null;
-        if (!next) return heading;
-        const tx = Number(sprite.targetX) - sprite.x;
-        const ty = Number(sprite.targetY) - sprite.y;
-        if (Math.sqrt(tx * tx + ty * ty) > FOLLOW_GAP.lookAheadPx) return heading;
-        const hx = Number(next.x) - sprite.x;
-        const hy = Number(next.y) - sprite.y;
-        const length = Math.sqrt(hx * hx + hy * hy);
-        if (!(length > 1e-6)) return heading;
-        const course = sprite._travelCoursePoint ||= { x: 0, y: 0 };
-        course.x = hx / length;
-        course.y = hy / length;
-        return course;
-    }
-
-    // A steering push without its part back along the walker's course. With
-    // `sidestep`, that part turns into a sidestep instead: along the push's
-    // own lateral side, or (dead ahead) to the walker's right, so two walkers
-    // meeting head-on pass each other on opposite sides.
-    // `out` (FP-8) receives the push in place of a new point.
-    _forwardOnlyPush(px, py, heading, sidestep = false, out = { x: 0, y: 0 }) {
-        out.x = px;
-        out.y = py;
-        if (!heading) return out;
-        const along = px * heading.x + py * heading.y;
-        if (along >= 0) return out;
-        const lx = px - along * heading.x;
-        const ly = py - along * heading.y;
-        out.x = lx;
-        out.y = ly;
-        if (!sidestep) return out;
-        const lateral = Math.sqrt(lx * lx + ly * ly);
-        const sx = lateral > 1e-6 ? lx / lateral : -heading.y;
-        const sy = lateral > 1e-6 ? ly / lateral : heading.x;
-        out.x = lx - along * sx;
-        out.y = ly - along * sy;
-        return out;
-    }
-
-    // The follow marks live on the sprite only while it trails someone:
-    // `_followGap` is the leader's gait (px per 16.67 ms), or true when the
-    // leader has not stepped; `_followYield` is set while the gap is under
-    // yieldPx.
-    _settleFollowGaps(following, followGaps) {
-        const holders = this._followGapHolders ||= new Set();
-        for (const sprite of holders) {
-            if (!following.has(sprite)) {
-                sprite._followGap = false;
-                sprite._followYield = false;
-            }
-        }
-        holders.clear();
-        for (const sprite of following.keys()) {
-            const leaderGait = following.get(sprite);
-            sprite._followGap = Number.isFinite(leaderGait) ? leaderGait : true;
-            sprite._followYield = followGaps.has(sprite);
-            holders.add(sprite);
-        }
-        // A wait is a 'file' when its chain of leaders ends at a walker that
-        // steps (it ends by itself, however long the queue), else a 'knot'
-        // (a planted head, or a ring of walkers waiting on each other),
-        // which AgentSprite times out.
-        const leaders = this._followYieldLeaders;
-        for (const sprite of holders) {
-            if (!sprite._followYield) continue;
-            let leader = leaders?.get(sprite);
-            let steps = 0;
-            while (leader?._followYield && holders.has(leader) && steps++ < FOLLOW_GAP.chainSteps) {
-                leader = leaders.get(leader);
-            }
-            const walks = leader && !leader._followYield && !this._isPlanted(leader);
-            sprite._followYield = walks ? 'file' : 'knot';
-        }
     }
 
     // 7.4 — the fan ring's places around an anchor, in visit-slot order: the
@@ -7559,7 +7787,7 @@ export class IsometricRenderer {
     }
 
     _forEachNearbySpritePair(sprites, cellSize, visitor) {
-        const size = Math.max(1, Number(cellSize) || LOCAL_AVOIDANCE.bucketPx);
+        const size = Math.max(1, Number(cellSize) || PAIR_BUCKET_DEFAULT_PX);
         const buckets = this._pairBuckets;
         const columns = this._pairColumnPool;
         const pool = this._pairBucketPool;
@@ -7791,7 +8019,6 @@ export class IsometricRenderer {
             }
             return retargets < maxRetargets;
         });
-        this._fanStacks();
     }
 
     // 7.4 — a body on its feet at one point: standing, or a walker that has
@@ -7799,120 +8026,6 @@ export class IsometricRenderer {
     // landmark.
     _isPlanted(sprite) {
         return !sprite.moving || !Number.isFinite(sprite._stepStartX) || sprite._stopLookActiveMs > 0;
-    }
-
-    // 7.4 — a villager that stopped this refresh (arrived, or began a chat
-    // wherever its approach reached its partner) inside a standing body's
-    // box steps onto the nearest box-clear place of that body's fan ring, on
-    // the refresh it lands, when that place is within settleHopPx. Seated,
-    // queued and selected bodies never move. Returns true when anyone
-    // stopped.
-    _settleLandings(movingSprites) {
-        const previous = this._walkersLastRefresh ||= new Set();
-        const landed = this._landedSprites ||= [];
-        landed.length = 0;
-        for (const sprite of previous) {
-            if (!sprite.moving || sprite.chatting) landed.push(sprite);
-        }
-        previous.clear();
-        for (const sprite of movingSprites) previous.add(sprite);
-        if (!landed.length) return false;
-        const standing = this._fanStanding ||= [];
-        standing.length = 0;
-        for (const sprite of this.agentSprites.values()) {
-            if (sprite && this._isPlanted(sprite)) standing.push(sprite);
-        }
-        const boxHit = (other, x, y) => Math.abs(other.x - x) < PERFORMING_FAN.overlapXPx
-            && Math.abs(other.y - y) < PERFORMING_FAN.overlapYPx;
-        for (const sprite of landed) {
-            if (sprite.moving || sprite.selected || FAN_EXEMPT_ROLES.has(sprite.visitRole)) continue;
-            if (!this.agentSprites.has(sprite.agent?.id) || this._isGateTransit(sprite, 'departure')) continue;
-            const occupant = standing.find(other => other !== sprite && boxHit(other, sprite.x, sprite.y));
-            // A body that stopped on a fixture or inside continuous clearance steps off it the same way.
-            const unstandable = !this._isSpriteStandable(sprite, sprite.x, sprite.y);
-            if (!occupant && !unstandable) continue;
-            const anchor = occupant ? this._fanAnchorOf(occupant) : { x: sprite.x, y: sprite.y };
-            const hashKey = `${occupant?._lastBuildingType || sprite._lastBuildingType}|${anchor.x | 0},${anchor.y | 0}`;
-            let best = null;
-            let bestHop = unstandable
-                ? Math.max(PERFORMING_FAN.settleHopPx, Math.hypot(PERFORMING_FAN.radiusXPx, PERFORMING_FAN.radiusYPx) + 1)
-                : PERFORMING_FAN.settleHopPx;
-            for (let index = 1; index <= FAN_RING_PLACES.length; index++) {
-                const place = this._fanRingPlace(anchor, index, hashKey);
-                const hop = Math.hypot(place.x - sprite.x, place.y - sprite.y);
-                if (hop > bestHop) continue;
-                if (standing.some(other => other !== sprite && boxHit(other, place.x, place.y))) continue;
-                if (!this._isSpriteStandable(sprite, place.x, place.y)) continue;
-                best = place;
-                bestHop = hop;
-            }
-            if (!best) continue;
-            sprite.x = best.x;
-            sprite.y = best.y;
-            sprite.targetX = best.x;
-            sprite.targetY = best.y;
-            sprite._fanAnchor = { x: anchor.x, y: anchor.y };
-            this._localAvoidanceMetrics.settledLandings = (this._localAvoidanceMetrics.settledLandings || 0) + 1;
-            this._markSpritesDirty();
-        }
-        return true;
-    }
-
-    // 7.4 — villagers performing at one building, or talking there, that
-    // stand stacked (closer than stackPx, two bodies reading as one) settle
-    // onto the fan ring in visit-slot order: the first keeps the anchor, the
-    // rest take ring places (talkers then turn to their partner on their own,
-    // `_faceChatPartner`). A later arrival walks into the ring on its own
-    // (_fanArrivals), so this meets only bodies that stopped together.
-    _fanStacks() {
-        const standing = [];
-        for (const sprite of this.agentSprites.values()) {
-            if (!sprite || sprite.moving || !sprite._lastBuildingType) continue;
-            if (sprite.chatPartner && !sprite.chatting) continue;
-            if (this._isGateTransit(sprite, 'departure') || sprite.isArrivalPending?.()) continue;
-            standing.push(sprite);
-        }
-        let fanned = 0;
-        const visited = new Set();
-        for (const seed of standing) {
-            if (visited.has(seed)) continue;
-            visited.add(seed);
-            const stack = [seed];
-            for (let index = 0; index < stack.length; index++) {
-                for (const other of standing) {
-                    if (visited.has(other) || other._lastBuildingType !== seed._lastBuildingType) continue;
-                    if (Math.hypot(other.x - stack[index].x, other.y - stack[index].y) >= PERFORMING_FAN.stackPx) continue;
-                    visited.add(other);
-                    stack.push(other);
-                }
-            }
-            if (stack.length < 2) continue;
-            const performing = stack.filter(sprite => sprite.chatting || ['performing', 'cooldown']
-                .includes(sprite.getBehaviorDebugSnapshot?.()?.behaviorState));
-            if (performing.length < 2) continue;
-            performing.sort((a, b) => (a._lastVisitMeta?.slotIndex ?? Infinity) - (b._lastVisitMeta?.slotIndex ?? Infinity)
-                || this._spriteStableId(a).localeCompare(this._spriteStableId(b)));
-            const anchor = { x: performing[0].x, y: performing[0].y };
-            const taken = standing.filter(sprite => !performing.includes(sprite) || sprite === performing[0]);
-            const hashKey = `${seed._lastBuildingType}|${anchor.x | 0},${anchor.y | 0}`;
-            for (let index = 1; index < performing.length; index++) {
-                const sprite = performing[index];
-                if (sprite.selected || FAN_EXEMPT_ROLES.has(sprite.visitRole)) continue;
-                const place = this._freeFanPlace(sprite, anchor, 1, taken, hashKey);
-                if (!place) continue;
-                sprite.x = place.x;
-                sprite.y = place.y;
-                sprite.targetX = place.x;
-                sprite.targetY = place.y;
-                sprite._fanAnchor = anchor;
-                taken.push(place);
-                fanned++;
-            }
-        }
-        if (fanned) {
-            this._localAvoidanceMetrics.fannedStacks = (this._localAvoidanceMetrics.fannedStacks || 0) + fanned;
-            this._markSpritesDirty();
-        }
     }
 
     _canStationaryRetarget(sprite, now = Date.now()) {
@@ -8318,7 +8431,93 @@ export class IsometricRenderer {
         return first;
     }
 
+    // W5-C — lazy-initialized shared 96 px OverlayOccupancyGrid & reusable
+    // ThoughtColumn candidate pool (zero per-frame allocations).
+    _ensureOverlayAuctionPools() {
+        if (!this._overlayOccupancyGrid) {
+            this._overlayOccupancyGrid = new OverlayOccupancyGrid({ cellSize: OVERLAY_GRID_CELL });
+        }
+        if (!this._attentionOccupancyGrid) {
+            this._attentionOccupancyGrid = new OverlayOccupancyGrid({ cellSize: OVERLAY_GRID_CELL });
+        }
+        if (!this._thoughtCandidatePool) {
+            this._thoughtCandidatePool = createThoughtCandidatePool(LABEL_MAX_SPEAKERS);
+        }
+        if (!this._labelAuctionStats) {
+            this._labelAuctionStats = {
+                frames: 0,
+                plaques: 0,
+                attention: 0,
+                speakers: 0,
+                placed: 0,
+                filtered: 0,
+                iterations: 0,
+                totalPlaced: 0,
+                totalFiltered: 0,
+            };
+        }
+        if (!this._labelAuctionOptions) {
+            this._labelAuctionOptions = {
+                pad: 2,
+                viewport: null,
+                reservedRects: null,
+                reserveInGrid: true,
+                outRects: this._thoughtCandidatePool.rects,
+                outStats: this._thoughtCandidatePool.stats,
+            };
+        }
+        return {
+            grid: this._overlayOccupancyGrid,
+            attentionGrid: this._attentionOccupancyGrid,
+            pool: this._thoughtCandidatePool,
+            stats: this._labelAuctionStats,
+            auctionOptions: this._labelAuctionOptions,
+        };
+    }
+
+    getLabelAuctionDiagnostics() {
+        const stats = this._labelAuctionStats;
+        return stats
+            ? { ...stats, gridCellSize: this._overlayOccupancyGrid?.cellSize ?? OVERLAY_GRID_CELL }
+            : {
+                frames: 0,
+                plaques: 0,
+                attention: 0,
+                speakers: 0,
+                placed: 0,
+                filtered: 0,
+                iterations: 0,
+                totalPlaced: 0,
+                totalFiltered: 0,
+                gridCellSize: OVERLAY_GRID_CELL,
+            };
+    }
+
+    _reserveRectClampedInGrid(grid, rect, layer, tag, minX, minY, maxX, maxY) {
+        if (!grid || !rect) return false;
+        const rawL = rect.left !== undefined ? rect.left : rect.x;
+        const rawT = rect.top !== undefined ? rect.top : rect.y;
+        const rawR = rect.right !== undefined ? rect.right : (rawL + rect.w);
+        const rawB = rect.bottom !== undefined ? rect.bottom : (rawT + rect.h);
+        if (!Number.isFinite(rawL) || !Number.isFinite(rawT) || !Number.isFinite(rawR) || !Number.isFinite(rawB)) {
+            return false;
+        }
+        const l = rawL < minX ? minX : rawL;
+        const t = rawT < minY ? minY : rawT;
+        const r = rawR > maxX ? maxX : rawR;
+        const b = rawB > maxY ? maxY : rawB;
+        if (r <= l || b <= t) return false;
+        grid.reserve(l, t, r, b, layer, tag);
+        return true;
+    }
+
     _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1, { agentRenderMode = 'full' } = {}) {
+        const occ = this._ensureOverlayAuctionPools();
+        const sharedGrid = occ.grid;
+        const attentionGrid = occ.attentionGrid;
+        sharedGrid.beginFrame();
+        attentionGrid.beginFrame();
+
         const nameGrid = this._overlayNameGrid;
         const bubbleGrid = this._overlayBubbleGrid;
         const nameRects = this._overlayNameRects;
@@ -8349,6 +8548,7 @@ export class IsometricRenderer {
         const useSpatialGrid = prioritized.length > 32;
         this._beginRectGridFrame(nameGrid);
         this._beginRectGridFrame(bubbleGrid);
+        let attentionTag = 0;
         const reserve = (rect) => {
             if (useSpatialGrid) {
                 this._insertRectGridItem(nameGrid, rect);
@@ -8357,31 +8557,58 @@ export class IsometricRenderer {
                 nameRects.push(rect);
                 reservedRects.push(rect);
             }
+            if (rect && rect.w > 0 && rect.h > 0) {
+                sharedGrid.reserve(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h, OVERLAY_LAYER_ATTENTION, attentionTag++);
+            }
         };
         const collides = rect => (useSpatialGrid
             ? this._rectGridHasOverlap(nameGrid, rect)
             : this._rectListHasOverlap(nameRects, rect));
 
-        // T1 — attention plates are laid out first, from live status, and
-        // every other label yields to them. Their rects are PRIMARY in the
-        // mark governor, so ambient marks in the region dim around them.
-        // Visible building plaques from the previous frame are passed as
-        // tally-avoidance obstacles so sliding off-frame tallies yield to
-        // plaques without blanking them.
+        // Layer 1 (OVERLAY_LAYER_PLAQUE): reserve visible painted building plaques
+        // in both the screen-space attention grid and the shared world-space overlay grid.
         const plaqueAvoid = this._plaqueAvoidScreenRects || (this._plaqueAvoidScreenRects = []);
         plaqueAvoid.length = 0;
-        if (this.camera?.worldToScreen && this.buildingRenderer?.plaqueWorldRects?.length) {
-            for (const worldRect of this.buildingRenderer.plaqueWorldRects) {
-                const topLeft = this.camera.worldToScreen(worldRect.left, worldRect.top);
-                const bottomRight = this.camera.worldToScreen(worldRect.right, worldRect.bottom);
-                plaqueAvoid.push({
-                    left: topLeft.x,
-                    top: topLeft.y,
-                    right: bottomRight.x,
-                    bottom: bottomRight.y,
-                });
+        let plaqueCount = 0;
+        if (this.buildingRenderer?.plaqueWorldRects?.length) {
+            const hasProj = typeof this.camera?.worldToScreen === 'function';
+            for (let i = 0; i < this.buildingRenderer.plaqueWorldRects.length; i++) {
+                const worldRect = this.buildingRenderer.plaqueWorldRects[i];
+                if (!worldRect) continue;
+                sharedGrid.reserve(
+                    worldRect.left,
+                    worldRect.top,
+                    worldRect.right,
+                    worldRect.bottom,
+                    OVERLAY_LAYER_PLAQUE,
+                    plaqueCount,
+                );
+                if (hasProj) {
+                    const topLeft = this.camera.worldToScreen(worldRect.left, worldRect.top);
+                    const bottomRight = this.camera.worldToScreen(worldRect.right, worldRect.bottom);
+                    const screenPlaque = {
+                        left: topLeft.x,
+                        top: topLeft.y,
+                        right: bottomRight.x,
+                        bottom: bottomRight.y,
+                    };
+                    plaqueAvoid.push(screenPlaque);
+                    attentionGrid.reserve(
+                        screenPlaque.left,
+                        screenPlaque.top,
+                        screenPlaque.right,
+                        screenPlaque.bottom,
+                        OVERLAY_LAYER_PLAQUE,
+                        plaqueCount,
+                    );
+                }
+                plaqueCount++;
             }
         }
+        occ.stats.plaques = plaqueCount;
+
+        // Layer 2 (OVERLAY_LAYER_ATTENTION): attention plates laid out first from
+        // live status against the shared occupancy grid; every other label yields to them.
         const readMode = this.getReadMode();
         const effectiveTheatre = Boolean(this.theatreMode && !readMode);
         const lens = this.inspectionGlass?.getCenter();
@@ -8394,6 +8621,7 @@ export class IsometricRenderer {
             // V8 — chrome over the world (the World dock) is occluded screen.
             reserved: getReservedRects(),
             avoid: plaqueAvoid,
+            occupancyGrid: attentionGrid,
             state: this._attentionState || (this._attentionState = {}),
             dwellNow: now,
             hoveredAgentId: this._hoveredAgentSprite?.agent.id,
@@ -8415,6 +8643,7 @@ export class IsometricRenderer {
             reserve(worldRect);
             this.markGovernor.reserve(worldRect, 'primary', 'attention');
         }
+        occ.stats.attention = attentionWorldRects.length;
         // S4/S5 — building ledgers and assay furniture give way to T1.
         if (this.buildingRenderer) this.buildingRenderer.attentionWorldRects = attentionWorldRects;
 
@@ -8527,11 +8756,13 @@ export class IsometricRenderer {
             }
             bubbleSprites.push(sprite);
         }
+        // Layer 3 (OVERLAY_LAYER_THOUGHT): solve ThoughtColumn placement over
+        // the shared 96 px occupancy grid via deterministic ε-auction.
         this._assignAgentBubbleSlots(
             bubbleSprites,
             zoom,
-            useSpatialGrid ? null : reservedRects,
-            useSpatialGrid ? bubbleGrid : false,
+            reservedRects,
+            sharedGrid,
             now,
         );
     }
@@ -8544,34 +8775,31 @@ export class IsometricRenderer {
         return { x: topLeft.x, y: topLeft.y, w: bottomRight.x - topLeft.x, h: bottomRight.y - topLeft.y };
     }
 
-    // W3.1 — thought placement. Speakers are ranked (focus, seat hold,
-    // freshest line, stable id); the top THOUGHT_SHORTLIST build their column
-    // (head bubble plus its drawn history, ThoughtColumn.js) and up to
-    // THOUGHT_BUDGET are placed at the first free candidate of slot × lateral.
-    // A displaced column's leader is reserved with it, so leaders never cross
-    // a placed thought. When every candidate collides, a focused speaker takes
-    // the least-overlapping one and anyone else is filtered for the frame.
-    // W3.3 — a committed candidate is sticky (see THOUGHT_RESEARCH_MS).
-    // Rects and columns live on the sprite and are reused frame to frame.
+    // W5-C / W3.1 — shared-grid ThoughtColumn ε-auction placement.
+    // Reserves Layer 1 static plaques + Layer 2 attention plates in the shared
+    // 96 px OverlayOccupancyGrid, then solves Layer 3 thoughts (<= 24 speakers x
+    // 30 candidates) via `SlotAuction.solveLabelAuction` with sticky prior -2
+    // bonus, boundsViolation * 1000, 300ms collision hold, and zero per-frame
+    // heap allocations.
     _assignAgentBubbleSlots(
         sprites,
         zoom = this.camera?.zoom || 1,
         reservedLabels = [],
         occupiedGrid = null,
         now = performance.now(),
+        options = null,
     ) {
-        // Names and thoughts share one reservation plane even though their
-        // anchors are deliberately below and above the character respectively.
-        const useSpatialGrid = occupiedGrid !== false;
-        const grid = useSpatialGrid ? (occupiedGrid || this._overlayBubbleGrid) : null;
-        const occupied = this._overlayBubbleOccupiedRects;
-        occupied.length = 0;
-        if (useSpatialGrid && !occupiedGrid) {
-            this._beginRectGridFrame(grid);
-            for (const rect of reservedLabels) this._insertRectGridItem(grid, rect);
-        } else if (!useSpatialGrid) {
-            for (const rect of reservedLabels) occupied.push(rect);
-        }
+        const occ = this._ensureOverlayAuctionPools();
+        const externalSharedGrid = occupiedGrid instanceof OverlayOccupancyGrid;
+        const grid = externalSharedGrid ? occupiedGrid : occ.grid;
+        const pool = occ.pool;
+        const useMergeSpatialGrid = occupiedGrid !== false && Boolean(this._overlayClusterGrid);
+        const pad = Number.isFinite(options?.pad) ? options.pad : 2;
+        const budget = Number.isInteger(options?.budget)
+            ? Math.max(0, Math.min(LABEL_MAX_SPEAKERS, options.budget))
+            : THOUGHT_BUDGET;
+        const shortlistLimit = Math.max(THOUGHT_SHORTLIST, budget);
+
         const s = 1 / (zoom || 1);
         const viewport = typeof this._screenViewport === 'function' ? this._screenViewport() : null;
         const hasView = Boolean(viewport?.width > 0 && viewport?.height > 0
@@ -8596,7 +8824,8 @@ export class IsometricRenderer {
                 }
             }
         }
-        const order = this._overlayBubbleOrder;
+
+        const order = this._overlayBubbleOrder || (this._overlayBubbleOrder = []);
         order.length = 0;
         const frame = this._thoughtFrame = (this._thoughtFrame || 0) + 1;
         for (const sprite of sprites || []) {
@@ -8622,20 +8851,26 @@ export class IsometricRenderer {
             if (fresh !== 0) return fresh;
             return String(a.agent.id) < String(b.agent.id) ? -1 : 1;
         });
+
         const calm = order.length <= THOUGHT_CALM_SPEAKERS;
         let prepared = 0;
         for (const sprite of order) {
             sprite._thoughtHistoryLimit = calm || sprite._thoughtRank >= 2 ? THOUGHT_HISTORY_LIMIT : 0;
-            if (prepared < THOUGHT_SHORTLIST && this._prepareThought(sprite, s)) {
+            if (prepared < shortlistLimit && this._prepareThought(sprite, s)) {
                 order[prepared++] = sprite;
                 continue;
             }
             this._clearThoughtPlacement(sprite);
-            if (prepared >= THOUGHT_SHORTLIST) sprite._thoughtFiltered = true;
+            if (prepared >= shortlistLimit) sprite._thoughtFiltered = true;
         }
         order.length = prepared;
-        const baseRects = this._overlayBubbleBaseRects;
+
+        const baseRects = this._overlayBubbleBaseRects || (this._overlayBubbleBaseRects = []);
         baseRects.length = 0;
+        let minSpeakerX = Infinity;
+        let minSpeakerY = Infinity;
+        let maxSpeakerX = -Infinity;
+        let maxSpeakerY = -Infinity;
         for (const sprite of order) {
             const rects = this._thoughtCandidateRects(sprite, 0, s);
             const home = rects.home;
@@ -8644,12 +8879,121 @@ export class IsometricRenderer {
             home.w = rects.body.w;
             home.h = rects.body.h;
             baseRects.push(home);
+            if (sprite.x < minSpeakerX) minSpeakerX = sprite.x;
+            if (sprite.x > maxSpeakerX) maxSpeakerX = sprite.x;
+            if (sprite.y < minSpeakerY) minSpeakerY = sprite.y;
+            if (sprite.y > maxSpeakerY) maxSpeakerY = sprite.y;
         }
+
         // W3.7 — merge before placement, so a member folded into an identical
         // ×N thought reserves nothing.
-        this._mergeIdenticalClusterBubbles(order, baseRects, useSpatialGrid);
-        let placed = 0;
-        for (const sprite of order) {
+        if (this._overlayClusterGrid) {
+            this._mergeIdenticalClusterBubbles(order, baseRects, useMergeSpatialGrid);
+        }
+
+        // Populate standalone shared grid when called directly (not from `_assignAgentOverlaySlots`).
+        if (!externalSharedGrid) {
+            grid.beginFrame();
+            const clampMargin = 1024;
+            const cMinX = Number.isFinite(minSpeakerX) ? minSpeakerX - clampMargin : -2048;
+            const cMinY = Number.isFinite(minSpeakerY) ? minSpeakerY - clampMargin : -2048;
+            const cMaxX = Number.isFinite(maxSpeakerX) ? maxSpeakerX + clampMargin : 2048;
+            const cMaxY = Number.isFinite(maxSpeakerY) ? maxSpeakerY + clampMargin : 2048;
+
+            let plaqueTag = 0;
+            if (Array.isArray(options?.plaques)) {
+                for (let i = 0; i < options.plaques.length; i++) {
+                    if (this._reserveRectClampedInGrid(grid, options.plaques[i], OVERLAY_LAYER_PLAQUE, plaqueTag, cMinX, cMinY, cMaxX, cMaxY)) {
+                        plaqueTag++;
+                    }
+                }
+            }
+            occ.stats.plaques = plaqueTag;
+
+            let attnTag = 0;
+            if (Array.isArray(options?.attentionPlates) && options.attentionPlates.length > 0) {
+                const first = options.attentionPlates[0];
+                if (first && (first.left !== undefined || first.w !== undefined)) {
+                    for (let i = 0; i < options.attentionPlates.length; i++) {
+                        if (this._reserveRectClampedInGrid(grid, options.attentionPlates[i], OVERLAY_LAYER_ATTENTION, attnTag, cMinX, cMinY, cMaxX, cMaxY)) {
+                            attnTag++;
+                        }
+                    }
+                } else {
+                    attnTag = reserveAttentionPlates(grid, options.attentionPlates, viewWorld, null, pad);
+                }
+            }
+            if (Array.isArray(reservedLabels)) {
+                for (let i = 0; i < reservedLabels.length; i++) {
+                    if (this._reserveRectClampedInGrid(grid, reservedLabels[i], OVERLAY_LAYER_ATTENTION, attnTag, cMinX, cMinY, cMaxX, cMaxY)) {
+                        attnTag++;
+                    }
+                }
+            }
+            if (occupiedGrid && typeof occupiedGrid === 'object' && occupiedGrid.buckets instanceof Map) {
+                const seenLegacy = occupiedGrid.seen || new Set();
+                seenLegacy.clear();
+                for (const bucket of occupiedGrid.buckets.values()) {
+                    if (!bucket || bucket.generation !== occupiedGrid.generation) continue;
+                    for (const item of bucket.items) {
+                        if (seenLegacy.has(item)) continue;
+                        seenLegacy.add(item);
+                        if (this._reserveRectClampedInGrid(grid, item.rect || item, OVERLAY_LAYER_ATTENTION, attnTag, cMinX, cMinY, cMaxX, cMaxY)) {
+                            attnTag++;
+                        }
+                    }
+                }
+            }
+            occ.stats.attention = attnTag;
+        }
+
+        // Select cohort (all focused + up to `budget` non-focused unmerged speakers)
+        // and honor the 300ms collision grace hold on already-committed speakers.
+        const cohortSprites = this._auctionCohortSprites || (this._auctionCohortSprites = []);
+        const overflowSprites = this._auctionOverflowSprites || (this._auctionOverflowSprites = []);
+        cohortSprites.length = 0;
+        overflowSprites.length = 0;
+
+        let placedCount = 0;
+        let nonFocusedAdmitted = 0;
+        let thoughtTag = 0;
+
+        const commitPlacement = (sprite, chosen, chosenClampX, committed, wasClamped, reserveBody = true) => {
+            if (chosen !== committed || (chosenClampX !== 0) !== wasClamped) {
+                sprite._bubbleBlockedSince = 0;
+                sprite._bubbleBetterSince = 0;
+            }
+            sprite._bubbleCandidate = chosen;
+            sprite._bubbleClamped = chosenClampX !== 0;
+            sprite.bubbleClampX = chosenClampX;
+            const rects = this._thoughtCandidateRects(sprite, chosen, s, chosenClampX);
+            if (reserveBody) {
+                grid.reserve(rects.body.x, rects.body.y, rects.body.x + rects.body.w, rects.body.y + rects.body.h, OVERLAY_LAYER_THOUGHT, thoughtTag++);
+            }
+            if (rects.leader) {
+                grid.reserve(rects.v.x, rects.v.y, rects.v.x + rects.v.w, rects.v.y + rects.v.h, OVERLAY_LAYER_THOUGHT, thoughtTag++);
+            }
+            if (rects.horizontal) {
+                grid.reserve(rects.h.x, rects.h.y, rects.h.x + rects.h.w, rects.h.y + rects.h.h, OVERLAY_LAYER_THOUGHT, thoughtTag++);
+            }
+            sprite.bubbleSlot = THOUGHT_CANDIDATE_SLOT[chosen];
+            sprite.bubbleLateral = THOUGHT_CANDIDATE_LATERAL[chosen] * (sprite._thoughtSide || 1);
+            if (!sprite._thoughtSeatedAt) sprite._thoughtSeatedAt = now;
+            placedCount++;
+        };
+
+        const rectsOverlapGrid = (rects) => {
+            if (grid.overlaps(rects.body.x, rects.body.y, rects.body.x + rects.body.w, rects.body.y + rects.body.h, pad)) {
+                return true;
+            }
+            if (rects.leader && grid.overlaps(rects.v.x, rects.v.y, rects.v.x + rects.v.w, rects.v.y + rects.v.h, pad)) {
+                return true;
+            }
+            return rects.horizontal && grid.overlaps(rects.h.x, rects.h.y, rects.h.x + rects.h.w, rects.h.y + rects.h.h, pad);
+        };
+
+        for (let i = 0; i < order.length; i++) {
+            const sprite = order[i];
             if (sprite.bubbleMergedInto) {
                 sprite.bubbleSlot = null;
                 sprite.bubbleLateral = 0;
@@ -8658,17 +9002,235 @@ export class IsometricRenderer {
                 sprite._bubbleCandidate = null;
                 continue;
             }
-            const focused = sprite._thoughtRank >= 2;
             if (sprite.bubbleMergedCount > 1) this._layoutThoughtColumns(sprite);
-            if ((focused || placed < THOUGHT_BUDGET)
-                && this._placeThought(sprite, s, now, grid, occupied, useSpatialGrid, focused, viewWorld, reservedWorld)) {
-                placed++;
-                if (!sprite._thoughtSeatedAt) sprite._thoughtSeatedAt = now;
+            const focused = sprite._thoughtRank >= 2;
+            if (!focused && nonFocusedAdmitted >= budget) {
+                overflowSprites.push(sprite);
                 continue;
+            }
+
+            const stickyKey = (sprite.selected ? 1 : 0) | (sprite.bubbleOccluded ? 2 : 0);
+            if (sprite._bubbleStickyKey !== stickyKey) {
+                sprite._bubbleStickyKey = stickyKey;
+                sprite._bubbleCandidate = null;
+                sprite._bubbleClamped = false;
+            }
+
+            const committed = sprite._bubbleCandidate ?? null;
+            const wasClamped = Boolean(sprite._bubbleClamped);
+            if (committed !== null) {
+                const committedClampX = wasClamped && viewWorld ? this._thoughtClampX(sprite, committed, s, viewWorld) : 0;
+                const committedRects = this._thoughtCandidateRects(sprite, committed, s, committedClampX);
+                const outOfBounds = this._thoughtBoundsViolationArea(committedRects.body, viewWorld, reservedWorld) > 0;
+                if (!outOfBounds && rectsOverlapGrid(committedRects)) {
+                    if (!sprite._bubbleBlockedSince) sprite._bubbleBlockedSince = now;
+                    if (now - sprite._bubbleBlockedSince < THOUGHT_RESEARCH_MS) {
+                        commitPlacement(sprite, committed, committedClampX, committed, wasClamped, true);
+                        if (!focused) nonFocusedAdmitted++;
+                        continue;
+                    }
+                } else if (!outOfBounds) {
+                    sprite._bubbleBlockedSince = 0;
+                }
+            }
+
+            if (cohortSprites.length < LABEL_MAX_SPEAKERS) {
+                cohortSprites.push(sprite);
+                if (!focused) nonFocusedAdmitted++;
+            } else {
+                overflowSprites.push(sprite);
+            }
+        }
+
+        // Solve Layer 3 ThoughtColumn placement via deterministic ε-auction.
+        let auctionIterations = 0;
+        let filteredCount = 0;
+        if (cohortSprites.length > 0) {
+            const activeSpeakers = pool.activeSpeakers;
+            activeSpeakers.length = 0;
+
+            for (let i = 0; i < cohortSprites.length; i++) {
+                const sprite = cohortSprites[i];
+                const spDesc = pool.descriptors[i];
+                resetThoughtCandidateSlots(spDesc);
+                const committed = sprite._bubbleCandidate ?? null;
+                const wasClamped = Boolean(sprite._bubbleClamped);
+                let holdForReturn = false;
+                if (committed !== null && !sprite._bubbleBlockedSince && (wasClamped || committed > 0)) {
+                    const returnLimit = wasClamped ? THOUGHT_CANDIDATE_COUNT : committed;
+                    let betterFree = false;
+                    for (let c = 0; c < returnLimit; c++) {
+                        const r = this._thoughtCandidateRects(sprite, c, s, 0);
+                        if (!rectsOverlapGrid(r) && this._thoughtBoundsViolationArea(r.body, viewWorld, reservedWorld) === 0) {
+                            betterFree = true;
+                            break;
+                        }
+                    }
+                    if (!betterFree) {
+                        sprite._bubbleBetterSince = 0;
+                        holdForReturn = true;
+                    } else if (!sprite._bubbleBetterSince) {
+                        sprite._bubbleBetterSince = now;
+                        holdForReturn = true;
+                    } else if (now - sprite._bubbleBetterSince < THOUGHT_RETURN_MS) {
+                        holdForReturn = true;
+                    }
+                }
+
+                spDesc.id = String(sprite.agent.id);
+                spDesc.priority = (sprite._thoughtRank || 0) * 10000 + (LABEL_MAX_SPEAKERS - i) * 100;
+                spDesc.priorCandidate = committed !== null && !sprite._bubbleBlockedSince ? committed : -1;
+
+                const side = sprite._thoughtSide || 1;
+                for (let c = 0; c < THOUGHT_CANDIDATE_COUNT; c++) {
+                    let clampX = 0;
+                    let rects = this._thoughtCandidateRects(sprite, c, s, 0);
+                    if (viewWorld) {
+                        const neededClamp = this._thoughtClampX(sprite, c, s, viewWorld);
+                        if (neededClamp !== 0) {
+                            clampX = neededClamp;
+                            rects = this._thoughtCandidateRects(sprite, c, s, clampX);
+                        }
+                    }
+                    spDesc._clampX[c] = clampX;
+
+                    const cand = spDesc.candidates[c];
+                    cand.left = rects.body.x;
+                    cand.top = rects.body.y;
+                    cand.right = rects.body.x + rects.body.w;
+                    cand.bottom = rects.body.y + rects.body.h;
+
+                    const slot = THOUGHT_CANDIDATE_SLOT[c];
+                    const lateral = THOUGHT_CANDIDATE_LATERAL[c] * side;
+                    let cost = thoughtCandidateCost(c, lateral, slot);
+                    if (clampX !== 0) cost += 12;
+                    if (holdForReturn && c === committed) cost = -0.5;
+                    if (
+                        (rects.leader && grid.overlaps(rects.v.x, rects.v.y, rects.v.x + rects.v.w, rects.v.y + rects.v.h, pad))
+                        || (rects.horizontal && grid.overlaps(rects.h.x, rects.h.y, rects.h.x + rects.h.w, rects.h.y + rects.h.h, pad))
+                    ) {
+                        cost = 1e6;
+                    }
+                    cand.cost = cost;
+                }
+                activeSpeakers.push(spDesc);
+            }
+
+            const auctionOptions = occ.auctionOptions;
+            auctionOptions.pad = pad;
+            auctionOptions.viewport = viewWorld;
+            auctionOptions.reservedRects = reservedWorld;
+            auctionOptions.reserveInGrid = true;
+            auctionOptions.outRects = pool.rects;
+            auctionOptions.outStats = pool.stats;
+
+            solveLabelAuction(grid, activeSpeakers, pool.assignments, auctionOptions);
+            auctionIterations = pool.stats.iterations;
+
+            for (let i = 0; i < cohortSprites.length; i++) {
+                const sprite = cohortSprites[i];
+                const spDesc = pool.descriptors[i];
+                const committed = sprite._bubbleCandidate ?? null;
+                const wasClamped = Boolean(sprite._bubbleClamped);
+                const focused = sprite._thoughtRank >= 2;
+                let chosen = pool.assignments[i];
+                let chosenClampX = chosen >= 0 ? spDesc._clampX[chosen] : 0;
+
+                if (chosen >= 0) {
+                    // `solveLabelAuction` already reserved `rects.body` in `grid`.
+                    commitPlacement(sprite, chosen, chosenClampX, committed, wasClamped, false);
+                    continue;
+                }
+
+                if (focused) {
+                    // Focused speaker falls back to the least-overlapping candidate.
+                    let leastScore = Infinity;
+                    let least = 0;
+                    let leastClampX = 0;
+                    for (let c = 0; c < THOUGHT_CANDIDATE_COUNT; c++) {
+                        const r0 = this._thoughtCandidateRects(sprite, c, s, 0);
+                        const ov0 = grid.overlapArea(r0.body.x, r0.body.y, r0.body.x + r0.body.w, r0.body.y + r0.body.h, 0)
+                            + (r0.leader ? grid.overlapArea(r0.v.x, r0.v.y, r0.v.x + r0.v.w, r0.v.y + r0.v.h, 0) : 0)
+                            + (r0.horizontal ? grid.overlapArea(r0.h.x, r0.h.y, r0.h.x + r0.h.w, r0.h.y + r0.h.h, 0) : 0);
+                        const b0 = this._thoughtBoundsViolationArea(r0.body, viewWorld, reservedWorld);
+                        const sc0 = ov0 + b0 * 1000;
+                        if (sc0 < leastScore) {
+                            leastScore = sc0;
+                            least = c;
+                            leastClampX = 0;
+                        }
+                        if (viewWorld) {
+                            const cx = this._thoughtClampX(sprite, c, s, viewWorld);
+                            if (cx !== 0) {
+                                const rc = this._thoughtCandidateRects(sprite, c, s, cx);
+                                const ovc = grid.overlapArea(rc.body.x, rc.body.y, rc.body.x + rc.body.w, rc.body.y + rc.body.h, 0)
+                                    + (rc.leader ? grid.overlapArea(rc.v.x, rc.v.y, rc.v.x + rc.v.w, rc.v.y + rc.v.h, 0) : 0)
+                                    + (rc.horizontal ? grid.overlapArea(rc.h.x, rc.h.y, rc.h.x + rc.h.w, rc.h.y + rc.h.h, 0) : 0);
+                                const bc = this._thoughtBoundsViolationArea(rc.body, viewWorld, reservedWorld);
+                                const scc = ovc + bc * 1000;
+                                if (scc < leastScore) {
+                                    leastScore = scc;
+                                    least = c;
+                                    leastClampX = cx;
+                                }
+                            }
+                        }
+                    }
+                    commitPlacement(sprite, least, leastClampX, committed, wasClamped, true);
+                    continue;
+                }
+
+                this._clearThoughtPlacement(sprite);
+                sprite._thoughtFiltered = true;
+                filteredCount++;
+            }
+        }
+
+        // Backfill any unused budget slots from overflow sprites when cohort speakers
+        // were completely blocked, else mark overflow speakers filtered cleanly.
+        for (let i = 0; i < overflowSprites.length; i++) {
+            const sprite = overflowSprites[i];
+            if (placedCount < budget) {
+                let found = -1;
+                let foundClampX = 0;
+                for (let c = 0; c < THOUGHT_CANDIDATE_COUNT; c++) {
+                    const r = this._thoughtCandidateRects(sprite, c, s, 0);
+                    if (!rectsOverlapGrid(r) && this._thoughtBoundsViolationArea(r.body, viewWorld, reservedWorld) === 0) {
+                        found = c;
+                        break;
+                    }
+                }
+                if (found < 0 && viewWorld) {
+                    for (let c = 0; c < THOUGHT_CANDIDATE_COUNT; c++) {
+                        const cx = this._thoughtClampX(sprite, c, s, viewWorld);
+                        if (cx === 0) continue;
+                        const r = this._thoughtCandidateRects(sprite, c, s, cx);
+                        if (!rectsOverlapGrid(r) && this._thoughtBoundsViolationArea(r.body, viewWorld, reservedWorld) === 0) {
+                            found = c;
+                            foundClampX = cx;
+                            break;
+                        }
+                    }
+                }
+                if (found >= 0) {
+                    commitPlacement(sprite, found, foundClampX, sprite._bubbleCandidate ?? null, Boolean(sprite._bubbleClamped), true);
+                    continue;
+                }
             }
             this._clearThoughtPlacement(sprite);
             sprite._thoughtFiltered = true;
+            filteredCount++;
         }
+
+        const stats = occ.stats;
+        stats.frames++;
+        stats.speakers = order.length;
+        stats.placed = placedCount;
+        stats.filtered = filteredCount;
+        stats.iterations = auctionIterations;
+        stats.totalPlaced += placedCount;
+        stats.totalFiltered += filteredCount;
+
         // A speaker that left the visible set drops its placement and seat
         // instead of carrying them stale until it returns.
         const seated = this._thoughtSeated || (this._thoughtSeated = []);
@@ -9788,7 +10350,9 @@ export class IsometricRenderer {
         const atmosphere = this._lastAtmosphere ?? this.atmosphereState?.snapshot?.();
         const ground = this._groundState ?? groundStateForAtmosphere(atmosphere);
         return { assetVersion: this.assets?.assetVersion, bounds, dpr, season,
-            sceneryRevision: this._terrainSceneryRevision || 0, snowBucket: snowBucketOf(ground?.snowCover), frost: frostQuarterOf(ground),
+            sceneryRevision: this._terrainSceneryRevision || 0,
+            substrateRevision: this.gpuWorld?.substrateRevision ?? 0,
+            snowBucket: snowBucketOf(ground?.snowCover), frost: frostQuarterOf(ground),
             frostRising: frostRisingOf(ground),
             phenology: phenologyForAtmosphere(atmosphere).id,
             // GW — 'weather' in the key exactly when this backend's bake holds the field.
@@ -13042,21 +13606,21 @@ export class IsometricRenderer {
         for (const canvas of liveSpriteCanvases) liveSpriteCanvasPixels += canvasPixelCount(canvas);
         return {
             frameFailures: {
-                ...this._frameFailureStats,
-                byStage: { ...this._frameFailureStats.byStage },
+                ...(this._frameFailureStats || {}),
+                byStage: { ...(this._frameFailureStats?.byStage || {}) },
                 reportIntervalMs: WORLD_FRAME_ERROR_REPORT_INTERVAL_MS,
                 maxConsecutive: WORLD_FRAME_MAX_CONSECUTIVE_FAILURES,
             },
             boundedState: {
                 lightFadeColors: this.lightFadeColorCache?.size || 0,
                 lightFadeColorLimit: LIGHT_FADE_COLOR_CACHE_LIMIT,
-                lightFadeColorEvictions: this._lightFadeColorCacheEvictions,
+                lightFadeColorEvictions: this._lightFadeColorCacheEvictions || 0,
                 lightColorRgbEntries: this.lightColorRgbCache?.size || 0,
                 lightColorRgbLimit: LIGHT_COLOR_RGB_CACHE_LIMIT,
-                lightColorRgbEvictions: this._lightColorRgbCacheEvictions,
-                crowdBumpCooldowns: this._crowdBumpCooldowns.size,
+                lightColorRgbEvictions: this._lightColorRgbCacheEvictions || 0,
+                crowdBumpCooldowns: this._crowdBumpCooldowns?.size || 0,
                 crowdBumpCooldownLimit: CROWD_BUMP_COOLDOWN_LIMIT,
-                nicknames: this._nicknames.size,
+                nicknames: this._nicknames?.size || 0,
                 nicknameLimit: NICKNAME_CACHE_LIMIT,
                 liveSpriteCanvases: liveSpriteCanvases.size,
                 liveSpriteCanvasPixels,
@@ -13072,6 +13636,8 @@ export class IsometricRenderer {
             monuments: this.chronicleMonuments?.getDiagnostics?.() || null,
             visits: this.visitIntentManager?.getDiagnostics?.() || null,
             allocator: this.visitTileAllocator?.getDiagnostics?.() || null,
+            orca: this.getCrowdOrcaDiagnostics(),
+            labelAuction: this.getLabelAuctionDiagnostics(),
             behavior: this.behaviorTelemetry?.metrics || null,
             ambient: this.ambientDiagnostics(),
             relationships: this.relationshipState?.getDiagnostics?.() || null,
@@ -13080,6 +13646,16 @@ export class IsometricRenderer {
             gpuWorld: this.gpuWorld?.getDiagnostics?.() || null,
             worldRendererMode: this.worldRendererMode,
             worldBackendReason: this.worldBackendReason,
+        };
+    }
+
+    getDiagnostics() {
+        return {
+            orca: this.getCrowdOrcaDiagnostics(),
+            labelAuction: this.getLabelAuctionDiagnostics(),
+            allocator: this.visitTileAllocator?.getDiagnostics?.() || null,
+            crowd: this._crowdStats || this._summarizeCrowdClusters(),
+            performance: this.getWorldPerformanceDiagnostics(),
         };
     }
 
