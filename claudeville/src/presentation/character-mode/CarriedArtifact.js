@@ -6,17 +6,22 @@
 // CarriedLantern.js — zero gradients, zero arcs, zero generated art).
 //
 // Truthful by construction (V8):
-// - Never draw any artifact on casual strolls, idle walks, or stale states.
-// - Walking bodies at z >= 2 carry the artifact in the trailing hand (strictly
-//   opposite CarriedLantern's facing hand) and suppress the floating tool glyph
-//   via the one-of rule.
-// - Standing bodies set the artifact down at x = -s*15..-s*9, bottom at y = +2.
+// - Never draw any artifact on casual strolls, idle walks, or stale states; a
+//   proof chit needs a dated result inside PROOF_FRESH_MS.
+// - Walking bodies at z >= 2 carry the artifact centred on the trailing hand
+//   (strictly opposite CarriedLantern's facing hand) and suppress the floating
+//   tool glyph via the one-of rule.
+// - Standing bodies set the artifact down at x = -s*15..-s*9, bottom at y = +2,
+//   moved out past the body's own ground ring when one is drawn.
 // - Report cairns stand at x = -s*22..-s*17, bottom at y = +2, admitted via
 //   MarkGovernor.reserve(rect, MarkTier.AMBIENT, 'cairn:' + id) with facing-side
-//   fallback +s*17..+s*22, and show every exact unit up to 5 (5×14) or a single
-//   5×6 bound bundle above 5 (never 5 units standing for "many").
+//   fallback +s*17..+s*22, capped at 6 in view and 2 per door zone, and show
+//   every exact unit up to 5 (5×14) or a single 5×6 bound bundle above 5 (never
+//   5 units standing for "many"). The owner paints the cached stamp
+//   (`reportCairnStamp`) in its own depth slot on both backends.
 // - Workflow ribbons key on workflowId, else provider:parentSessionId:workflowName
-//   (never bare workflowName alone), capped at 2 concurrent ribbons per parent.
+//   (never bare workflowName alone), capped at 2 concurrent ribbons per parent;
+//   each slot paints its own swallowtail device (`workflowRibbonStamp`).
 
 import { ART_RAMPS, EFFECT_COLORS } from '../../config/artPalette.js';
 import { MarkTier } from './MarkGovernor.js';
@@ -60,7 +65,7 @@ const PALETTE = Object.freeze({
     K: ART_RAMPS.stone[0],
     S: ART_RAMPS.stone[2],
     L: ART_RAMPS.stone[4],
-    // Ember billet glow
+    // Ember billet glow (amber hot face)
     E: ART_RAMPS.emissive[0],
     G: ART_RAMPS.emissive[1],
     // Parchment / timber
@@ -70,102 +75,115 @@ const PALETTE = Object.freeze({
     // Cream / ivory
     C: ART_RAMPS.blossomIvory[3],
     I: ART_RAMPS.blossomIvory[2],
+    D: ART_RAMPS.blossomIvory[1],
     W: EFFECT_COLORS.peak,
     // Wax seals & ink
     V: EFFECT_COLORS.magic[0],
     M: EFFECT_COLORS.magic[1],
     R: ART_RAMPS.clothCrimson[1],
+    Z: ART_RAMPS.clothCrimson[0],
     F: EFFECT_COLORS.failure,
     O: EFFECT_COLORS.failureOutline,
     // Brass / gold check & ribbon
     B: ART_RAMPS.trimGold[1],
     Y: ART_RAMPS.trimGold[2],
-    // Slate plan lines
+    // Emerald proof check
+    H: ART_RAMPS.surfGlow[0],
+    // Slate plan lines & notched broken-proof slate
     N: ART_RAMPS.slate[0],
     U: ART_RAMPS.slate[2],
     A: ART_RAMPS.slate[3],
+    // Pale cyan plan sheet
+    X: ART_RAMPS.seaPath[2],
 });
 
 // Pure 6×6 row-string pixel art stamps (every row exactly 6 chars, 6 rows).
+// Each kind owns its own silhouette and accent so seven kinds stay apart at
+// z2: a low iron ingot, a hanging scroll on two rods, a landscape envelope,
+// a square chit, a notched slate chit, a dog-eared portrait sheet and a tall
+// narrow order with its seal ribbons.
 const ARTIFACT_ROWS = Object.freeze({
-    // Ember iron billet (Edit / Write)
+    // Dark iron billet with an amber hot face (Edit / Write)
     billet: Object.freeze([
+        '......',
         '.KKKK.',
-        'KSGGSK',
-        'KGEESK',
+        'KGEEGK',
         'KSEESK',
-        'KSSSSK',
-        '.KKKK.',
+        'KKKKKK',
+        '......',
     ]),
-    // Rolled parchment scroll (Read / Grep / Glob)
+    // Cream scroll hung on two timber rods, red seal (Read / Grep / Glob)
     scroll: Object.freeze([
-        '.TTTT.',
-        'TQQQQT',
-        'TPPRPT',
-        'TQQQQT',
-        'TPPPPT',
-        '.TTTT.',
+        'T....T',
+        'TCCCCT',
+        'TCIICT',
+        'TCRRCT',
+        'TCCCCT',
+        'T....T',
     ]),
-    // Violet-wax letter (Web / MCP)
+    // Folded ivory envelope, its flap closing on a violet wax seal (Web / MCP)
     letter: Object.freeze([
+        '......',
         'KKKKKK',
-        'KQQQQK',
-        'KQVMPK',
-        'KQMVPk'.replace('k', 'K'),
-        'KPPPPK',
+        'KDWWDK',
+        'KCDDCK',
+        'KCMVCK',
         'KKKKKK',
     ]),
-    // Whole cream proof chit (exit 0 verified pass)
+    // Parchment proof chit with an emerald check (exit 0 verified pass)
     proof: Object.freeze([
         '.KKKK.',
-        'KWWWWK',
-        'KWWYCK',
-        'KWYBCK',
-        'KCCCCK',
+        'KQQQQK',
+        'KQQQHK',
+        'KHQHQK',
+        'KQHQQK',
         '.KKKK.',
     ]),
-    // Broken proof chit: 1, 2, or 3 visible edge notches + crack (exit != 0)
+    // Notched slate proof chit with a crimson crack: 1, 2 or 3 visible edge
+    // notches (exit != 0)
     brokenProof1: Object.freeze([
         '.KKK..',
-        'KWWFK.',
-        'KWWFCK',
-        'KCCFCK',
-        'KCCCCK',
+        'KAAFK.',
+        'KAAFUK',
+        'KUUFUK',
+        'KUUUUK',
         '.KKKK.',
     ]),
     brokenProof2: Object.freeze([
         '.KK...',
-        'KWFK..',
-        'KWWFC.',
-        'KCCFK.',
-        'KCCFK.',
+        'KAFK..',
+        'KAAFU.',
+        'KUUFK.',
+        'KUUFK.',
         '.KKK..',
     ]),
     brokenProof3: Object.freeze([
         '.KK...',
-        'KWF...',
-        'KWFK..',
-        '.KFC..',
-        'KCFK..',
+        'KAF...',
+        'KAFK..',
+        '.KFU..',
+        'KUFK..',
         '.KK...',
     ]),
-    // Folded plan sheet (active plan / composing with plan)
+    // Dog-eared pale cyan plan sheet in a brass frame, two slate rules
+    // (active plan / composing with plan)
     plan: Object.freeze([
-        'NNNN..',
-        'NCCUN.',
-        'NCUCCN',
-        'NCAACN',
-        'NCCUCN',
-        'NNNNNN',
+        'BBBB..',
+        'BXXXB.',
+        'BNNNXB',
+        'BXXXXB',
+        'BNNNNB',
+        'BBBBBB',
     ]),
-    // Sealed wax delegate orders (spawning / delegating subagent)
+    // Tall folded order under a gold-waxed crimson seal with two ribbon
+    // tails (spawning / delegating subagent)
     orders: Object.freeze([
-        '.TTTT.',
-        'TQQQQT',
-        'TQRYQT',
-        'TQRRQT',
-        'TPPPPT',
-        '.TTTT.',
+        '.KKKK.',
+        '.KQQK.',
+        '.KQQK.',
+        '.KRYK.',
+        '..RZ..',
+        '.Z..R.',
     ]),
 });
 
@@ -324,6 +342,7 @@ export function resolveCarriedArtifact(agent, {
     casualStroll = false,
     idleWalk = false,
     mendLedger = null,
+    failureStreak = null,
     now = Date.now(),
 } = {}) {
     if (casualStroll || idleWalk || isStaleOrInactive(agent)) return null;
@@ -352,10 +371,14 @@ export function resolveCarriedArtifact(agent, {
     }
 
     // 4. Recent verified shell result (proof chit / notched broken proof chit).
+    // Only a result with a real completion time inside PROOF_FRESH_MS earns a
+    // chit: an undated result is never fresh, so no chit is carried forever.
     const latest = Array.isArray(agent.lastResults) ? agent.lastResults[0] : null;
     if (latest && latest.exitCode !== null && latest.exitCode !== undefined && Number.isFinite(Number(latest.exitCode))) {
-        const completedAt = Number(latest.completedAt);
-        const fresh = !Number.isFinite(completedAt) || Math.abs(now - completedAt) <= PROOF_FRESH_MS;
+        const completedAt = latest.completedAt === null || latest.completedAt === undefined || latest.completedAt === ''
+            ? NaN
+            : Number(latest.completedAt);
+        const fresh = Number.isFinite(completedAt) && Math.abs(Number(now) - completedAt) <= PROOF_FRESH_MS;
         if (fresh) {
             const exitCode = Number(latest.exitCode);
             if (exitCode === 0) {
@@ -366,7 +389,7 @@ export function resolveCarriedArtifact(agent, {
             if (realFailure) {
                 const streak = mendLedger && typeof mendLedger.failureStreakFor === 'function'
                     ? mendLedger.failureStreakFor(agent.id, { now })
-                    : 1;
+                    : (Number(failureStreak) || 1);
                 return { kind: 'brokenProof', notches: clampNotches(streak || 1) };
             }
         }
@@ -409,13 +432,42 @@ export function artifactWalkingAnchor({ bounds = null, west = false, anchors = n
 }
 
 /**
+ * Spec 04 §2.2 — the walking stamp's top-left, centred on the trailing-hand
+ * point (`artifactWalkingAnchor`), so the 6×6 artifact hangs from the hand
+ * rather than below and beside it.
+ */
+export function artifactWalkingRect({ bounds = null, west = false, anchors = null } = {}) {
+    const hand = artifactWalkingAnchor({ bounds, west, anchors });
+    const half = ARTIFACT_SIZE >> 1;
+    return {
+        x: Math.round(hand.x - half),
+        y: Math.round(hand.y - half),
+        w: ARTIFACT_SIZE,
+        h: ARTIFACT_SIZE,
+    };
+}
+
+/**
  * Spec 04 §2.2 — standing set-down rectangle in world texels.
  * For facing sign s = +1 (east) / -1 (west):
  *   x spans -s*15 .. -s*9 (east: [-15, -9]; west: [+9, +15]), bottom at y = +2.
+ * `ringHalfWidth` (texels from the foot to the outermost pixel of the body's
+ * ground ring or arc, keyline included) moves the stamp out past that ring by
+ * one clear texel, so it rests beside the green working arc, never on it. The
+ * outer edge never passes the trailing body column (s*22, the cairn column's
+ * outer bound); the cairn, lower in Spec 04 precedence, yields to it.
  */
-export function artifactSetDownRect({ footX = 0, footY = 0, west = false } = {}) {
+export function artifactSetDownRect({ footX = 0, footY = 0, west = false, ringHalfWidth = null } = {}) {
     const s = west ? -1 : 1;
-    const x0 = footX + Math.min(-s * ARTIFACT_SET_DOWN.maxOffset, -s * ARTIFACT_SET_DOWN.minOffset);
+    let inner = ARTIFACT_SET_DOWN.minOffset;
+    const ring = Number(ringHalfWidth);
+    if (ringHalfWidth !== null && ringHalfWidth !== undefined && Number.isFinite(ring) && ring > 0) {
+        // The stamp's innermost pixel sits at -s*(inner+1) facing east and
+        // at +inner facing west; either way one clear texel past the ring.
+        inner = Math.min(CAIRN_MAX_OFFSET - ARTIFACT_SIZE, Math.max(inner, Math.ceil(ring) + (west ? 2 : 1)));
+    }
+    const outer = inner + (ARTIFACT_SET_DOWN.maxOffset - ARTIFACT_SET_DOWN.minOffset);
+    const x0 = footX + Math.min(-s * outer, -s * inner);
     const y0 = footY + ARTIFACT_SET_DOWN.bottomY - ARTIFACT_SIZE;
     return {
         x: Math.round(x0),
@@ -528,10 +580,53 @@ export function reportCairnSpec({ returned = 0, outstanding = 0, returnedTrims =
 }
 
 /**
- * Spec 04 §2.2 — Cairn admission via MarkGovernor.
+ * Spec 04 §2.2 — the cairn column's rect for one side of the body:
+ *   'trailing' (primary): x = -s*22 .. -s*17
+ *   'facing'  (fallback): x = +s*17 .. +s*22
+ * bottom at y = +2, `width` × `height` texels.
+ */
+export function reportCairnRect({
+    footX = 0,
+    footY = 0,
+    west = false,
+    side = 'trailing',
+    width = CAIRN_WIDTH,
+    height = CAIRN_BUNDLE_HEIGHT,
+} = {}) {
+    const s = west ? -1 : 1;
+    const left = side === 'facing'
+        ? footX + Math.min(s * CAIRN_MIN_OFFSET, s * CAIRN_MAX_OFFSET)
+        : footX + Math.min(-s * CAIRN_MAX_OFFSET, -s * CAIRN_MIN_OFFSET);
+    return {
+        x: Math.round(left),
+        y: Math.round(footY + CAIRN_BOTTOM_Y - height),
+        w: width,
+        h: height,
+    };
+}
+
+function validCairnSpec(spec) {
+    return Boolean(spec && (spec.mode === 'exact' || spec.mode === 'bundle')
+        && Number(spec.width) > 0 && Number(spec.height) > 0 && Number(spec.total) > 0);
+}
+
+function countOrNull(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Spec 04 §2.2 / §2.4 — Cairn admission via MarkGovernor.
  * Primary slot: x = -s*22 .. -s*17, bottom at y = +2.
  * Fallback slot (facing side): x = +s*17 .. +s*22, bottom at y = +2.
  * Returns null if both collide (count never moves to a different mark).
+ *
+ * Caps (Spec 04 §2.4): at most CAIRN_VIEW_CAP (6) cairns in view and
+ * CAIRN_DOOR_ZONE_CAP (2) per door zone. The caller walks leads oldest
+ * dispatch first and passes how many it already admitted in view
+ * (`viewCount`, alias `existingCount`) and in this lead's door zone
+ * (`doorCount`); an omitted count is not capped.
  */
 export function admitReportCairn({
     id = '',
@@ -542,15 +637,18 @@ export function admitReportCairn({
     outstanding = 0,
     returnedTrims = [],
     governor = null,
+    viewCount = null,
+    existingCount = null,
+    doorCount = null,
 } = {}) {
+    const inView = countOrNull(viewCount) ?? countOrNull(existingCount);
+    if (inView !== null && inView >= CAIRN_VIEW_CAP) return null;
+    const inDoorZone = countOrNull(doorCount);
+    if (inDoorZone !== null && inDoorZone >= CAIRN_DOOR_ZONE_CAP) return null;
     const spec = reportCairnSpec({ returned, outstanding, returnedTrims });
     if (!spec) return null;
-    const s = west ? -1 : 1;
-    const primaryLeft = Math.round(footX + Math.min(-s * CAIRN_MAX_OFFSET, -s * CAIRN_MIN_OFFSET));
-    const fallbackLeft = Math.round(footX + Math.min(s * CAIRN_MIN_OFFSET, s * CAIRN_MAX_OFFSET));
-    const top = Math.round(footY + CAIRN_BOTTOM_Y - spec.height);
-    const primaryRect = { x: primaryLeft, y: top, w: spec.width, h: spec.height };
-    const fallbackRect = { x: fallbackLeft, y: top, w: spec.width, h: spec.height };
+    const primaryRect = reportCairnRect({ footX, footY, west, side: 'trailing', width: spec.width, height: spec.height });
+    const fallbackRect = reportCairnRect({ footX, footY, west, side: 'facing', width: spec.width, height: spec.height });
     const key = `cairn:${id}`;
 
     if (governor && typeof governor.reserve === 'function') {
@@ -565,20 +663,10 @@ export function admitReportCairn({
     return { ...spec, rect: primaryRect, side: 'trailing', key };
 }
 
-/**
- * Draw an admitted report cairn on the world art-pixel grid (`fillRect` only).
- */
-export function drawReportCairn(ctx, cairn) {
-    if (!ctx || !cairn?.rect) return;
-    const ox = Math.round(cairn.rect.x);
-    const bottomY = Math.round(cairn.rect.y + cairn.rect.h);
+// One cairn painted on the art-pixel grid (`fillRect` only), its left edge
+// at `ox` and its bottom row ending at `bottomY`.
+function paintReportCairn(ctx, cairn, ox, bottomY) {
     if (cairn.mode === 'bundle') {
-        const stamp = reportCairnBundleStamp();
-        if (stamp) {
-            ctx.imageSmoothingEnabled = false;
-            ctx.drawImage(stamp, ox, bottomY - CAIRN_BUNDLE_HEIGHT);
-            return;
-        }
         for (let y = 0; y < CAIRN_BUNDLE_ROWS.length; y++) {
             const row = CAIRN_BUNDLE_ROWS[y];
             for (let x = 0; x < row.length; x++) {
@@ -591,8 +679,9 @@ export function drawReportCairn(ctx, cairn) {
         return;
     }
     // Exact mode: bottom-up stack of units (each unit 5×2 with 1-texel gap = 3 texel stride).
-    for (let index = 0; index < cairn.units.length; index++) {
-        const unit = cairn.units[index];
+    const units = Array.isArray(cairn.units) ? cairn.units : [];
+    for (let index = 0; index < units.length; index++) {
+        const unit = units[index];
         const uy = bottomY - 2 - index * CAIRN_UNIT_STRIDE;
         if (unit.state === 'returned') {
             // Filled parchment scroll (5×2) with 1×2 child model trim seal at centre.
@@ -611,6 +700,70 @@ export function drawReportCairn(ctx, cairn) {
             ctx.fillRect(ox + CAIRN_WIDTH - 1, uy + 1, 1, 1);
         }
     }
+}
+
+const CAIRN_STAMP_CACHE_MAX = 64;
+const cairnStampCache = new Map();
+
+/** The stamp cache key of one cairn: its mode and every unit it stands for. */
+export function reportCairnStampKey(cairn) {
+    if (!validCairnSpec(cairn)) return null;
+    if (cairn.mode === 'bundle') return 'report-cairn:bundle';
+    const units = (Array.isArray(cairn.units) ? cairn.units : [])
+        .map(unit => unit.state === 'returned' ? `r${unit.trim || ART_RAMPS.trimGold[1]}` : 'o')
+        .join(',');
+    return `report-cairn:exact:${units}`;
+}
+
+/**
+ * Spec 04 §2.4 depth — the whole cairn (exact stack or bound bundle) as one
+ * cached crisp pixel canvas, `width` × `height` texels with `__cvGroundKey`,
+ * so its owner blits it on Canvas and submits it as one GPU record in its own
+ * depth slot (lit, graded and occluded like the queue candle and lantern).
+ * Null without `document` or for an empty cairn.
+ */
+export function reportCairnStamp(cairn) {
+    const key = reportCairnStampKey(cairn);
+    if (!key || typeof document === 'undefined') return null;
+    const cached = cairnStampCache.get(key);
+    if (cached) {
+        cairnStampCache.delete(key);
+        cairnStampCache.set(key, cached);
+        return cached;
+    }
+    const width = cairn.mode === 'bundle' ? CAIRN_BUNDLE_WIDTH : CAIRN_WIDTH;
+    const height = cairn.mode === 'bundle' ? CAIRN_BUNDLE_HEIGHT : Math.max(1, Math.round(Number(cairn.height) || 0));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.imageSmoothingEnabled = false;
+    paintReportCairn(ctx, cairn, 0, height);
+    canvas.__cvGroundKey = key;
+    cairnStampCache.set(key, canvas);
+    while (cairnStampCache.size > CAIRN_STAMP_CACHE_MAX) {
+        cairnStampCache.delete(cairnStampCache.keys().next().value);
+    }
+    return canvas;
+}
+
+/**
+ * Draw an admitted report cairn on the world art-pixel grid (`fillRect` only).
+ */
+export function drawReportCairn(ctx, cairn) {
+    if (!ctx || !cairn?.rect) return;
+    const ox = Math.round(cairn.rect.x);
+    const bottomY = Math.round(cairn.rect.y + cairn.rect.h);
+    if (cairn.mode === 'bundle') {
+        const stamp = reportCairnBundleStamp();
+        if (stamp) {
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(stamp, ox, bottomY - CAIRN_BUNDLE_HEIGHT);
+            return;
+        }
+    }
+    paintReportCairn(ctx, cairn, ox, bottomY);
 }
 
 // ---------------------------------------------------------------------------
@@ -655,8 +808,8 @@ export function workflowGroupKey(agent) {
 /**
  * Spec 04 §3.5 — Assign workflow ribbon slots per parent, capped at 2 concurrent
  * ribbons per parent (slot 0, slot 1, or null for 3rd+).
- * Returns `{ byAgentId: Map, byParentId: Map }` with exact run count and label
- * (e.g. `"3 runs"`) for READ and The Glass.
+ * Returns `{ byAgentId: Map, byParentId: Map }` with exact run count (`count`,
+ * alias `runCount`) and label (e.g. `"3 runs"`) for READ and The Glass.
  */
 export function assignWorkflowRibbons(agents = []) {
     const byParentGroups = new Map();
@@ -715,6 +868,7 @@ export function assignWorkflowRibbons(agents = []) {
             key,
             parentId,
             slot,
+            count: parentSummary.runCount,
             runCount: parentSummary.runCount,
             runCountLabel: parentSummary.runCountLabel,
             label: sanitizeWorkflowLabel(agent.workflowName),
@@ -723,3 +877,69 @@ export function assignWorkflowRibbons(agents = []) {
 
     return { byAgentId, byParentId };
 }
+
+// ---------------------------------------------------------------------------
+// Workflow Ribbon badge (Spec 04 §3.5)
+// ---------------------------------------------------------------------------
+
+// Two squad devices, one per ribbon slot a parent can hold: slot 0 a 3×5
+// swallowtail, slot 1 a 4×6 swallowtail crossed by a cream band, so a
+// parent's two concurrent runs read apart in the same repo accent. `a` is
+// the accent, `k` the dark tie knot, `c` the cream band. Never any text.
+const WORKFLOW_RIBBON_ROWS = Object.freeze([
+    Object.freeze([
+        'kak',
+        'aaa',
+        'aaa',
+        'a.a',
+        'a.a',
+    ]),
+    Object.freeze([
+        'kaak',
+        'aaaa',
+        'cccc',
+        'aaaa',
+        'a..a',
+        'a..a',
+    ]),
+]);
+
+const HEX_RE = /^#[0-9a-f]{6}$/i;
+const RIBBON_STAMP_CACHE_MAX = 32;
+const ribbonStampCache = new Map();
+
+/** Pure row strings of one ribbon slot's device (slot 0 → 3×5, slot 1 → 4×6), else null. */
+export function workflowRibbonRows(slot) {
+    return Number.isInteger(slot) ? WORKFLOW_RIBBON_ROWS[slot] || null : null;
+}
+
+/** The palette tone of one ribbon row code under `accent`. */
+export function workflowRibbonColor(code, accent = null) {
+    if (code === 'a') return HEX_RE.test(String(accent || '')) ? String(accent).toLowerCase() : ART_RAMPS.trimGold[2];
+    if (code === 'k') return ART_RAMPS.timber[0];
+    if (code === 'c') return ART_RAMPS.blossomIvory[3];
+    return null;
+}
+
+/**
+ * Cached crisp ribbon badge canvas for a workflow ribbon `slot` (0 or 1) in
+ * the parent's repo `accent` (`__cvGroundKey` set). Null for a slot past the
+ * per-parent cap, or without `document`.
+ */
+export function workflowRibbonStamp(slot, accent = null) {
+    const rows = workflowRibbonRows(slot);
+    if (!rows || typeof document === 'undefined') return null;
+    const tone = workflowRibbonColor('a', accent);
+    const key = `workflow-ribbon:${slot}:${tone}`;
+    const cached = ribbonStampCache.get(key);
+    if (cached) return cached;
+    const canvas = paintRows(rows, code => workflowRibbonColor(code, tone));
+    if (!canvas) return null;
+    canvas.__cvGroundKey = key;
+    ribbonStampCache.set(key, canvas);
+    while (ribbonStampCache.size > RIBBON_STAMP_CACHE_MAX) {
+        ribbonStampCache.delete(ribbonStampCache.keys().next().value);
+    }
+    return canvas;
+}
+

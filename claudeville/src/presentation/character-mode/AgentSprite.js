@@ -89,10 +89,15 @@ import { CANDLE_OFFSET, DRINK_FRAME_BY_STEP, FALLBACK_SEAT_DROP, SEAT_FACING_DIR
 import { materialClassId } from './MaterialRegistry.js';
 import { LANTERN_SET_DOWN, carriedLanternStamp } from './CarriedLantern.js';
 import {
+    ARTIFACT_MIN_ZOOM,
+    ARTIFACT_SIZE,
     artifactSetDownRect,
-    artifactWalkingAnchor,
+    artifactWalkingRect,
     carriedArtifactStamp,
+    reportCairnRect,
+    reportCairnStamp,
     shouldSuppressToolGlyphForArtifact,
+    workflowRibbonStamp,
 } from './CarriedArtifact.js';
 import { waitAgeTier, waitAnchor } from '../../domain/services/SignalLedger.js';
 import { AMBIENT_SCENIC_POINTS } from '../../config/scenery.js';
@@ -104,6 +109,7 @@ import {
     errandChoice,
     errandCooldownMs,
     errandDwellMs,
+    precipitationFrozenFor,
     routineHash,
     sitDurationMs,
     squallShelter,
@@ -543,6 +549,177 @@ function measureCellContentBounds(source, cell, contentKey = null) {
             ? { minX, minY, maxX, maxY }
             : fallbackCellContentBounds(cell);
     });
+}
+
+// W3-D — body marks (rain shoulders, mended hem, salt cuff) are body
+// pixels: only a texel at least this opaque is body (the compositor's baked
+// rim is OUTLINE_ALPHA 128, so it never counts), and every mark keeps one
+// texel in from its run's ends, off the silhouette's own outline.
+export const BODY_MARK_ALPHA_MIN = 200;
+// The rain glaze over the shoulders (a darkening of the cloth, not paint).
+const RAIN_SHOULDER_ALPHA = 0.34;
+// Freezing breath: two held steps of a short puff per seeded cycle.
+const BREATH_CYCLE_MS = 3200;
+const BREATH_PUFF_MS = 520;
+// W3-D — a still worker's return when a real tool fires: one beat at a run.
+const STILL_WORK_RUN_BOOST_MS = 900;
+
+/**
+ * Per-row opaque runs of one RGBA cell: `rows[y]` is a flat list of
+ * inclusive `[x0, x1, x0, x1, ...]` spans of texels whose alpha is at least
+ * `alphaMin`, left to right; an empty list for a clear row.
+ */
+export function cellOpaqueRowRuns(data, width, height, alphaMin = BODY_MARK_ALPHA_MIN) {
+    const rows = new Array(height);
+    for (let y = 0; y < height; y++) {
+        const runs = [];
+        let start = -1;
+        for (let x = 0; x < width; x++) {
+            const opaque = data[(y * width + x) * 4 + 3] >= alphaMin;
+            if (opaque && start < 0) start = x;
+            if (!opaque && start >= 0) {
+                runs.push(start, x - 1);
+                start = -1;
+            }
+        }
+        if (start >= 0) runs.push(start, width - 1);
+        rows[y] = runs;
+    }
+    return rows;
+}
+
+// Opaque row runs of one cell inside an immutable composed sheet or strip,
+// cached beside its content bounds.
+function measureCellRowRuns(source, cell, contentKey = null) {
+    if (!validSpriteSource(source) || typeof document === 'undefined') return null;
+    const key = `runs|${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
+    return sheetMetadataEntry(source, contentKey, key, () => {
+        const scratch = document.createElement('canvas');
+        scratch.width = cell.sw;
+        scratch.height = cell.sh;
+        const scratchCtx = scratch.getContext('2d', { willReadFrequently: true });
+        if (!scratchCtx) return null;
+        scratchCtx.imageSmoothingEnabled = false;
+        scratchCtx.drawImage(source, cell.sx, cell.sy, cell.sw, cell.sh, 0, 0, cell.sw, cell.sh);
+        return cellOpaqueRowRuns(scratchCtx.getImageData(0, 0, cell.sw, cell.sh).data, cell.sw, cell.sh);
+    });
+}
+
+// The runs of row `y` shrunk one texel at each end (empty where a run is
+// under three texels wide), as `[x0, x1]` pairs.
+function insetRuns(rows, y) {
+    const runs = rows[y] || [];
+    const out = [];
+    for (let i = 0; i + 1 < runs.length; i += 2) {
+        const a = runs[i] + 1;
+        const b = runs[i + 1] - 1;
+        if (b >= a) out.push([a, b]);
+    }
+    return out;
+}
+
+/**
+ * W3-D — where one drawn body cell's marks land, in cell texels, read off its
+ * own opaque row runs (`cellOpaqueRowRuns`) so no mark texel is ever off the
+ * body:
+ * - `shoulders`: the rain glaze, two rows at ~39 % of the body's height (the
+ *   shoulder line, under the head and hat brim), every inset run of each row;
+ * - `stitches`: 1..4 single texels two apart, centred in the widest inset run
+ *   3 rows above the lowest body row (4 rows when that row has no room);
+ * - `cuff`: 2 single texels 1 row above the lowest body row (2 rows when that
+ *   row has no room), one per leg when the row shows two;
+ * - `mouth`: the face's outer texel on the facing side at ~24 % of the body's
+ *   height, where a breath puff starts (the puff itself is air, off the body).
+ * Each list is empty (`mouth` null) when not asked for or with no room.
+ */
+export function bodyMarkPixels(rows, {
+    shoulders = false,
+    stitches = 0,
+    saltCuff = false,
+    breath = false,
+    west = false,
+} = {}) {
+    const out = { shoulders: [], stitches: [], cuff: [], mouth: null, top: -1, bottom: -1 };
+    if (!Array.isArray(rows)) return out;
+    let top = -1;
+    let bottom = -1;
+    for (let y = 0; y < rows.length; y++) {
+        if (!rows[y]?.length) continue;
+        if (top < 0) top = y;
+        bottom = y;
+    }
+    out.top = top;
+    out.bottom = bottom;
+    if (top < 0 || bottom - top < 8) return out;
+    const height = bottom - top;
+    if (shoulders) {
+        const y0 = top + Math.round(height * 0.39);
+        for (const y of [y0, y0 + 1]) {
+            for (const [a, b] of insetRuns(rows, y)) out.shoulders.push({ x: a, y, w: b - a + 1 });
+        }
+    }
+    const count = Math.max(0, Math.min(4, Math.trunc(Number(stitches) || 0)));
+    if (count > 0) {
+        for (const y of [bottom - 3, bottom - 4]) {
+            let widest = null;
+            for (const run of insetRuns(rows, y)) {
+                if (!widest || run[1] - run[0] > widest[1] - widest[0]) widest = run;
+            }
+            if (!widest) continue;
+            const span = widest[1] - widest[0] + 1;
+            const n = Math.min(count, span);
+            const gap = n > 1 && span >= 2 * n - 1 ? 2 : 1;
+            const used = (n - 1) * gap + 1;
+            const start = widest[0] + Math.floor((span - used) / 2);
+            for (let i = 0; i < n; i++) out.stitches.push({ x: start + i * gap, y });
+            break;
+        }
+    }
+    if (saltCuff) {
+        for (const y of [bottom - 1, bottom - 2]) {
+            const runs = insetRuns(rows, y);
+            if (!runs.length) continue;
+            if (runs.length >= 2) {
+                const first = runs[0];
+                const last = runs[runs.length - 1];
+                out.cuff = [
+                    { x: (first[0] + first[1]) >> 1, y },
+                    { x: (last[0] + last[1]) >> 1, y },
+                ];
+                break;
+            }
+            const [a, b] = runs[0];
+            if (b - a < 2) continue;
+            const third = Math.max(1, Math.floor((b - a + 1) / 3));
+            out.cuff = [{ x: a + third - 1, y }, { x: b - third + 1, y }];
+            break;
+        }
+    }
+    if (breath) {
+        const y = top + Math.round(height * 0.24);
+        const runs = rows[y] || [];
+        if (runs.length) out.mouth = { x: west ? runs[0] : runs[runs.length - 1], y };
+    }
+    return out;
+}
+
+// A place's identity beyond its role, for places that name a target tile (a
+// squall shelter): `_syncRestPlace` re-picks when it changes.
+function placeKeyOf(place) {
+    if (!place || typeof place !== 'object') return null;
+    if (typeof place.key === 'string' && place.key) return place.key;
+    const target = place.target;
+    if (!target || !Number.isFinite(Number(target.tileX)) || !Number.isFinite(Number(target.tileY))) return null;
+    return `${place.role || 'place'}:${place.building?.type || ''}:${Number(target.tileX)},${Number(target.tileY)}`;
+}
+
+function tileKeyOf(tile) {
+    return tile && Number.isFinite(Number(tile.tileX)) && Number.isFinite(Number(tile.tileY))
+        ? `${Number(tile.tileX)},${Number(tile.tileY)}` : null;
+}
+
+function rectsOverlap(a, b) {
+    return Boolean(a && b) && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
 function easeOutCubic(t) {
@@ -1712,6 +1889,8 @@ export class AgentSprite {
         const screen = tileToWorld(targetTileX, targetTileY);
         this._lastBuildingType = building.type;
         this._lastIntentId = intent?.id || null;
+        // `_routeToRestPlace` names the place it routed to after this returns.
+        this._placeKey = null;
         this._lastTargetTile = { tileX: targetTileX, tileY: targetTileY };
         this._lastVisitSlotId = visitTarget.slotId || null;
         this._lastVisitFacingPoint = visitTarget.facingPoint ? { ...visitTarget.facingPoint } : null;
@@ -1802,6 +1981,7 @@ export class AgentSprite {
             role: place.role || null,
             reason: place.role || null,
         });
+        if (routed) this._placeKey = placeKeyOf(place);
         if (!routed && place.role) this._crowdLegRefused(Date.now());
         return routed;
     }
@@ -1905,11 +2085,16 @@ export class AgentSprite {
     // A status whose place differs from the one held (or a place wanted but
     // not held) re-picks at once, so an idle body goes to sit, a new
     // petitioner joins the line, and a resumed worker stands up and leaves.
+    // A place that names its own target (a squall shelter) must match that
+    // target too: a seated idle villager stands up and runs for cover, and
+    // a nearer shelter re-aims it. A plain work visit (role null) is never a
+    // place, so a still worker's station is left alone.
     _syncRestPlace(now) {
         if (this.chatPartner || this.chatting || this.leaving || this.isArrivalPending?.() || this._straightWalk) return;
         const place = this._restPlaceForState();
         const wanted = place === REST_PLACE ? 'rest' : place === QUEUE_PLACE ? 'queue' : place?.role || null;
-        if (wanted === (this.visitRole || null)) return;
+        const wantedKey = placeKeyOf(place);
+        if (wanted === (this.visitRole || null) && (wantedKey === null || wantedKey === (this._placeKey ?? null))) return;
         if (wanted && now < (this._placeRetryAt || 0)) return;
         this._placeRetryAt = now + PLACE_RETRY_MS;
         this._releaseVisitReservation();
@@ -2136,6 +2321,8 @@ export class AgentSprite {
 
     _resetCrowdRoutine(status) {
         const crowd = this._crowd;
+        // A think belongs to one WORKING stretch: a status change ends it.
+        this._endStillWork();
         crowd.status = status;
         crowd.phase = status === AgentStatus.IDLE ? 'sit' : null;
         crowd.place = null;
@@ -2160,9 +2347,15 @@ export class AgentSprite {
     _advanceIdleLoop(now) {
         const crowd = this._crowd;
         const id = this.agent.id;
-        // W3-D — heavy rain/storm drives idle villagers to the nearest shelter.
+        // W3-D — a squall (storm or heavy rain, never falling snow) drives
+        // idle villagers to the nearest shelter at a run. The leg is its own
+        // place (role 'shelter', its target tile in the key), so a villager
+        // already on a seat stands up for it (_syncRestPlace).
         const shelter = this._weather
-            ? squallShelter(this.agent, this._weather, this._screenToTile(this.x, this.y))
+            ? squallShelter(this.agent, this._weather, this._screenToTile(this.x, this.y), {
+                frozen: this._weatherFrozen(),
+                date: this._weatherDate ?? null,
+            })
             : null;
         if (shelter && this.motionScale > 0) {
             const targetKey = `${shelter.building}:${shelter.target?.tileX},${shelter.target?.tileY}`;
@@ -2170,7 +2363,13 @@ export class AgentSprite {
                 const shelterBuilding = this._buildingForType(shelter.building)
                     || { type: shelter.building, visitTiles: [shelter.target] };
                 crowd.shelterKey = targetKey;
-                this._beginCrowdLeg({ role: 'rest', building: shelterBuilding, shelter: true, gait: shelter.gait }, 'shelter', now);
+                this._beginCrowdLeg({
+                    role: 'shelter',
+                    building: shelterBuilding,
+                    target: shelter.target,
+                    gait: 'run',
+                    key: `shelter:${targetKey}`,
+                }, 'shelter', now);
             }
             return;
         }
@@ -2222,41 +2421,17 @@ export class AgentSprite {
     _advanceErrand(now) {
         const crowd = this._crowd;
         const id = this.agent.id;
-        // W3-D — Long Think (I2): keep still-work workers on their own
-        // building's visit tiles (never an errand, preserving room & tally).
-        const ownBuilding = this._buildingForType(this._lastBuildingType || 'archive') || this._buildingForType('archive');
-        const still = stillWorkRoutine(this.agent, now, ownBuilding, {
-            station: this._stillWorkStation,
-            previousPose: this._stillWorkPose,
-            reducedMotion: this.motionScale <= 0,
-        });
-        if (still) {
-            if (still.stillWorkPose) {
-                this._stillWorkPose = still.stillWorkPose;
-                if (!this._stillWorkStation && still.target) this._stillWorkStation = still.target;
-                crowd.place = null;
-                crowd.arrivedAt = null;
-                if (still.target && ownBuilding && !this.moving) {
-                    const cur = this._lastTargetTile;
-                    if (!cur || cur.tileX !== still.target.tileX || cur.tileY !== still.target.tileY) {
-                        this._routeToVisitTarget(ownBuilding, null, {
-                            ...still.target,
-                            facingPoint: still.facingPoint || still.target.facingPoint || null,
-                        }, { role: 'work', reason: 'still-work' });
-                    }
-                }
-                return;
-            }
-            // One-beat return boost when a real tool fires after still-work.
-            this._stillWorkPose = null;
-            this._stillWorkStation = null;
-            this._stillWorkRunBoostUntil = now + 900;
-        } else {
-            this._stillWorkPose = null;
-            this._stillWorkStation = null;
-        }
+        // A real visit intent owns the route. Still-work never re-aims a body
+        // that follows one: routing here would clear `_lastIntentId`, and the
+        // update reroute would send the body back on every arrival.
         if (this._activeVisitIntent()) {
+            this._endStillWork();
             crowd.intentSeenAt = now;
+            crowd.place = null;
+            crowd.arrivedAt = null;
+            return;
+        }
+        if (this._advanceStillWork(now)) {
             crowd.place = null;
             crowd.arrivedAt = null;
             return;
@@ -2286,6 +2461,81 @@ export class AgentSprite {
             return;
         }
         this._beginCrowdLeg({ role: 'errand', kind: choice.kind, building }, 'errand', now);
+    }
+
+    // W3-D — Long Think (I2): a still worker keeps its own building's work
+    // tiles (never an errand, so its room and tally hold). Only a body that
+    // already works at a building qualifies: one with no building yet is
+    // never invented into the Archive. The station is the tile it already
+    // stands on (its own allocated slot), and each leg of the pace is an
+    // ordinary work visit (role null), so `_syncRestPlace` never releases and
+    // re-picks it. Arrived, the dwell holds for the whole think. True while
+    // still-work owns the body.
+    _advanceStillWork(now) {
+        const ownBuilding = this._lastBuildingType ? this._buildingForType(this._lastBuildingType) : null;
+        const still = ownBuilding
+            ? stillWorkRoutine(this.agent, now, ownBuilding, {
+                station: this._stillWorkStation || this._lastTargetTile,
+                previousPose: this._stillWorkPose,
+                reducedMotion: this.motionScale <= 0,
+            })
+            : null;
+        if (!still?.stillWorkPose) {
+            // The think ended on a real tool: one beat at a run back to work.
+            if (still?.gait === 'run' && this._stillWorkPose) this._stillWorkRunBoostUntil = now + STILL_WORK_RUN_BOOST_MS;
+            this._endStillWork();
+            return false;
+        }
+        this._stillWorkPose = still.stillWorkPose;
+        if (!this._stillWorkStation) {
+            const stand = this._lastTargetTile || still.target;
+            this._stillWorkStation = stand ? { tileX: stand.tileX, tileY: stand.tileY } : null;
+        }
+        const target = still.target || null;
+        this._stillWorkTarget = target ? { ...target } : null;
+        if (this.moving) return true;
+        const targetKey = tileKeyOf(target);
+        if (targetKey && targetKey !== tileKeyOf(this._lastTargetTile) && targetKey !== this._stillWorkRefusedKey) {
+            const routed = this._routeToVisitTarget(ownBuilding, null, {
+                ...target,
+                facingPoint: still.facingPoint || target.facingPoint || null,
+            }, { role: null, reason: 'still-work' });
+            if (routed) {
+                this._stillWorkRefusedKey = null;
+                return true;
+            }
+            // An unreachable pace tile is not retried this think: hold here.
+            this._stillWorkRefusedKey = targetKey;
+        }
+        this.waitTimer = Math.max(this.waitTimer || 0, 60);
+        return true;
+    }
+
+    _endStillWork() {
+        this._stillWorkPose = null;
+        this._stillWorkStation = null;
+        this._stillWorkTarget = null;
+        this._stillWorkRefusedKey = null;
+    }
+
+    // Whether this body's current leg is urgent enough to run: the one-beat
+    // return from a think to a real tool, or a squall shelter run.
+    _urgentRunDue(now = Date.now()) {
+        if (departedTableau(this) || this.chatPartner) return false;
+        if (this.agent?.status === AgentStatus.WORKING && (this._stillWorkRunBoostUntil || 0) > now) return true;
+        const crowd = this._crowd;
+        return crowd?.place?.gait === 'run' && crowd.status === (this.agent?.status || null);
+    }
+
+    // The sky's precipitation is frozen (falling snow, never rain): its own
+    // flag, else the month of `_weatherDate` (GroundState), else settled snow
+    // on the props when the sky carries no flag and no date is known.
+    _weatherFrozen(weather = this._weather) {
+        if (!weather) return false;
+        const date = this._weatherDate ?? null;
+        if (precipitationFrozenFor(weather, { date })) return true;
+        if (typeof weather.frozen === 'boolean' || date !== null) return false;
+        return (Number(this.getSnowBucket?.()) || 0) > 0;
     }
 
     _endErrand(now) {
@@ -3198,6 +3448,17 @@ export class AgentSprite {
         const top = SPEED_RUNGS.length - 1;
         if (this.chatPartner) return SPEED_RUNGS[this._followRung(top)];
         const status = this.agent.status;
+        // W3-D — a squall shelter run and a think's one-beat return to a real
+        // tool take the top rung (and the run strip, `_runGaitDue`); a still
+        // worker's pace between its two tiles is the gentlest stroll.
+        if (this._urgentRunDue()) {
+            let rung = top;
+            if (this._congestedBuilding()) rung = Math.min(rung, speedRungIndex(SPEED_RUNGS[rung] * CONGESTION_GAIT_SCALE));
+            return SPEED_RUNGS[this._followRung(rung)];
+        }
+        if (status === AgentStatus.WORKING && this._stillWorkPose === 'pace-work') {
+            return SPEED_RUNGS[this._followRung(RUNG_STROLL)];
+        }
         let base = RUNG_WAITING;
         if (status === AgentStatus.WORKING) base = RUNG_WORKING;
         else if (status === AgentStatus.IDLE) {
@@ -4666,6 +4927,14 @@ export class AgentSprite {
 
     _drawAtScreenPosition(ctx, zoom = 1, renderMode = 'full') {
         this._zoom = zoom;
+        // The body-frame marks (carried lantern and artifact, workflow
+        // ribbon, Report Cairn) are laid out by this frame's 1:1 body only. A
+        // hidden, impostor, overview or crowd-LOD frame keeps none, so no GPU
+        // record or Canvas blit stands at the last full-body position.
+        this._lanternMark = null;
+        this._artifactMark = null;
+        this._ribbonMark = null;
+        this._cairnMark = null;
 
         // A pending body (materialize beat, dispatch comet, gate entry queue)
         // is hidden on both backends: no stale GPU record stands in for it.
@@ -4950,19 +5219,26 @@ export class AgentSprite {
         // stands still, the ground sitter's fallback shuts its eyes.
         const seat = this._risenForChild() ? null : this._seatedSeat();
         const distress = this._distressPose();
+        const settledThink = !seat && !distress && this.animState === 'idle' && this._stillWorkSettled();
         const renderFrame = seat
             ? 0
             : distress
                 ? (distress === DISTRESS_LIMITED ? IDLE_FRAMES - 1 : 0)
-                : (this.animState === 'idle' && posture.idleFrame != null)
-                    ? posture.idleFrame
-                    : this.frame;
+                : settledThink
+                    ? 0
+                    : (this.animState === 'idle' && posture.idleFrame != null)
+                        ? posture.idleFrame
+                        : this.frame;
         const cell = this.spriteSheet.cell(seat || distress ? 'idle' : this.animState, this.direction, renderFrame);
         // 2.2 — an authored action pose replaces the idle body for this frame.
         // Geometry stays the base cell's (same 92 px cell, same feet anchor), so
         // only the source image and source rect change and the body never jumps.
         let pose = this._actionStripPose(identity, spriteId);
         let bodyCell = pose ? pose.cell : cell;
+        // The drawn cell before any seat clip: the W3-D body marks read its
+        // own opaque rows (`_bodyMarkRuns`).
+        const markCell = bodyCell;
+        const markPose = pose;
         const bodySource = pose ? pose.source : this.spriteCanvas;
         this._poseCell = {
             sx: bodyCell.sx,
@@ -4991,7 +5267,8 @@ export class AgentSprite {
         const distressDrop = this._distressPostureDrop();
         const recoilDrop = this._pushRecoilDrop(Date.now());
         // 7.3 — an authored wait or work pose holds its own frame: no idle bob.
-        const heldStrip = Boolean(seat) || (pose && (pose.group === 'wait' || WORK_STRIP_GROUPS.has(pose.group)));
+        // W3-D — a settled still worker holds its frame too (no breathing bob).
+        const heldStrip = Boolean(seat) || settledThink || (pose && (pose.group === 'wait' || WORK_STRIP_GROUPS.has(pose.group)));
         const idleBob = posture.bobScale > 0 && recoilDrop === 0
             ? (IDLE_BOB_BY_FRAME[((this.frame % IDLE_FRAMES) + IDLE_FRAMES) % IDLE_FRAMES] || 0)
             : 0;
@@ -5018,12 +5295,14 @@ export class AgentSprite {
                 this._handoffAckStart = 0;
             }
         }
-        if (this._allyNodStart && this.motionScale > 0) {
-            const nodAge = Date.now() - this._allyNodStart;
+        // W3-D — the PairAffinity ally nod: a 1-texel dip on the motion clock
+        // (`_motionNowMs`), so a capture or a scrub repeats it exactly.
+        if (Number.isFinite(this._allyNodStart) && this.motionScale > 0) {
+            const nodAge = this._motionNowMs() - this._allyNodStart;
             if (nodAge >= 0 && nodAge < 180) {
                 ackBobY += Math.round(Math.sin((nodAge / 180) * Math.PI));
             } else {
-                this._allyNodStart = 0;
+                this._allyNodStart = null;
             }
         }
         // V7 — every cell of this facing (walk, idle, action strip, GPU
@@ -5080,9 +5359,16 @@ export class AgentSprite {
             drawScale: 1,
             poseGroup: poseGripFrame >= 0 ? pose.group : null,
             poseFrame: poseGripFrame,
+            markCell,
+            markPose,
+            // On a seat or sitting on the ground: the body below the seat
+            // line is clipped, so the hem and cuff are not there to mark.
+            seated: Boolean(seat) || distress === DISTRESS_LIMITED,
         };
         this._layoutLanternMark(frameGeometry);
         this._layoutArtifactMark(frameGeometry);
+        this._layoutRibbonMark(frameGeometry);
+        this._layoutCairnMark(frameGeometry);
         this._setGpuFrameRecord({
             cell: pose ? cell : bodyCell,
             dx,
@@ -5166,19 +5452,26 @@ export class AgentSprite {
         }
         this._snowCap = snow;
         if (canvasBody && !sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
-        // 7.1 — the stone seat's front faces over the sitter's legs; 7.2 — the
-        // petitioner's floor candle; the Tavern patron's tankard. All after
-        // the body in its depth slot.
+        // One order on both backends (AgentLayerRecords LAYER_ORDER), all
+        // after the body in its depth slot. Layer 5 rides the front gear: the
+        // carried artifact, the workflow ribbon. Layer 6 stands beside the
+        // feet: 7.1 the stone seat's front faces over the sitter's legs, 7.2
+        // the petitioner's floor candle, NL-4 the set-down lantern, the
+        // Tavern patron's tankard, and the lead's Report Cairn.
         if (canvasBody) {
+            const artifact = this._artifactMark;
+            if (artifact) ctx.drawImage(artifact.stamp, artifact.x, artifact.y);
+            const ribbon = this._ribbonMark;
+            if (ribbon) ctx.drawImage(ribbon.stamp, ribbon.x, ribbon.y);
             if (seatStones) ctx.drawImage(seatStones.front.canvas, this._placeX + seatStones.front.x, this._placeY + seatStones.front.y);
             const candle = this._queueCandleMark();
             if (candle) ctx.drawImage(candle.stamp, candle.x, candle.y);
-            const tankard = this._tankardMark();
-            if (tankard) ctx.drawImage(tankard.stamp, tankard.x, tankard.y);
             const lantern = this._lanternMark;
             if (lantern) ctx.drawImage(lantern.stamp, lantern.x, lantern.y);
-            const artifact = this._artifactMark;
-            if (artifact) ctx.drawImage(artifact.stamp, artifact.x, artifact.y);
+            const tankard = this._tankardMark();
+            if (tankard) ctx.drawImage(tankard.stamp, tankard.x, tankard.y);
+            const cairn = this._cairnMark;
+            if (cairn) ctx.drawImage(cairn.stamp, cairn.x, cairn.y);
         }
         if (departedBody) ctx.restore();
         // These marks belong to the body frame and have exactly one owner
@@ -5651,122 +5944,6 @@ export class AgentSprite {
         this._lanternMark = mark;
     }
 
-    // Spec 04 §2.2 — carried artifact (6×6 code-drawn pixel stamp): held in
-    // the trailing hand while walking, set down beside the feet while standing.
-    _layoutArtifactMark(frameGeometry) {
-        const artifact = this.carriedArtifact;
-        if (!artifact?.kind || departedTableau(this) || (this._zoom || 1) < 1.6) {
-            this._artifactMark = null;
-            return;
-        }
-        const stamp = carriedArtifactStamp(artifact.kind, { notches: artifact.notches || 1 });
-        if (!stamp) {
-            this._artifactMark = null;
-            return;
-        }
-        const mark = this._artifactMarkState || (this._artifactMarkState = { kind: 'carried-artifact', stamp: null, x: 0, y: 0 });
-        mark.stamp = stamp;
-        const west = /w$/.test(DIRECTIONS[this.direction] || '');
-        const { dx, dy, bounds } = frameGeometry || {};
-        if (this.moving && bounds && Number.isFinite(dx) && Number.isFinite(dy)) {
-            const anchor = artifactWalkingAnchor({ bounds, west });
-            mark.x = Math.round(dx + anchor.x);
-            mark.y = Math.round(dy + anchor.y);
-        } else {
-            const rect = artifactSetDownRect({ footX: this._placeX, footY: this._placeY, west });
-            mark.x = rect.x;
-            mark.y = rect.y;
-        }
-        this._artifactMark = mark;
-    }
-
-    _artifactRecord() {
-        const mark = this._artifactMark;
-        if (!mark || !this._gpuFrameRecord) return null;
-        const stamp = mark.stamp;
-        const record = this._artifactGpuRecord || (this._artifactGpuRecord = {
-            sx: 0, sy: 0, alpha: 1, elevation: 0.34, occluder: 0, emissive: 0, ownerSlot: 0,
-            material: 0, materialSource: null, occluderSource: null, sourceKind: 'individual',
-        });
-        record.id = `carried-artifact:${this.agent?.id}`;
-        record.stableKey = record.id;
-        record.textureKey = stamp.__cvArtifactKey || stamp.__cvGroundKey || `artifact:${mark.kind}`;
-        record.textureRevision = record.textureKey;
-        record.source = stamp;
-        record.sourceWidth = stamp.width;
-        record.sourceHeight = stamp.height;
-        record.sw = record.width = stamp.width;
-        record.sh = record.height = stamp.height;
-        record.x = mark.x;
-        record.y = mark.y;
-        return record;
-    }
-
-    triggerAllyNod(now = Date.now()) {
-        if (this.motionScale <= 0) return;
-        this._allyNodStart = now;
-    }
-
-    // W3-D — strict-D8 earned patina (mended cloak hem stitches, salt at cuff)
-    // plus weather acting (rain-darkened shoulders, freezing breath puffs at z >= 2).
-    _drawPatinaAndWeatherBody(ctx, frameGeometry) {
-        const bounds = frameGeometry?.bounds;
-        if (!bounds || !Number.isFinite(frameGeometry.dx) || !Number.isFinite(frameGeometry.dy)) return;
-        const dx = frameGeometry.dx;
-        const dy = frameGeometry.dy;
-        const zoom = this._zoom || 1;
-        const spanW = Math.max(1, bounds.maxX - bounds.minX);
-        const spanH = Math.max(1, bounds.maxY - bounds.minY);
-        const patina = this._patina;
-        if (patina && zoom >= 1.6) {
-            const stitches = Math.min(4, Math.max(0, Number(patina.mendedStitches) || 0));
-            if (stitches > 0) {
-                const hemY = Math.round(dy + bounds.maxY - 2);
-                const startX = Math.round(dx + bounds.minX + Math.max(2, Math.floor((spanW - stitches * 2) / 2)));
-                ctx.fillStyle = ART_RAMPS.trimGold[2];
-                for (let i = 0; i < stitches; i++) {
-                    ctx.fillRect(startX + i * 2, hemY, 1, 1);
-                }
-            }
-            if (patina.saltCuff) {
-                const cuffY = Math.round(dy + bounds.maxY - 1);
-                const cx = Math.round(dx + bounds.minX + spanW * 0.35);
-                ctx.fillStyle = ART_RAMPS.snow[2];
-                ctx.fillRect(cx, cuffY, 1, 1);
-                ctx.fillRect(cx + 3, cuffY, 1, 1);
-            }
-        }
-        const weather = this._weather;
-        if (!weather) return;
-        const raining = (weather.type === 'rain' || weather.type === 'storm') && (Number(weather.precipitation) || 0) > 0.15;
-        if (raining && !this._seatedSeat()) {
-            const shY = Math.round(dy + bounds.minY + spanH * 0.28);
-            const shX = Math.round(dx + bounds.minX + spanW * 0.2);
-            const shW = Math.max(4, Math.round(spanW * 0.6));
-            ctx.save();
-            ctx.fillStyle = 'rgba(16, 22, 32, 0.24)';
-            ctx.fillRect(shX, shY, shW, 2);
-            ctx.restore();
-        }
-        if (weather.freezing === true && zoom >= 2 && this.motionScale > 0) {
-            const seed = routineHash(this.agent?.id || '');
-            const cycleMs = 3200;
-            const phaseMs = (Date.now() + (seed % cycleMs)) % cycleMs;
-            if (phaseMs < 520) {
-                const west = /w$/.test(DIRECTIONS[this.direction] || '');
-                const dirX = west ? -1 : 1;
-                const mouthX = Math.round(dx + bounds.minX + spanW * (west ? 0.3 : 0.7));
-                const mouthY = Math.round(dy + bounds.minY + spanH * 0.26);
-                const step2 = phaseMs >= 260;
-                ctx.save();
-                ctx.fillStyle = '#dce6f0';
-                ctx.globalAlpha = step2 ? 0.22 : 0.45;
-                ctx.fillRect(mouthX + dirX * (step2 ? 3 : 1), mouthY - (step2 ? 2 : 0), step2 ? 3 : 2, step2 ? 2 : 1);
-                ctx.restore();
-            }
-        }
-    }
-
     _lanternRecord() {
         const mark = this._lanternMark;
         if (!mark || !this._gpuFrameRecord) return null;
@@ -5801,6 +5978,277 @@ export class AgentSprite {
         record.x = mark.x;
         record.y = mark.y;
         return record;
+    }
+
+    // Spec 04 §2.2 — carried artifact (6×6 code-drawn pixel stamp): held
+    // centred on the trailing hand while walking, set down beside the feet
+    // while standing, out past the body's own ground ring.
+    _layoutArtifactMark(frameGeometry) {
+        const artifact = this.carriedArtifact;
+        if (!artifact?.kind || departedTableau(this) || (this._zoom || 1) < ARTIFACT_MIN_ZOOM) {
+            this._artifactMark = null;
+            return;
+        }
+        const stamp = carriedArtifactStamp(artifact.kind, { notches: artifact.notches || 1 });
+        if (!stamp) {
+            this._artifactMark = null;
+            return;
+        }
+        const mark = this._artifactMarkState || (this._artifactMarkState = { kind: 'carried-artifact', stamp: null, x: 0, y: 0 });
+        mark.stamp = stamp;
+        const west = /w$/.test(DIRECTIONS[this.direction] || '');
+        const { dx, dy, bounds } = frameGeometry || {};
+        if (this.moving && bounds && Number.isFinite(dx) && Number.isFinite(dy)) {
+            const rect = artifactWalkingRect({ bounds, west });
+            mark.x = Math.round(dx + rect.x);
+            mark.y = Math.round(dy + rect.y);
+        } else {
+            const rect = artifactSetDownRect({
+                footX: this._placeX,
+                footY: this._placeY,
+                west,
+                ringHalfWidth: this._groundRingReach(west),
+            });
+            mark.x = rect.x;
+            mark.y = rect.y;
+        }
+        this._artifactMark = mark;
+    }
+
+    // Texels from the foot to the outermost pixel (keyline included) of this
+    // frame's ground ring or arc on the trailing side, or null with none: the
+    // contact shadow and its sun cast are not rings.
+    _groundRingReach(west) {
+        const foot = this._placeX;
+        let reach = null;
+        for (const mark of this._groundMarks || []) {
+            if (!mark?.stamp || mark.kind === 'shadow' || mark.kind === 'cast') continue;
+            const left = Number(mark.x);
+            const right = left + (Number(mark.stamp.width) || 0) - 1;
+            if (!Number.isFinite(left) || !Number.isFinite(right)) continue;
+            const side = west ? right - foot : foot - left;
+            if (side > 0) reach = Math.max(reach ?? 0, side);
+        }
+        return reach;
+    }
+
+    _artifactRecord() {
+        return this._markStampRecord(this._artifactMark, 'artifact', `carried-artifact:${this.agent?.id}`);
+    }
+
+    // Spec 04 §3.5 — the workflow ribbon: a child of a parent's workflow run
+    // (`workflowRibbon`, the renderer's `assignWorkflowRibbons` entry) wears
+    // its run's swallowtail device (slot 0: 3×5; slot 1: 4×6) in the repo
+    // accent, tied at the shoulder on the facing (pennon) side. A third run
+    // (slot null) wears none. The run's name and count live in hover, READ
+    // and The Glass; the badge is pixels only, so a postcard shows no words.
+    _layoutRibbonMark(frameGeometry) {
+        const ribbon = this.workflowRibbon;
+        const slot = Number.isInteger(ribbon?.slot) ? ribbon.slot : null;
+        const { dx, dy, bounds } = frameGeometry || {};
+        if (slot === null || departedTableau(this) || (this._zoom || 1) < ARTIFACT_MIN_ZOOM
+            || !bounds || !Number.isFinite(dx) || !Number.isFinite(dy)) {
+            this._ribbonMark = null;
+            return;
+        }
+        const stamp = workflowRibbonStamp(slot, this.thoughtRepoAccent());
+        if (!stamp) {
+            this._ribbonMark = null;
+            return;
+        }
+        const mark = this._ribbonMarkState || (this._ribbonMarkState = { kind: 'workflow-ribbon', stamp: null, x: 0, y: 0 });
+        mark.stamp = stamp;
+        const west = /w$/.test(DIRECTIONS[this.direction] || '');
+        const height = Math.max(1, bounds.maxY - bounds.minY);
+        mark.x = Math.round(west ? dx + bounds.minX - 1 - stamp.width : dx + bounds.maxX + 2);
+        mark.y = Math.round(dy + bounds.minY + height * 0.3);
+        this._ribbonMark = mark;
+    }
+
+    _ribbonRecord() {
+        return this._markStampRecord(this._ribbonMark, 'ribbon', `workflow-ribbon:${this.agent?.id}`);
+    }
+
+    // Spec 04 §2.2 / §2.4 — this lead's Report Cairn (`_cairnSpec`, the
+    // renderer's admitted cairn: units or bundle, and the side it won), one
+    // cached stamp painted in this body's own depth slot right after it on
+    // both backends, so it is lit, graded and occluded with its owner. It
+    // stands where the side puts it at this frame's placement; when the
+    // set-down artifact (higher in Spec 04 precedence) holds those texels,
+    // the cairn takes the other side, else it is not drawn.
+    _layoutCairnMark(frameGeometry) {
+        const spec = this._cairnSpec;
+        if (!spec || this.moving || departedTableau(this) || (this._zoom || 1) < ARTIFACT_MIN_ZOOM) {
+            this._cairnMark = null;
+            return;
+        }
+        const stamp = reportCairnStamp(spec);
+        if (!stamp) {
+            this._cairnMark = null;
+            return;
+        }
+        const west = /w$/.test(DIRECTIONS[this.direction] || '');
+        const place = side => reportCairnRect({
+            footX: this._placeX,
+            footY: this._placeY,
+            west,
+            side,
+            width: stamp.width,
+            height: stamp.height,
+        });
+        const side = spec.side === 'facing' ? 'facing' : 'trailing';
+        let rect = place(side);
+        const artifact = this._artifactMark;
+        const held = artifact ? { x: artifact.x, y: artifact.y, w: ARTIFACT_SIZE, h: ARTIFACT_SIZE } : null;
+        if (rectsOverlap(rect, held)) {
+            rect = place(side === 'facing' ? 'trailing' : 'facing');
+            if (rectsOverlap(rect, held)) {
+                this._cairnMark = null;
+                return;
+            }
+        }
+        const mark = this._cairnMarkState || (this._cairnMarkState = { kind: 'report-cairn', stamp: null, x: 0, y: 0 });
+        mark.stamp = stamp;
+        mark.x = rect.x;
+        mark.y = rect.y;
+        this._cairnMark = mark;
+    }
+
+    _cairnRecord() {
+        return this._markStampRecord(this._cairnMark, 'cairn', `report-cairn:${this.agent?.id}`);
+    }
+
+    // One small prop stamp riding this body's depth slot as its own record
+    // (the carried artifact, the workflow ribbon, the Report Cairn). Like the
+    // carried lantern, its id is not `agent:`-prefixed, so it stays a shared
+    // individual texture outside the packed agent frame atlas.
+    _markStampRecord(mark, slot, id) {
+        if (!mark?.stamp || !this._gpuFrameRecord) return null;
+        const stamp = mark.stamp;
+        const records = this._markGpuRecords || (this._markGpuRecords = {});
+        const record = records[slot] || (records[slot] = {
+            sx: 0, sy: 0, alpha: 1, elevation: 0.34, occluder: 0, emissive: 0, ownerSlot: 0,
+            material: 0, materialSource: null, occluderSource: null, sourceKind: 'individual',
+        });
+        record.id = id;
+        record.stableKey = id;
+        record.textureKey = stamp.__cvArtifactKey || stamp.__cvGroundKey || `${slot}:${mark.kind}`;
+        record.textureRevision = record.textureKey;
+        record.source = stamp;
+        record.sourceWidth = stamp.width;
+        record.sourceHeight = stamp.height;
+        record.sw = record.width = stamp.width;
+        record.sh = record.height = stamp.height;
+        record.x = mark.x;
+        record.y = mark.y;
+        return record;
+    }
+
+    // W3-D — the deterministic motion clock (ms) body gestures read: an
+    // explicit `_motionTimeMs` pin (a capture or a test), else the renderer's
+    // shared motion clock, else 0. Never the wall clock, so a Canvas capture
+    // or a sim scrub repeats every gesture exactly.
+    _motionNowMs() {
+        const pinned = this._motionTimeMs;
+        if (pinned !== null && pinned !== undefined && Number.isFinite(Number(pinned))) return Number(pinned);
+        const elapsed = Number(this._motionClock?.elapsedMs);
+        return Number.isFinite(elapsed) ? elapsed : 0;
+    }
+
+    // W3-D — the PairAffinity ally nod (the renderer's pass of two allies):
+    // stamped on the motion clock, whatever clock the caller holds.
+    triggerAllyNod() {
+        if (this.motionScale <= 0) return;
+        this._allyNodStart = this._motionNowMs();
+    }
+
+    // S12 — the grade albedo marks take on the ungraded resident overlay, as
+    // the signature clasp does; the Canvas world pass grades its own pixels.
+    get _lightGrade() {
+        return this.gpuWorldEnabled ? (this.overlayLightGrade || null) : null;
+    }
+
+    // The opaque row runs of the body cell this frame drew (the strip pose or
+    // sheet cell, before any seat clip): a layered profile's dressed cell, an
+    // action strip's own cell, else the composed sheet's. Null until loaded.
+    _bodyMarkRuns(frameGeometry) {
+        const cell = frameGeometry?.markCell || frameGeometry?.cell;
+        if (!cell || !(cell.sw > 0) || !(cell.sh > 0)) return null;
+        const pose = frameGeometry.markPose || null;
+        if (this._layerProfile) {
+            const owner = pose?.source || this.spriteCanvas;
+            if (!validSpriteSource(owner) || typeof document === 'undefined') return null;
+            const contentKey = this._sheetContentKey();
+            const key = `runs|${contentKey}|${cell.sx},${cell.sy},${cell.sw},${cell.sh},${pose?.group || ''},${sourceGeneration(pose?.source)}`;
+            return sheetMetadataEntry(owner, contentKey, key, () =>
+                measureCellRowRuns(this._dressedCell(cell, pose), { ...cell, sx: 0, sy: 0 }));
+        }
+        const source = pose?.source || this.spriteCanvas;
+        return measureCellRowRuns(source, cell, source === this.spriteCanvas ? this._sheetContentKey() : null);
+    }
+
+    // W3-D — strict-D8 earned patina (mended cloak hem stitches, salt at the
+    // cuff) and weather acting (rain-darkened shoulders, freezing breath).
+    // Every mark is laid on the drawn cell's own opaque rows (`bodyMarkPixels`)
+    // one texel in from the silhouette, so none lands on transparent ground;
+    // colours come from ART_RAMPS under this frame's grade (`_lightGrade`).
+    // A half-scale crowd body carries none; a seated or ground-sitting body
+    // has no hem or cuff to mark; falling snow never darkens the shoulders;
+    // the breath puff shows on a still body at z >= 2 on the motion clock.
+    _drawPatinaAndWeatherBody(ctx, frameGeometry) {
+        const geometry = frameGeometry;
+        if (!ctx || !geometry || geometry.lod || (Number(geometry.drawScale) || 1) < 1) return;
+        const { dx, dy } = geometry;
+        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+        const zoom = this._zoom || 1;
+        const patina = zoom >= ARTIFACT_MIN_ZOOM ? this._patina : null;
+        const weather = this._weather || null;
+        const seated = geometry.seated === true || Boolean(this._seatedSeat?.());
+        const stitches = seated ? 0 : Math.min(4, Math.max(0, Math.trunc(Number(patina?.mendedStitches) || 0)));
+        const saltCuff = !seated && patina?.saltCuff === true;
+        const precipitating = (weather?.type === 'rain' || weather?.type === 'storm') && (Number(weather.precipitation) || 0) > 0.15;
+        const shoulders = Boolean(precipitating && !seated && !this._weatherFrozen(weather));
+        const breath = weather?.freezing === true && zoom >= 2 && this.motionScale > 0 && !this.moving
+            && DIRECTIONS[this.direction] !== 'n';
+        if (!stitches && !saltCuff && !shoulders && !breath) return;
+        const runs = this._bodyMarkRuns(geometry);
+        if (!runs) return;
+        const west = /w$/.test(DIRECTIONS[this.direction] || '');
+        const marks = bodyMarkPixels(runs, { shoulders, stitches, saltCuff, breath, west });
+        const grade = this._lightGrade;
+        const ox = Math.round(dx);
+        const oy = Math.round(dy);
+        ctx.save();
+        const baseAlpha = ctx.globalAlpha;
+        if (marks.shoulders.length) {
+            ctx.globalAlpha = baseAlpha * RAIN_SHOULDER_ALPHA;
+            ctx.fillStyle = gradeTone(ART_RAMPS.slate[0], grade);
+            for (const run of marks.shoulders) ctx.fillRect(ox + run.x, oy + run.y, run.w, 1);
+            ctx.globalAlpha = baseAlpha;
+        }
+        if (marks.stitches.length) {
+            ctx.fillStyle = gradeTone(ART_RAMPS.snow[3], grade);
+            for (const px of marks.stitches) ctx.fillRect(ox + px.x, oy + px.y, 1, 1);
+        }
+        if (marks.cuff.length) {
+            ctx.fillStyle = gradeTone(ART_RAMPS.snow[2], grade);
+            for (const px of marks.cuff) ctx.fillRect(ox + px.x, oy + px.y, 1, 1);
+        }
+        if (marks.mouth) {
+            const seed = routineHash(this.agent?.id || '');
+            const phaseMs = ((this._motionNowMs() + (seed % BREATH_CYCLE_MS)) % BREATH_CYCLE_MS + BREATH_CYCLE_MS) % BREATH_CYCLE_MS;
+            if (phaseMs < BREATH_PUFF_MS) {
+                const dirX = west ? -1 : 1;
+                const late = phaseMs >= BREATH_PUFF_MS / 2;
+                const mx = ox + marks.mouth.x + dirX;
+                const my = oy + marks.mouth.y;
+                ctx.fillStyle = gradeTone(ART_RAMPS.snow[3], grade);
+                ctx.globalAlpha = baseAlpha * (late ? 0.22 : 0.45);
+                if (late) ctx.fillRect(west ? mx - 4 : mx + 2, my - 2, 3, 2);
+                else ctx.fillRect(west ? mx - 1 : mx, my, 2, 1);
+            }
+        }
+        ctx.restore();
     }
 
     _queueCandleRecord() {
@@ -6048,8 +6496,10 @@ export class AgentSprite {
             seatBack: stones && this._seatStoneRecord(stones.back, 'back'),
             weaponBack: weapon('back'), frost: this._frostTintRecord(), snow: this._snowCapRecord(),
             hat: layer?.hat && layerRecord(body, layer.hat, 'head', geometry),
-            weaponFront: weapon('front'), artifact: this._artifactRecord(), seatFront: stones && this._seatStoneRecord(stones.front, 'front'),
+            weaponFront: weapon('front'), artifact: this._artifactRecord(), ribbon: this._ribbonRecord(),
+            seatFront: stones && this._seatStoneRecord(stones.front, 'front'),
             candle: this._queueCandleRecord(), tankard: this._tankardRecord(), lantern: this._lanternRecord(),
+            cairn: this._cairnRecord(),
         });
     }
 
@@ -7261,14 +7711,23 @@ export class AgentSprite {
     // W8.7 — the gait for this stride (`resolveTravelGait`): a run needs the
     // top rung, an urgent trip and this profile's `run` strip.
     _runGaitDue() {
-        return resolveTravelGait({
-            status: this.agent?.status,
-            chatApproach: Boolean(this.chatPartner),
-            errand: Boolean(this._crowd?.place),
-            topRung: this._gaitSpeed === SPEED_RUNGS[SPEED_RUNGS.length - 1],
-            departed: departedTableau(this),
-            hasRunStrip: Boolean(this._runStrip()),
-        }) === TravelGait.RUN;
+        const topRung = this._gaitSpeed === SPEED_RUNGS[SPEED_RUNGS.length - 1];
+        const departed = departedTableau(this);
+        const hasRunStrip = Boolean(this._runStrip());
+        // W3-D — an urgent routine leg (a squall shelter run, a think's
+        // one-beat return to a real tool) runs as an urgent trip does: on the
+        // top rung, with this profile's run strip.
+        const gait = this._urgentRunDue() && topRung && !departed && hasRunStrip
+            ? TravelGait.RUN
+            : resolveTravelGait({
+                status: this.agent?.status,
+                chatApproach: Boolean(this.chatPartner),
+                errand: Boolean(this._crowd?.place),
+                topRung,
+                departed,
+                hasRunStrip,
+            });
+        return gait === TravelGait.RUN;
     }
 
     // Current action vocabulary including any mid-walk verified win latched
@@ -7297,6 +7756,9 @@ export class AgentSprite {
         if (this.agent?.status === AgentStatus.WAITING_ON_USER) return 'wait';
         const action = this._resolveAction();
         if (action === AgentAction.CELEBRATE) return 'celebrate';
+        // W3-D — two minutes into a think the still worker settles: it holds
+        // the thinking row's still frame at its station (`_actionStripFrame`).
+        if (this._stillWorkSettled()) return 'think';
         const building = this._lastBuildingType
             || this.agent?.targetBuildingType
             || this.agent?.lastKnownBuildingType
@@ -7306,6 +7768,14 @@ export class AgentSprite {
         const sustained = this._sustainedWorkStripGroup(building);
         if (sustained) return sustained;
         return ACTION_STRIP_GROUPS[action] || null;
+    }
+
+    // W3-D — Long Think settled ('sit-work', from 120 s of silence): the still
+    // worker stands at its station and holds one still thinking frame. Pacing
+    // ('pace-work') walks its two tiles at the gentlest stroll instead.
+    _stillWorkSettled() {
+        return this._stillWorkPose === 'sit-work' && !this.moving
+            && this.agent?.status === AgentStatus.WORKING && !departedTableau(this);
     }
 
     _admittedWorkStripGroup() {
@@ -7351,6 +7821,8 @@ export class AgentSprite {
         }
         // Static band for reduced motion or a stale observation (C1).
         if (this.motionScale <= 0 || this.observation?.state === 'stale') return 'hold';
+        // W3-D — a settled still worker holds the think row's still frame.
+        if (group === 'think' && this._stillWorkSettled()) return 'hold';
         const rows = meta?.groups?.[group]?.rows;
         const first = Number(rows?.[0]);
         const span = Number(rows?.[1]) - first + 1;

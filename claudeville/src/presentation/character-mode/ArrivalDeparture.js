@@ -24,6 +24,8 @@ import {
 } from './EffectStamps.js';
 import { noteMoment } from './MomentTally.js';
 import { postcardFrame } from './Postcard.js';
+import { ART_RAMPS } from '../../config/artPalette.js';
+import { WORLD_DISPLAY_FONT_8 } from '../../config/theme.js';
 
 // 6.2 — arrival materialize beat (Medium): anticipation column + rune ring,
 // one cream silhouette frame, the true body with a 3-step column collapse and
@@ -47,8 +49,14 @@ const MAX_COMPLETION_CUES = 8;
 const MAX_ORPHAN_RETURNS = 6;
 const MAX_ARRIVALS = 6;
 // Spec 04 §3.2 — Compaction rite & carrier bird: plays once per unseen
-// compaction whose `at` is within the last 120 s (never on page load/backfill).
+// compaction whose `at` is within the last 120 s (never on page load/backfill)
+// and no earlier than the page itself (a session that joins after load never
+// replays a compaction from before the page opened).
 export const COMPACTION_RITE_WINDOW_MS = 120_000;
+// The parchment chit (`412K → 38K`) rides above the villager's head for the
+// whole rite, in C5 label type (8 px, screen-fixed) on a parchment backing.
+const COMPACTION_CHIT_LIFT = 46;
+const COMPACTION_CHIT_PAD = 3;
 const COMPACTION_RITE_DURATION_MS = 1600;
 const COMPACTION_REDUCED_DURATION_MS = 1200;
 const MAX_COMPACTION_RITES = 4;
@@ -393,8 +401,13 @@ function hashId(value) {
 }
 
 export class ArrivalDepartureController {
-    constructor({ motionScale = 1 } = {}) {
+    constructor({ motionScale = 1, pageStartWallMs = Date.now() } = {}) {
         this.motionScale = motionScale === 0 ? 0 : 1;
+        // Spec 04 §3.2 late-joiner guard: the wall clock this page opened at.
+        // A compaction stamped before it never plays, whenever its session
+        // first appears.
+        const pageStart = Number(pageStartWallMs);
+        this._pageStartWallMs = Number.isFinite(pageStart) ? pageStart : Date.now();
         this.arrivals = new Map();
         this.departures = new Map();
         this.dispatches = new Map();
@@ -680,8 +693,16 @@ export class ArrivalDepartureController {
 
     // Spec 04 §3.2 — Observe an agent's `compactions[]`. Plays the rite +
     // carrier bird at most once per unseen compaction whose `at` is within
-    // COMPACTION_RITE_WINDOW_MS (120 s) of `wallNow`. Entries seen on page load
-    // or backfill never trigger a rite.
+    // COMPACTION_RITE_WINDOW_MS (120 s) of `wallNow` (wall clock, like `at`)
+    // and not before the page opened (`_pageStartWallMs`). Entries seen on
+    // page load or backfill never trigger a rite. `now` is the monotonic
+    // moment clock `update()` and `draw()` read (performance.now()), so the
+    // rite's age starts at zero.
+    //
+    // The page-start guard compares like with like: a `wallNow` that reads
+    // earlier than the page's own start belongs to another clock (a replay
+    // or test clock, or a wall clock set back), where only the 120 s window
+    // applies.
     observeAgentCompactions(agent, sprite, {
         archivePoint = null,
         now = nowMs(),
@@ -709,6 +730,7 @@ export class ArrivalDepartureController {
             this._rememberCompactionKey(key);
             const ageMs = Number(wallNow) - at;
             if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > COMPACTION_RITE_WINDOW_MS) continue;
+            if (Number(wallNow) >= this._pageStartWallMs && at < this._pageStartWallMs) continue;
             const rite = this.beginCompactionRite(agent, sprite, item, { archivePoint, now });
             if (rite) started.push(rite);
         }
@@ -1164,6 +1186,25 @@ export class ArrivalDepartureController {
         ctx.fillRect(bx - 1, by + 1, 3, 2);
         ctx.fillStyle = MAGIC_RAMP[1];
         ctx.fillRect(bx, by + 1, 1, 1);
+        // The token chit: words of the session's own context size, so it
+        // stands down on a postcard frame (XP-5).
+        if (!postcardFrame() && rite.chit) {
+            const z = Math.max(0.01, Number(zoom) || 1);
+            const text = String(rite.chit);
+            const width = text.length * 8 + COMPACTION_CHIT_PAD * 2;
+            ctx.translate(snap(origin.x), snap(origin.y - COMPACTION_CHIT_LIFT));
+            ctx.scale(1 / z, 1 / z);
+            const left = -Math.round(width / 2);
+            ctx.fillStyle = ART_RAMPS.timber[1];
+            ctx.fillRect(left - 1, -7, width + 2, 14);
+            ctx.fillStyle = ART_RAMPS.sand[4];
+            ctx.fillRect(left, -6, width, 12);
+            ctx.fillStyle = ART_RAMPS.timber[0];
+            ctx.font = WORLD_DISPLAY_FONT_8;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, left + COMPACTION_CHIT_PAD, 0);
+        }
         ctx.restore();
     }
 }

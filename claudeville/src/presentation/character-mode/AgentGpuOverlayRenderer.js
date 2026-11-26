@@ -77,13 +77,15 @@ export class AgentGpuOverlayRenderer {
         // AgentSprite's Canvas body pass stands down while gpuWorldEnabled, so
         // the order here is the Canvas order and each mark is struck once.
         if (record.frameGeometry && !departedTableau(host)) {
-            host._drawPatinaAndWeatherBody?.(ctx, record.frameGeometry);
-            host._drawSignatureMark(ctx, record.frameGeometry);
-            host._drawReceiveBeat(ctx, record.frameGeometry);
             // Plan 2.7 — a half-scale crowd body keeps its identity plate and
             // evidence seals but sheds the 1:1-sized procedural gestures,
-            // which would be twice its proportion and read as noise.
+            // which would be twice its proportion and read as noise. The
+            // W3-D body marks (patina, rain shoulders, breath) are 1:1 body
+            // pixels too: Canvas never draws them on an LOD body, nor here.
             const fullBody = !record.frameGeometry.lod;
+            if (fullBody) host._drawPatinaAndWeatherBody?.(ctx, record.frameGeometry);
+            host._drawSignatureMark(ctx, record.frameGeometry);
+            host._drawReceiveBeat(ctx, record.frameGeometry);
             if (fullBody) host._drawStanceOverlay(ctx, record.frameGeometry);
             host._drawActionPoseOverlay(ctx, record.frameGeometry);
             if (fullBody) host._drawToolRitualOverlay(ctx, record.frameGeometry);

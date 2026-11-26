@@ -484,10 +484,17 @@ export function layerRecord(body, stamp, name, g) {
         elevation: body.elevation, shadeExempt: body.shadeExempt, sharedLayer: true };
 }
 
-const LAYER_ORDER = [
+// One depth slot per agent, in paint order; the Canvas body pass
+// (AgentSprite._drawAtScreenPosition) strikes the same marks in this order.
+// Layer 5 rides the front gear (the carried artifact in the trailing hand,
+// the workflow ribbon at the shoulder); layer 6 stands on the ground beside
+// the feet (seat front, queue candle, set-down lantern, tankard, and the
+// lead's Report Cairn, Spec 04 §2.4 depth).
+export const LAYER_ORDER = Object.freeze([
     ['seatBack', 0], ['weaponBack', 1], ['body', 2], ['hat', 3], ['frost', 4], ['snow', 4],
-    ['weaponFront', 5], ['artifact', 5], ['seatFront', 6], ['candle', 6], ['lantern', 6], ['tankard', 6],
-];
+    ['weaponFront', 5], ['artifact', 5], ['ribbon', 5],
+    ['seatFront', 6], ['candle', 6], ['lantern', 6], ['tankard', 6], ['cairn', 6],
+].map(entry => Object.freeze(entry)));
 
 export function agentLayerRecords(sources) {
     const records = [];

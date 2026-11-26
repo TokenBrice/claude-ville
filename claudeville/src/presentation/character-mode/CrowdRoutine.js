@@ -25,6 +25,7 @@ import { REST_SEATS, REST_STANDS, VILLAGE_GATE } from '../../config/townPlan.js'
 import { stillWorkState } from './MarkGovernor.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { isBlockingMcpDelegationTool, isWaitingOnCrew, TurnState } from '../../domain/services/StatusResolver.js';
+import { precipitationIsFrozen } from './GroundState.js';
 
 export const STROLL_CAP = 6;
 export const MIN_SIT_MS = 45_000;
@@ -216,10 +217,34 @@ const SHELTERS = [
     { building: 'archive', target: archiveCloister },
 ];
 
-export function squallShelter(agent, weather, position = agent?.position) {
+// The month (0..11) a `date` option names: a Date, or a month index.
+function monthOf(date) {
+    if (date instanceof Date) return Number.isFinite(date.getTime()) ? date.getMonth() : null;
+    const month = Number(date);
+    return date !== null && date !== undefined && Number.isInteger(month) && month >= 0 && month <= 11 ? month : null;
+}
+
+/**
+ * Whether `weather`'s precipitation falls frozen: the sky's own `frozen`
+ * flag first, else the month rule (GroundState.precipitationIsFrozen) when a
+ * `date` is known. Authored snow is `type: 'rain'` in a winter month with no
+ * flag, so the month decides it. No flag and no date: liquid.
+ */
+export function precipitationFrozenFor(weather, { date = null, frozen = null } = {}) {
+    if (frozen === true || weather?.frozen === true) return true;
+    if (weather?.frozen === false) return false;
+    const month = monthOf(date);
+    return month !== null ? precipitationIsFrozen(month, weather) === true : false;
+}
+
+// W3-D — a squall (storm, or rain at intensity >= 0.72) sends an idle
+// villager running to the nearest cover. Frozen precipitation (falling snow,
+// including authored winter snow) is not a squall: nobody runs from snow.
+export function squallShelter(agent, weather, position = agent?.position, { date = null, frozen = null } = {}) {
     if (agent?.status !== AgentStatus.IDLE || agent.isDeparted || !position) return null;
     if (weather?.type !== 'storm' && !(weather?.type === 'rain' && weather.intensity >= 0.72)) return null;
+    if (precipitationFrozenFor(weather, { date, frozen })) return null;
     const distance = ({ target }) => Math.hypot(target.tileX - position.tileX, target.tileY - position.tileY);
     const shelter = SHELTERS.reduce((near, next) => distance(next) < distance(near) ? next : near);
-    return { ...shelter, visitRole: 'rest', gait: 'run' };
+    return { ...shelter, visitRole: 'shelter', gait: 'run' };
 }

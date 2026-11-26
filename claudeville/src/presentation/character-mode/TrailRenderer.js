@@ -126,6 +126,17 @@ function createCameraMotionStats() {
 // palette); `points` are world `{ x, y, ts }` in the caller's transform.
 export const TRAIL_ALPHA_STEPS = 3;
 
+// A snow or wet-sand footprint fades in the trail's whole steps, never a
+// continuous ramp: its freshness (age × ground strength, 0..1) rounds up to
+// one of TRAIL_ALPHA_STEPS levels, so a print holds its alpha, then drops a
+// step. Zero (melted, dried or expired) stays zero.
+export function footprintAlphaStep(fresh) {
+    const value = Number(fresh);
+    if (!(value > 0)) return 0;
+    const level = Math.ceil(Math.min(1, value) * TRAIL_ALPHA_STEPS - 1e-9);
+    return Math.max(1, level) / TRAIL_ALPHA_STEPS;
+}
+
 export function drawAgedTrailDots(ctx, points, {
     now = Date.now(),
     maxAgeMs = RETAIN_MS,
@@ -576,7 +587,7 @@ export class TrailRenderer {
                 const strength = this._footprintStrength(print);
                 if (age <= 0 || strength <= 0) continue;
                 const at = tileToWorld(print.tileX, print.tileY);
-                ctx.globalAlpha = alpha * 0.45 * age * strength;
+                ctx.globalAlpha = alpha * 0.45 * footprintAlphaStep(age * strength);
                 ctx.fillStyle = print.footprint === 'snow' ? ART_RAMPS.slate[1] : ART_RAMPS.dirt[0];
                 ctx.fillRect(Math.round(at.x) - 1, Math.round(at.y) - 1, 1, 2);
                 ctx.fillRect(Math.round(at.x) + 1, Math.round(at.y), 1, 2);

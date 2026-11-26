@@ -40,6 +40,7 @@ const SITES = {
     'AgentSprite.js _drawTurnSand': { flag: true, why: 'turn duration' },
     'AgentSprite.js drawFamiliarMotes': { flag: true, why: 'hidden familiar count' },
     'ArrivalDeparture.js drawChildMiniature': { flag: true, why: 'child count pill' },
+    'ArrivalDeparture.js _drawCompactionRite': { flag: true, why: 'compaction token chit' },
     'AttentionPlates.js drawPlateText': { beacons: true, why: 'T1 plate: name, waiting reason' },
     'AttentionPlates.js drawTallyTab': { beacons: true, why: 'T1 tally' },
     'BuildingSprite.js _paintPlaque': { tier: 'if (!postcard) renderer.buildingRenderer?.drawLabels(', why: 'building plaques: patron names, counts, squads' },
