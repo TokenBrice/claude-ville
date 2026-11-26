@@ -130,6 +130,8 @@ function pluralizeTimelineLabel(value) {
 
 export const CHRONICLE_TIMELINE_PAGE_SIZE = 100;
 export const HALL_OF_LIVES_CHAPTER_LIMIT = 3;
+export const HALL_OF_LIVES_PAGE_SIZE = 40;
+export const HALL_OF_LIVES_MAX_AVATAR_CANVASES = 120;
 
 /** XP-2 — the separate window that replays one recorded day. */
 export function retoldVillageHref(pathname, dateKey) {
@@ -151,30 +153,36 @@ function hallLineage(identityKey) {
  * and the order is last seen only.
  */
 export function buildHallOfLives(records = [], { now = Date.now() } = {}) {
-    return (Array.isArray(records) ? records : [])
-        .map(record => {
-            const identityKey = String(record?.identityKey || '');
+    if (!Array.isArray(records)) return [];
+    const lives = [];
+    for (const record of records) {
+        if (!record || typeof record !== 'object') continue;
+        try {
+            const identityKey = String(record.identityKey || '');
             const lineage = hallLineage(identityKey);
-            const biography = lineage ? AgentBiography.fromRecord(record) : null;
-            if (!biography) return null;
-            const book = buildBookOfLivesViewModel(record, { now });
+            if (!lineage) continue;
+            const displayName = String(record.displayName || '').trim().slice(0, 80);
+            const nickname = AgentBiography.latestNickname(record.milestones) || '';
+            const book = buildBookOfLivesViewModel(record, { now, chapterLimit: HALL_OF_LIVES_CHAPTER_LIMIT });
             const providerLabel = providerPresentation(lineage.provider).badge.label;
-            return {
+            lives.push({
                 identityKey,
                 scope: lineage.scope,
                 provider: lineage.provider,
                 // The name the lineage last wore; a legacy row keeps its slug.
-                name: biography.displayName || lineage.slugName,
+                name: displayName || lineage.slugName,
                 role: lineage.scope === 'named' ? `${providerLabel} villager` : `${providerLabel} project lead`,
-                nickname: biography.nickname || '',
+                nickname,
                 lastSeenAt: book.lastSeenAt,
                 firstSeenLabel: book.firstSeenLabel,
                 lastSeenLabel: book.lastReturnedLabel,
                 chapters: book.visibleChapters.slice(-HALL_OF_LIVES_CHAPTER_LIMIT).reverse(),
-            };
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.lastSeenAt - a.lastSeenAt || a.identityKey.localeCompare(b.identityKey));
+            });
+        } catch {
+            // One corrupt record must never break the Hall of Lives.
+        }
+    }
+    return lives.sort((a, b) => b.lastSeenAt - a.lastSeenAt || a.identityKey.localeCompare(b.identityKey));
 }
 
 const CHRONICLE_EXPORT_MIME = {
@@ -1027,6 +1035,11 @@ export class ChroniclePanel {
         this._pendingLoomScroll = null;
         this._loomScrollRaf = null;
         this._avatars = [];
+        this._hallCursor = null;
+        this._hallHasMore = false;
+        this._hallLoadingMore = false;
+        this._hallFallbackRows = null;
+        this._hallRenderedKeys = null;
         this._destroyed = false;
     }
 
@@ -1058,7 +1071,15 @@ export class ChroniclePanel {
             || this._request !== request
             || !this.modal.isRequestCurrent(request)
         ) return;
-        if (!this.modal.open('Village Chronicle', '', { wide: true, request })) return;
+        if (!this.modal.open('Village Chronicle', '', {
+            wide: true,
+            request,
+            onClose: () => {
+                this._cancelPendingLoomScroll();
+                this._releaseAvatars();
+                this._resetHallState();
+            },
+        })) return;
         this._selectedDateKey = dateKey;
         this._selectedSpend = page.spend;
         this._renderPage(page, dateKey, request);
@@ -1360,9 +1381,22 @@ export class ChroniclePanel {
             button.type = 'button';
             button.setAttribute('aria-pressed', String(key === active));
             if (key !== active) {
-                button.addEventListener('click', () => (key === 'hall'
-                    ? this._showHall(request)
-                    : this._showDayBook(request)));
+                button.addEventListener('click', () => {
+                    if (key === 'hall') {
+                        void this._showHall(request).catch(error => {
+                            if (!this._destroyed && request === this._request
+                                && this.modal?.isRequestCurrent?.(request)) {
+                                this._reportFailure(
+                                    CHRONICLE_READ_FAILURE_EVENT,
+                                    'Could not load the Hall of Lives.',
+                                    { error },
+                                );
+                            }
+                        });
+                    } else {
+                        this._showDayBook(request);
+                    }
+                });
             }
             return button;
         };
@@ -1372,12 +1406,54 @@ export class ChroniclePanel {
         ]);
     }
 
+    _resetHallState() {
+        this._hallCursor = null;
+        this._hallHasMore = false;
+        this._hallLoadingMore = false;
+        this._hallFallbackRows = null;
+        this._hallRenderedKeys = null;
+    }
+
     _showDayBook(request) {
         // A pending Hall read must not reopen the Hall after this switch.
         this._viewSeq++;
+        this._resetHallState();
         if (this._selectedPage && this.modal?.isRequestCurrent(request)) {
             this._renderPage(this._selectedPage, this._selectedDateKey, request);
         }
+    }
+
+    async _readHallPage({ limit = HALL_OF_LIVES_PAGE_SIZE, cursor = null } = {}) {
+        if (typeof this.log?.readBiographiesPage === 'function') {
+            return this.log.readBiographiesPage({ limit, cursor, durableOnly: true });
+        }
+        if (typeof this.log?.readBiographies !== 'function') {
+            return { records: [], nextCursor: null, hasMore: false };
+        }
+        if (cursor === null) {
+            const all = await this.log.readBiographies();
+            this._hallFallbackRows = (Array.isArray(all) ? all : [])
+                .filter(record => record && typeof record === 'object'
+                    && hallLineage(String(record.identityKey || '')))
+                .sort((a, b) => {
+                    const aSeen = Number(a?.lastSeenAt ?? 0);
+                    const bSeen = Number(b?.lastSeenAt ?? 0);
+                    if (bSeen !== aSeen) return bSeen - aSeen;
+                    const aKey = String(a?.identityKey || '');
+                    const bKey = String(b?.identityKey || '');
+                    return aKey === bKey ? 0 : (aKey < bKey ? 1 : -1);
+                });
+        }
+        const rows = Array.isArray(this._hallFallbackRows) ? this._hallFallbackRows : [];
+        const offset = Number.isInteger(cursor?.offset) ? cursor.offset : 0;
+        const records = rows.slice(offset, offset + limit);
+        const nextOffset = offset + records.length;
+        const hasMore = nextOffset < rows.length;
+        return {
+            records,
+            nextCursor: hasMore ? { offset: nextOffset } : null,
+            hasMore,
+        };
     }
 
     async _showHall(request) {
@@ -1385,31 +1461,124 @@ export class ChroniclePanel {
         // The view sequence also drops a pending date render; the date read
         // sequence (which guards exports) moves only with the date.
         const viewSeq = ++this._viewSeq;
-        let records;
+        this._resetHallState();
+        this._hallRenderedKeys = new Set();
         try {
-            records = typeof this.log.readBiographies === 'function' ? await this.log.readBiographies() : [];
+            const page = await this._readHallPage({ limit: HALL_OF_LIVES_PAGE_SIZE, cursor: null });
+            if (this._destroyed || request !== this._request || viewSeq !== this._viewSeq
+                || !this.modal.isRequestCurrent(request)) return;
+            const content = this.modal.contentEl;
+            if (!content) return;
+            const lives = buildHallOfLives(page?.records);
+            for (const life of lives) this._hallRenderedKeys.add(life.identityKey);
+            this._hallCursor = page?.nextCursor ?? null;
+            this._hallHasMore = Boolean(page?.hasMore);
+            this._cancelPendingLoomScroll();
+            this._releaseAvatars();
+            const hallNodes = this._renderHall(lives, {
+                hasMore: this._hallHasMore,
+                onShowMore: (listEl, moreWrapEl, moreButton) => {
+                    void this._loadMoreHall(request, viewSeq, listEl, moreWrapEl, moreButton).catch(error => {
+                        if (!this._destroyed && request === this._request && viewSeq === this._viewSeq
+                            && this.modal?.isRequestCurrent?.(request)) {
+                            this._reportFailure(CHRONICLE_READ_FAILURE_EVENT, 'Could not load more lineages.', { error });
+                        }
+                    });
+                },
+            });
+            replaceChildren(content, [this._tabs('hall', request), ...hallNodes]);
         } catch (error) {
             if (!this._destroyed && request === this._request && viewSeq === this._viewSeq
-                && this.modal.isRequestCurrent(request)) {
+                && this.modal?.isRequestCurrent?.(request)) {
+                this._releaseAvatars();
                 this._reportFailure(CHRONICLE_READ_FAILURE_EVENT, 'Could not load the Hall of Lives.', { error });
             }
-            return;
         }
-        if (this._destroyed || request !== this._request || viewSeq !== this._viewSeq
-            || !this.modal.isRequestCurrent(request)) return;
-        const content = this.modal.contentEl;
-        if (!content) return;
-        this._cancelPendingLoomScroll();
-        this._releaseAvatars();
-        replaceChildren(content, [this._tabs('hall', request), ...this._renderHall(buildHallOfLives(records))]);
     }
 
-    _renderHall(lives) {
+    async _loadMoreHall(request, viewSeq, listEl, moreWrapEl, moreButton) {
+        if (
+            this._destroyed
+            || this._hallLoadingMore
+            || !this._hallHasMore
+            || request !== this._request
+            || viewSeq !== this._viewSeq
+            || !this.modal?.isRequestCurrent?.(request)
+        ) return;
+        this._hallLoadingMore = true;
+        if (moreButton) {
+            moreButton.disabled = true;
+            moreButton.textContent = 'Loading…';
+        }
+        try {
+            const page = await this._readHallPage({
+                limit: HALL_OF_LIVES_PAGE_SIZE,
+                cursor: this._hallCursor,
+            });
+            if (
+                this._destroyed
+                || request !== this._request
+                || viewSeq !== this._viewSeq
+                || !this.modal?.isRequestCurrent?.(request)
+            ) return;
+            this._hallCursor = page?.nextCursor ?? null;
+            this._hallHasMore = Boolean(page?.hasMore);
+            const lives = buildHallOfLives(page?.records);
+            for (const life of lives) {
+                if (this._hallRenderedKeys?.has(life.identityKey)) continue;
+                const node = this._safeLifeNode(life);
+                if (!node) continue;
+                this._hallRenderedKeys?.add(life.identityKey);
+                listEl?.append?.(node);
+            }
+            if (!this._hallHasMore) {
+                moreWrapEl?.remove?.();
+            } else if (moreButton) {
+                moreButton.disabled = false;
+                moreButton.textContent = 'Show more';
+            }
+        } catch (error) {
+            if (
+                !this._destroyed
+                && request === this._request
+                && viewSeq === this._viewSeq
+                && this.modal?.isRequestCurrent?.(request)
+            ) {
+                if (moreButton) {
+                    moreButton.disabled = false;
+                    moreButton.textContent = 'Show more';
+                }
+                this._reportFailure(CHRONICLE_READ_FAILURE_EVENT, 'Could not load more lineages.', { error });
+            }
+        } finally {
+            this._hallLoadingMore = false;
+        }
+    }
+
+    _renderHall(lives, { hasMore = false, onShowMore = null } = {}) {
         const nodes = [el('p', { className: 'chronicle__opening' }, lives.length
             ? 'The lineages the village remembers, most recently seen first.'
             : 'The village remembers no lineages yet.')];
+        let listEl = null;
         if (lives.length) {
-            nodes.push(el('ul', { className: 'chronicle__lives' }, lives.map(life => this._lifeNode(life))));
+            const items = [];
+            for (const life of lives) {
+                const node = this._safeLifeNode(life);
+                if (node) items.push(node);
+            }
+            listEl = el('ul', { className: 'chronicle__lives' }, items);
+            nodes.push(listEl);
+        }
+        if (hasMore && listEl && typeof onShowMore === 'function') {
+            const moreButton = el('button', {
+                className: ['chronicle__date-button', 'chronicle__hall-more'],
+                text: 'Show more',
+                ariaLabel: 'Show more remembered lineages',
+            });
+            moreButton.type = 'button';
+            const moreWrap = el('div', { className: 'chronicle__note' }, [moreButton]);
+            moreButton.addEventListener('click', () => onShowMore(listEl, moreWrap, moreButton));
+            nodes.push(moreWrap);
         }
         nodes.push(el('p', { className: 'chronicle__note' },
             'A lineage is a named villager or a project lead, one per provider and repository. '
@@ -1417,15 +1586,38 @@ export class ChroniclePanel {
         return nodes;
     }
 
+    _safeLifeNode(life) {
+        try {
+            return this._lifeNode(life);
+        } catch {
+            return null;
+        }
+    }
+
     _lifeNode(life) {
-        const avatar = new AvatarCanvas({
-            id: life.identityKey,
-            provider: life.provider,
-            model: null,
-            effort: null,
-            appearance: Appearance.fromIdentityKey(life.identityKey),
-        }, 'niche');
-        this._avatars.push(avatar);
+        let bustContent;
+        if (this._avatars.length < HALL_OF_LIVES_MAX_AVATAR_CANVASES) {
+            const avatar = new AvatarCanvas({
+                id: life.identityKey,
+                provider: life.provider,
+                model: null,
+                effort: null,
+                appearance: Appearance.fromIdentityKey(life.identityKey),
+            }, 'niche');
+            this._avatars.push(avatar);
+            bustContent = avatar.canvas;
+        } else {
+            bustContent = el('span', {
+                className: 'chronicle__life-bust-fallback',
+                text: String(life.name || '?').slice(0, 1).toUpperCase(),
+                style: {
+                    display: 'grid',
+                    placeItems: 'center',
+                    width: '44px',
+                    height: '40px',
+                },
+            });
+        }
         const chapters = life.chapters.length
             ? el('ul', { className: 'chronicle__life-chapters' }, life.chapters.map(chapter => (
                 el('li', { className: 'chronicle__life-chapter' }, [
@@ -1435,7 +1627,7 @@ export class ChroniclePanel {
             )))
             : el('p', { className: 'chronicle__life-empty' }, 'No chapters recorded yet.');
         return el('li', { className: 'chronicle__life' }, [
-            el('div', { className: 'chronicle__life-bust' }, [avatar.canvas]),
+            el('div', { className: 'chronicle__life-bust' }, [bustContent]),
             el('div', { className: 'chronicle__life-body' }, [
                 el('div', { className: 'chronicle__life-heading' }, [
                     el('span', { className: 'chronicle__life-name' }, life.name),
@@ -1458,10 +1650,12 @@ export class ChroniclePanel {
         this._destroyed = true;
         this._cancelPendingLoomScroll();
         this._dateReadSeq++;
+        this._viewSeq++;
         this.modal?.invalidateRequest?.(this._request);
         this._request = null;
         this._selectedSpend = null;
         this._selectedPage = null;
+        this._resetHallState();
         this._releaseAvatars();
         this.modal = null;
         this.log = null;

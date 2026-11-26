@@ -571,7 +571,9 @@ export class AvatarCanvas {
             return false;
         }
         if (record.loaded || (record.image.complete && record.image.naturalWidth)) return true;
-        record.promise.then(() => this.redraw());
+        record.promise.then(() => {
+            if (AVATAR_CANVASES.has(this)) this.redraw();
+        });
         return false;
     }
 
@@ -630,10 +632,12 @@ export class AvatarCanvas {
         const scratch = document.createElement('canvas');
         scratch.width = cellSize;
         scratch.height = cellSize;
-        const ctx = scratch.getContext('2d');
+        const ctx = scratch.getContext('2d', { willReadFrequently: true });
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(image, 0, sourceRow * cellSize, cellSize, cellSize, 0, 0, cellSize, cellSize);
         const data = ctx.getImageData(0, 0, cellSize, cellSize).data;
+        scratch.width = 0;
+        scratch.height = 0;
         let minX = cellSize;
         let minY = cellSize;
         let maxX = 0;
@@ -1065,5 +1069,10 @@ export class AvatarCanvas {
         this._unsubscribeSharedCompositor?.();
         this._unsubscribeSharedCompositor = null;
         AVATAR_CANVASES.delete(this);
+        if (this.canvas) {
+            this.canvas.width = 0;
+            this.canvas.height = 0;
+        }
+        this.spriteImage = null;
     }
 }

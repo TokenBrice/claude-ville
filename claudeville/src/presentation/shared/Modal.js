@@ -6,7 +6,8 @@ export class Modal {
         this.contentEl = document.getElementById('modalContent');
         this.closeBtn = document.getElementById('modalClose');
 
-        this._onClose = () => this.close();
+        this._onCloseClick = () => this.close();
+        this._onClose = null;
         this._onKeydown = (e) => {
             if (e.key === 'Escape') {
                 e.preventDefault();
@@ -27,7 +28,7 @@ export class Modal {
         // Element that had focus before the dialog opened; restored on close.
         this._previousFocus = null;
 
-        this.closeBtn.addEventListener('click', this._onClose);
+        this.closeBtn.addEventListener('click', this._onCloseClick);
         this.overlay.addEventListener('click', this._onOverlayClick);
     }
 
@@ -46,10 +47,14 @@ export class Modal {
         }
     }
 
-    open(title, contentHTML, { wide = false, request = null, owner = null } = {}) {
+    open(title, contentHTML, { wide = false, request = null, owner = null, onClose = null } = {}) {
         if (this._destroyed) return false;
         const requestOwner = request ?? this.beginRequest();
         if (!this.isRequestCurrent(requestOwner)) return false;
+        if (this._isOpen) {
+            this._invokeOnClose();
+        }
+        this._onClose = typeof onClose === 'function' ? onClose : null;
         this.titleEl.textContent = title;
         this.contentEl.innerHTML = contentHTML;
         this.box.classList.toggle('modal--wide', wide);
@@ -79,12 +84,28 @@ export class Modal {
         return this._isOpen && (owner === null || owner === this._owner);
     }
 
+    _invokeOnClose() {
+        const callback = this._onClose;
+        this._onClose = null;
+        if (typeof callback === 'function') {
+            try {
+                callback();
+            } catch {
+                // A close callback failure must never break modal teardown.
+            }
+        }
+    }
+
     close() {
-        if (!this.overlay) return;
+        if (!this.overlay) {
+            this._invokeOnClose();
+            return;
+        }
         this.invalidateRequest();
         const wasOpen = this._isOpen;
         this._isOpen = false;
         this._owner = null;
+        this._invokeOnClose();
         this.overlay.style.display = 'none';
         this.overlay.setAttribute('aria-hidden', 'true');
         this._clearAfterExit();
@@ -163,8 +184,8 @@ export class Modal {
         if (this._destroyed) return;
         this._destroyed = true;
         this.close();
-        this.closeBtn.removeEventListener('click', this._onClose);
-        this.overlay.removeEventListener('click', this._onOverlayClick);
+        this.closeBtn?.removeEventListener('click', this._onCloseClick);
+        this.overlay?.removeEventListener('click', this._onOverlayClick);
         this.overlay = null;
         this.box = null;
         this.titleEl = null;

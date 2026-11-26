@@ -7,6 +7,7 @@ import {
     EMPTY_COVERAGE_MASK,
     coverageMetaKey,
     hasCoverageQuarter,
+    isDurableBiographyKey,
     normalizeCoverageMask,
     normalizeDaySky,
     normalizeSkyCode,
@@ -670,6 +671,53 @@ export class ChronicleLog {
     async readBiographies() {
         if (!this.store) return [];
         return this.store.queryRange('biographies', { index: 'lastSeenAt', direction: 'prev' });
+    }
+
+    /** Cursor-paginated durable biography read for Hall of Lives. */
+    async readBiographiesPage({ limit = 40, cursor = null, durableOnly = true } = {}) {
+        if (!this.store) return { records: [], nextCursor: null, hasMore: false };
+        if (typeof this.store.readBiographiesPage === 'function') {
+            return this.store.readBiographiesPage({ limit, cursor, durableOnly });
+        }
+        const pageLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 40)));
+        const all = await this.readBiographies();
+        const filtered = (Array.isArray(all) ? all : [])
+            .filter(record => record && typeof record === 'object'
+                && (!durableOnly || isDurableBiographyKey(record.identityKey)))
+            .sort((a, b) => {
+                const aSeen = Number(a?.lastSeenAt ?? 0);
+                const bSeen = Number(b?.lastSeenAt ?? 0);
+                if (bSeen !== aSeen) return bSeen - aSeen;
+                const aKey = String(a?.identityKey || '');
+                const bKey = String(b?.identityKey || '');
+                return aKey === bKey ? 0 : (aKey < bKey ? 1 : -1);
+            });
+        const hasCursor = cursor !== null
+            && cursor !== undefined
+            && typeof cursor === 'object'
+            && Number.isFinite(Number(cursor.lastSeenAt))
+            && typeof cursor.identityKey === 'string'
+            && cursor.identityKey.length > 0;
+        const cursorLastSeenAt = hasCursor ? Number(cursor.lastSeenAt) : null;
+        const cursorIdentityKey = hasCursor ? cursor.identityKey : null;
+        const remaining = hasCursor
+            ? filtered.filter(record => {
+                const seen = Number(record?.lastSeenAt ?? 0);
+                const key = String(record?.identityKey || '');
+                return seen < cursorLastSeenAt
+                    || (seen === cursorLastSeenAt && key < cursorIdentityKey);
+            })
+            : filtered;
+        const records = remaining.slice(0, pageLimit);
+        const hasMore = remaining.length > pageLimit;
+        const last = records.at(-1);
+        return {
+            records,
+            nextCursor: hasMore && last
+                ? { lastSeenAt: Number(last.lastSeenAt ?? 0), identityKey: String(last.identityKey || '') }
+                : null,
+            hasMore,
+        };
     }
 
     /** Events for a local day, oldest first. */

@@ -344,14 +344,18 @@ const BOOK_OF_LIVES_NICKNAME_LABELS = Object.freeze({
     'nickname-lifetimeTokens-100000000': 'Earned the nickname "the Tokensmith"',
 });
 
+const BOOK_OF_LIVES_DATE_FORMAT = new Intl.DateTimeFormat('en', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+});
+
 function bookOfLivesDate(timestamp) {
     const at = Number(timestamp);
     if (!Number.isFinite(at) || at <= 0) return 'Unknown';
-    return new Intl.DateTimeFormat('en', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-    }).format(new Date(at));
+    const date = new Date(at);
+    if (Number.isNaN(date.getTime())) return 'Unknown';
+    return BOOK_OF_LIVES_DATE_FORMAT.format(date);
 }
 
 function bookOfLivesProject(value) {
@@ -386,35 +390,82 @@ function generatedMilestoneLabel(milestone) {
  * Episode and milestone labels are regenerated from closed identifiers; stored
  * labels, prompts, reasoning, and transcript text never enter the model.
  */
-export function buildBookOfLivesViewModel(biography, { now = Date.now() } = {}) {
+export function buildBookOfLivesViewModel(biography, { now = Date.now(), chapterLimit = null } = {}) {
     const identityKey = String(biography?.identityKey || '');
     const projectScoped = identityKey.startsWith('project:');
     const sessionScoped = !projectScoped && !identityKey.startsWith('named:');
-    const firstSeenAt = Number(biography?.firstSeenAt) || 0;
-    const lastSeenAt = Number(biography?.lastSeenAt) || firstSeenAt;
-    const episodes = (Array.isArray(biography?.extensions?.lifeEpisodes)
+    const rawFirstSeenAt = Number(biography?.firstSeenAt);
+    const firstSeenAt = Number.isFinite(rawFirstSeenAt) && rawFirstSeenAt > 0 ? rawFirstSeenAt : 0;
+    const rawLastSeenAt = Number(biography?.lastSeenAt);
+    const lastSeenAt = Number.isFinite(rawLastSeenAt) && rawLastSeenAt > 0 ? rawLastSeenAt : firstSeenAt;
+    const rawChapterLimit = chapterLimit == null ? null : Number(chapterLimit);
+    const effectiveChapterLimit = rawChapterLimit !== null && Number.isFinite(rawChapterLimit)
+        ? Math.max(0, Math.min(BOOK_OF_LIVES_CHAPTER_LIMIT, Math.floor(rawChapterLimit)))
+        : BOOK_OF_LIVES_CHAPTER_LIMIT;
+    const rawEpisodes = Array.isArray(biography?.extensions?.lifeEpisodes)
         ? biography.extensions.lifeEpisodes
-        : [])
-        .map((episode, index) => {
-            const kind = String(episode?.kind || '');
-            const label = BOOK_OF_LIVES_EPISODE_LABELS[kind];
-            const at = Number(episode?.at) || 0;
-            if (!label || at <= 0) return null;
-            const project = bookOfLivesProject(episode?.project);
-            return {
-                kind,
-                at,
-                label,
-                project,
-                copy: project ? `${label} in ${project}` : label,
-                dateLabel: bookOfLivesDate(at),
-                _order: index,
-            };
-        })
-        .filter(Boolean)
-        .sort((a, b) => a.at - b.at || a._order - b._order)
-        .slice(-BOOK_OF_LIVES_CHAPTER_LIMIT)
-        .map(({ _order, ...chapter }) => chapter);
+        : [];
+    const selectedRaw = [];
+    if (effectiveChapterLimit > 0 && rawEpisodes.length > 0) {
+        if (effectiveChapterLimit < rawEpisodes.length && effectiveChapterLimit <= 8) {
+            // Keep only the newest `effectiveChapterLimit` entries in ascending
+            // (at, _order) order without allocating or sorting discarded episodes.
+            for (let index = 0; index < rawEpisodes.length; index++) {
+                const episode = rawEpisodes[index];
+                const kind = String(episode?.kind || '');
+                const label = BOOK_OF_LIVES_EPISODE_LABELS[kind];
+                const at = Number(episode?.at);
+                if (!label || !Number.isFinite(at) || at <= 0) continue;
+                if (
+                    selectedRaw.length === effectiveChapterLimit
+                    && (at < selectedRaw[0].at || (at === selectedRaw[0].at && index < selectedRaw[0]._order))
+                ) continue;
+                const entry = { kind, at, label, rawProject: episode?.project, _order: index };
+                let insertAt = selectedRaw.length;
+                while (
+                    insertAt > 0
+                    && (
+                        selectedRaw[insertAt - 1].at > at
+                        || (selectedRaw[insertAt - 1].at === at && selectedRaw[insertAt - 1]._order > index)
+                    )
+                ) {
+                    insertAt--;
+                }
+                selectedRaw.splice(insertAt, 0, entry);
+                if (selectedRaw.length > effectiveChapterLimit) selectedRaw.shift();
+            }
+        } else {
+            const candidates = [];
+            for (let index = 0; index < rawEpisodes.length; index++) {
+                const episode = rawEpisodes[index];
+                const kind = String(episode?.kind || '');
+                const label = BOOK_OF_LIVES_EPISODE_LABELS[kind];
+                const at = Number(episode?.at);
+                if (!label || !Number.isFinite(at) || at <= 0) continue;
+                candidates.push({
+                    kind,
+                    at,
+                    label,
+                    rawProject: episode?.project,
+                    _order: index,
+                });
+            }
+            candidates.sort((a, b) => a.at - b.at || a._order - b._order);
+            const start = Math.max(0, candidates.length - effectiveChapterLimit);
+            for (let i = start; i < candidates.length; i++) selectedRaw.push(candidates[i]);
+        }
+    }
+    const episodes = selectedRaw.map(({ kind, at, label, rawProject }) => {
+        const project = bookOfLivesProject(rawProject);
+        return {
+            kind,
+            at,
+            label,
+            project,
+            copy: project ? `${label} in ${project}` : label,
+            dateLabel: bookOfLivesDate(at),
+        };
+    });
     const visibleChapters = episodes.slice(-BOOK_OF_LIVES_VISIBLE_CHAPTER_LIMIT);
     const archivedChapters = episodes.slice(0, -BOOK_OF_LIVES_VISIBLE_CHAPTER_LIMIT);
     const milestones = (Array.isArray(biography?.milestones) ? biography.milestones : [])

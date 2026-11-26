@@ -238,23 +238,61 @@ export class AgentBiography {
      * Resolve the stable identity that biography state accumulates under.
      *
      * Precedence:
-     * 1. Team/custom-named agents keep their given name across sessions
-     *    (`named:<provider>:<name>`).
-     * 2. Unnamed mains share a provider/repository identity across days
-     *    (`project:<provider>:<repo>`), including concurrent mains.
-     * 3. Other anonymous agents remain scoped to their provider session id;
-     *    generated display names are not durable identity.
+     * 1. Explicitly user-named agents (`userNamed: true`) and team members
+     *    (`teamName` / `agentType: 'team-member'`) keep their given name
+     *    across sessions (`named:<provider>:<name>`). Ephemeral one-off
+     *    subagent descriptions and auto-generated main session titles do NOT
+     *    mint durable `named:*` lineages.
+     * 2. Unnamed or auto-titled mains share a provider/repository identity
+     *    across days (`project:<provider>:<repo>`), including concurrent mains.
+     * 3. Other anonymous agents and ephemeral subagents remain scoped to their
+     *    provider session id; generated display names are not durable identity.
      */
     static identityKeyFor(agent) {
         if (!agent) return null;
         const provider = slug(agent.provider || 'unknown');
-        const givenName = agent.agentName || (agent._customName ? agent.name : null);
-        if (givenName) return compactEventKey(`named:${provider}:${slug(givenName)}`);
+        const rawGivenName = agent.agentName || (agent._customName ? agent.name : null);
+        const givenName = typeof rawGivenName === 'string' ? rawGivenName.trim() : '';
+        const isTeamMember = Boolean(agent.teamName) || agent.agentType === 'team-member';
+        const isEphemeralSubagent = !isTeamMember && (
+            agent.agentType === 'sub-agent'
+            || agent.agentType === 'workflow-subagent'
+            || agent.agentType === 'repository'
+            || Boolean(agent.subagentKind)
+            || (Boolean(agent.parentSessionId || agent.parentId) && agent.userNamed === false)
+        );
+        const isAutoNamedMain = !isTeamMember
+            && agent.agentType === 'main'
+            && agent.userNamed === false;
+        const isDurableName = Boolean(givenName) && (
+            agent.userNamed === true
+            || isTeamMember
+            || (!isEphemeralSubagent && !isAutoNamedMain)
+        );
+        if (isDurableName) return compactEventKey(`named:${provider}:${slug(givenName)}`);
         const repo = String(agent.projectPath || '').trim().split(/[\\/]/).filter(Boolean).pop();
         if (agent.agentType === 'main' && !agent.parentSessionId && !agent.parentId && repo) {
             return compactEventKey(`project:${provider}:${slug(repo)}`);
         }
         return AgentBiography.sessionIdentityKeyFor(agent);
+    }
+
+    /** Extract the latest earned nickname directly from raw persisted milestones. */
+    static latestNickname(milestones) {
+        if (!Array.isArray(milestones)) return null;
+        let latest = null;
+        let latestAt = -1;
+        for (const entry of milestones) {
+            if (!String(entry?.id || '').trim()) continue;
+            const nickname = String(entry?.nickname || '').trim();
+            if (!nickname) continue;
+            const at = nonNegativeNumber(entry?.at);
+            if (latest === null || at >= latestAt) {
+                latest = nickname;
+                latestAt = at;
+            }
+        }
+        return latest;
     }
 
     /** v1–v3 anonymous key, also the stable completion-deduplication key. */

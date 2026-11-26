@@ -11,6 +11,12 @@ const LATEST_COMMIT_IDS_PER_PROJECT_LIMIT = 64;
 const FOUNDING_META_KEY = 'founding';
 const EVENT_RETENTION_DAYS = 14;
 const EVENT_RETENTION_MAX_ROWS = 20_000;
+const BIOGRAPHY_RETENTION_MAX_ROWS = 5_000;
+const DURABLE_BIOGRAPHY_KEY_RE = /^(named|project):[a-z0-9-]+:.+$/;
+
+export function isDurableBiographyKey(identityKey) {
+    return DURABLE_BIOGRAPHY_KEY_RE.test(String(identityKey || ''));
+}
 export const RECORDED_TRAIL_INTERVAL_MS = 5 * 60_000;
 // Spec 04 §5.4 — Loom of Days meta keys (stored in existing `meta` store; DB_VERSION stays 7).
 export const COVERAGE_QUARTERS = 96;
@@ -601,11 +607,40 @@ export class ChronicleStore {
         );
         // EN-2 — biographies prune by their lastSeenAt index, so the book of
         // lives stays bounded over years of one-off identities.
+        const biographies = tx.objectStore('biographies');
         deleteByCursor(
-            indexOrStore(tx.objectStore('biographies'), 'lastSeenAt'),
+            indexOrStore(biographies, 'lastSeenAt'),
             this._range(null, now - RETENTION_MS.biographies),
             {},
-            count => { deleted.biographies = count; },
+            (expired) => {
+                deleted.biographies = expired;
+                const countRequest = biographies.count();
+                countRequest.onsuccess = () => {
+                    const overflow = Math.max(0, countRequest.result - BIOGRAPHY_RETENTION_MAX_ROWS);
+                    if (overflow <= 0) return;
+                    // Evict ephemeral anonymous:* rows first (oldest lastSeenAt),
+                    // then oldest remaining rows if still over the hard ceiling.
+                    deleteByCursor(
+                        indexOrStore(biographies, 'lastSeenAt'),
+                        null,
+                        {
+                            shouldDelete: record => String(record?.identityKey || '').startsWith('anonymous:'),
+                            limit: overflow,
+                        },
+                        (anonymousOverflow) => {
+                            deleted.biographies += anonymousOverflow;
+                            const remaining = overflow - anonymousOverflow;
+                            if (remaining <= 0) return;
+                            deleteByCursor(
+                                indexOrStore(biographies, 'lastSeenAt'),
+                                null,
+                                { limit: remaining },
+                                (durableOverflow) => { deleted.biographies += durableOverflow; },
+                            );
+                        },
+                    );
+                };
+            },
         );
         // Keep complete local calendar days rather than a rolling duration:
         // yesterday should not disappear part-way through the afternoon. The
@@ -849,6 +884,187 @@ export class ChronicleStore {
         return this.get('biographies', identityKey);
     }
 
+    /**
+     * Cursor-paginated read over `biographies` ordered newest `lastSeenAt`
+     * first (IDB `'prev'` order: `lastSeenAt DESC, identityKey DESC`).
+     * Skips non-durable rows inside the cursor when `durableOnly` is true
+     * and stops as soon as `limit + 1` matching rows are seen.
+     */
+    async readBiographiesPage({ limit = 40, cursor = null, durableOnly = true } = {}) {
+        const pageLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 40)));
+        const hasCursor = cursor !== null
+            && cursor !== undefined
+            && typeof cursor === 'object'
+            && Number.isFinite(Number(cursor.lastSeenAt))
+            && typeof cursor.identityKey === 'string'
+            && cursor.identityKey.length > 0;
+        const cursorLastSeenAt = hasCursor ? Number(cursor.lastSeenAt) : null;
+        const cursorIdentityKey = hasCursor ? cursor.identityKey : null;
+
+        await this.open();
+        const collected = [];
+        let lastEntryCursor = null;
+        let hasMore = false;
+        let scanBoundary = hasCursor
+            ? { lastSeenAt: cursorLastSeenAt, identityKey: cursorIdentityKey }
+            : null;
+
+        // Batched IDB 3.0 `getAllRecords({ direction: 'prev' })` avoids
+        // per-row IPC round-trips that stall behind a live WebGPU/Canvas rAF
+        // loop. Falls back to `openCursor('prev')` + `continuePrimaryKey` when
+        // unavailable or when a full batch sits on one identical `lastSeenAt`.
+        let needCursorFallback = true;
+        {
+            const tx = this.db.transaction('biographies', 'readonly');
+            const store = tx.objectStore('biographies');
+            const hasIndex = store.indexNames.contains('lastSeenAt');
+            const source = hasIndex ? store.index('lastSeenAt') : store;
+            if (hasIndex && typeof source.getAllRecords === 'function') {
+                needCursorFallback = false;
+                await new Promise((resolve, reject) => {
+                    let batchSize = Math.min(512, Math.max(pageLimit * 4, 256));
+                    const nextBatch = () => {
+                        const options = { count: batchSize, direction: 'prev' };
+                        if (scanBoundary) {
+                            options.query = IDBKeyRange.upperBound(scanBoundary.lastSeenAt, false);
+                        }
+                        const request = source.getAllRecords(options);
+                        request.onerror = () => reject(request.error);
+                        request.onsuccess = () => {
+                            const batch = request.result;
+                            if (!Array.isArray(batch) || batch.length === 0) {
+                                resolve();
+                                return;
+                            }
+                            for (const entry of batch) {
+                                const key = entry?.key;
+                                if (typeof key !== 'number' || !Number.isFinite(key)) continue;
+                                const record = entry.value;
+                                const primaryKey = String(entry.primaryKey ?? record?.identityKey ?? '');
+                                if (scanBoundary) {
+                                    if (key > scanBoundary.lastSeenAt) continue;
+                                    if (key === scanBoundary.lastSeenAt && primaryKey >= scanBoundary.identityKey) continue;
+                                }
+                                if (durableOnly && !isDurableBiographyKey(primaryKey)) continue;
+                                if (collected.length < pageLimit) {
+                                    collected.push(record);
+                                    lastEntryCursor = { lastSeenAt: key, identityKey: primaryKey };
+                                } else {
+                                    hasMore = true;
+                                    resolve();
+                                    return;
+                                }
+                            }
+                            if (batch.length < batchSize) {
+                                resolve();
+                                return;
+                            }
+                            const lastBatchEntry = batch[batch.length - 1];
+                            const lastKey = lastBatchEntry?.key;
+                            const lastPk = String(lastBatchEntry?.primaryKey ?? lastBatchEntry?.value?.identityKey ?? '');
+                            if (typeof lastKey !== 'number' || !Number.isFinite(lastKey)) {
+                                needCursorFallback = true;
+                                resolve();
+                                return;
+                            }
+                            const sameTimestamp = Boolean(scanBoundary && lastKey === scanBoundary.lastSeenAt);
+                            if (!sameTimestamp || lastPk < scanBoundary.identityKey) {
+                                scanBoundary = { lastSeenAt: lastKey, identityKey: lastPk };
+                            }
+                            if (sameTimestamp) {
+                                needCursorFallback = true;
+                                resolve();
+                                return;
+                            }
+                            batchSize = Math.min(2048, batchSize * 2);
+                            nextBatch();
+                        };
+                    };
+                    nextBatch();
+                });
+            }
+        }
+
+        if (needCursorFallback && !hasMore) {
+            const tx = this.db.transaction('biographies', 'readonly');
+            const store = tx.objectStore('biographies');
+            const hasIndex = store.indexNames.contains('lastSeenAt');
+            const source = hasIndex ? store.index('lastSeenAt') : store;
+            const range = hasIndex && scanBoundary
+                ? IDBKeyRange.upperBound(scanBoundary.lastSeenAt, false)
+                : null;
+            let jumpedPrimary = false;
+
+            await new Promise((resolve, reject) => {
+                const request = source.openCursor(range, 'prev');
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => {
+                    const cur = request.result;
+                    if (!cur) {
+                        resolve();
+                        return;
+                    }
+                    const record = cur.value;
+                    const primaryKey = String(cur.primaryKey ?? record?.identityKey ?? '');
+
+                    if (hasIndex) {
+                        if (typeof cur.key !== 'number' || !Number.isFinite(cur.key)) {
+                            cur.continue();
+                            return;
+                        }
+                        if (scanBoundary) {
+                            if (cur.key > scanBoundary.lastSeenAt) {
+                                cur.continue();
+                                return;
+                            }
+                            if (cur.key === scanBoundary.lastSeenAt && primaryKey >= scanBoundary.identityKey) {
+                                if (
+                                    !jumpedPrimary
+                                    && primaryKey > scanBoundary.identityKey
+                                    && typeof cur.continuePrimaryKey === 'function'
+                                ) {
+                                    jumpedPrimary = true;
+                                    try {
+                                        cur.continuePrimaryKey(scanBoundary.lastSeenAt, scanBoundary.identityKey);
+                                        return;
+                                    } catch {
+                                        // Fall through to sequential continue on non-standard shims.
+                                    }
+                                }
+                                cur.continue();
+                                return;
+                            }
+                        }
+                    }
+
+                    if (durableOnly && !isDurableBiographyKey(primaryKey)) {
+                        cur.continue();
+                        return;
+                    }
+
+                    if (collected.length < pageLimit) {
+                        collected.push(record);
+                        lastEntryCursor = {
+                            lastSeenAt: hasIndex ? cur.key : Number(record?.lastSeenAt ?? 0),
+                            identityKey: primaryKey,
+                        };
+                        cur.continue();
+                        return;
+                    }
+
+                    hasMore = true;
+                    resolve();
+                };
+            });
+        }
+
+        return {
+            records: collected,
+            nextCursor: hasMore ? lastEntryCursor : null,
+            hasMore,
+        };
+    }
+
     /** One atomic dirty snapshot; followers are notified only after commit. */
     async putBiographies(records = []) {
         await this.bulkPut('biographies', records);
@@ -1048,5 +1264,6 @@ export {
     CHRONICLE_OPEN_TIMEOUT_MS,
     EVENT_RETENTION_DAYS,
     EVENT_RETENTION_MAX_ROWS,
+    BIOGRAPHY_RETENTION_MAX_ROWS,
     RETENTION_MS,
 };
