@@ -1938,7 +1938,14 @@
     }
 }
 
-.activity-panel__freshness { color: var(--ink-3); font: var(--fs-body)/var(--lh-body) var(--font-body); }
+.activity-panel__freshness {
+    padding: 6px 12px 6px 16px;
+    border-bottom: 1px solid var(--line-1);
+    background: var(--bg-0);
+    color: var(--ink-3);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    flex-shrink: 0;
+}
 .activity-panel__freshness[hidden] { display: none; }
 .activity-panel__tool-item.cv-inspection { display: block; }
 .activity-panel__tool-item.cv-inspection > summary { display: flex; gap: 5px; align-items: baseline; }

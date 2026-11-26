@@ -417,6 +417,7 @@
 }
 .dashboard__cols > span { min-width: 0; overflow: hidden; }
 .dashboard__col--num { text-align: right; }
+.dashboard__col--tape { letter-spacing: 0; }
 .dashboard__col--tape,
 .dashboard__col--work,
 .dashboard__col--kids { display: none; }
@@ -922,6 +923,9 @@
     padding: 0 12px 8px 16px;
 }
 .dash-card__call-locate {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     padding: 3px 8px;
     border: 1px solid var(--line-2);
     background: var(--bg-2);
@@ -930,6 +934,16 @@
     letter-spacing: 1px;
     white-space: nowrap;
     cursor: pointer;
+}
+.dash-card__call-locate-glyph {
+    display: none;
+}
+.dash-card__call-locate-arrow {
+    display: block;
+    flex: none;
+    width: 4px;
+    height: 7px;
+    shape-rendering: crispEdges;
 }
 .dash-card__call-locate:hover,
 .dash-card__call-locate:focus-visible {

@@ -31,6 +31,7 @@ import { formatCost, formatNumber } from './Formatters.js';
 export const CHRONICLE_COMPACTED_KIND = ChronicleEventKind.COMPACTED ?? 'compacted';
 export const CHRONICLE_RELEASE_KIND = ChronicleEventKind.RELEASE ?? 'release';
 export const SUN_ARC_HEIGHT = 36;
+export const SUN_ARC_DEFAULT_WIDTH = 648;
 export const COVERAGE_QUARTERS = 96;
 export { DIURNAL_BANDS, DIURNAL_BAND_LABELS };
 
@@ -220,6 +221,15 @@ function eventText(event) {
     }
 }
 
+function isTruthyCoverageFlag(value) {
+    if (value === null || value === undefined || value === false || value === 0) return false;
+    if (typeof value === 'string') {
+        const trimmed = value.trim().toLowerCase();
+        return trimmed !== '' && trimmed !== '0' && trimmed !== 'false';
+    }
+    return Boolean(value);
+}
+
 /**
  * Decode an optional 96-bit quarter-hour coverage mask into a 96-byte array
  * of 0/1 flags. Returns null when coverage is unknown/missing so callers can
@@ -228,7 +238,7 @@ function eventText(event) {
 export function decodeCoverageMask(coverage) {
     if (coverage === null || coverage === undefined) return null;
     const raw = (typeof coverage === 'object' && !Array.isArray(coverage) && !ArrayBuffer.isView(coverage))
-        ? (coverage.bits ?? coverage.mask ?? coverage.quarters ?? null)
+        ? (coverage.bits ?? coverage.mask ?? coverage.quarters ?? coverage.hours ?? null)
         : coverage;
     if (raw === null || raw === undefined) return null;
 
@@ -251,14 +261,14 @@ export function decodeCoverageMask(coverage) {
         }
         return null;
     }
-    if (raw instanceof Uint32Array || (Array.isArray(raw) && raw.length === 3)) {
+    if ((raw instanceof Uint32Array || Array.isArray(raw)) && raw.length === 3) {
         for (let q = 0; q < COVERAGE_QUARTERS; q++) {
             const word = Number(raw[q >> 5]) >>> 0;
             quarters[q] = (word >>> (q & 31)) & 1;
         }
         return quarters;
     }
-    if (raw instanceof Uint8Array || (Array.isArray(raw) && raw.length === 12)) {
+    if ((raw instanceof Uint8Array || Array.isArray(raw)) && raw.length === 12) {
         for (let q = 0; q < COVERAGE_QUARTERS; q++) {
             const byte = Number(raw[q >> 3]) & 0xff;
             quarters[q] = (byte >> (q & 7)) & 1;
@@ -266,12 +276,12 @@ export function decodeCoverageMask(coverage) {
         return quarters;
     }
     if ((Array.isArray(raw) || ArrayBuffer.isView(raw)) && raw.length === COVERAGE_QUARTERS) {
-        for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = raw[q] ? 1 : 0;
+        for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = isTruthyCoverageFlag(raw[q]) ? 1 : 0;
         return quarters;
     }
     if ((Array.isArray(raw) || ArrayBuffer.isView(raw)) && raw.length === 24) {
         for (let h = 0; h < 24; h++) {
-            const covered = raw[h] ? 1 : 0;
+            const covered = isTruthyCoverageFlag(raw[h]) ? 1 : 0;
             for (let q = 0; q < 4; q++) quarters[h * 4 + q] = covered;
         }
         return quarters;
@@ -476,6 +486,14 @@ export function groupEventsIntoDiurnalChapters(events = [], {
     }
 
     return { dateKey, bands, chapters };
+}
+
+/** Snap a Sun-Arc ribbon width to a whole multiple of 24 px so 1:1 pixels never stretch. */
+export function sunArcBackingWidth(availableWidth, fallback = SUN_ARC_DEFAULT_WIDTH) {
+    const raw = Number(availableWidth);
+    if (!Number.isFinite(raw) || raw < 24) return fallback;
+    const clamped = Math.min(SUN_ARC_DEFAULT_WIDTH, Math.floor(raw));
+    return Math.max(24, Math.floor(clamped / 24) * 24);
 }
 
 /** Map a click/pointer x offset across the Sun-Arc width into an integer hour 0..23. */
@@ -1437,7 +1455,7 @@ export class ChroniclePanel {
             ariaLabel: '24-hour diurnal sun-arc ribbon; click an hour to jump to its Day Book entries',
             dataset: { dateKey: model.dateKey },
         });
-        canvas.width = 648;
+        canvas.width = SUN_ARC_DEFAULT_WIDTH;
         canvas.height = SUN_ARC_HEIGHT;
         canvas.setAttribute('role', 'img');
         canvas.setAttribute('tabindex', '0');
@@ -1457,7 +1475,10 @@ export class ChroniclePanel {
             return parts.join(' · ');
         };
         const repaint = () => {
-            const width = Math.max(240, Math.round(canvas.clientWidth || canvas.width || 648));
+            // Keep backing store and CSS width 1:1 at a multiple of 24 px (648 px desktop).
+            const measured = canvas.clientWidth || canvas.width || SUN_ARC_DEFAULT_WIDTH;
+            const width = sunArcBackingWidth(measured, SUN_ARC_DEFAULT_WIDTH);
+            if (canvas.style) canvas.style.width = `${width}px`;
             drawSunArcRibbon(canvas, model, {
                 width,
                 height: SUN_ARC_HEIGHT,

@@ -172,12 +172,97 @@ function nonNegInt(value) {
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
+const COVERAGE_QUARTERS = 96;
+
+function isTruthyCoverageFlag(value) {
+    if (value === null || value === undefined || value === false || value === 0) return false;
+    if (typeof value === 'string') {
+        const trimmed = value.trim().toLowerCase();
+        return trimmed !== '' && trimmed !== '0' && trimmed !== 'false';
+    }
+    return Boolean(value);
+}
+
+/**
+ * Decode a Chronicle coverage mask into 96 quarter-hour flags (0/1), matching
+ * `ChronicleStore` (24-char big-endian hex) and `ChroniclePanel.decodeCoverageMask`
+ * (96-char bitstring, BigInt, 12-byte Uint8Array, 3-word Uint32Array,
+ * 24-hour or 96-quarter arrays, or `{ bits | mask | quarters | hours }`).
+ * Returns null when coverage is missing or unrecognized.
+ */
+export function decodeTapestryCoverage(coverage) {
+    if (coverage === null || coverage === undefined) return null;
+    const raw = (typeof coverage === 'object' && !Array.isArray(coverage) && !ArrayBuffer.isView(coverage))
+        ? (coverage.bits ?? coverage.mask ?? coverage.quarters ?? coverage.hours ?? null)
+        : coverage;
+    if (raw === null || raw === undefined) return null;
+
+    const quarters = new Uint8Array(COVERAGE_QUARTERS);
+    if (typeof raw === 'bigint') {
+        for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = Number((raw >> BigInt(q)) & 1n);
+        return quarters;
+    }
+    if (typeof raw === 'string') {
+        const trimmed = raw.trim();
+        if (/^[01]{96}$/.test(trimmed)) {
+            for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = trimmed.charCodeAt(q) === 49 ? 1 : 0;
+            return quarters;
+        }
+        const hex = trimmed.startsWith('0x') || trimmed.startsWith('0X') ? trimmed.slice(2) : trimmed;
+        if (/^[0-9a-fA-F]{1,24}$/.test(hex)) {
+            const bits = BigInt(`0x${hex}`);
+            for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = Number((bits >> BigInt(q)) & 1n);
+            return quarters;
+        }
+        return null;
+    }
+    if ((raw instanceof Uint32Array || Array.isArray(raw)) && raw.length === 3) {
+        for (let q = 0; q < COVERAGE_QUARTERS; q++) {
+            const word = Number(raw[q >> 5]) >>> 0;
+            quarters[q] = (word >>> (q & 31)) & 1;
+        }
+        return quarters;
+    }
+    if ((raw instanceof Uint8Array || Array.isArray(raw)) && raw.length === 12) {
+        for (let q = 0; q < COVERAGE_QUARTERS; q++) {
+            const byte = Number(raw[q >> 3]) & 0xff;
+            quarters[q] = (byte >> (q & 7)) & 1;
+        }
+        return quarters;
+    }
+    if ((Array.isArray(raw) || ArrayBuffer.isView(raw)) && raw.length === COVERAGE_QUARTERS) {
+        for (let q = 0; q < COVERAGE_QUARTERS; q++) quarters[q] = isTruthyCoverageFlag(raw[q]) ? 1 : 0;
+        return quarters;
+    }
+    if ((Array.isArray(raw) || ArrayBuffer.isView(raw)) && raw.length === 24) {
+        for (let h = 0; h < 24; h++) {
+            const covered = isTruthyCoverageFlag(raw[h]) ? 1 : 0;
+            for (let q = 0; q < 4; q++) quarters[h * 4 + q] = covered;
+        }
+        return quarters;
+    }
+    return null;
+}
+
+/** Collapse a decoded 96-quarter coverage mask into 24 hour flags (0/1), or null. */
+export function decodeTapestryCoverageHours(coverage) {
+    const quarters = decodeTapestryCoverage(coverage);
+    if (!quarters) return null;
+    const hours = new Uint8Array(24);
+    for (let h = 0; h < 24; h++) {
+        const base = h * 4;
+        hours[h] = (quarters[base] || quarters[base + 1] || quarters[base + 2] || quarters[base + 3]) ? 1 : 0;
+    }
+    return hours;
+}
+
 /**
  * Pure integer-only stat rollup. Strips all string identities (names, repos,
  * branches, paths, prompts) and produces strictly non-negative integer counts.
  */
-export function extractTapestryStats({ summary = null, events = [], cast = [], coverage = null } = {}) {
-    const list = Array.isArray(events) ? events : [];
+export function extractTapestryStats({ summary = null, events, roster = null, cast = [], coverage = null } = {}) {
+    const hasExplicitEvents = Array.isArray(events);
+    const list = hasExplicitEvents ? events : [];
     const distinctHours = new Set();
     const distinctAgents = new Set();
     let commits = 0;
@@ -197,20 +282,30 @@ export function extractTapestryStats({ summary = null, events = [], cast = [], c
         if (Number.isFinite(ts)) distinctHours.add(new Date(ts).getHours());
     }
 
+    const coverageHours = decodeTapestryCoverageHours(coverage);
     let coveredHours = 0;
-    if (Array.isArray(coverage)) {
-        for (let h = 0; h < Math.min(24, coverage.length); h++) {
-            if (coverage[h]) coveredHours++;
-        }
-    } else if (coverage && typeof coverage.length === 'number') {
-        for (let h = 0; h < Math.min(24, coverage.length); h++) {
-            if (coverage[h]) coveredHours++;
+    if (coverageHours) {
+        for (let h = 0; h < 24; h++) {
+            if (coverageHours[h]) coveredHours++;
         }
     }
 
-    const summaryAgents = Array.isArray(summary?.agents)
-        ? summary.agents.length
-        : nonNegInt(summary?.villagers ?? summary?.agentCount);
+    let villagers;
+    if (summary?.villagers != null) {
+        villagers = nonNegInt(summary.villagers);
+    } else if (summary?.agentCount != null) {
+        villagers = nonNegInt(summary.agentCount);
+    } else if (Array.isArray(roster)) {
+        villagers = roster.length;
+    } else if (Array.isArray(summary?.roster)) {
+        villagers = summary.roster.length;
+    } else if (Array.isArray(summary?.agents)) {
+        villagers = Math.max(summary.agents.length, distinctAgents.size);
+    } else if (hasExplicitEvents) {
+        villagers = distinctAgents.size;
+    } else {
+        villagers = Array.isArray(cast) ? cast.length : 0;
+    }
 
     return Object.freeze({
         commits: summary?.commits != null ? nonNegInt(summary.commits) : commits,
@@ -222,9 +317,7 @@ export function extractTapestryStats({ summary = null, events = [], cast = [], c
         hours: summary?.hours != null
             ? Math.min(24, nonNegInt(summary.hours))
             : (coveredHours > 0 ? coveredHours : distinctHours.size),
-        villagers: summaryAgents > 0
-            ? summaryAgents
-            : Math.max(distinctAgents.size, Array.isArray(cast) ? cast.length : 0),
+        villagers,
     });
 }
 
@@ -367,9 +460,10 @@ function drawSunArcSlot(ctx, sunArc, events, coverage) {
             else if (kind === 'push' && !ev.outcome) hourPushes[h]++;
             else if (kind === 'waiting' || kind === 'errored' || kind === 'rate_limited') hourIncidents[h]++;
         }
-        if (coverage && typeof coverage.length === 'number') {
-            for (let h = 0; h < Math.min(24, coverage.length); h++) {
-                if (coverage[h]) hourObserved[h] = 1;
+        const coverageHours = decodeTapestryCoverageHours(coverage);
+        if (coverageHours) {
+            for (let h = 0; h < 24; h++) {
+                if (coverageHours[h]) hourObserved[h] = 1;
             }
         }
 
@@ -574,7 +668,8 @@ export function renderChronicleTapestry({
     date = null,
     dateKey = null,
     summary = null,
-    events = [],
+    events,
+    roster = null,
     diorama = null,
     sunArc = null,
     loom = null,
@@ -605,7 +700,8 @@ export function renderChronicleTapestry({
     const effectiveDate = date ?? dateKey ?? '2026-11-19';
     const dateLabel = formatTapestryDate(effectiveDate);
     const masthead = formatTapestryMasthead(effectiveDate);
-    const stats = extractTapestryStats({ summary, events, cast, coverage });
+    const stats = extractTapestryStats({ summary, events, roster, cast, coverage });
+    const effectiveCast = stats.villagers > 0 ? cast : [];
     const textDrawn = [];
 
     targetCtx.save();
@@ -613,10 +709,10 @@ export function renderChronicleTapestry({
     drawWalnutBorder(targetCtx);
     drawMasthead(targetCtx, masthead, textDrawn);
     drawDioramaSlot(targetCtx, diorama);
-    drawSunArcSlot(targetCtx, sunArc, events, coverage);
+    drawSunArcSlot(targetCtx, sunArc, Array.isArray(events) ? events : [], coverage);
     drawLedgerBand(targetCtx, stats, repoColors, textDrawn);
     drawLoomBand(targetCtx, loom);
-    drawCastBand(targetCtx, cast);
+    drawCastBand(targetCtx, effectiveCast);
     targetCtx.restore();
 
     return {

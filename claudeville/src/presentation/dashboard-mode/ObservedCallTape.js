@@ -72,6 +72,8 @@ export const TAPE_INK = Object.freeze({
     brass: '#b8893f',
     sail: '#f2c75c',
     baseline: '#3a2c20',
+    hoursRail: 'rgba(191, 152, 92, 0.25)',
+    hoursCovered: '#5a4330',
 });
 
 // The SignalLedger exception buckets, in lane rank order, and their status
@@ -601,18 +603,27 @@ function activityBarHeight(count) {
 
 /**
  * Paint 24 crisp 6x8 px cells for today's project hours strip:
- * - uncovered hours: blank linen (zero fill)
+ * - uncovered hours: blank linen interiors (zero false activity); when
+ *   `showRail` is true (used by `paintHoursStripCanvas`), paints a subtle 1 px
+ *   bottom baseline rule across all 24 cells so a fresh day with 1 covered hour
+ *   immediately reads as a 24-hour strip rather than a stray speck.
  * - covered hours: 1 px baseline, ink for observed act/look, 2x2 brass pip for
  *   verified commit, 3x4 pixel sail mark for verified push.
  */
-export function paintHoursStrip(ctx, hours) {
+export function paintHoursStrip(ctx, hours, { showRail = false } = {}) {
     if (!ctx || !Array.isArray(hours)) return;
     for (let h = 0; h < HOURS_PER_DAY && h < hours.length; h++) {
         const cell = hours[h];
-        if (!cell?.covered) continue;
         const x = h * HOUR_CELL_PITCH;
+        if (!cell?.covered) {
+            if (showRail) {
+                ctx.fillStyle = TAPE_INK.hoursRail;
+                ctx.fillRect(x, HOUR_CELL_H - 1, HOUR_CELL_W, 1);
+            }
+            continue;
+        }
         // Covered-hour baseline
-        ctx.fillStyle = TAPE_INK.baseline;
+        ctx.fillStyle = showRail ? TAPE_INK.hoursCovered : TAPE_INK.baseline;
         ctx.fillRect(x, HOUR_CELL_H - 1, HOUR_CELL_W, 1);
 
         // Observed activity ink (act on left 3 px, look on right 3 px)
@@ -643,11 +654,11 @@ export function paintHoursStrip(ctx, hours) {
     }
 }
 
-export function paintHoursStripCanvas(canvas, hours) {
+export function paintHoursStripCanvas(canvas, hours, { showRail = true } = {}) {
     const ctx = canvas?.getContext?.('2d');
     if (!ctx) return;
     const width = Number(canvas.width) || HOURS_STRIP_WIDTH;
     const height = Number(canvas.height) || HOURS_STRIP_HEIGHT;
     ctx.clearRect(0, 0, width, height);
-    paintHoursStrip(ctx, hours);
+    paintHoursStrip(ctx, hours, { showRail });
 }

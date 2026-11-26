@@ -2232,7 +2232,27 @@ export class DashboardRenderer {
         const locateBtn = document.createElement('button');
         locateBtn.type = 'button';
         locateBtn.className = 'dash-card__call-locate';
-        locateBtn.textContent = 'LOCATE IN WORLD ▸';
+        locateBtn.appendChild(document.createTextNode('LOCATE IN WORLD'));
+        // Press Start 2P lacks U+25B8 (`▸`); keep the glyph span hidden visually
+        // and render a crisp 4x7 pixel-art SVG chevron alongside the label.
+        const locateGlyph = document.createElement('span');
+        locateGlyph.className = 'dash-card__call-locate-glyph';
+        locateGlyph.setAttribute('aria-hidden', 'true');
+        locateGlyph.textContent = ' ▸';
+        locateBtn.appendChild(locateGlyph);
+        const locateArrow = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        locateArrow.setAttribute('class', 'dash-card__call-locate-arrow');
+        locateArrow.setAttribute('viewBox', '0 0 4 7');
+        locateArrow.setAttribute('width', '4');
+        locateArrow.setAttribute('height', '7');
+        locateArrow.setAttribute('aria-hidden', 'true');
+        locateArrow.setAttribute('focusable', 'false');
+        locateArrow.setAttribute('shape-rendering', 'crispEdges');
+        const locatePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        locatePath.setAttribute('fill', 'currentColor');
+        locatePath.setAttribute('d', 'M0 0h1v7H0zM1 1h1v5H1zM2 2h1v3H2zM3 3h1v1H3z');
+        locateArrow.appendChild(locatePath);
+        locateBtn.appendChild(locateArrow);
         locateBtn.title = 'Switch to World and frame this agent (A)';
         locateBtn.addEventListener('click', (event) => {
             event.stopPropagation();

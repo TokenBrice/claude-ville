@@ -704,9 +704,9 @@ export class ActivityPanel {
         ));
         this._elapsedUnsubscribe = subscribeElapsedText(this._statusElapsedEl, now => this._statusAgeText(now));
         this._toolEls = {
-            icon: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-icon'),
-            name: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-name'),
-            input: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-input'),
+            icon: this.dom.panelCurrentTool?.querySelector('.activity-panel__tool-icon') || null,
+            name: this.dom.panelCurrentTool?.querySelector('.activity-panel__tool-name') || null,
+            input: this.dom.panelCurrentTool?.querySelector('.activity-panel__tool-input') || null,
         };
         this._journeySectionEl = null;
         this._journeyBodyEl = null;
@@ -764,6 +764,9 @@ export class ActivityPanel {
         this._workingDirectoryRowEl = null;
         this._workingDirectoryValueEl = null;
         this._workingDirectoryCopyBtn = null;
+        this._originalShellSections = [...(this.panelEl?.querySelectorAll?.('[data-section]') || [])]
+            .filter(node => node?.parentNode)
+            .map(node => ({ node, parent: node.parentNode }));
         this._ensurePinCompare();
         this._ensureWorkingDirectoryAction();
         this._ensureTabFolio();
@@ -800,9 +803,16 @@ export class ActivityPanel {
         this._exitTasks = [];
         this._exitSeq = 0;
 
+        // Place observation freshness inside `.activity-panel__body` below the
+        // pinned tab bar so toggling "Cached · updated Ns ago" never shifts the
+        // folio tabs vertically.
         this._detailFreshnessEl = el('div', { className: 'activity-panel__freshness' });
         this._detailFreshnessEl.hidden = true;
-        this.panelEl.querySelector('.activity-panel__header')?.appendChild(this._detailFreshnessEl);
+        if (this._bodyEl) {
+            this._bodyEl.insertBefore(this._detailFreshnessEl, this._bodyEl.firstChild);
+        } else {
+            this.panelEl?.querySelector?.('.activity-panel__header')?.appendChild(this._detailFreshnessEl);
+        }
         this._bind();
         this._refreshPinCompare();
         eventBus.emit('agents:pins-changed', {
@@ -1710,6 +1720,7 @@ export class ActivityPanel {
         // Building selection overrides agent selection. Close any agent state first.
         this._resetNarration();
         if (this._repoLineEl) this._repoLineEl.hidden = true;
+        if (this._detailFreshnessEl) this._detailFreshnessEl.hidden = true;
         if (this._mode === 'agent') {
             this._stopPolling();
             this.currentAgent = null;
@@ -4898,11 +4909,38 @@ export class ActivityPanel {
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         this._tabListEl?.removeEventListener('keydown', this._onTabListKeydown);
 
+        // Unwrap the shell's token grid from the generated disclosure and move
+        // all original shell sections back to their original parent/order BEFORE
+        // removing the generated tablist / scrollable body wrappers so remounting
+        // a new ActivityPanel finds the intact shell DOM.
+        if (this._ledgerDetailsEl) {
+            const grid = this.dom?.panelTokenGrid;
+            if (grid && this._ledgerDetailsEl.parentNode) {
+                this._ledgerDetailsEl.parentNode.insertBefore(grid, this._ledgerDetailsEl);
+                grid.hidden = false;
+            }
+            this._ledgerDetailsEl.remove?.();
+        }
+        for (const { node, parent } of this._originalShellSections || []) {
+            if (!node || !parent) continue;
+            if (node.style) node.style.display = '';
+            if (this._tabsEl && this._tabsEl.parentNode === parent) {
+                parent.insertBefore(node, this._tabsEl);
+            } else if (this._bodyEl && this._bodyEl.parentNode === parent) {
+                parent.insertBefore(node, this._bodyEl);
+            } else {
+                parent.appendChild(node);
+            }
+        }
+        this._originalShellSections = [];
+
         const ownedNodes = [
             this._pinStripEl,
             this._pinToggleBtn,
             this._workingDirectoryRowEl,
             this._statusElapsedEl,
+            this._repoLineEl,
+            this._detailFreshnessEl,
             this._callCardEl,
             this._tabsEl,
             this._bodyEl,
@@ -4978,5 +5016,9 @@ export class ActivityPanel {
         this._bodyEl = null;
         this._ledgerDetailsEl = null;
         this._contextTicksEl = null;
+        this._detailFreshnessEl = null;
+        this._repoLineEl = null;
+        this._repoLineSwatchEl = null;
+        this._repoLineTextEl = null;
     }
 }

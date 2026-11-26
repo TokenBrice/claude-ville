@@ -856,9 +856,12 @@
 }
 
 .chronicle__sun-arc-canvas {
+    box-sizing: content-box;
     display: block;
-    width: 100%;
+    width: 648px;
+    max-width: calc(100% - 2px);
     height: 36px;
+    margin: 0 auto;
     border: 1px solid var(--line-2);
     image-rendering: pixelated;
     image-rendering: crisp-edges;
@@ -868,7 +871,9 @@
 .chronicle__sun-arc-scale {
     display: flex;
     justify-content: space-between;
-    margin-top: 4px;
+    width: 650px;
+    max-width: 100%;
+    margin: 4px auto 0;
     color: var(--ink-3);
     font: var(--fs-label)/var(--lh-label) var(--font-display);
     font-variant-numeric: tabular-nums;
@@ -1223,7 +1228,8 @@
 .postcard-studio__title-group {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
+    min-width: 0;
 }
 
 .postcard-studio__title {
@@ -1235,7 +1241,7 @@
 
 .postcard-studio__hint {
     color: var(--ink-3);
-    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    font: var(--fs-label)/14px var(--font-display);
     letter-spacing: 1px;
 }
 

@@ -23,7 +23,7 @@ import { ModeManager } from '../application/ModeManager.js';
 import { SessionWatcher } from '../application/SessionWatcher.js';
 import { NotificationService } from '../application/NotificationService.js';
 import { AttentionService } from '../application/AttentionService.js';
-import { ChronicleLog } from '../application/ChronicleLog.js';
+import { ChronicleLog, chronicleDateKey } from '../application/ChronicleLog.js';
 import { SpendLedger } from '../application/SpendLedger.js';
 import { AuroraGate } from '../application/AuroraGate.js';
 import { AgentBiographyService } from '../application/AgentBiographyService.js';
@@ -54,6 +54,80 @@ import { setRestSeatVisualBeat } from './character-mode/RestSeats.js';
 import { createAtmosphereSnapshot } from './character-mode/AtmosphereState.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 import { paintRevealBands } from './character-mode/RevealBands.js';
+
+/**
+ * Build the Tapestry cast list strictly from the selected Chronicle day's
+ * recorded agents so today's live villagers never leak into a past day.
+ */
+export function buildTapestryCast({
+    dateKey = null,
+    todayKey = chronicleDateKey(),
+    events = [],
+    summary = null,
+    agentSprites = null,
+} = {}) {
+    const isToday = !dateKey || dateKey === todayKey;
+    const spriteList = agentSprites
+        ? (typeof agentSprites.values === 'function' ? [...agentSprites.values()] : [...agentSprites])
+        : [];
+    const spriteById = new Map();
+    const spriteByName = new Map();
+    for (const sprite of spriteList) {
+        const cell = sprite?._poseCell;
+        if (!cell?.canvas) continue;
+        const id = sprite?.agent?.id != null ? String(sprite.agent.id).trim() : '';
+        const name = sprite?.agent?.name != null ? String(sprite.agent.name).trim() : '';
+        if (id && !spriteById.has(id)) spriteById.set(id, cell);
+        if (name && !spriteByName.has(name)) spriteByName.set(name, cell);
+    }
+
+    const recorded = [];
+    const seenKeys = new Set();
+    const seenNames = new Set();
+    for (const ev of Array.isArray(events) ? events : []) {
+        if (!ev || typeof ev !== 'object') continue;
+        const id = ev.agentId != null ? String(ev.agentId).trim() : '';
+        const name = ev.agentName != null ? String(ev.agentName).trim() : '';
+        if (!id && !name) continue;
+        const key = id ? `id:${id}` : `name:${name}`;
+        if (seenKeys.has(key) || (!id && seenNames.has(name))) continue;
+        seenKeys.add(key);
+        if (name) seenNames.add(name);
+        recorded.push({
+            id,
+            name,
+            provider: ev.provider || '',
+            model: ev.model || null,
+            effort: ev.effort || null,
+        });
+    }
+    if (Array.isArray(summary?.agents)) {
+        for (const rawName of summary.agents) {
+            const name = typeof rawName === 'string' ? rawName.trim() : '';
+            if (!name || seenNames.has(name)) continue;
+            seenNames.add(name);
+            recorded.push({ id: '', name, provider: '', model: null, effort: null });
+        }
+    }
+
+    if (recorded.length > 0) {
+        return recorded.map((entry) => {
+            const matchedCell = (entry.id && spriteById.get(entry.id))
+                || ((isToday || !entry.id) && entry.name ? spriteByName.get(entry.name) : null)
+                || null;
+            if (matchedCell) return matchedCell;
+            const visual = (entry.model || entry.provider)
+                ? getModelVisualIdentity(entry.model, entry.effort, entry.provider, entry.id || null)
+                : null;
+            const trimColor = visual?.trim || visual?.accent || visual?.minimapColor || null;
+            return trimColor ? { trimColor } : {};
+        });
+    }
+
+    if (!isToday) return [];
+    if (summary?.villagers === 0 || summary?.agentCount === 0) return [];
+    return spriteList.map(sprite => sprite?._poseCell).filter(cell => cell?.canvas);
+}
 
 export function chronicleSkyCode(snap) {
     const wx = snap?.weather;
@@ -1775,7 +1849,12 @@ export class App {
             diorama.width = card.canvas.width;
             diorama.height = Math.round(diorama.width * 9 / 16);
             diorama.getContext('2d').drawImage(card.canvas, 0, 0);
-            cast = [...this.renderer.agentSprites.values()].map(sprite => sprite._poseCell).filter(cell => cell?.canvas);
+            cast = buildTapestryCast({
+                dateKey: data?.dateKey,
+                events: data?.events,
+                summary: data?.summary,
+                agentSprites: this.renderer?.agentSprites,
+            });
         } finally {
             if (fromDashboard && !this._destroyed) this.modeManager.switchMode('dashboard');
         }
