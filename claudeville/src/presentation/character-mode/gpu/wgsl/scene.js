@@ -73,7 +73,7 @@ const LIGHT_ROLE_ATTENTION = LIGHT_ROLE_CODES.attention;
 const wgslRgb = (rgb) => `vec3f(${rgb.map(channel => (channel / 255).toFixed(6)).join(', ')})`;
 const grassGustRgb = (side) => `array<vec3f, ${GRASS_GUST_STOPS.length}>(${GRASS_GUST_STOPS.map(pair => wgslRgb(pair[side])).join(', ')})`;
 
-export const SCENE_WGSL = /* wgsl */ `
+export const sceneWgsl = (capture = false) => /* wgsl */ `
 // NE P3.3b — named moon-path night lift constants (shared with openSea.js and GLSL twins).
 const MOON_PATH_UNGRADE_MIX: f32 = ${MOON_PATH_UNGRADE_MIX.toFixed(2)};
 const MOON_PATH_SILVER_TINT: vec3f = vec3f(${MOON_PATH_SILVER_TINT.map(v => v.toFixed(2)).join(', ')});
@@ -83,6 +83,7 @@ const MOON_PATH_SILVER_TINT: vec3f = vec3f(${MOON_PATH_SILVER_TINT.map(v => v.to
 // GL's default (perspective, centre); per-record values are flat.
 struct VsOut {
   @builtin(position) position: vec4f,
+  ${capture ? '@location(13) @interpolate(flat) word: u32,' : ''}
   @location(0) uv: vec2f,
   @location(1) world: vec2f,
   // alpha, material, elevation, emissive (loc2)
@@ -220,7 +221,7 @@ var<private> fatTap: array<vec4f, 4>;
 fn fatPremultiplied(c: vec4f) -> vec4f { return vec4f(c.rgb * c.a, c.a); }
 fn indexedAlbedo(p: vec2i) -> vec4f {
   let raw = albedoTexel(p);
-  if ((v_flags & RECORD_FLAG_RECOLOR_INDEX) == 0u) { return raw; }
+  if (batch.hasMaterialMap == 0u || (v_flags & RECORD_FLAG_RECOLOR_INDEX) == 0u) { return raw; }
   let rgba = vec4i(raw * 255.0 + 0.5);
   let color = vec4f(rgba) / 255.0;
   let code = (i32(textureLoad(materialMap, p, 0).b * 255.0 + 0.5) >> 1u) & 63;
@@ -629,6 +630,7 @@ fn sceneSurface() -> SurfaceSample {
     }
   }
   if (batch.terrainBatch != 0u && frame.waterFx.x > 0.0) { uv = reflectionRippleUv(uv, uvStepX); }
+  ${capture ? 'captureCastOnWater = castOnWater;' : ''}
   var albedoRgba = sampleAlbedo(uv);
   var recordAlpha = v_alpha;
   if ((v_flags & RECORD_FLAG_SEA_FRET) != 0u) { recordAlpha = seaFretAlpha(v_world, v_alpha); }
@@ -884,6 +886,19 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   // nightCarry; relaxed 2026-11-23, operator decision).
   let bakedRim = recvClass != 0 && !reflectRecord && albedoRgba.a > 0.4 && albedoRgba.a < 0.6
     && max(albedoRgba.r, max(albedoRgba.g, albedoRgba.b)) < 0.16;
+  ${capture ? `
+  var region = (captureWord >> 16u) & 15u;
+  if (batch.terrainBatch != 0u && waterMaterial) { region = 2u; }
+  if (region == 4u && roofFace) { region = 3u; }
+  var tags = 0u;
+  if (reflectRecord || captureCastOnWater || (waterMaterial && frame.waterFx.x > 0.0
+      && uv.x != clamp(v_uv.x, v_uvClamp.x, v_uvClamp.z))) { tags |= 1u; }
+  let cloud = cloudCourseAt(cloudSeamField(artCell, cloudNoiseAt(artCell), bayer4(artCell), 2.0));
+  if (frame.cloud.z > 0.0 && fwidth(cloud) > 0.0) { tags |= 2u; }
+  if (bakedRim) { tags |= 4u; }
+  if (frame.shadeRect.w > 0.0 && fwidth(sunVerdict) > 0.0) { tags |= 8u; }
+  captureWord = (captureWord & 0xff00ffffu) | (region << 16u) | (tags << 20u);
+  ` : ''}
   let nightCarry = (*surf).nightCarry;
   // 2.1 — a backlit figure wears one rim.
   var backReach = 0.0;
@@ -1392,8 +1407,7 @@ struct SceneOut {
   @location(1) emission: vec4f,
 }
 
-@diagnostic(off, derivative_uniformity)
-@fragment fn sceneFs(in: VsOut) -> SceneOut {
+fn setSceneInputs(in: VsOut) {
   glFragCoord = in.position;
   v_uv = in.uv;
   v_world = in.world;
@@ -1412,6 +1426,11 @@ struct SceneOut {
   v_texel = in.texel;
   v_texelRect = in.texelRect;
   v_layer = in.layer;
+}
+
+@diagnostic(off, derivative_uniformity)
+@fragment fn sceneFs(in: VsOut) -> SceneOut {
+  setSceneInputs(in);
   var surf = sceneSurface();
   // SD-3 — the finished lifted texel stays under the waiting candle.
   let color = sunLiftFinal(sceneLight(&surf));
@@ -1420,4 +1439,25 @@ struct SceneOut {
   out.emission = sceneEmission(surf);
   return out;
 }
+${capture ? `
+var<private> captureWord: u32;
+var<private> captureCastOnWater: bool;
+@vertex fn captureVs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32, @location(0) word: u32) -> VsOut {
+  var out = sceneVertex(vi, ii, true);
+  out.word = word;
+  return out;
+}
+@fragment fn captureFs(in: VsOut) -> @location(0) u32 {
+  setSceneInputs(in);
+  captureWord = in.word;
+  var surf = sceneSurface();
+  _ = sceneLight(&surf);
+  return captureWord;
+}
+@fragment fn captureMarkFs(in: VsOut) -> @location(0) u32 {
+  if (textureSampleLevel(albedo, albedoSampler, clamp(in.uv, in.uvClamp.xy, in.uvClamp.zw), 0.0).a < 0.01) { discard; }
+  return in.word;
+}` : ''}
 `;
+
+export const SCENE_WGSL = sceneWgsl();

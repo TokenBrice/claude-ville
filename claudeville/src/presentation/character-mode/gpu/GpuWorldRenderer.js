@@ -1,3 +1,4 @@
+import { preferAgentModelCells } from '../AgentLayerRecords.js';
 import {
     buildStableGpuBatches,
     LIGHT_RECORD_FLAGS,
@@ -435,10 +436,11 @@ void main() {
 }`;
 
 // The shared record vertex stage.
-function quadVertexSource() {
+function quadVertexSource(capture = false) {
     return `#version 300 es
 precision highp float;
 precision highp int;
+${capture ? 'layout(location = 7) in uint a_captureWord; flat out uint v_captureWord;' : ''}
 layout(location = 0) in vec4 a_rect;
 layout(location = 1) in vec4 a_uvRect;
 layout(location = 2) in vec4 a_surface;
@@ -478,6 +480,7 @@ flat out ivec4 v_texelRect;
 flat out vec2 v_reflect;
 ${CUE_RUN_GLSL}
 void main() {
+    ${capture ? 'v_captureWord = a_captureWord;' : ''}
     // Strip corners (0,0) (1,0) (0,1) (1,1). Each coordinate is selected from
     // the staged rect, never interpolated, so every edge is the staged value.
     // B.3 — a ground-cue batch holding dot runs draws six vertices per dot
@@ -1398,7 +1401,15 @@ flat in vec2 v_reflect;
 in vec2 v_texel;
 flat in ivec4 v_texelRect;
 layout(location = 0) out vec4 outColor;
+#ifdef CAPTURE_ATTRIBUTION
+flat in uint v_captureWord;
+uniform bool u_captureMark;
+vec4 captureBytes(uint word) {
+    return vec4(uvec4(word, word >> 8u, word >> 16u, word >> 24u) & 255u) / 255.0;
+}
+#else
 layout(location = 1) out vec4 outEmission;
+#endif
 uniform sampler2D u_albedo;
 // B.1b — a paged record's albedo is its layer (v_layer, loc3.x) of the
 // batch's texture-array page on unit 14; every other record samples its own
@@ -1443,11 +1454,12 @@ vec2 fatAlbedoPix = vec2(0.0);
 FatTaps fatAlbedoTaps;
 vec4 fatTap[4];
 vec4 fatPremultiplied(vec4 c) { return vec4(c.rgb * c.a, c.a); }
+uniform bool u_hasMaterialMap;
 uniform highp sampler2D u_materialMap;
 uniform highp sampler2D u_paletteLut;
 vec4 indexedAlbedo(ivec2 p) {
     vec4 color = albedoTexel(p);
-    if ((v_flags & ${GPU_RECORD_FLAGS.recolorIndex}u) == 0u) return color;
+    if (!u_hasMaterialMap || (v_flags & ${GPU_RECORD_FLAGS.recolorIndex}u) == 0u) return color;
     // Resolve on the authored byte grid before any filtering or lighting.
     ivec4 rgba = ivec4(color * 255.0 + 0.5);
     color = vec4(rgba) / 255.0;
@@ -1508,7 +1520,6 @@ vec4 sampleEmission(vec2 uv, float albedoAlpha) {
     // Return straight hue and contribution per covered texel. Output applies albedo alpha once.
     return sum.a > 0.0 ? vec4(sum.rgb / sum.a, sum.a / albedoAlpha) : vec4(0.0);
 }
-uniform bool u_hasMaterialMap;
 uniform sampler2D u_occluderMap;
 uniform bool u_hasOccluderMap;
 // B.2 — V9 flag 32 (packedGeometry): the material map also carries the
@@ -2423,6 +2434,13 @@ float seaFretAlpha(vec2 world, float landShare) {
 }
 
 void main() {
+#ifdef CAPTURE_ATTRIBUTION
+    if (u_captureMark) {
+        if (albedoTexture(clamp(v_uv, v_uvClamp.xy, v_uvClamp.zw)).a < 0.01) discard;
+        outColor = captureBytes(v_captureWord);
+        return;
+    }
+#endif
     // V9 — sample inside the record's own source rect (never an atlas
     // neighbour), whatever sub-texel offset the record rests at.
     vec2 uv = clamp(v_uv, v_uvClamp.xy, v_uvClamp.zw);
@@ -3403,8 +3421,23 @@ void main() {
     if (bakedRim && !u_additive) alpha = max(alpha, v_alpha * mix(0.96, 1.0, nightCarry));
     // SD-3 — every lifted texel stays under the waiting candle (SUN_LIFT_CANDLE).
     color = sunLiftFinal(color);
+#ifdef CAPTURE_ATTRIBUTION
+    uint word = v_captureWord;
+    uint region = (word >> 16u) & 15u;
+    if (u_terrainBatch && waterMaterial) region = 2u;
+    if (region == 4u && roofFace) region = 3u;
+    uint tags = 0u;
+    if (reflectRecord || castOnWater || (waterMaterial && u_waterFx.x > 0.0
+        && uv.x != clamp(v_uv.x, v_uvClamp.x, v_uvClamp.z))) tags |= 1u;
+    float cloud = cloudCourseAt(cloudSeamField(artCell, cloudNoiseAt(artCell), bayer4(artCell), 2.0));
+    if (u_cloud.z > 0.0 && fwidth(cloud) > 0.0) tags |= 2u;
+    if (bakedRim) tags |= 4u;
+    if (u_shadeRect.w > 0.0 && fwidth(sunVerdict) > 0.0) tags |= 8u;
+    outColor = captureBytes((word & 0xff00ffffu) | (region << 16u) | (tags << 20u));
+#else
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
     outEmission = vec4(emission * alpha, alpha > 0.0 ? 1.0 : 0.0);
+#endif
 }`;
 
 const FULLSCREEN_VERTEX = `#version 300 es
@@ -4167,6 +4200,41 @@ function uniformLocations(gl, program, names) {
     }, {});
 }
 
+// Slots refer to the frozen input, including holes left by rejected records.
+// Normalization and atlas placement may replace the original object.
+export function captureRecordWords(raw, normalized, batches, offset = 0, marks = false) {
+    if (offset + raw.length > 65535) throw new RangeError('Too many records for 16-bit attribution');
+    let next = 0;
+    return Uint32Array.from(batches.flatMap(batch => batch.records.map(record => {
+        while (next < raw.length && raw[next] !== record && normalized?.[next] !== record) next++;
+        if (next === raw.length) throw new Error('Attribution batch differs from the frozen input');
+        const index = next++;
+        const source = raw[index];
+        const id = String(source.id || source.debugId || source.key || '').toLowerCase();
+        const kind = String(source.kind || source.role || '').toLowerCase();
+        const flags = record.flags;
+        let region = 1;
+        if (flags & GPU_RECORD_FLAGS.reflect || id.includes('reflect') || kind === 'reflection') region = 8;
+        else if (marks || flags & (GPU_RECORD_FLAGS.screenSpace | GPU_RECORD_FLAGS.cueRun | GPU_RECORD_FLAGS.actionMark)
+            || /^(mark:|overlay\.)/.test(id) || kind === 'mark') region = 10;
+        else if (/^(weather:|atmosphere\.|ground:fog)/.test(id) || /^(weather|rain)$/.test(kind)) region = 9;
+        else if (id.startsWith('agent:') || kind.startsWith('agent')) {
+            const attachment = Number.isFinite(source.layer) ? source.layer !== 2
+                : /[-:](head|hat|weapon|attachment|artifact|cape|frost-tint|snow-cap)(?:[-:]|$)/.test(id);
+            region = attachment || kind === 'agent-attachment' ? 7 : 6;
+        } else if (/^building[.:]/.test(id) || kind.startsWith('building')) region = id.includes('roof') || kind === 'building-roof' ? 3 : 4;
+        else if (id.startsWith('water:') || id.includes('coast-water') || kind === 'water') region = 2;
+        else if (/^(prop[.:]|veg\.|bridge\.|dock\.)/.test(id) || kind === 'prop' || kind === 'tree') region = 5;
+        const layer = Math.max(0, Math.min(255, source.layer | 0));
+        return (offset + index + 1) | (region << 16) | (layer << 24);
+    })));
+}
+
+// Sidecars use the model key directly, without the albedo's agent-model prefix.
+export function evictableAgentTexture(key) {
+    return /^(?:(?:material|occluder|emissive):)?(?:agentLayer:|agent-(?:model|sheet(?:-lod)?|strip):|agent\.)/.test(key);
+}
+
 export class GpuWorldRenderer {
     constructor(canvas, { enabled = true } = {}) {
         this.canvas = canvas || null;
@@ -4724,7 +4792,7 @@ export class GpuWorldRenderer {
         if (this.rainVao) gl.deleteVertexArray(this.rainVao);
         if (this.markBuffer) gl.deleteBuffer(this.markBuffer);
         if (this.markVao) gl.deleteVertexArray(this.markVao);
-        for (const program of [this.sceneProgram, this.particleProgram, this.rainProgram, this.bloomProgram, this.compositeProgram, this.markProgram, this.compositeP3Program, this.markP3Program]) {
+        for (const program of [this.sceneProgram, this.particleProgram, this.rainProgram, this.bloomProgram, this.compositeProgram, this.markProgram, this.compositeP3Program, this.markP3Program, this._attributionProgram]) {
             if (program) gl.deleteProgram(program);
         }
         this.compositeP3Program = null;
@@ -4738,6 +4806,7 @@ export class GpuWorldRenderer {
         this.particleVao = null;
         this.rainVao = null;
         this.sceneProgram = null;
+        this._attributionProgram = null;
         this.particleProgram = null;
         this.rainProgram = null;
         this.bloomProgram = null;
@@ -4776,6 +4845,7 @@ export class GpuWorldRenderer {
         this.particleBuffer = null;
         this.particleVao = null;
         this.sceneProgram = null;
+        this._attributionProgram = null;
         this.particleProgram = null;
         this.bloomProgram = null;
         this.compositeProgram = null;
@@ -5066,23 +5136,27 @@ export class GpuWorldRenderer {
         return entry.texture;
     }
 
-    _trimTextureCache() {
-        const overCap = this._cachedTextureBytes > MAX_CACHED_TEXTURE_BYTES
-            || this._textureEntries.size > MAX_CACHED_TEXTURES;
+    _trimTextureCache(protectedFrame = this.frames + 1) {
+        const nonTextureBytes = (this.vertexBufferBytes || 0) + (this.particleBuffer ? this._particleBytes.byteLength : 0);
+        const sourceBudget = Math.min(MAX_CACHED_TEXTURE_BYTES,
+            160 * 1024 * 1024 - (this.textureBytes - this._cachedTextureBytes) - nonTextureBytes);
+        const overCap = this._cachedTextureBytes > sourceBudget || this._textureEntries.size > MAX_CACHED_TEXTURES;
         if (!overCap) {
             this._textureCacheNeedsTrim = false;
             return;
         }
-        if (!this._textureCacheNeedsTrim && this.frames - this._lastTextureTrimFrame < 120) return;
+        if (!this._textureCacheNeedsTrim && sourceBudget === this._lastSourceBudget && this.frames - this._lastTextureTrimFrame < 120) return;
+        this._lastSourceBudget = sourceBudget;
         this._lastTextureTrimFrame = this.frames;
         this._textureCacheNeedsTrim = false;
         const candidates = [...this._textureEntries.entries()]
-            .filter(([, entry]) => entry.lastUsedFrame !== this.frames + 1)
+            .filter(([key, entry]) => entry.lastUsedFrame < protectedFrame || evictableAgentTexture(key))
             .sort((a, b) => finite(a[1].lastUsedFrame) - finite(b[1].lastUsedFrame));
         for (const [key, entry] of candidates) {
-            if (this._cachedTextureBytes <= MAX_CACHED_TEXTURE_BYTES
+            if (this._cachedTextureBytes <= sourceBudget
                 && this._textureEntries.size <= MAX_CACHED_TEXTURES) break;
             this.gl.deleteTexture(entry.texture);
+            if (entry.lastUsedFrame >= protectedFrame) preferAgentModelCells(key);
             this._textureEntries.delete(key);
             this._cachedTextureBytes -= entry.bytes || 0;
             this.textureEvictions++;
@@ -5445,9 +5519,35 @@ export class GpuWorldRenderer {
         this.waterFieldsActive = present;
     }
 
-    _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL, batches = null) {
+    _bindSceneSamplers(gl, uniforms) {
+        // B.1b — the albedo page (or its stand-in) stays on unit 14;
+        // unit 0 starts empty in case a paged batch draws first.
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
+        gl.bindTexture(gl.TEXTURE_2D_ARRAY, this._albedoPage?.texture || this.emptyAlbedoPage);
+        gl.uniform1i(uniforms.u_albedoPage, SCENE_SAMPLER_UNITS.albedoPage);
+        gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
+        gl.bindTexture(gl.TEXTURE_2D, this.emptyMaterialTexture);
+        gl.uniform1i(uniforms.u_albedo, SCENE_SAMPLER_UNITS.albedo);
+        gl.uniform1i(uniforms.u_albedoPaged, 0);
+        // PF-5 — seed the sidecar units and their (never-changing) sampler
+        // uniforms once per frame: per-batch staging then only binds a
+        // sidecar that exists, instead of rebinding the empty texture for
+        // every batch without one.
+        const sidecarUnits = [
+            [uniforms.u_materialMap, SCENE_SAMPLER_UNITS.material],
+            [uniforms.u_emissiveMap, SCENE_SAMPLER_UNITS.emissive],
+            [uniforms.u_occluderMap, SCENE_SAMPLER_UNITS.occluder],
+        ];
+        for (const [location, unit] of sidecarUnits) {
+            if (!location) continue;
+            gl.uniform1i(location, unit);
+            gl.activeTexture(gl.TEXTURE0 + unit);
+            gl.bindTexture(gl.TEXTURE_2D, this.emptyMaterialTexture);
+        }
+    }
+
+    _setSceneUniforms(feed, camera, qualityLevel = POST_FX_LEVELS.FULL, batches = null, uniforms = this.sceneUniforms) {
         const gl = this._uniformGl || this.gl;
-        const uniforms = this.sceneUniforms;
         const grade = resolveFrameGrade(feed);
         const weather = resolveWeatherUniform(feed, qualityLevel);
         // B.2 — packed agent geometry follows the occluder channel toggle
@@ -6329,6 +6429,109 @@ export class GpuWorldRenderer {
         }
     }
 
+    async debugCaptureTargets({ includeAttribution = false } = {}) {
+        const { width, height, gl } = this;
+        const out = { width, height, composite: null, scene: null, emission: null, attribution: null,
+            attributionFormat: null, rowOrder: 'top-left', channelOrder: 'rgba' };
+        if (!this.ensureFreshOutput()) return out;
+        const read = (framebuffer, attachment) => {
+            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
+            gl.readBuffer(attachment);
+            const bottomUp = new Uint8Array(width * height * 4);
+            gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, bottomUp);
+            const topDown = new Uint8Array(bottomUp.length);
+            const stride = width * 4;
+            for (let y = 0; y < height; y++) {
+                topDown.set(bottomUp.subarray(y * stride, (y + 1) * stride), (height - 1 - y) * stride);
+            }
+            return topDown;
+        };
+        try {
+            out.composite = read(null, gl.BACK);
+            out.scene = read(this.sceneTarget.framebuffer, gl.COLOR_ATTACHMENT0);
+            if (this.sceneTarget.attachments >= 2) out.emission = read(this.sceneTarget.framebuffer, gl.COLOR_ATTACHMENT1);
+            gl.readBuffer(gl.COLOR_ATTACHMENT0);
+            if (includeAttribution) {
+                out.attribution = this._captureAttribution(read);
+                out.attributionFormat = 'rgba8';
+            }
+            return out;
+        } finally {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        }
+    }
+
+    _captureAttribution(read) {
+        const gl = this.gl;
+        if (!this._attributionProgram) {
+            const fragment = SCENE_FRAGMENT.replace('#version 300 es', '#version 300 es\n#define CAPTURE_ATTRIBUTION');
+            this._attributionProgram = createProgram(gl, quadVertexSource(true), fragment);
+            this._attributionUniforms = uniformLocations(gl, this._attributionProgram,
+                [...Object.keys(this.sceneUniforms), 'u_captureMark']);
+        }
+        const { records, marks, camera, feed = {} } = this._lastRenderInput;
+        const scene = this._batchScratch;
+        const overlays = this._stageMarkInputs(marks);
+        const words = [captureRecordWords(records, this._normalizedRecordScratch, scene),
+            captureRecordWords(marks || [], this._markNormalized, overlays, records.length, true)];
+        const target = this._createTarget(this.width, this.height);
+        const wordBuffer = gl.createBuffer();
+        const dither = gl.isEnabled(gl.DITHER);
+        try {
+            this._uploadBatchTextures(scene, !this._occluderChannelSkipped);
+            if (overlays.length) {
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.markBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, this._markStaging.f32.subarray(0, this._markByteLength / 4), gl.DYNAMIC_DRAW);
+                this.markBufferBytes = this._markByteLength;
+            }
+            this._bindMirror.invalidate();
+            const uniforms = this._attributionUniforms;
+            gl.useProgram(this._attributionProgram);
+            this._setSceneUniforms(feed, camera, this._preparedQualityLevel, scene, uniforms);
+            this._bindSceneSamplers(gl, uniforms);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+            gl.viewport(0, 0, this.width, this.height);
+            gl.disable(gl.BLEND);
+            gl.disable(gl.DEPTH_TEST);
+            gl.disable(gl.DITHER);
+            gl.clearColor(0, 0, 0, 0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.bindVertexArray(this.vao);
+            gl.enableVertexAttribArray(7);
+            gl.vertexAttribDivisor(7, 1);
+            const flags = new Map();
+            this._albedoPagedBound = null;
+            for (const [pass, batches] of [scene, overlays].entries()) {
+                let offset = 0;
+                gl.uniform1i(uniforms.u_captureMark, pass);
+                gl.bindBuffer(gl.ARRAY_BUFFER, wordBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, words[pass], gl.STREAM_DRAW);
+                this._pointedInstance = -1;
+                for (const batch of batches) {
+                    gl.bindBuffer(gl.ARRAY_BUFFER, wordBuffer);
+                    gl.vertexAttribIPointer(7, 1, gl.UNSIGNED_INT, 4, offset);
+                    offset += batch.count * 4;
+                    gl.bindBuffer(gl.ARRAY_BUFFER, pass ? this.markBuffer : this.vertexBuffer);
+                    this._setBatchUniforms(uniforms, batch, flags);
+                    this._drawBatch(batch);
+                }
+            }
+            return read(target.framebuffer, gl.COLOR_ATTACHMENT0);
+        } finally {
+            gl.bindVertexArray(this.vao);
+            gl.disableVertexAttribArray(7);
+            gl.bindVertexArray(null);
+            gl.bindBuffer(gl.ARRAY_BUFFER, null);
+            gl.deleteBuffer(wordBuffer);
+            this._releaseTarget(target);
+            if (dither) gl.enable(gl.DITHER);
+            this._frameReuse?.invalidate();
+            this._trimTextureCache(this.frames);
+            this._pointedInstance = -1;
+            this._bindMirror.invalidate();
+        }
+    }
+
     _stageMarkInputs(marks) {
         this._markByteLength = 0;
         const batches = this._markBatches ||= [];
@@ -6377,30 +6580,7 @@ export class GpuWorldRenderer {
             if (this._radiance) this._radiance.gl = stagingGl;
             stagingGl.useProgram(this.sceneProgram);
             this._setSceneUniforms(feed, camera, qualityLevel, batches);
-            // B.1b — the albedo page (or its stand-in) stays on unit 14;
-            // unit 0 starts empty in case a paged batch draws first.
-            stagingGl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedoPage);
-            stagingGl.bindTexture(gl.TEXTURE_2D_ARRAY, this._albedoPage?.texture || this.emptyAlbedoPage);
-            stagingGl.uniform1i(this.sceneUniforms.u_albedoPage, SCENE_SAMPLER_UNITS.albedoPage);
-            stagingGl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.albedo);
-            stagingGl.bindTexture(gl.TEXTURE_2D, this.emptyMaterialTexture);
-            stagingGl.uniform1i(this.sceneUniforms.u_albedo, SCENE_SAMPLER_UNITS.albedo);
-            stagingGl.uniform1i(this.sceneUniforms.u_albedoPaged, 0);
-            // PF-5 — seed the sidecar units and their (never-changing) sampler
-            // uniforms once per frame: per-batch staging then only binds a
-            // sidecar that exists, instead of rebinding the empty texture for
-            // every batch without one.
-            const sidecarUnits = [
-                [this.sceneUniforms.u_materialMap, SCENE_SAMPLER_UNITS.material],
-                [this.sceneUniforms.u_emissiveMap, SCENE_SAMPLER_UNITS.emissive],
-                [this.sceneUniforms.u_occluderMap, SCENE_SAMPLER_UNITS.occluder],
-            ];
-            for (const [location, unit] of sidecarUnits) {
-                if (!location) continue;
-                stagingGl.uniform1i(location, unit);
-                stagingGl.activeTexture(gl.TEXTURE0 + unit);
-                stagingGl.bindTexture(gl.TEXTURE_2D, this.emptyMaterialTexture);
-            }
+            this._bindSceneSamplers(stagingGl, this.sceneUniforms);
             const bloomMode = effectBudgetMode('bloom', qualityLevel);
             const strength = bloomMode === 'off' ? 0 : bloomMode === 'reduced' ? 0.42 : 0.72;
             const bloomSources = this.lightCount > 0 || this._daytimeWorkBloom;
@@ -6817,7 +6997,7 @@ export class GpuWorldRenderer {
         const atlasPages = [];
         for (const [name, entry] of this._textureEntries) {
             const bytes = entry.bytes || 0;
-            const pinned = entry.lastUsedFrame === this.frames;
+            const pinned = entry.lastUsedFrame >= this.frames && !evictableAgentTexture(name);
             if (pinned) pinnedSourceBytes += bytes;
             else evictableSourceBytes += bytes;
             if (name.includes('world-pilot') || name.includes('agent-frame-atlas')) {

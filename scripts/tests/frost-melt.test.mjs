@@ -165,3 +165,67 @@ test('EY-5: the rime of a clear night rises 1 → 4 from 22:00 to 01:00, at most
     for (const frost of [1, 2, 3]) assert.notEqual(terrainArtifactKey({ ...inputs, frost }), terrainArtifactKey({ ...inputs, frost, frostRising: true }));
     assert.equal(terrainArtifactKey({ ...inputs, frost: 4 }), terrainArtifactKey({ ...inputs, frost: 4, frostRising: true }));
 });
+
+test('layered crest bounds, frost and settled snow exclude both kinds of baked Codex sidearm', async t => {
+    const { AgentSprite } = await import('../../claudeville/src/presentation/character-mode/AgentSprite.js');
+    const { clearLayerCaches, paletteIdentity } = await import('../../claudeville/src/presentation/character-mode/AgentLayerRecords.js');
+    // These fixtures use the first cell and unscaled, opaque stamps. Keep
+    // pixel copies and source-in coverage observable without a browser.
+    function raster(width = 0, height = 0) {
+        const canvas = { width, height };
+        let data;
+        function pixels() { return data ||= new Uint32Array(canvas.width * canvas.height); }
+        const ctx = {
+            canvas, save() {}, restore() {}, translate() {},
+            getImageData() { return { data: new Uint8ClampedArray(pixels().slice().buffer) }; },
+            putImageData(image) { pixels().set(new Uint32Array(image.data.buffer)); },
+            clearRect(x, y, w, h) {
+                for (let row = y; row < Math.min(y+h, canvas.height); row++) {
+                    if (x < canvas.width) pixels().fill(0, row*canvas.width+x, row*canvas.width+Math.min(x+w,canvas.width));
+                }
+            },
+            fillRect(x, y, w, h) {
+                for (let row=y; row<y+h; row++) for (let col=x; col<x+w; col++) {
+                    const i = row*canvas.width+col;
+                    if (this.globalCompositeOperation !== 'source-in' || pixels()[i]) pixels()[i] = 0xffaaaaaa;
+                }
+            },
+            drawImage(source, ...args) {
+                const [sx,sy,w,h,x,y] = args.length === 2 ? [0,0,source.width,source.height,...args] : args;
+                for (let row=0; row<h; row++) for (let col=0; col<w; col++) {
+                    const value = source.pixel(sx+col, sy+row);
+                    if (value >>> 24) pixels()[(row+y)*canvas.width+col+x] = value;
+                }
+            },
+        };
+        canvas.getContext = () => ctx;
+        canvas.pixel = (x,y) => x >= 0 && x < canvas.width && y >= 0 && y < canvas.height ? pixels()[y*canvas.width+x] : 0;
+        return canvas;
+    }
+    const prev = globalThis.document;
+    globalThis.document = { createElement: () => raster() };
+    t.after(() => { globalThis.document = prev; clearLayerCaches(); });
+    for (const [modelClass, model, toolY] of [['gpt54','agent.codex.gpt54',8], ['spark','agent.codex.gpt53spark',50]]) {
+        const sheet = raster(736,92);
+        sheet.getContext().fillRect(35,30,20,42);
+        sheet.getContext().fillRect(72,toolY,7,3);
+        const hat = raster(28,8);
+        hat.getContext().fillRect(0,0,28,8);
+        const sprite = Object.assign(Object.create(AgentSprite.prototype), {
+            assets: {}, spriteCanvas: sheet, _spriteProfileKey: model, _frozenTintCellCache: new Map(), _cellBoundsCache: new Map(),
+            _layerProfile: { identity: { modelClass }, palette: paletteIdentity(model,0,null) },
+            _cellHead: () => ({ source: hat, sx: 0, sy: 0, sw: 28, sh: 8, x: 30, y: 14, key: 'crest' }),
+            _shouldScrubBakedCodexWeapon: () => true, _updatePrivateDerivedEstimate() {},
+        });
+        const cell = { sx: 0, sy: 0, sw: 92, sh: 92 };
+        const bounds = sprite._getCellContentBounds(cell);
+        assert.deepEqual([bounds.minY,bounds.minX,bounds.maxX], [14,30,57], model);
+        const dressed = sprite._dressedCell(cell);
+        const frost = sprite._getFrozenTintCell(cell,dressed);
+        assert.ok(frost.pixel(30,14), model + ' frosted brim');
+        assert.equal(frost.pixel(74,toolY), 0, model + ' tool stays clear');
+        const snow = sprite._snowCapCell(cell,dressed);
+        assert.deepEqual([snow.__cvSnowX,snow.__cvSnowY,snow.width], [30,14,28], model);
+        assert.ok(snow.pixel(0,0), model + ' snow on brim');
+    }
+});

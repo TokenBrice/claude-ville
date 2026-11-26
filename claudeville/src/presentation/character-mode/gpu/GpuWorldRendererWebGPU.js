@@ -1,3 +1,5 @@
+import { preferAgentModelCells } from '../AgentLayerRecords.js';
+import { evictableAgentTexture, captureRecordWords } from './GpuWorldRenderer.js';
 // Wave 10 (10.1 Stage A) — the resident world on WebGPU, behind WebGL2 and
 // opt-in (`?renderer=webgpu`). The same interface as GpuWorldRenderer (contract
 // §4.4) over the same inputs: GpuSceneBuilder's record stream batched by
@@ -63,10 +65,12 @@ import {
     BLOOM_BINDING,
     DEBUG_LOAD_BINDING,
     FRAME_UNIFORM_LAYOUT,
+    assembleScene,
     createUniformViews,
     writeBatchUniforms,
     writeFrameUniforms,
 } from './wgsl/index.js';
+import { SCENE_WGSL, sceneWgsl } from './wgsl/scene.js';
 import { BATCH_BINDING, COMPOSITE_BINDING, FRAME_BINDING } from './wgsl/common.js';
 import { COMPOSITE_ROLES_BINDING } from './wgsl/composite.js';
 import { HDR_HIGHLIGHT_MODES, HDR_HIGHLIGHTS_DEFAULT, hdrLampsLit, resolveDisplayColor } from '../DisplayColor.js';
@@ -310,6 +314,7 @@ export class GpuWorldRendererWebGPU {
         this._batchState = {};
         this._bloomParams = createUniformViews(512);
         this._frameBindGroup = null;
+        this._attributionPipelines = null;
         this._frameBindKey = '';
         this._batchBindGroups = new Map();
         this.deviceLost = null;
@@ -630,6 +635,7 @@ export class GpuWorldRendererWebGPU {
         this._textureEntries.clear();
         this._batchBindGroups.clear();
         this._frameBindGroup = null;
+        this._attributionPipelines = null;
         this._frameBindKey = '';
         this.sceneTarget = null;
         this.bloomA = null;
@@ -689,6 +695,7 @@ export class GpuWorldRendererWebGPU {
         this._particleMotifTexture = null;
         this._batchBindGroups.clear();
         this._frameBindGroup = null;
+        this._attributionPipelines = null;
         this._frameBindKey = '';
         this._compositeBindGroup = null;
         this._compositeRolesBindGroup = null;
@@ -1067,22 +1074,29 @@ export class GpuWorldRendererWebGPU {
         return entry.view;
     }
 
-    _trimTextureCache() {
-        const overCap = this._cachedTextureBytes > MAX_CACHED_TEXTURE_BYTES || this._textureEntries.size > MAX_CACHED_TEXTURES;
+    _trimTextureCache(protectedFrame = this.frames + 1) {
+        const nonTextureBytes = (this._recordBufferBytes || 0) + (this._markRecordBufferBytes || 0)
+            + (this._particleBuffer ? this._particleBytes.byteLength : 0) + (this._lightRecordBuffer ? LIGHT_RECORD_BUFFER_BYTES : 0)
+            + (this.sceneTarget ? this.width * this.height * texelBytes(this.presentFormat) : 0);
+        const sourceBudget = Math.min(MAX_CACHED_TEXTURE_BYTES,
+            160 * 1024 * 1024 - (this.textureBytes - this._cachedTextureBytes) - nonTextureBytes);
+        const overCap = this._cachedTextureBytes > sourceBudget || this._textureEntries.size > MAX_CACHED_TEXTURES;
         if (!overCap) {
             this._textureCacheNeedsTrim = false;
             return;
         }
-        if (!this._textureCacheNeedsTrim && this.frames - this._lastTextureTrimFrame < 120) return;
+        if (!this._textureCacheNeedsTrim && sourceBudget === this._lastSourceBudget && this.frames - this._lastTextureTrimFrame < 120) return;
+        this._lastSourceBudget = sourceBudget;
         this._lastTextureTrimFrame = this.frames;
         this._textureCacheNeedsTrim = false;
         const candidates = [...this._textureEntries.entries()]
-            .filter(([, entry]) => entry.lastUsedFrame !== this.frames + 1)
+            .filter(([key, entry]) => entry.lastUsedFrame < protectedFrame || evictableAgentTexture(key))
             .sort((a, b) => finite(a[1].lastUsedFrame) - finite(b[1].lastUsedFrame));
         for (const [key, entry] of candidates) {
-            if (this._cachedTextureBytes <= MAX_CACHED_TEXTURE_BYTES && this._textureEntries.size <= MAX_CACHED_TEXTURES) break;
+            if (this._cachedTextureBytes <= sourceBudget && this._textureEntries.size <= MAX_CACHED_TEXTURES) break;
             // Destroyed after this frame's submit (trim runs post-submit).
             entry.texture?.destroy?.();
+            if (entry.lastUsedFrame >= protectedFrame) preferAgentModelCells(key);
             this._textureEntries.delete(key);
             this._cachedTextureBytes -= entry.bytes || 0;
             this.textureEvictions++;
@@ -2104,20 +2118,67 @@ export class GpuWorldRendererWebGPU {
      * the HDR canvas and emission attachment) as Float32Array of its values.
      * `formats` names each target's format.
      */
-    async debugCaptureTargets() {
+    async debugCaptureTargets({ includeAttribution = false } = {}) {
         if (!this.ensureFreshOutput()) {
-            return { scene: null, composite: null, emission: null, formats: {}, width: this.width, height: this.height, rowOrder: 'top-left', channelOrder: 'rgba' };
+            return { scene: null, composite: null, emission: null, attribution: null, attributionFormat: null, formats: {}, width: this.width, height: this.height, rowOrder: 'top-left', channelOrder: 'rgba' };
         }
         this._readbackPending = (this._readbackPending || 0) + 1;
         try {
-            return await this._captureTargets();
+            return await this._captureTargets(includeAttribution);
         } finally {
             this._readbackPending--;
         }
     }
 
-    async _captureTargets() {
-        const out = { scene: null, composite: null, emission: null, formats: {}, width: this.width, height: this.height, rowOrder: 'top-left', channelOrder: 'rgba' };
+    _captureAttribution(encoder) {
+        const device = this.device;
+        if (!this._attributionPipelines) {
+            const module = device.createShaderModule({
+                label: 'world-attribution', code: assembleScene().replace(SCENE_WGSL, () => sceneWgsl(true)),
+            });
+            const layout = device.createPipelineLayout({ bindGroupLayouts: [this.pipelines.layouts.frame, this.pipelines.layouts.batch] });
+            const vertex = { module, entryPoint: 'captureVs', buffers: [{ arrayStride: 4, stepMode: 'instance',
+                attributes: [{ shaderLocation: 0, offset: 0, format: 'uint32' }] }] };
+            this._attributionPipelines = ['scene', 'cue', 'mark'].map(kind => device.createRenderPipeline({
+                label: 'world-attribution-' + kind, layout, vertex,
+                fragment: { module, entryPoint: kind === 'mark' ? 'captureMarkFs' : 'captureFs', targets: [{ format: 'r32uint' }] },
+                primitive: { topology: kind === 'cue' ? 'triangle-list' : 'triangle-strip' },
+            }));
+        }
+        const { records, marks } = this._lastRenderInput;
+        const scene = this._batchScratch;
+        this._uploadBatchTextures(scene, !this._occluderChannelSkipped);
+        const overlays = this._stageMarks(marks);
+        const sceneWords = captureRecordWords(records, this._normalizedRecordScratch, scene);
+        const markWords = captureRecordWords(marks || [], this._markNormalized, overlays, records.length, true);
+        const buffer = device.createBuffer({ size: (sceneWords.length + markWords.length) * 4,
+            usage: GPUBufferUsage.VERTEX, mappedAtCreation: true, label: 'world-capture-words' });
+        const words = new Uint32Array(buffer.getMappedRange());
+        words.set(sceneWords);
+        words.set(markWords, sceneWords.length);
+        buffer.unmap();
+        const batches = [...scene, ...overlays];
+        this._ensureBatchSlots(batches.length);
+        for (const [i, batch] of batches.entries()) this._writeBatchSlot(i, batch, { mark: i >= scene.length });
+        device.queue.writeBuffer(this._batchBuffer, 0, this._batchViews.buffer, 0, batches.length * BATCH_UNIFORM_STRIDE);
+        const target = this._createTarget(this.width, this.height, 'r32uint', { label: 'world-attribution' });
+        const pass = encoder.beginRenderPass({ colorAttachments: [{ view: target.view, loadOp: 'clear',
+            clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: 'store' }] });
+        pass.setBindGroup(0, this._frameBindGroup);
+        for (const [i, batch] of batches.entries()) {
+            if (!batch.albedoTexture) continue;
+            const mark = i >= scene.length;
+            pass.setPipeline(this._attributionPipelines[mark ? 2 : batch.cueRuns ? 1 : 0]);
+            pass.setVertexBuffer(0, buffer, mark ? sceneWords.byteLength : 0);
+            pass.setBindGroup(1, this._batchBindGroup(mark ? this._markRecordBuffer : this._recordBuffer, batch), [i * BATCH_UNIFORM_STRIDE]);
+            pass.draw(batch.cueRuns ? CUE_RUN_VERTICES : 4, batch.count, 0, batch.instanceOffset / RECORD_INSTANCE_BYTES);
+        }
+        pass.end();
+        return { texture: target.texture, buffer };
+    }
+
+    async _captureTargets(includeAttribution) {
+        const out = { scene: null, composite: null, emission: null, attribution: null, attributionFormat: null, formats: {}, width: this.width, height: this.height, rowOrder: 'top-left', channelOrder: 'rgba' };
         if (!this.isActive() || !this.sceneTarget) return out;
         const device = this.device;
         const width = this.width;
@@ -2132,6 +2193,14 @@ export class GpuWorldRendererWebGPU {
         ].filter(([, texture]) => texture);
         device.pushErrorScope('validation');
         const encoder = device.createCommandEncoder({ label: 'world-capture' });
+        let attribution;
+        try {
+            attribution = includeAttribution ? this._captureAttribution(encoder) : null;
+        } catch (error) {
+            await device.popErrorScope();
+            throw error;
+        }
+        if (attribution) sources.push(['attribution', attribution.texture, 'r32uint', true]);
         const reads = sources.map(([name, texture, format, glRows]) => {
             const texelBytes = format === 'rgba16float' ? 8 : 4;
             const pitch = Math.ceil(width * texelBytes / 256) * 256;
@@ -2140,6 +2209,9 @@ export class GpuWorldRendererWebGPU {
             return { name, buffer, format, texelBytes, pitch, glRows };
         });
         device.queue.submit([encoder.finish()]);
+        attribution?.texture.destroy();
+        attribution?.buffer.destroy();
+        if (attribution) this._trimTextureCache(this.frames);
         const error = await device.popErrorScope();
         for (const read of reads) {
             try {
@@ -2152,7 +2224,10 @@ export class GpuWorldRendererWebGPU {
                     const row = read.glRows ? height - 1 - y : y;
                     tight.set(mapped.subarray(row * read.pitch, row * read.pitch + rowBytes), y * rowBytes);
                 }
-                if (read.format === 'rgba16float') {
+                if (read.format === 'r32uint') {
+                    out.attribution = new Uint32Array(tight.buffer);
+                    out.attributionFormat = read.format;
+                } else if (read.format === 'rgba16float') {
                     out[read.name] = halfFloatsToFloat32(new Uint16Array(tight.buffer));
                 } else {
                     if (read.format === 'bgra8unorm') {
@@ -2170,6 +2245,9 @@ export class GpuWorldRendererWebGPU {
                 out[read.name] = null;
             }
             read.buffer.destroy();
+        }
+        if (includeAttribution && !out.attribution) {
+            throw new Error('Attribution capture failed: ' + (error?.message || 'unable to map the r32uint target'));
         }
         return out;
     }
@@ -2360,7 +2438,7 @@ export class GpuWorldRendererWebGPU {
         const atlasPages = [];
         for (const [name, entry] of this._textureEntries) {
             const bytes = entry.bytes || 0;
-            const pinned = entry.lastUsedFrame === this.frames;
+            const pinned = entry.lastUsedFrame >= this.frames && !evictableAgentTexture(name);
             if (pinned) pinnedSourceBytes += bytes;
             else evictableSourceBytes += bytes;
             if (name.includes('world-pilot') || name.includes('agent-frame-atlas')) {

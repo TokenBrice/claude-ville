@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import { collectSpriteEntries, loadSpriteManifest, pathForEntry, actionStripPathsForEntry, spritesRoot } from '../sprites/manifest-utils.mjs';
@@ -11,6 +11,10 @@ import { AgentSprite } from '../../claudeville/src/presentation/character-mode/A
 import { GPU_RECORD_FLAGS, normalizeGpuRecord } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import { packGeometryPixels } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
 import { stageGpuRecords, createRecordStaging } from '../../claudeville/src/presentation/character-mode/gpu/GpuRecordLayout.js';
+
+import { captureRecordWords, GpuWorldRenderer } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
+import { GpuWorldRendererWebGPU } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRendererWebGPU.js';
+import { encodeAttributionWord } from '../visual/attribution.mjs';
 
 const roster = collectSpriteEntries(loadSpriteManifest()).filter(e => e.id.startsWith('agent.') && e.materialSidecar);
 const read = path => PNG.sync.read(readFileSync(join(spritesRoot, path)));
@@ -79,10 +83,49 @@ test('the top/side rim stays off the hat contact edge and its two shadow rows by
     for (let y = 5; y <= 6; y++) for (let x = 3; x <= 9; x++) assert.deepEqual(rgba(x,y), [0,0,0,56]);
     for (let x = 0; x < w; x++) for (let y = 5; y < h; y++) assert.notEqual(rgba(x,y)[3], 128);
     for (let value = 0; value < 256; value++) assert.ok(Math.abs(Math.round(value*0.78)-Math.round(value*(1-56/255))) <= 1);
-    const names = ['seatBack', 'weaponBack', 'body', 'frost', 'snow', 'hat', 'weaponFront', 'seatFront'];
+    const names = ['seatBack', 'weaponBack', 'body', 'hat', 'frost', 'snow', 'weaponFront', 'seatFront'];
     const records = agentLayerRecords(Object.fromEntries(names.toReversed().map(name => [name, { name }])));
     assert.deepEqual(records.map(record => record.name), names);
-    assert.deepEqual(records.map(record => record.layer), [0, 1, 2, 3, 3, 4, 5, 6]);
+    assert.deepEqual(records.map(record => record.layer), [0, 1, 2, 3, 4, 4, 5, 6]);
+});
+
+test('every accessory keeps enclosed transparent components clear at both rim opacities', () => {
+    const files = readdirSync(join(spritesRoot, 'overlays')).filter(name => /^overlay\.accessory\..+\.png$/.test(name));
+    assert.ok(files.length > 0);
+    let holes = 0;
+    for (const file of files) {
+        const png = read('overlays/' + file);
+        const w = png.width + 2, h = png.height + 3;
+        const original = new Uint8ClampedArray(w*h*4);
+        for (let y = 0; y < png.height; y++) original.set(png.data.subarray(y*png.width*4, (y+1)*png.width*4), ((y+1)*w+1)*4);
+        const seen = new Set();
+        for (const alpha of [128, 116]) {
+            seen.clear();
+            const result = original.slice();
+            outlineHat(result, w, h, alpha);
+            for (let i = 0; i < w*h; i++) {
+                if (seen.has(i) || original[4*i+3] >= 16) continue;
+                const component = [i];
+                seen.add(i);
+                let enclosed = true;
+                for (const p of component) {
+                    const x = p%w, y = Math.floor(p/w);
+                    if (!x || x === w-1 || !y || y === h-1) enclosed = false;
+                    for (const [nx,ny] of [[x-1,y],[x+1,y],[x,y-1],[x,y+1]]) {
+                        const n = ny*w+nx;
+                        if (nx<0 || nx>=w || ny<0 || ny>=h || seen.has(n) || original[4*n+3]>=16) continue;
+                        component.push(n);
+                        seen.add(n);
+                    }
+                }
+                if (enclosed) {
+                    holes++;
+                    for (const p of component) assert.equal(result[p*4+3], original[p*4+3], file + ' at pixel ' + p);
+                }
+            }
+        }
+    }
+    assert.ok(holes > 0);
 });
 
 test('every LOD vote copies both channels from one original texel and outline writes leave its index zero', () => {
@@ -150,6 +193,20 @@ test('hard cache ceilings hold across five hot frames at 100 agents', t => {
     assert.ok(CANVAS_CELL_CACHE.entries.size >= 500 && stats.modelBaseBytes > 50*1024*1024);
     assert.ok(Math.max(...times)<16);
     t.diagnostic(`100 warm agents, max ${Math.max(...times).toFixed(3)} ms; ${stats.canvasCells} cells, ${stats.canvasCellBytes} bytes; model cache ${stats.modelBaseBytes} bytes`);
+
+    clearLayerCaches();
+    const strips = roster.map(({id}) => ({ image: assets.get(id), meta: { groups: { run: { rows: [1,6] } } } }));
+    let cells = 0;
+    for (let i = 0; i < agents.length; i++) {
+        const modelIndex = i % roster.length;
+        const strip = modelIndex < 11 ? null : strips[modelIndex];
+        const pose = { ...cell, sx: (i%8)*92, sy: (1+i%6)*92 };
+        const result = modelLayerSheet(assets, agents[i].model, strip, strip && 'run', null, packGeometryPixels, pose);
+        if (result.source.width === 92) cells++;
+        assert.ok(AgentSprite.sharedCacheStats().layerCacheBytes <= 83_886_080);
+    }
+    assert.ok(cells > 0, 'a mixed crowd falls back to active cells');
+    t.diagnostic(`100 mixed poses, 11 base models and 29 six-row groups: ${AgentSprite.sharedCacheStats().layerCacheBytes} bytes`);
 });
 
 test('the 72-byte scalar record preserves all eight extended flags and both adjacent metadata values', () => {
@@ -177,4 +234,38 @@ test('the 72-byte scalar record preserves all eight extended flags and both adja
     assert.equal(lut.rowFor({...identity,key:'overflow'}),0);
     lut.used.clear();
     assert.equal(lut.rowFor({...identity,key:'next'}),4);
+});
+
+test('capture words preserve frozen slots, attachments, skipped inputs and repeated mark instances', () => {
+    const body = { id: 'agent:team-head', layer: 2 };
+    const head = { id: 'agent:1-head', layer: 3 };
+    const raw = [{},body,head];
+    const normalized = raw.map((r,i) => normalizeGpuRecord(r,i));
+    const words = captureRecordWords(raw, normalized, [{records: normalized.slice(1)}]);
+    assert.deepEqual([...words], [
+        encodeAttributionWord({ recordIndex: 1, regionClass: 'agentBody', layerByte: 2 }),
+        encodeAttributionWord({ recordIndex: 2, regionClass: 'agentAttachment', layerByte: 3 }),
+    ]);
+    const mark = { id: 'mark:a', prenormalized: true };
+    const marks = [mark,mark];
+    assert.deepEqual([...captureRecordWords(marks, [], [{records: marks}], raw.length, true)],
+        [3,4].map(recordIndex => encodeAttributionWord({ recordIndex, regionClass: 'markOrOverlay' })));
+});
+
+test('both backends reclaim active model textures after submission to meet the total VRAM budget', () => {
+    const MiB = 1024*1024;
+    for (const Backend of [GpuWorldRenderer,GpuWorldRendererWebGPU]) {
+        const world = Object.assign(Object.create(Backend.prototype), {
+            frames: 1, _textureCacheNeedsTrim: true, _textureEntries: new Map(), _cachedTextureBytes: 0,
+            textureEvictions: 0, gl: { deleteTexture() {} }, _updateTextureBytes() {},
+        });
+        for (const [key, size] of [['world-pilot',110], ['agent-model:agent.codex.gpt54|base',15], ['material:agent.codex.gpt54|base',15]]) {
+            world._textureEntries.set(key, { bytes: size*MiB, texture: {}, lastUsedFrame: 2 });
+            world._cachedTextureBytes += size*MiB;
+        }
+        world.textureBytes = world._cachedTextureBytes + 40*MiB;
+        world._trimTextureCache();
+        assert.deepEqual([...world._textureEntries.keys()], ['world-pilot']);
+        assert.ok(world._cachedTextureBytes + 40*MiB <= 160*MiB);
+    }
 });

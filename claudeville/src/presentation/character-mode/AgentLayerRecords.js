@@ -72,7 +72,16 @@ export const agentPaletteLut = new AgentPaletteLutTable();
 
 // A record can still sample an evicted canvas until this frame is submitted.
 let frameEpoch = 0;
+const activeCellModels = new Map();
+
+// A sheet reclaimed after submission would otherwise be uploaded in full on
+// every frame. Keep sampling cells until this pose leaves the working set.
+export function preferAgentModelCells(textureKey) {
+    const key = textureKey.replace(/^(?:material:|emissive:|occluder:)?(?:agent-model:)?/, '');
+    if (key.startsWith('agent.') && key.includes('|') && !key.includes('|cell:')) activeCellModels.set(key, frameEpoch);
+}
 export function finishAgentLayerFrame() {
+    for (const [key, seen] of activeCellModels) if (seen < frameEpoch - 1) activeCellModels.delete(key);
     frameEpoch++;
 }
 
@@ -125,6 +134,27 @@ export const CANVAS_CELL_CACHE = new RasterCache(512, 16.5 * 1024 * 1024 / 4);
 const HAT_CACHE = new RasterCache(192, 65_536);
 const GEAR_CACHE = new RasterCache(320, 2_000_000);
 
+// Reserve the bounded pose tiles inside the same 80 MiB model budget.
+const MODEL_SHEET_CACHES = [MODEL_GROUP_STRIP_CACHE, MODEL_LOD_CACHE, MODEL_BASE_CACHE];
+const MODEL_SHEET_PIXELS = 80 * 1024 * 1024 / 4 - MODEL_TILE_CACHE.maxPixels;
+
+function admitModelSheet(cache, key, pixels, activeCell) {
+    if (cache.entries.has(key)) return true;
+    if (activeCell && !cache.canAdmitSheet(key, pixels)) return false;
+    let excess = MODEL_SHEET_CACHES.reduce((sum, store) => sum + store.pixels, pixels) - MODEL_SHEET_PIXELS;
+    for (const store of MODEL_SHEET_CACHES) {
+        if (excess <= 0) break;
+        for (const [oldest, entry] of store.entries) {
+            if (activeCell && entry.epoch >= frameEpoch - 1) break;
+            store.entries.delete(oldest);
+            store.pixels -= entry.pixels;
+            excess -= entry.pixels;
+            if (excess <= 0) break;
+        }
+    }
+    return excess <= 0;
+}
+
 function surface(width, height) {
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -172,7 +202,10 @@ export function modelLayerSheet(assets, model, strip, group, scrub, pack, active
     const planes = lod ? 0.5 : (emission && strip ? 3 : 2);
     // A crowded frame cannot keep 40 full pairs inside the byte cap. Keep
     // active cold cells shared by model and pose instead of evicting live sheets.
-    if (activeCell && !cache.canAdmitSheet(key, width * height * planes)) {
+    const gpuCell = activeCell && activeCellModels.has(key);
+    if (gpuCell || !admitModelSheet(cache, key, width * height * planes, activeCell)) {
+        if (gpuCell) activeCellModels.set(key, frameEpoch);
+        if (!activeCell) return null;
         x = activeCell.sx;
         y = activeCell.sy;
         width = height = cell;
@@ -300,13 +333,32 @@ export function outlineHat(data, w, h, rimAlpha = OUTLINE_ALPHA) {
     }
     const bounds = overlayOpaqueBounds(data, w, h);
     if (!bounds) return;
+    // The stamp has a transparent padded perimeter. Four-way reachability
+    // keeps the visor, wreath and other enclosed openings clear.
+    const exterior = new Uint8Array(w*h);
+    const queue = [];
+    function visit(i) {
+        if (!opaque[i] && !exterior[i]) {
+            exterior[i] = 1;
+            queue.push(i);
+        }
+    }
+    for (let x = 0; x < w; x++) { visit(x); visit((h-1)*w+x); }
+    for (let y = 1; y < h-1; y++) { visit(y*w); visit(y*w+w-1); }
+    for (let next = 0; next < queue.length; next++) {
+        const i = queue[next];
+        if (i % w) visit(i-1);
+        if (i % w < w-1) visit(i+1);
+        if (i >= w) visit(i-w);
+        if (i+w < exterior.length) visit(i+w);
+    }
     const inset = Math.floor((bounds.right-bounds.left+1)*0.15);
     for (let x = 0; x < w; x++) {
         const bottom = bottoms[x];
         const side = Math.max(bottoms[x-1] ?? -1, bottoms[x+1] ?? -1);
         for (let y = 0; y < h; y++) {
             const i = y*w+x;
-            if (opaque[i]) continue;
+            if (!exterior[i]) continue;
             if (bottom >= 0 && x >= bounds.left+inset && x <= bounds.right-inset && y > bottom && y <= bottom+2) {
                 data.set([0,0,0,56], 4*i);
             } else if (y <= (bottom < 0 ? side : bottom) && (opaque[i+w] || opaque[i-w] || (x && opaque[i-1]) || (x+1 < w && opaque[i+1]))) {
@@ -314,6 +366,22 @@ export function outlineHat(data, w, h, rimAlpha = OUTLINE_ALPHA) {
             }
         }
     }
+}
+
+// LampSilhouette samples alpha >= 0.3. Thresholding each attachment first
+// makes their union exactly the threshold of max(body, hat, weapons).
+function lampCoverage(image, width, height, x = 0, y = 0) {
+    let soft = false;
+    for (let i = 3; i < image.data.length; i += 4) {
+        if (image.data[i] > 0 && image.data[i] < 77) {
+            image.data[i] = 0;
+            soft = true;
+        }
+    }
+    if (!soft) return null;
+    const ctx = surface(width, height);
+    ctx.putImageData(image, -x, -y);
+    return ctx.canvas;
 }
 
 export function headLayer(compositor, model, accessory, palette, group, frame, dir, scale = 1, day = false) {
@@ -327,7 +395,7 @@ export function headLayer(compositor, model, accessory, palette, group, frame, d
     const key = [stamp.key, scale, day].join('|');
     const w = Math.ceil(stamp.image.width * scale), h = Math.ceil(stamp.height * scale);
     const width = w + 2, height = h + 3;
-    const source = HAT_CACHE.get(key, width * height, () => {
+    const source = HAT_CACHE.get(key, canvas => width * height * (canvas.__cvLampCoverage ? 2 : 1), () => {
         const ctx = surface(width, height);
         if (scale === 0.5) {
             const raw = surface(w * 2, h * 2);
@@ -339,6 +407,7 @@ export function headLayer(compositor, model, accessory, palette, group, frame, d
         const pixels = ctx.getImageData(0, 0, width, height);
         outlineHat(pixels.data, width, height, day ? DAY_RIM_ALPHA : scale === 1 ? OUTLINE_ALPHA : LOD_OUTLINE_ALPHA);
         ctx.putImageData(pixels, 0, 0);
+        if (!day) ctx.canvas.__cvLampCoverage = lampCoverage(pixels, width, height);
         return ctx.canvas;
     });
     const size = DEFAULT_CELL * scale;
@@ -369,6 +438,7 @@ function halfWeaponStamp(full, wrist, key) {
     const pixels = raw.getImageData(0, 0, 2 * w, 2 * h).data;
     downsampleMajorityWithChannels(pixels, 2 * w, dst.data, w, h, 2 * Math.max(w, h));
     ctx.putImageData(dst, 0, 0);
+    ctx.canvas.__cvLampCoverage = lampCoverage(dst, w, h);
     return { source: ctx.canvas, key, x: Math.round(wx / 2) + left, y: Math.round(wy / 2) + top };
 }
 
@@ -380,7 +450,7 @@ export function equipmentLayer(sprite, identity, geometry, layer) {
     const image = sprite._equipmentAssetId && sprite.assets?.get?.(sprite._equipmentAssetId);
     const key = [model, equipment, sprite.assets?.assetVersion, sourceGeneration(image),
         sprite.direction, cell.sx, cell.sy, poseGroup, poseFrame, drawScale, layer].join('|');
-    const stampPixels = stamp => stamp ? stamp.source.width * stamp.source.height : 0;
+    const stampPixels = stamp => stamp ? (stamp.source.__cvLampCoverage ? 2 : 1) * stamp.source.width * stamp.source.height : 0;
     return GEAR_CACHE.get(key, stampPixels, () => {
         if (drawScale === 0.5) {
             const full = equipmentLayer(sprite, identity, { ...geometry, drawScale: 1 }, layer);
@@ -393,11 +463,13 @@ export function equipmentLayer(sprite, identity, geometry, layer) {
         const size = Math.ceil(DEFAULT_CELL * drawScale) + 2 * pad;
         const ctx = surface(size, size);
         sprite._drawCodexEquipment(ctx, identity, { ...geometry, dx: pad, dy: pad }, layer);
-        const bounds = overlayOpaqueBounds(ctx.getImageData(0, 0, size, size).data, size, size);
+        const pixels = ctx.getImageData(0, 0, size, size);
+        const bounds = overlayOpaqueBounds(pixels.data, size, size);
         if (!bounds) return null;
         const width = bounds.right - bounds.left + 1;
         const height = bounds.bottom - bounds.top + 1;
         const cropped = slice(ctx.canvas, bounds.top, width, height, bounds.left);
+        cropped.canvas.__cvLampCoverage = lampCoverage(pixels, width, height, bounds.left, bounds.top);
         return { source: cropped.canvas, key, x: bounds.left - pad, y: bounds.top - pad };
     });
 }
@@ -413,8 +485,8 @@ export function layerRecord(body, stamp, name, g) {
 }
 
 const LAYER_ORDER = [
-    ['seatBack', 0], ['weaponBack', 1], ['body', 2], ['frost', 3], ['snow', 3],
-    ['hat', 4], ['weaponFront', 5], ['seatFront', 6], ['candle', 6], ['lantern', 6], ['tankard', 6],
+    ['seatBack', 0], ['weaponBack', 1], ['body', 2], ['hat', 3], ['frost', 4], ['snow', 4],
+    ['weaponFront', 5], ['seatFront', 6], ['candle', 6], ['lantern', 6], ['tankard', 6],
 ];
 
 export function agentLayerRecords(sources) {
@@ -438,6 +510,7 @@ export function layerCacheStats() {
     return {
         canvasCellBytes: CANVAS_CELL_CACHE.pixels * 4,
         canvasCells: CANVAS_CELL_CACHE.entries.size,
+        modelSheetBytes: MODEL_SHEET_CACHES.reduce((sum, store) => sum + store.pixels * 4, 0),
         modelBaseBytes: (MODEL_BASE_CACHE.pixels + MODEL_TILE_CACHE.pixels) * 4,
         layerCacheBytes: [MODEL_BASE_CACHE, MODEL_TILE_CACHE, MODEL_GROUP_STRIP_CACHE, MODEL_LOD_CACHE, CANVAS_CELL_CACHE, HAT_CACHE, GEAR_CACHE]
             .reduce((sum, store) => sum + store.pixels * 4, 0),
@@ -445,6 +518,7 @@ export function layerCacheStats() {
 }
 
 export function clearLayerCaches() {
+    activeCellModels.clear();
     for (const store of [MODEL_BASE_CACHE, MODEL_TILE_CACHE, MODEL_GROUP_STRIP_CACHE, MODEL_LOD_CACHE, CANVAS_CELL_CACHE, HAT_CACHE, GEAR_CACHE]) {
         store.entries.clear();
         store.pixels = 0;
@@ -458,10 +532,14 @@ export function avatarIdleCell(compositor, model, palette, variant, accessory, t
     const identity = paletteIdentity(model, variant, teamTrim, compositor.assets.palettes?.[palette]?.trim);
     const body = canvasPoseCell(compositor.assets, identity, source, { sx: 0, sy: WALK_FRAMES*size, sw: size, sh: size });
     const hat = headLayer(compositor, model, accessory, palette, 'idle', 0, 0, 1, true);
+    return bodyWithHead(body, hat);
+}
+
+export function bodyWithHead(body, hat) {
     if (!hat) return body;
     const key = [sourceGeneration(body), hat.key, hat.x, hat.y].join('|');
-    return CANVAS_CELL_CACHE.get(key, size*size, () => {
-        const ctx = surface(size,size);
+    return CANVAS_CELL_CACHE.get(key, body.width*body.height, () => {
+        const ctx = surface(body.width, body.height);
         ctx.drawImage(body,0,0);
         ctx.drawImage(hat.source, hat.sx, hat.sy, hat.sw, hat.sh, hat.x, hat.y, hat.sw, hat.sh);
         return ctx.canvas;

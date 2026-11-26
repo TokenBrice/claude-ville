@@ -1828,6 +1828,33 @@ function lampSilhouetteZoomGate(renderer) {
     return renderer?._lampSilhouetteGate === true;
 }
 
+const equippedLampMasks = new WeakMap();
+
+// The cast reader samples one rectangle. Include gear outside the body cell,
+// keeping the strongest coverage where two translucent rims overlap.
+function equippedLampRecord(sprite, body, layers, key) {
+    const x = Math.min(...layers.map(layer => layer.x - body.x));
+    const y = Math.min(...layers.map(layer => layer.y - body.y));
+    const width = Math.ceil(Math.max(...layers.map(layer => layer.x - body.x + layer.width)) - x);
+    const height = Math.ceil(Math.max(...layers.map(layer => layer.y - body.y + layer.height)) - y);
+    let mask = equippedLampMasks.get(sprite);
+    if (mask?.key !== key) {
+        const canvas = createAgentAtlasCanvas();
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        for (const layer of layers) {
+            const source = layer.source.__cvLampCoverage || layer.source;
+            ctx.drawImage(source, layer.sx, layer.sy, layer.sw, layer.sh,
+                layer.x - body.x - x, layer.y - body.y - y, layer.width, layer.height);
+        }
+        mask = { key, canvas };
+        equippedLampMasks.set(sprite, mask);
+    }
+    return { x: body.x + x, y: body.y + y, width, height, source: mask.canvas, sx: 0, sy: 0, sw: width, sh: height };
+}
+
 function insertLampSilhouetteRecords(renderer, records, at) {
     const strength = lookStrength('nl3');
     const level = renderer?.gpuWorld?._compositeQualityLevel ?? 0;
@@ -1839,18 +1866,29 @@ function insertLampSilhouetteRecords(renderer, records, at) {
     }
     const bodies = [];
     const frameKeys = renderer._gpuAgentAtlasFrameKeys;
+    let recordsById;
     for (const [agentId, sprite] of renderer.agentSprites) {
         const cast = lampSilhouetteFor(sprite);
         if (!cast) continue;
         const id = `agent:${agentId}`;
-        const record = records.find(r => r.id === id);
+        recordsById ??= new Map(records.map(record => [record.id, record]));
+        const record = recordsById.get(id);
         if (!record?.source || !(record.width > 0) || !(record.height > 0)) continue;
         // The frame in the body's atlas cell: its walk-strip key and frame,
         // else the packer's frame key for the slot.
-        const contentKey = record.walkStrip
+        let contentKey = record.walkStrip
             ? `w:${record.walkStrip.key}:${record.walkStrip.frame}:${record.sx},${record.sy}`
             : `f:${record.sharedLayer ? record.textureKey : frameKeys?.get(id) || ''}:${record.sx},${record.sy}`;
-        bodies.push({ agentId, sprite, record, cast, contentKey });
+        const attachments = ['-head', '-weapon-back', '-weapon-front']
+            .map(suffix => recordsById.get(id + suffix)).filter(layer => layer?.source);
+        let mask = record;
+        if (attachments.length) {
+            const layers = [record, ...attachments];
+            contentKey += JSON.stringify(layers.map(layer => [layer.textureKey, layer.sx, layer.sy, layer.sw,
+                layer.sh, layer.x - record.x, layer.y - record.y, layer.width, layer.height]));
+            mask = equippedLampRecord(sprite, record, layers, contentKey);
+        }
+        bodies.push({ agentId, sprite, record: mask, cast, contentKey });
     }
     const shadows = lampSilhouetteRecords(bodies, {
         strength,

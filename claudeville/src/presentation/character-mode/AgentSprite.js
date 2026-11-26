@@ -1,5 +1,5 @@
 import {
-    agentLayerRecords, canvasPoseCell, avatarIdleCell, equipmentLayer, headLayer, headPose, layerRecord,
+    agentLayerRecords, bodyWithHead, canvasPoseCell, avatarIdleCell, equipmentLayer, headLayer, headPose, layerRecord,
     modelLayerSheet, paletteIdentity, layerCacheStats, clearLayerCaches,
 } from './AgentLayerRecords.js';
 import { resolveObservation } from './ObservationCertainty.js';
@@ -4707,7 +4707,9 @@ export class AgentSprite {
 
         const layered = Boolean(this.compositor.accessoryImage && this.assets?.get);
         const modelSource = layered ? this.assets.get(spriteId) : null;
+        const accessorySource = layered && accessoryAssetId ? this.assets.get(accessoryAssetId) : null;
         if (!validSpriteSource(this.spriteCanvas) || this._spriteProfileKey !== profileKey
+            || (layered && accessorySource !== this._layerProfile?.accessorySource)
             || (modelSource && modelSource !== this.spriteCanvas)) {
             const profileRefs = ACTIVE_PROFILE_REFS.get(profileKey);
             // Plan 2.4 — the shared rim is baked into the sheet both backends
@@ -4733,7 +4735,8 @@ export class AgentSprite {
                 this._gpuBaseSpriteCanvas = baseCanvas;
                 this._layerProfile = layered ? {
                     palette: paletteIdentity(spriteId, variant, teamTrim, this.assets.palettes?.[paletteKey]?.trim),
-                    paletteKey, accessory, identity,
+                    paletteKey, accessory, identity, accessorySource,
+                    boundsKey: [spriteId, cleanupKey, accessory, sourceGeneration(accessorySource)].join('|'),
                 } : null;
                 if (layered) baseCanvas.__cvSourceGeneration ??= String(sourceGeneration(baseCanvas));
                 this._equipmentAssetId = equipmentAssetId;
@@ -4898,7 +4901,6 @@ export class AgentSprite {
         let pose = this._actionStripPose(identity, spriteId);
         let bodyCell = pose ? pose.cell : cell;
         const bodySource = pose ? pose.source : this.spriteCanvas;
-        const poseSource = pose ? pose.source : null;
         this._poseCell = {
             sx: bodyCell.sx,
             sy: bodyCell.sy,
@@ -4915,7 +4917,7 @@ export class AgentSprite {
             drawScale: 1,
         };
         const cellSize = this.spriteSheet?.cellSize || 92;
-        const bounds = this._getCellContentBounds(cell);
+        const bounds = this._getCellContentBounds(this._layerProfile ? bodyCell : cell, pose);
         // Explicit 0 / 0 / -1 / 0 breathing step keyed by `this.frame` (seeded
         // per agent via `_idlePhaseFrames`), replacing the sine rounding that
         // collapsed to 0 on every IDLE frame and scenic posture.
@@ -5048,45 +5050,49 @@ export class AgentSprite {
             if (layer?.canvas) ctx.drawImage(layer.canvas, dx, dy);
             else ctx.drawImage(bodySource, bodyCell.sx, bodyCell.sy, bodyCell.sw, bodyCell.sh, dx, dy, bodyCell.sw, bodyCell.sh);
         }
+        if (canvasBody && this._layerFrame?.hat) {
+            const hat = this._layerFrame.hat;
+            ctx.drawImage(hat.source, hat.sx, hat.sy, hat.sw, hat.sh, dx + hat.x, dy + hat.y, hat.sw, hat.sh);
+        }
         // Frozen/darkened body tint while rate-limited — static overlay, so it
         // reads identically under reduced motion. One owner per backend: this
         // Canvas blit, or the resident record `_frostTintRecord` lays over the
         // body from the same cell (VQ-9).
         const frozen = this.agent?.status === AgentStatus.RATE_LIMITED;
+        const snowSettled = this._snowSettled(zoom);
+        const weatherSource = this._layerProfile && (frozen || snowSettled)
+            ? this._dressedCell(bodyCell, pose) : pose?.source;
+        const weatherCell = this._layerProfile && weatherSource ? { ...bodyCell, sx: 0, sy: 0 } : bodyCell;
         const frost = frozen && !canvasBody ? (this._frostTintState ||= {}) : null;
         if (frost) {
-            frost.cell = bodyCell;
+            frost.cell = weatherCell;
             frost.dx = dx;
             frost.dy = dy;
-            frost.source = poseSource;
+            frost.source = weatherSource;
             frost.identity = identity;
             frost.frameGeometry = frameGeometry;
         }
         this._frostTint = frost;
-        if (frozen && canvasBody) this._drawFrozenTint(ctx, bodyCell, dx, dy, poseSource);
+        if (frozen && canvasBody) this._drawFrozenTint(ctx, weatherCell, dx, dy, weatherSource);
         // EF-6 — the snow course rides the cell it rests on: blitted here,
         // under the front gear, on Canvas; one resident record over the body
         // (`_snowCapRecord`) on the GPU path.
         let snow = null;
-        if (this._snowSettled(zoom)) {
+        if (snowSettled) {
             snow = this._snowCapState ||= {};
-            snow.cell = bodyCell;
-            snow.source = poseSource;
+            snow.cell = weatherCell;
+            snow.source = weatherSource;
             snow.dx = dx;
             snow.dy = dy;
             snow.identity = identity;
             snow.frameGeometry = frameGeometry;
             snow.frame = this._gpuFrameRecord;
             if (canvasBody) {
-                const stamp = this._snowCapCell(bodyCell, poseSource);
+                const stamp = this._snowCapCell(weatherCell, weatherSource);
                 if (stamp) ctx.drawImage(stamp, dx + stamp.__cvSnowX, dy + stamp.__cvSnowY);
             }
         }
         this._snowCap = snow;
-        if (canvasBody && this._layerFrame?.hat) {
-            const hat = this._layerFrame.hat;
-            ctx.drawImage(hat.source, hat.sx, hat.sy, hat.sw, hat.sh, dx + hat.x, dy + hat.y, hat.sw, hat.sh);
-        }
         if (canvasBody && !sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
         // 7.1 — the stone seat's front faces over the sitter's legs; 7.2 — the
         // petitioner's floor candle; the Tavern patron's tankard. All after
@@ -5908,23 +5914,19 @@ export class AgentSprite {
         this._layerFrame = null;
         let sheet = null;
         if (profile) {
-            const scrub = !pose && this._shouldScrubBakedCodexWeapon(profile.identity)
-                ? (ctx, w, h, x, y, size) => this._clearBakedCodexSidearmPixels(ctx, w, h, profile.identity.modelClass, x, y, size) : null;
+            const scrub = this._layerScrub(pose);
             if (this.gpuWorldEnabled) {
                 sheet = modelLayerSheet(this.assets, record.spriteId, pose?.strip, pose?.group, scrub, packGeometryPixels, pose?.cell || record.cell, record.lod);
             } else {
                 const cell = pose?.cell || record.cell;
-                const head = headPose(cell, pose?.group, pose?.strip?.meta.groups[pose.group].rows[0] || 0);
                 this._layerFrame = {
                     canvas: canvasPoseCell(this.assets, profile.palette, pose?.source || this.spriteCanvas, cell, pose?.strip, scrub),
-                    hat: headLayer(this.compositor, record.spriteId, profile.accessory, profile.paletteKey, head.group,
-                        head.frame, this.direction, record.drawScale, true),
+                    hat: this._cellHead(cell, pose, record.drawScale, true),
                 };
             }
         }
         if (sheet) {
             const original = pose?.cell || record.cell;
-            const head = headPose(original, pose?.group, pose?.strip?.meta.groups[pose.group].rows[0] || 0);
             const cell = { ...original, sx: original.sx - sheet.x, sy: original.sy - sheet.y };
             if (record.lod) {
                 cell.sx /= 2;
@@ -5932,8 +5934,7 @@ export class AgentSprite {
                 cell.sw /= 2;
                 cell.sh = Math.ceil(cell.sh/2);
             }
-            const hat = headLayer(this.compositor, record.spriteId, profile.accessory, profile.paletteKey,
-                head.group, head.frame, this.direction, record.drawScale);
+            const hat = this._cellHead(original, pose, record.drawScale, false);
             this._layerFrame = { hat, sheathed: pose?.strip?.meta?.grip?.sheathe && !(record.frameGeometry.poseFrame >= 0) };
             this.gpuOverlayRenderer.setFrameRecord({ ...record, layer: { sheet, cell, palette: profile.palette } });
         } else this.gpuOverlayRenderer.setFrameRecord(record);
@@ -5976,7 +5977,7 @@ export class AgentSprite {
     _getFrozenTintCell(cell, source = null, gear = null) {
         const sheet = source || this.spriteCanvas;
         if (!sheet) return null;
-        const key = `${source ? 'strip' : 'base'}:${cell.sx},${cell.sy},${cell.sw},${cell.sh}${gear ? ':gear' : ''}`;
+        const key = `${source?.__cvDressedKey || sourceGeneration(source)}:${cell.sx},${cell.sy},${cell.sw},${cell.sh}${gear ? ':gear' : ''}`;
         const cached = this._frozenTintCellCache.get(key);
         if (cached) return cached;
 
@@ -6037,7 +6038,7 @@ export class AgentSprite {
     _snowCapCell(cell, source = null, gear = null) {
         const sheet = source || this.spriteCanvas;
         if (!sheet) return null;
-        const key = `snow:${source ? 'strip' : 'base'}:${cell.sx},${cell.sy},${cell.sw},${cell.sh}${gear ? ':gear' : ''}`;
+        const key = `snow:${source?.__cvDressedKey || sourceGeneration(source)}:${cell.sx},${cell.sy},${cell.sw},${cell.sh}${gear ? ':gear' : ''}`;
         const cached = this._frozenTintCellCache.get(key);
         if (cached !== undefined) return cached;
         const scratch = document.createElement('canvas');
@@ -6109,16 +6110,41 @@ export class AgentSprite {
         return record;
     }
 
-    _getCellContentBounds(cell) {
+    _layerScrub(pose) {
+        const identity = this._layerProfile.identity;
+        return !pose && this._shouldScrubBakedCodexWeapon(identity)
+            ? (ctx, w, h, x, y, size) => this._clearBakedCodexSidearmPixels(ctx, w, h, identity.modelClass, x, y, size)
+            : null;
+    }
+
+    _cellHead(cell, pose, scale, day) {
+        const profile = this._layerProfile;
+        const head = headPose(cell, pose?.group, pose?.strip?.meta.groups[pose.group].rows[0] || 0);
+        const dir = Math.floor(cell.sx / DEFAULT_CELL);
+        return headLayer(this.compositor, profile.palette.model, profile.accessory, profile.paletteKey,
+            head.group, head.frame, dir, scale, day);
+    }
+
+    _dressedCell(cell, pose) {
+        const source = pose?.source || this.spriteCanvas;
+        const body = canvasPoseCell(this.assets, this._layerProfile.palette, source, cell, pose?.strip, this._layerScrub(pose));
+        const hat = this._cellHead(cell, pose, 1, true);
+        const dressed = bodyWithHead(body, hat);
+        dressed.__cvDressedKey = [sourceGeneration(source), cell.sx, cell.sy, cell.sh, hat?.key, hat?.x, hat?.y].join('|');
+        return dressed;
+    }
+
+    _getCellContentBounds(cell, pose = null) {
         if (!validSpriteSource(this.spriteCanvas)) return fallbackCellContentBounds(cell);
-        const key = `${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
+        const key = [cell.sx, cell.sy, cell.sw, cell.sh, pose?.group || '', sourceGeneration(pose?.source),
+            this.assets?.assetVersion].join(',');
         const cached = this._cellBoundsCache.get(key);
         if (cached) return cached;
-        const raw = measureCellContentBounds(this.spriteCanvas, cell, this._sheetContentKey());
-        const bounds = this._layerProfile ? sheetMetadataEntry(this.spriteCanvas, this._sheetContentKey(), 'rim:'+key, () => ({
-            minX: Math.max(0, raw.minX-1), minY: Math.max(0, raw.minY-1),
-            maxX: Math.min(cell.sw-1, raw.maxX+1), maxY: Math.min(cell.sh-1, raw.maxY+1),
-        })) : raw;
+        const contentKey = this._sheetContentKey();
+        const bounds = this._layerProfile
+            ? sheetMetadataEntry(pose?.source || this.spriteCanvas, contentKey, contentKey+'|'+key, () =>
+                measureCellContentBounds(this._dressedCell(cell, pose), { ...cell, sx: 0, sy: 0 }))
+            : measureCellContentBounds(this.spriteCanvas, cell, contentKey);
         this._cellBoundsCache.set(key, bounds);
         return bounds;
     }
@@ -6132,7 +6158,7 @@ export class AgentSprite {
     // measured metadata.
     _sheetContentKey() {
         const sourceGeneration = this.spriteCanvas?.__cvSourceGeneration;
-        return `${this._layerProfile?.palette.model || this._spriteProfileKey}|${this.assets?.assetVersion || 0}`
+        return `${this._layerProfile?.boundsKey || this._spriteProfileKey}|${this.assets?.assetVersion || 0}`
             + (sourceGeneration ? `|${sourceGeneration}` : '');
     }
 
@@ -6144,7 +6170,8 @@ export class AgentSprite {
         if (!validSpriteSource(this.spriteCanvas) || !this.spriteSheet) {
             return { cx2: DEFAULT_CELL - 1, maxY: DEFAULT_CELL - 18 };
         }
-        const key = FOOT_ANCHOR_KEYS[direction] ?? `anchor:${direction}`;
+        const anchorKey = FOOT_ANCHOR_KEYS[direction] ?? `anchor:${direction}`;
+        const key = this._layerProfile ? this._sheetContentKey()+anchorKey : anchorKey;
         return sheetMetadataEntry(this.spriteCanvas, this._sheetContentKey(), key, () => {
             const sheet = this.spriteSheet;
             const idle = this._getCellContentBounds(sheet.cell('idle', direction, 0));
