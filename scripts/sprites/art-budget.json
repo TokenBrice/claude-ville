@@ -263,6 +263,11 @@
     "agent.zai.glm": {
       "maxColours": 436,
       "maxTierA": 0.1906,
+      "legacyFeetAuditGroups": [
+        "gaze",
+        "strike",
+        "wait"
+      ],
       "reason": "pre-Wave-0 characters baseline; ratchet down on touch"
     },
     "agent.zai.glm.b": {

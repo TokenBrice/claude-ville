@@ -534,13 +534,16 @@ export function extractTelemetryBudgets(meta) {
     const out = {};
 
     const derivedCpuBytes = firstFinite(
-        leaves.cpuDerivedEstimateBytes,
         agentSprites.cpuDerivedEstimateBytes,
+        leaves.cpuDerivedEstimateBytes,
         budget.derivedCpuBytes,
     );
     if (derivedCpuBytes !== null) {
         out.derivedCpuBytes = derivedCpuBytes;
         out.derivedCpuCap = DEFAULT_TELEMETRY_CAPS.derivedCpuCap;
+    }
+    if (Number.isFinite(leaves.cpuDerivedEstimateBytes)) {
+        out.totalDerivedCpuBytes = leaves.cpuDerivedEstimateBytes;
     }
 
     const gpuOwnedBytes = firstFinite(

@@ -1,0 +1,6627 @@
+{
+  "schemaVersion": 1,
+  "caseId": "readme-night-1920x1080-webgpu",
+  "capturedAt": "2026-11-26T02:42:47.540Z",
+  "scenario": "readme-showcase",
+  "hour": 22,
+  "weather": "clear",
+  "zoom": 3,
+  "date": "2026-07-15",
+  "season": "summer",
+  "backend": "webgpu",
+  "backing": [
+    1680,
+    1032
+  ],
+  "dpr": 1,
+  "adapter": {
+    "vendor": "nvidia",
+    "architecture": "blackwell",
+    "fallback": false
+  },
+  "determinism": {
+    "selfStableBytes": true,
+    "ladderLevel": 0,
+    "nondeterministicMasks": []
+  },
+  "fence": {
+    "elapsedMs": 26,
+    "terrainKey": "-1640,-376,3280,2000@1|assets|season:summer|stage:summer|scenery:0|passes:ground-splat:sheetsw,coast-field:0:723:9:136:24:313|s0,coast-reflections:1:9:9:3,|retry:0",
+    "presentGeneration": 4,
+    "centerRgb": [
+      218,
+      164,
+      134
+    ],
+    "greenFillShare": 0,
+    "distinctInteriorColors": 147
+  },
+  "attributionFormat": "r32uint",
+  "recordsCount": 818,
+  "marksCount": 16,
+  "records": [
+    {
+      "index": 0,
+      "id": "terrain:static",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 1,
+      "id": "ground:offshore:prop.farShore.b",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 2,
+      "id": "ground:offshore:west.farShore.b",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 3,
+      "id": "ground:offshore:prop.farShore.a",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 4,
+      "id": "ground:offshore:prop.farHamlet",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 5,
+      "id": "ground:offshore:west.seaStack.a",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 6,
+      "id": "ground:offshore:prop.seaStack.a",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 7,
+      "id": "ground:offshore:prop.seaStack.c",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 8,
+      "id": "ground:offshore:prop.seaStack.b",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 9,
+      "id": "ground:offshore:prop.reefWreck",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 10,
+      "id": "ground:offshore:west.farShore.a",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 11,
+      "id": "ground:offshore:west.seaStack.c",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 12,
+      "id": "ground:offshore:prop.beaconRock",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 13,
+      "id": "ground:semantics",
+      "layer": 0,
+      "flags": 4
+    },
+    {
+      "index": 14,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 15,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 16,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 17,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 18,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 19,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 20,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 21,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 22,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 23,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 24,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 25,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 26,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 27,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 28,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 29,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 30,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 31,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 32,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 33,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 34,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 35,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 36,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 37,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 38,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 39,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 40,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 41,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 42,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 43,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 44,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 45,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 46,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 47,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 48,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 49,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 50,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 51,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 52,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 53,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 54,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 55,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 56,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 57,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 58,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 59,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 60,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 61,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 62,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 63,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 64,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 65,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 66,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 67,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 68,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 69,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 70,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 71,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 72,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 73,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 74,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 75,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 76,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 77,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 78,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 79,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 80,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 81,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 82,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 83,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 84,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 85,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 86,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 87,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 88,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 89,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 90,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 91,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 92,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 93,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 94,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 95,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 96,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 97,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 98,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 99,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 100,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 101,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 102,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 103,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 104,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 105,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 106,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 107,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 108,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 109,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 110,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 111,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 112,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 113,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 114,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 115,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 116,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 117,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 118,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 119,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 120,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 121,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 122,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 123,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 124,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 125,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 126,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 127,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 128,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 129,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 130,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 131,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 132,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 133,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 134,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 135,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 136,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 137,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 138,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 139,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 140,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 141,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 142,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 143,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 144,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 145,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 146,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 147,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 148,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 149,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 150,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 151,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 152,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 153,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 154,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 155,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 156,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 157,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 158,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 159,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 160,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 161,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 162,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 163,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 164,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 165,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 166,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 167,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 168,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 169,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 170,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 171,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 172,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 173,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 174,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 175,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 176,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 177,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 178,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 179,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 180,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 181,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 182,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 183,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 184,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 185,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 186,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 187,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 188,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 189,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 190,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 191,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 192,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 193,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 194,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 195,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 196,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 197,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 198,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 199,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 200,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 201,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 202,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 203,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 204,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 205,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 206,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 207,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 208,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 209,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 210,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 211,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 212,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 213,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 214,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 215,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 216,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 217,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 218,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 219,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 220,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 221,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 222,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 223,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 224,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 225,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 226,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 227,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 228,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 229,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 230,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 231,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 232,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 233,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 234,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 235,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 236,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 237,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 238,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 239,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 240,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 241,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 242,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 243,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 244,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 245,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 246,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 247,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 248,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 249,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 250,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 251,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 252,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 253,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 254,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 255,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 256,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 257,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 258,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 259,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 260,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 261,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 262,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 263,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 264,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 265,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 266,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 267,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 268,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 269,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 270,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 271,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 272,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 273,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 274,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 275,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 276,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 277,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 278,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 279,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 280,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 281,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 282,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 283,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 284,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 285,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 286,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 287,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 288,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 289,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 290,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 291,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 292,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 293,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 294,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 295,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 296,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 297,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 298,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 299,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 300,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 301,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 302,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 303,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 304,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 305,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 306,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 307,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 308,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 309,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 310,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 311,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 312,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 313,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 314,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 315,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 316,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 317,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 318,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 319,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 320,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 321,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 322,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 323,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 324,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 325,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 326,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 327,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 328,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 329,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 330,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 331,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 332,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 333,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 334,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 335,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 336,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 337,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 338,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 339,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 340,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 341,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 342,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 343,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 344,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 345,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 346,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 347,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 348,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 349,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 350,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 351,
+      "id": "ground:cue",
+      "layer": 0,
+      "flags": 128
+    },
+    {
+      "index": 352,
+      "id": "ground:lampshade:0",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 353,
+      "id": "ground:lampshade:1",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 354,
+      "id": "ground:lampshade:2",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 355,
+      "id": "ground:lampshade:3",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 356,
+      "id": "ground:building:archive",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 357,
+      "id": "ground:readme-onyx:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 358,
+      "id": "ground:readme-onyx:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 359,
+      "id": "ground:readme-lumen:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 360,
+      "id": "ground:readme-lumen:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 361,
+      "id": "ground:readme-tomo:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 362,
+      "id": "ground:readme-tomo:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 363,
+      "id": "ground:readme-iris:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 364,
+      "id": "ground:readme-iris:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 365,
+      "id": "ground:readme-sol:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 366,
+      "id": "ground:readme-sol:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 367,
+      "id": "ground:readme-sybil:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 368,
+      "id": "ground:readme-sybil:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 369,
+      "id": "ground:readme-argos:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 370,
+      "id": "ground:readme-argos:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 371,
+      "id": "ground:readme-pip:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 372,
+      "id": "ground:readme-pip:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 373,
+      "id": "ground:readme-hazel:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 374,
+      "id": "ground:readme-hazel:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 375,
+      "id": "ground:readme-sage:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 376,
+      "id": "ground:readme-sage:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 377,
+      "id": "ground:zai-glmth_mpb63pdk_1e8b50af:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 378,
+      "id": "ground:zai-glmth_mpb63pdk_1e8b50af:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 379,
+      "id": "ground:building:command",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 380,
+      "id": "ground:readme-juniper:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 381,
+      "id": "ground:readme-juniper:status",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 382,
+      "id": "ground:readme-kestrel:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 383,
+      "id": "ground:readme-kestrel:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 384,
+      "id": "ground:readme-lark:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 385,
+      "id": "ground:readme-lark:status",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 386,
+      "id": "ground:readme-flint:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 387,
+      "id": "ground:readme-flint:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 388,
+      "id": "ground:readme-moss:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 389,
+      "id": "ground:readme-moss:status",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 390,
+      "id": "ground:building:tavern",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 391,
+      "id": "ground:readme-rowan:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 392,
+      "id": "ground:readme-rowan:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 393,
+      "id": "ground:readme-cinder:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 394,
+      "id": "ground:readme-quill:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 395,
+      "id": "ground:building:mine",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 396,
+      "id": "ground:tree:15.95,28.7",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 397,
+      "id": "ground:tree:16.7,28",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 398,
+      "id": "ground:tree:17.6,27.4",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 399,
+      "id": "ground:readme-spark:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 400,
+      "id": "ground:readme-spark:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 401,
+      "id": "ground:tree:22.854085365335923,27.079082055532762",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 402,
+      "id": "ground:readme-tansy:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 403,
+      "id": "ground:readme-tansy:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 404,
+      "id": "ground:readme-basalt:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 405,
+      "id": "ground:readme-basalt:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 406,
+      "id": "ground:readme-terra:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 407,
+      "id": "ground:readme-terra:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 408,
+      "id": "ground:readme-ember:shadow",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 409,
+      "id": "ground:readme-ember:working",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 410,
+      "id": "ground:building:forge",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 411,
+      "id": "ground:building:taskboard",
+      "layer": 0,
+      "flags": 256
+    },
+    {
+      "index": 412,
+      "id": "ground:reflect:agent:readme-spark",
+      "layer": 2,
+      "flags": 16418
+    },
+    {
+      "index": 413,
+      "id": "cache-water:prop.runeFountain:16.2,20",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 414,
+      "id": "cache-water:prop.well:12.5,27.5",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 415,
+      "id": "cache-water:prop.runeFountain:1.15,19",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 416,
+      "id": "mirror-accent:watchtower:1",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 417,
+      "id": "mirror-accent:watchtower:-2",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 418,
+      "id": "mirror-accent:harbor:-1",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 419,
+      "id": "mirror-accent:forge:1",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 420,
+      "id": "mirror-accent:forge:2",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 421,
+      "id": "bridge-emitter:west-river-plank",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 422,
+      "id": "bridge-emitter:central-river-bridge",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 423,
+      "id": "cache-emitter:prop.lantern:12.5,35.4",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 424,
+      "id": "cache-emitter:prop.lantern:11.2,17.3",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 425,
+      "id": "cache-emitter:prop.lantern:24.75,19.5",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 426,
+      "id": "cache-emitter:prop.runeBrazier:12,18",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 427,
+      "id": "cache-emitter:prop.runeBrazier:26,32",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 428,
+      "id": "cache-emitter:prop.runeBrazier:1.9,18.25",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 429,
+      "id": "cache-emitter:prop.lantern:6,22",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 430,
+      "id": "cache-emitter:prop.lantern:14,30",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 431,
+      "id": "cache-emitter:prop.lantern:19,29",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 432,
+      "id": "cache-emitter:prop.lantern:20,32",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 433,
+      "id": "cache-emitter:prop.lantern:18,35",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 434,
+      "id": "cache-emitter:prop.lantern:18,37",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 435,
+      "id": "cache-emitter:prop.lantern:6,35",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 436,
+      "id": "cache-emitter:prop.lantern:9,36",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 437,
+      "id": "cache-emitter:prop.lantern:25,21",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 438,
+      "id": "cache-emitter:prop.lantern:10,12",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 439,
+      "id": "cache-emitter:prop.lantern:15,7",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 440,
+      "id": "cache-emitter:prop.lantern:23,13",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 441,
+      "id": "cache-emitter:prop.lantern:27,17",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 442,
+      "id": "cache-emitter:prop.lantern:30,30",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 443,
+      "id": "cache-emitter:prop.lantern:21,35",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 444,
+      "id": "cache-emitter:prop.lantern:16.5,26.4",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 445,
+      "id": "cache-emitter:prop.lantern:19.6,21.6",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 446,
+      "id": "prop:veg.reedClump:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 447,
+      "id": "prop:veg.cattailClump:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 448,
+      "id": "prop:veg.cattailClump:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 449,
+      "id": "building.archive:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 450,
+      "id": "building.archive:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 451,
+      "id": "building.archive:column:1:part:bellLouvre",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 452,
+      "id": "prop:veg.boulder.mossy.small:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 453,
+      "id": "building.archive:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 454,
+      "id": "building.archive:column:2:part:bellLouvre",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 455,
+      "id": "building.archive:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 456,
+      "id": "building.archive:column:3:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 457,
+      "id": "building.archive:column:16",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 458,
+      "id": "building.archive:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 459,
+      "id": "building.archive:column:4:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 460,
+      "id": "mist-halo:3",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 461,
+      "id": "building.archive:column:15",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 462,
+      "id": "building.archive:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 463,
+      "id": "building.archive:column:5:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 464,
+      "id": "building.archive:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 465,
+      "id": "agent:readme-onyx",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 466,
+      "id": "carried-lantern:readme-onyx",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 467,
+      "id": "building.archive:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 468,
+      "id": "building.archive:column:6:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 469,
+      "id": "building.archive:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 470,
+      "id": "building.archive:column:13:part:door",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 471,
+      "id": "building.archive:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 472,
+      "id": "building.archive:column:7:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 473,
+      "id": "building.archive:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 474,
+      "id": "building.archive:column:12:part:door",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 475,
+      "id": "agent:readme-lumen",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 476,
+      "id": "agent:readme-lumen-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 477,
+      "id": "carried-lantern:readme-lumen",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 478,
+      "id": "agent:readme-tomo",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 479,
+      "id": "agent:readme-tomo-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 480,
+      "id": "carried-lantern:readme-tomo",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 481,
+      "id": "building.archive:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 482,
+      "id": "building.archive:column:8:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 483,
+      "id": "building.archive:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 484,
+      "id": "building.archive:column:11:part:door",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 485,
+      "id": "building.archive:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 486,
+      "id": "building.archive:column:9:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 487,
+      "id": "building.archive:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 488,
+      "id": "building.archive:column:10:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 489,
+      "id": "agent:readme-iris",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 490,
+      "id": "carried-lantern:readme-iris",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 491,
+      "id": "agent:readme-sol",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 492,
+      "id": "carried-lantern:readme-sol",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 493,
+      "id": "agent:readme-sybil",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 494,
+      "id": "carried-lantern:readme-sybil",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 495,
+      "id": "agent:readme-argos",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 496,
+      "id": "carried-lantern:readme-argos",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 497,
+      "id": "agent:readme-pip",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 498,
+      "id": "carried-lantern:readme-pip",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 499,
+      "id": "agent:readme-hazel",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 500,
+      "id": "carried-lantern:readme-hazel",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 501,
+      "id": "agent:readme-sage",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 502,
+      "id": "carried-lantern:readme-sage",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 503,
+      "id": "agent:zai-glmth_mpb63pdk_1e8b50af",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 504,
+      "id": "agent:zai-glmth_mpb63pdk_1e8b50af-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 505,
+      "id": "carried-lantern:zai-glmth_mpb63pdk_1e8b50af",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 506,
+      "id": "building.command:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 507,
+      "id": "building.command:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 508,
+      "id": "building.command:column:1:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 509,
+      "id": "building.command:column:1:part:banner",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 510,
+      "id": "building.command:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 511,
+      "id": "building.command:column:2:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 512,
+      "id": "building.command:column:2:part:banner",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 513,
+      "id": "building.command:column:17",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 514,
+      "id": "building.command:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 515,
+      "id": "building.command:column:3:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 516,
+      "id": "building.command:column:3:part:gate",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 517,
+      "id": "building.command:column:3:part:banner",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 518,
+      "id": "building.command:column:16",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 519,
+      "id": "building.command:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 520,
+      "id": "building.command:column:4:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 521,
+      "id": "building.command:column:4:part:gate",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 522,
+      "id": "building.command:column:15",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 523,
+      "id": "building.command:column:15:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 524,
+      "id": "building.command:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 525,
+      "id": "building.command:column:5:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 526,
+      "id": "building.command:column:5:part:gate",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 527,
+      "id": "mist-halo:0",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 528,
+      "id": "building.command:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 529,
+      "id": "building.command:column:14:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 530,
+      "id": "agent:readme-juniper",
+      "layer": 2,
+      "flags": 24609
+    },
+    {
+      "index": 531,
+      "id": "agent:readme-juniper:queue-candle",
+      "layer": 6,
+      "flags": 8193
+    },
+    {
+      "index": 532,
+      "id": "agent:readme-kestrel",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 533,
+      "id": "carried-lantern:readme-kestrel",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 534,
+      "id": "agent:readme-lark",
+      "layer": 2,
+      "flags": 24609
+    },
+    {
+      "index": 535,
+      "id": "agent:readme-lark:queue-candle",
+      "layer": 6,
+      "flags": 8193
+    },
+    {
+      "index": 536,
+      "id": "building.command:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 537,
+      "id": "building.command:column:6:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 538,
+      "id": "building.command:column:6:part:gate",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 539,
+      "id": "mist-halo:8",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 540,
+      "id": "building.command:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 541,
+      "id": "building.command:column:13:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 542,
+      "id": "building.command:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 543,
+      "id": "building.command:column:7:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 544,
+      "id": "prop:calendar.harvest-pumpkins-civic:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 545,
+      "id": "building.command:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 546,
+      "id": "building.command:column:12:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 547,
+      "id": "agent:readme-flint",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 548,
+      "id": "agent:readme-flint-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 549,
+      "id": "carried-lantern:readme-flint",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 550,
+      "id": "agent:readme-moss",
+      "layer": 2,
+      "flags": 24609
+    },
+    {
+      "index": 551,
+      "id": "agent:readme-moss:queue-candle",
+      "layer": 6,
+      "flags": 8193
+    },
+    {
+      "index": 552,
+      "id": "building.command:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 553,
+      "id": "building.command:column:8:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 554,
+      "id": "mist-halo:7",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 555,
+      "id": "building.command:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 556,
+      "id": "building.command:column:11:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 557,
+      "id": "building.command:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 558,
+      "id": "building.command:column:9:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 559,
+      "id": "building.command:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 560,
+      "id": "building.command:column:10:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 561,
+      "id": "building.tavern:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 562,
+      "id": "building.tavern:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 563,
+      "id": "building.tavern:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 564,
+      "id": "building.tavern:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 565,
+      "id": "building.tavern:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 566,
+      "id": "building.tavern:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 567,
+      "id": "building.tavern:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 568,
+      "id": "building.tavern:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 569,
+      "id": "building.tavern:column:7:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 570,
+      "id": "prop:rest-seat.stool.tavern-bar-w.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 571,
+      "id": "agent:readme-rowan",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 572,
+      "id": "carried-lantern:readme-rowan",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 573,
+      "id": "prop:rest-seat.stool.tavern-bar-w.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 574,
+      "id": "building.tavern:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 575,
+      "id": "building.tavern:column:8:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 576,
+      "id": "building.tavern:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 577,
+      "id": "building.tavern:column:9:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 578,
+      "id": "prop:rest-seat.stool.tavern-bar-mid.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 579,
+      "id": "mist-halo:13",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 580,
+      "id": "prop:rest-seat.stool.tavern-bar-mid.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 581,
+      "id": "mist-halo:9",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 582,
+      "id": "building.tavern:column:17",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 583,
+      "id": "prop:tavern-arcade:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 584,
+      "id": "building.tavern:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 585,
+      "id": "building.tavern:column:10:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 586,
+      "id": "prop:tavern-arcade:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 587,
+      "id": "building.tavern:column:16",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 588,
+      "id": "building.tavern:column:16:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 589,
+      "id": "prop:tavern-arcade:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 590,
+      "id": "prop:tavern-arcade:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 591,
+      "id": "mist-halo:14",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 592,
+      "id": "building.tavern:column:15",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 593,
+      "id": "building.tavern:column:15:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 594,
+      "id": "prop:tavern-arcade:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 595,
+      "id": "prop:tavern-arcade:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 596,
+      "id": "building.tavern:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 597,
+      "id": "building.tavern:column:14:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 598,
+      "id": "prop:tavern-arcade:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 599,
+      "id": "mist-halo:10",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 600,
+      "id": "prop:tavern-arcade:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 601,
+      "id": "building.tavern:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 602,
+      "id": "building.tavern:column:13:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 603,
+      "id": "prop:tavern-arcade:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 604,
+      "id": "prop:tavern-arcade:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 605,
+      "id": "building.tavern:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 606,
+      "id": "building.tavern:column:12:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 607,
+      "id": "prop:tavern-arcade:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 608,
+      "id": "prop:tavern-arcade:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 609,
+      "id": "prop:bridge.rail.central-river-bridge:column:19",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 610,
+      "id": "prop:bridge.rail.central-river-bridge:column:20",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 611,
+      "id": "prop:bridge.rail.central-river-bridge:column:21",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 612,
+      "id": "prop:bridge.rail.central-river-bridge:column:22",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 613,
+      "id": "prop:bridge.rail.central-river-bridge:column:18",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 614,
+      "id": "building.tavern:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 615,
+      "id": "building.tavern:column:11:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 616,
+      "id": "prop:tavern-arcade:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 617,
+      "id": "mist-halo:6",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 618,
+      "id": "prop:bridge.rail.central-river-bridge:column:17",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 619,
+      "id": "prop:tavern-arcade:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 620,
+      "id": "prop:bridge.rail.central-river-bridge:column:16",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 621,
+      "id": "prop:tavern-arcade:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 622,
+      "id": "prop:bridge.rail.central-river-bridge:column:15",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 623,
+      "id": "prop:rest-seat.tavern.tavern-wall-w.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 624,
+      "id": "prop:tavern-arcade:column:15",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 625,
+      "id": "agent:readme-cinder",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 626,
+      "id": "agent:readme-cinder-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 627,
+      "id": "carried-lantern:readme-cinder",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 628,
+      "id": "agent:readme-cinder:tavern-tankard",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 629,
+      "id": "prop:rest-seat.tavern.tavern-wall-w.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 630,
+      "id": "prop:bridge.rail.central-river-bridge:column:14",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 631,
+      "id": "prop:tavern-arcade:column:16",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 632,
+      "id": "prop:bridge.rail.central-river-bridge:column:13",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 633,
+      "id": "prop:tavern-arcade:column:17",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 634,
+      "id": "mist-halo:11",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 635,
+      "id": "prop:bridge.rail.central-river-bridge:column:12",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 636,
+      "id": "prop:tavern-arcade:column:18",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 637,
+      "id": "mist-halo:5",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 638,
+      "id": "prop:bridge.rail.central-river-bridge:column:11",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 639,
+      "id": "prop:tavern-arcade:column:19",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 640,
+      "id": "prop:rest-seat.tavern.tavern-wall-e.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 641,
+      "id": "prop:rest-seat.tavern.tavern-yard-w.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 642,
+      "id": "agent:readme-quill",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 643,
+      "id": "carried-lantern:readme-quill",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 644,
+      "id": "agent:readme-quill:tavern-tankard",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 645,
+      "id": "prop:prop.mangroveRoot.twisted:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 646,
+      "id": "prop:rest-seat.tavern.tavern-wall-e.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 647,
+      "id": "prop:rest-seat.tavern.tavern-yard-w.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 648,
+      "id": "prop:bridge.rail.central-river-bridge:column:10",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 649,
+      "id": "prop:bridge.rail.central-river-bridge:column:9",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 650,
+      "id": "prop:bridge.rail.central-river-bridge:column:8",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 651,
+      "id": "mist-halo:12",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 652,
+      "id": "prop:bridge.rail.central-river-bridge:column:7",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 653,
+      "id": "prop:rest-seat.tavern.tavern-yard-mid.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 654,
+      "id": "prop:rest-seat.tavern.tavern-yard-mid.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 655,
+      "id": "prop:bridge.rail.central-river-bridge:column:6",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 656,
+      "id": "building.mine:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 657,
+      "id": "prop:bridge.rail.central-river-bridge:column:5",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 658,
+      "id": "prop:bridge.rail.central-river-bridge:column:4",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 659,
+      "id": "prop:fantasy.tree:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 660,
+      "id": "prop:fantasy.tree:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 661,
+      "id": "building.mine:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 662,
+      "id": "prop:bridge.rail.central-river-bridge:column:0",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 663,
+      "id": "prop:bridge.rail.central-river-bridge:column:1",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 664,
+      "id": "prop:bridge.rail.central-river-bridge:column:2",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 665,
+      "id": "prop:bridge.rail.central-river-bridge:column:3",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 666,
+      "id": "prop:rest-seat.tavern.tavern-yard-e.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 667,
+      "id": "prop:fantasy.tree:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 668,
+      "id": "prop:rest-seat.tavern.tavern-yard-e.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 669,
+      "id": "building.mine:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 670,
+      "id": "building.mine:column:2:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 671,
+      "id": "building.mine:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 672,
+      "id": "building.mine:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 673,
+      "id": "building.mine:column:3:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 674,
+      "id": "building.mine:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 675,
+      "id": "prop:prop.bridgeBannerRune:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 676,
+      "id": "building.mine:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 677,
+      "id": "building.mine:column:4:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 678,
+      "id": "building.mine:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 679,
+      "id": "building.mine:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 680,
+      "id": "building.mine:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 681,
+      "id": "prop:rest-seat.pier.harbor-pier.back:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 682,
+      "id": "prop:calendar.weekend-awning:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 683,
+      "id": "prop:rest-seat.pier.harbor-pier.front:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 684,
+      "id": "building.mine:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 685,
+      "id": "building.mine:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 686,
+      "id": "building.mine:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 687,
+      "id": "building.mine:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 688,
+      "id": "building.harbor:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 689,
+      "id": "building.harbor:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 690,
+      "id": "building.harbor:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 691,
+      "id": "building.harbor:column:15",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 692,
+      "id": "building.harbor:column:16",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 693,
+      "id": "building.harbor:column:17",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 694,
+      "id": "building.harbor:column:18",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 695,
+      "id": "building.harbor:column:19",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 696,
+      "id": "building.harbor:column:20",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 697,
+      "id": "building.harbor:column:21",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 698,
+      "id": "building.harbor:column:22",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 699,
+      "id": "building.harbor:column:23",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 700,
+      "id": "agent:readme-spark",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 701,
+      "id": "carried-lantern:readme-spark",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 702,
+      "id": "building.harbor:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 703,
+      "id": "building.harbor:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 704,
+      "id": "building.harbor:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 705,
+      "id": "building.harbor:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 706,
+      "id": "building.harbor:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 707,
+      "id": "building.harbor:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 708,
+      "id": "building.harbor:column:11:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 709,
+      "id": "building.harbor:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 710,
+      "id": "building.harbor:column:5:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 711,
+      "id": "building.harbor:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 712,
+      "id": "building.harbor:column:10:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 713,
+      "id": "prop:fantasy.tree:whole",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 714,
+      "id": "building.harbor:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 715,
+      "id": "building.harbor:column:6:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 716,
+      "id": "building.harbor:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 717,
+      "id": "building.harbor:column:9:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 718,
+      "id": "building.harbor:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 719,
+      "id": "building.harbor:column:7:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 720,
+      "id": "building.harbor:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 721,
+      "id": "building.harbor:column:8:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 722,
+      "id": "building.harbor:column:8:part:door",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 723,
+      "id": "prop:prop.villageGate:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 724,
+      "id": "agent:readme-tansy",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 725,
+      "id": "carried-lantern:readme-tansy",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 726,
+      "id": "mist-halo:2",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 727,
+      "id": "prop:prop.villageGate:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 728,
+      "id": "prop:prop.villageGate:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 729,
+      "id": "agent:readme-basalt",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 730,
+      "id": "agent:readme-basalt-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 731,
+      "id": "carried-lantern:readme-basalt",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 732,
+      "id": "agent:readme-terra",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 733,
+      "id": "carried-lantern:readme-terra",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 734,
+      "id": "mist-halo:17",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 735,
+      "id": "prop:prop.villageGate:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 736,
+      "id": "prop:prop.villageGate:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 737,
+      "id": "agent:readme-ember",
+      "layer": 2,
+      "flags": 16417
+    },
+    {
+      "index": 738,
+      "id": "agent:readme-ember-head",
+      "layer": 3,
+      "flags": 1
+    },
+    {
+      "index": 739,
+      "id": "carried-lantern:readme-ember",
+      "layer": 6,
+      "flags": 1
+    },
+    {
+      "index": 740,
+      "id": "prop:prop.villageGate:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 741,
+      "id": "building.forge:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 742,
+      "id": "prop:prop.villageGate:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 743,
+      "id": "building.forge:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 744,
+      "id": "mist-halo:15",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 745,
+      "id": "prop:prop.villageGate:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 746,
+      "id": "mist-halo:19",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 747,
+      "id": "building.forge:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 748,
+      "id": "building.forge:column:2:part:bellows",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 749,
+      "id": "prop:prop.villageGate:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 750,
+      "id": "building.forge:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 751,
+      "id": "building.forge:column:3:part:bellows",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 752,
+      "id": "building.forge:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 753,
+      "id": "prop:prop.villageGate:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 754,
+      "id": "mist-halo:18",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 755,
+      "id": "building.forge:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 756,
+      "id": "building.forge:column:4:part:bellows",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 757,
+      "id": "building.forge:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 758,
+      "id": "prop:prop.villageGate:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 759,
+      "id": "building.forge:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 760,
+      "id": "building.forge:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 761,
+      "id": "mist-halo:16",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 762,
+      "id": "prop:prop.villageGate:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 763,
+      "id": "building.forge:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 764,
+      "id": "building.forge:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 765,
+      "id": "mist-halo:1",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 766,
+      "id": "prop:prop.villageGate:column:12",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 767,
+      "id": "building.forge:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 768,
+      "id": "building.forge:column:7:forge-workload",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 769,
+      "id": "building.forge:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 770,
+      "id": "building.forge:column:10:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 771,
+      "id": "prop:prop.villageGate:column:13",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 772,
+      "id": "building.forge:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 773,
+      "id": "building.forge:column:8:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 774,
+      "id": "building.forge:column:8:forge-workload",
+      "layer": 0,
+      "flags": 1
+    },
+    {
+      "index": 775,
+      "id": "building.forge:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 776,
+      "id": "building.forge:column:9:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 777,
+      "id": "prop:prop.villageGate:column:14",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 778,
+      "id": "prop:prop.villageGate:column:15",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 779,
+      "id": "building.taskboard:column:0",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 780,
+      "id": "building.taskboard:column:0:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 781,
+      "id": "prop:prop.villageGate:column:16",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 782,
+      "id": "building.taskboard:column:1",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 783,
+      "id": "building.taskboard:column:1:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 784,
+      "id": "prop:prop.villageGate:column:17",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 785,
+      "id": "building.taskboard:column:2",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 786,
+      "id": "building.taskboard:column:2:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 787,
+      "id": "building.taskboard:column:11",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 788,
+      "id": "building.taskboard:column:11:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 789,
+      "id": "prop:prop.villageGate:column:18",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 790,
+      "id": "mist-halo:4",
+      "layer": 0,
+      "flags": 0
+    },
+    {
+      "index": 791,
+      "id": "building.taskboard:column:3",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 792,
+      "id": "building.taskboard:column:3:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 793,
+      "id": "building.taskboard:column:10",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 794,
+      "id": "building.taskboard:column:10:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 795,
+      "id": "prop:prop.villageGate:column:19",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 796,
+      "id": "building.taskboard:column:4",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 797,
+      "id": "building.taskboard:column:4:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 798,
+      "id": "building.taskboard:column:9",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 799,
+      "id": "building.taskboard:column:9:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 800,
+      "id": "prop:prop.villageGate:column:20",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 801,
+      "id": "building.taskboard:column:5",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 802,
+      "id": "building.taskboard:column:5:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 803,
+      "id": "building.taskboard:column:8",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 804,
+      "id": "building.taskboard:column:8:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 805,
+      "id": "prop:prop.villageGate:column:21",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 806,
+      "id": "building.taskboard:column:6",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 807,
+      "id": "building.taskboard:column:6:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 808,
+      "id": "building.taskboard:column:7",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 809,
+      "id": "building.taskboard:column:7:glass",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 810,
+      "id": "prop:prop.villageGate:column:22",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 811,
+      "id": "prop:prop.villageGate:column:23",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 812,
+      "id": "prop:prop.villageGate:column:24",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 813,
+      "id": "prop:prop.villageGate:column:25",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 814,
+      "id": "prop:prop.villageGate:column:26",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 815,
+      "id": "prop:prop.villageGate:column:27",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 816,
+      "id": "prop:prop.villageGate:column:28",
+      "layer": 0,
+      "flags": 17
+    },
+    {
+      "index": 817,
+      "id": "prop:prop.villageGate:column:29",
+      "layer": 0,
+      "flags": 17
+    }
+  ],
+  "telemetry": {
+    "canvasBudget": {
+      "budgets": {
+        "maxRendererCanvasPixels": 61000000,
+        "maxMainCanvasPixels": 7500000,
+        "maxScreenCachePixels": 7500000,
+        "maxWorldCachePixels": 7000000,
+        "maxLightCachePixels": 1250000,
+        "maxGpuResourceBytes": 134217728,
+        "maxUnifiedRendererBytes": 378217728
+      },
+      "dpr": 1,
+      "running": true,
+      "worldModeActive": true,
+      "worldResourcesSuspended": false,
+      "worldResumeInFlight": false,
+      "worldResumeFailures": 0,
+      "rafPending": false,
+      "visibleCanvasPixels": 1733760,
+      "volatile": {
+        "terrain": 0,
+        "sky": 1742832,
+        "trail": 0,
+        "postFxMask": 0,
+        "atmosphere": 0,
+        "lightGradients": 0,
+        "gpuAgentAtlas": 56355,
+        "gpuAgentMaterialAtlas": 0,
+        "gpuAgentEmissiveAtlas": 0,
+        "semanticGround": 433440,
+        "groundCueAtlas": 272384,
+        "shadeField": 0
+      },
+      "volatilePixels": 2505011,
+      "shadeFieldBufferBytes": 15138816,
+      "retainedAssetPixels": 164356,
+      "domCanvasPixels": 3467520,
+      "resources": {
+        "canvas": {
+          "visible": 13870080,
+          "volatile": 10020044,
+          "retained": 657424
+        },
+        "canvasBytes": 123738940,
+        "gpu": {
+          "textures": {
+            "gpuWorld.pinnedSources": 99576650,
+            "gpuWorld.evictableSources": 31384512,
+            "gpuWorld.albedoPage": 8388608,
+            "gpuWorld.radiance": 0
+          },
+          "attachments": {
+            "gpuWorld.presentation": 6935040,
+            "gpuWorld.sceneColor": 6935040,
+            "gpuWorld.sceneEmission": 6935040,
+            "gpuWorld.sceneDepth": 3467520,
+            "gpuWorld.bloomA": 975240,
+            "gpuWorld.bloomB": 975240
+          },
+          "buffers": {
+            "gpuWorld.vertices": 131072,
+            "gpuWorld.marks": 2048,
+            "gpuWorld.particles": 6720,
+            "gpuWorld.lights": 16384
+          },
+          "groupTotals": {
+            "textures": 139349770,
+            "attachments": 26223120,
+            "buffers": 156224
+          },
+          "totalBytes": 165729114,
+          "pinnedBytes": 134344602,
+          "evictableBytes": 31384512
+        },
+        "gpuBytes": 165729114,
+        "ownershipLeaves": {
+          "cpuDecodedEstimateBytes": 639202512,
+          "cpuDerivedEstimateBytes": 109868860,
+          "canvasVisibleEstimateBytes": 13870080,
+          "gpuOwnedBytes": 165729114
+        },
+        "totalBytes": 928670566,
+        "budgetBytes": 378217728
+      },
+      "cacheCounts": {
+        "lightGradients": 0,
+        "lightFadeColors": 0,
+        "lightColorRgb": 0,
+        "fantasyForestTrees": 21
+      },
+      "cacheStats": {
+        "assets": {
+          "bitmaps": 290,
+          "bitmapPixels": 22885007,
+          "masks": 9,
+          "maskBytes": 732480,
+          "outlines": 9,
+          "outlinePixels": 732480,
+          "companions": 147,
+          "companionPixels": 60334245,
+          "atlasImages": 4,
+          "atlasPixels": 14354048,
+          "atlasMetadata": 1,
+          "materialTextureBytes": 298753172,
+          "missing": 0,
+          "optionalMissing": 0,
+          "decodedLoaded": true,
+          "materialAssetsEnabled": true,
+          "materialDecodedLoaded": true,
+          "suspended": false,
+          "loadInFlight": false,
+          "decodePasses": 1
+        },
+        "compositor": {
+          "entries": 0,
+          "pixels": 0,
+          "entryLimit": 24,
+          "pixelLimit": 12500000
+        },
+        "agentSprites": {
+          "processedSpriteSheets": 0,
+          "processedSpritePixels": 0,
+          "processedSpriteEntryLimit": 37,
+          "processedSpritePixelLimit": 12500000,
+          "codexEquipmentAssets": 0,
+          "codexEquipmentPixels": 0,
+          "codexEquipmentEstimateBytes": 0,
+          "canvasCellBytes": 15980032,
+          "canvasCells": 472,
+          "modelSheetBytes": 62295040,
+          "modelBaseBytes": 18146816,
+          "layerCacheBytes": 80288608,
+          "gpuEquippedSheetPixelLimit": 0,
+          "gpuEquippedSheets": 0,
+          "gpuEquippedSheetEstimateBytes": 0,
+          "gpuEquippedMaxComposeMs": 0,
+          "packedGeometrySheets": 0,
+          "packedGeometryEstimateBytes": 0,
+          "processedSpriteEstimateBytes": 0,
+          "compositorEstimateBytes": 0,
+          "privateDerivedEstimateBytes": 101568,
+          "gpuAgentMaterialAtlasEstimateBytes": 0,
+          "gpuAgentEmissiveAtlasEstimateBytes": 0,
+          "cpuDerivedEstimateBytes": 80390176,
+          "ownership": {
+            "compositorSpriteSheets": {
+              "ownershipClass": "CPU-derived",
+              "estimateBytes": 0
+            },
+            "processedSpriteSheets": {
+              "ownershipClass": "CPU-derived",
+              "estimateBytes": 0
+            },
+            "codexEquipmentCanvases": {
+              "ownershipClass": "CPU-derived",
+              "estimateBytes": 0
+            },
+            "agentLayerSheets": {
+              "ownershipClass": "CPU-derived",
+              "estimateBytes": 80288608
+            },
+            "packedGeometrySheets": {
+              "ownershipClass": "CPU-derived",
+              "estimateBytes": 0
+            },
+            "perSpriteEffectCells": {
+              "ownershipClass": "CPU-derived",
+              "estimateBytes": 101568
+            },
+            "gpuAgentMaterialAtlas": {
+              "ownershipClass": "CPU-derived",
+              "estimateBytes": 0
+            },
+            "gpuAgentEmissiveAtlas": {
+              "ownershipClass": "CPU-derived",
+              "estimateBytes": 0
+            }
+          },
+          "activeProfileKeys": [
+            "agent.claude.fable|claude|8|_|_|raw|#bb9587",
+            "agent.claude.haiku|claude|1|_|_|raw|_",
+            "agent.claude.haiku|claude|8|_|_|raw|#bb9587",
+            "agent.claude.mythos|claude|2|_|_|raw|_",
+            "agent.claude.opus.b|claude|11|_|_|raw|_",
+            "agent.claude.opus.b|claude|5|_|_|raw|_",
+            "agent.claude.sonnet|claude|11|_|_|raw|_",
+            "agent.claude.sonnet|claude|1|_|_|raw|#bb9587",
+            "agent.claude.sonnet|claude|3|_|_|raw|_",
+            "agent.codex.gpt53spark|codex|7|_|multitool|raw|_",
+            "agent.codex.gpt54|codex|10|_|engineerWrench|raw|_",
+            "agent.codex.gpt55|codex|1|_|runeblade|raw|_",
+            "agent.codex.gpt55|codex|9|_|runeblade|raw|_",
+            "agent.codex.gpt56luna.b|codex|3|_|crescentSaber|raw|_",
+            "agent.codex.gpt56sol.b|codex|3|_|dawnblade|raw|_",
+            "agent.codex.gpt56terra|codex|6|_|earthbreaker|raw|_",
+            "agent.codex.gpt6astra|codex|1|_|worldsplitter|raw|_",
+            "agent.codex.gpt6astra|codex|9|effortXhigh|worldsplitter|raw|_",
+            "agent.deepseek.flash.high|deepseek|2|_|_|raw|_",
+            "agent.deepseek.flash.xhigh|deepseek|3|effortMax|_|raw|_",
+            "agent.deepseek.flash|deepseek|4|_|_|raw|_",
+            "agent.deepseek.pro|deepseek|4|_|_|raw|_",
+            "agent.deepseek.reasoner|deepseek|9|_|_|raw|_",
+            "agent.gemini.argon|gemini|0|_|_|raw|_",
+            "agent.gemini.base|gemini|11|_|_|raw|_",
+            "agent.gemini.base|gemini|2|_|_|raw|_",
+            "agent.gemini.carbon|gemini|5|_|_|raw|_",
+            "agent.gemini.flash|gemini|1|_|_|raw|_",
+            "agent.gemini.neon|gemini|8|effortXhigh|_|raw|_",
+            "agent.grok.base|grok|4|biretta|_|raw|_",
+            "agent.grok.base|grok|5|hornedHelm|_|raw|_",
+            "agent.grok.composer|grok|11|laurelCrown|_|raw|_",
+            "agent.kimi.base|kimi|8|wingedHelm|_|raw|_",
+            "agent.kimi.base|kimi|9|wingedHelm|_|raw|_",
+            "agent.zai.flash|zai|11|_|_|raw|_",
+            "agent.zai.glm.b|zai|7|_|_|raw|_",
+            "agent.zai.glm|zai|8|effortMax|_|raw|_"
+          ],
+          "selectedProfilePins": [],
+          "primaryProfilePins": [
+            "agent.claude.opus.b|claude|5|_|_|raw|_",
+            "agent.codex.gpt55|codex|1|_|runeblade|raw|_",
+            "agent.zai.flash|zai|11|_|_|raw|_"
+          ],
+          "sharedDerivedHighWaterEstimateBytes": 201326592,
+          "toolClassifications": 22
+        }
+      },
+      "gpu": {
+        "backend": "webgpu",
+        "adapter": {
+          "vendor": "nvidia",
+          "architecture": "blackwell",
+          "device": "",
+          "description": "",
+          "isFallbackAdapter": false
+        },
+        "recordStride": 72,
+        "deviceLost": null,
+        "failure": null,
+        "deviceRebuilds": 0,
+        "deviceRebuildError": null,
+        "initError": null,
+        "radianceBounce": false,
+        "timestamps": {
+          "supported": true,
+          "pending": 0,
+          "errors": 0,
+          "dropped": 0,
+          "samples": 3,
+          "gpuMs": 0.90333856,
+          "gpuMsP25": 0.60544
+        },
+        "supported": true,
+        "active": true,
+        "contextHealthy": true,
+        "suspended": false,
+        "width": 1680,
+        "height": 1032,
+        "frames": 10,
+        "skippedFrames": 0,
+        "records": 818,
+        "batches": 318,
+        "markRecords": 16,
+        "markRoleRecords": 7,
+        "lateMarkRecords": 0,
+        "lateMarkRoleRecords": 0,
+        "hdrEnabled": false,
+        "hdrMode": "subtle",
+        "hdrReason": "SDR screen",
+        "hdrGains": null,
+        "dynamicRangeHigh": false,
+        "colorGamutP3": false,
+        "p3Enabled": false,
+        "canvasFormat": "rgba8unorm",
+        "canvasColorSpace": "srgb",
+        "canvasToneMapping": "standard",
+        "emissionFormat": "rgba8unorm",
+        "displayError": null,
+        "uncapturedErrors": 0,
+        "lastUncapturedError": null,
+        "lights": 72,
+        "localLightPhase": 1,
+        "exposureBucket": "deep-night",
+        "wetReflections": 0,
+        "gradeKey": "blue-hour>night",
+        "gradeExposure": 0.750249167236455,
+        "cloudCourses": 3,
+        "aerialHaze": 0.020679608373703452,
+        "uploads": 640,
+        "uploadBytes": 226087272,
+        "uploadBytesByKind": {
+          "wholeImages": 215727140,
+          "imagePatches": 0,
+          "albedoPage": 3641028,
+          "typedFields": 6620800,
+          "lightRecords": 98304
+        },
+        "sceneTextureBindings": {
+          "groupsBound": 318,
+          "records": {
+            "albedoPage": 110,
+            "pilotAtlas": 141,
+            "agentAtlas": 0,
+            "cueAtlas": 338,
+            "other": 229
+          }
+        },
+        "skippedOccluderUploads": 138,
+        "uploadMs": 52.145730900000004,
+        "cpuMs": 60.67014959999999,
+        "shaderCpuMs": 8.524418700000002,
+        "gpuMs": 0.90333856,
+        "gpuMsP25": 0.60544,
+        "gpuTimerSamples": 3,
+        "gpuTimerEvery": 4,
+        "gpuTimerSupported": true,
+        "gpuTimerExtension": "timestamp-query",
+        "gpuTimerPendingQueries": 0,
+        "gpuTimerErrors": 0,
+        "gpuDisjointDiscards": 0,
+        "passSamplingEnabled": false,
+        "passes": {
+          "upload": {
+            "gpuMs": null,
+            "cpuMs": null,
+            "draws": null,
+            "bytes": null,
+            "samples": 0
+          },
+          "scene": {
+            "gpuMs": null,
+            "cpuMs": null,
+            "draws": null,
+            "bytes": null,
+            "samples": 0
+          },
+          "bloom": {
+            "gpuMs": null,
+            "cpuMs": null,
+            "draws": null,
+            "bytes": null,
+            "samples": 0
+          },
+          "present": {
+            "gpuMs": null,
+            "cpuMs": null,
+            "draws": null,
+            "bytes": null,
+            "samples": 0
+          }
+        },
+        "qualityTimingSource": "gpu-timer",
+        "frameGapMs": 63.657028100000005,
+        "textureBytes": 158637850,
+        "residentTextureBytes": 158637850,
+        "cachedTextureBytes": 130961162,
+        "cachedTextureCapBytes": 167411712,
+        "cachedTextureCapExceeded": false,
+        "cachedTextures": 144,
+        "albedoPage": {
+          "layers": 2,
+          "bytes": 8388608,
+          "entries": 173,
+          "liveEntries": 77,
+          "pagedRecords": 110,
+          "overflowRecords": 0,
+          "fill": 0.129,
+          "repacks": 1,
+          "uploads": 250,
+          "uploadBytes": 3641028
+        },
+        "radiance": {
+          "supported": false,
+          "override": null,
+          "reason": "not ported to WebGPU (Stage A declared exclusion)"
+        },
+        "textureEvictions": 85,
+        "maxCachedTextureBytes": 167411712,
+        "maxCachedTextures": 512,
+        "materialAttachments": 2,
+        "particleInstances": 0,
+        "footprintMarchSteps": 8,
+        "bloomScale": 0.375,
+        "qualityLevel": 0,
+        "qualityReason": "override",
+        "shedEffects": [],
+        "shedReason": "override",
+        "qualityDegradationReason": null,
+        "qualityTransitionReason": null,
+        "qualityTransitionAtMs": null,
+        "qualityTransitionMetrics": null,
+        "qualityTransitions": 0,
+        "pacing": {
+          "refreshHz": null,
+          "periodMs": null,
+          "budgetMs": 8.333333333333334,
+          "timerVeto": "under-budget",
+          "missShare": 0,
+          "intervals": 0,
+          "window": 60,
+          "pending": null,
+          "pacedLevel": 2,
+          "coolDownUntilMs": null,
+          "nextProbeAtMs": null,
+          "sampledAtMs": 3795
+        },
+        "lightAdmission": {
+          "cap": 128,
+          "admitted": 72,
+          "offered": 75,
+          "culled": 14,
+          "overCap": 0,
+          "tileFull": 3,
+          "maxPerTile": 24,
+          "clusters": true,
+          "tiles": 459,
+          "daylight": false
+        },
+        "debugLoad": null,
+        "resources": {
+          "textures": {
+            "pinnedSources": 99576650,
+            "evictableSources": 31384512,
+            "albedoPage": 8388608,
+            "radiance": 0
+          },
+          "pinnedBytes": 134344602,
+          "evictableBytes": 31384512,
+          "totalBytes": 165729114,
+          "atlasPages": [
+            {
+              "name": "world-pilot",
+              "width": 2032,
+              "height": 1766,
+              "bytes": 14354048,
+              "pinned": true
+            },
+            {
+              "name": "material:world-pilot:channels",
+              "width": 2032,
+              "height": 1766,
+              "bytes": 14354048,
+              "pinned": true
+            },
+            {
+              "name": "emissive:world-pilot:channels",
+              "width": 2032,
+              "height": 1766,
+              "bytes": 14354048,
+              "pinned": true
+            },
+            {
+              "name": "occluder:world-pilot:channels",
+              "width": 2032,
+              "height": 1766,
+              "bytes": 14354048,
+              "pinned": true
+            }
+          ],
+          "liveBodyAtlas": null,
+          "cachedSourceOverageBytes": 0,
+          "attachments": {
+            "presentation": 6935040,
+            "sceneColor": 6935040,
+            "sceneEmission": 6935040,
+            "sceneDepth": 3467520,
+            "bloomA": 975240,
+            "bloomB": 975240
+          },
+          "buffers": {
+            "vertices": 131072,
+            "marks": 2048,
+            "particles": 6720,
+            "lights": 16384
+          }
+        },
+        "atlasRecords": 141,
+        "individualRecords": 677,
+        "sourceBatchCount": 318,
+        "sourceUploadBytes": 226054504
+      },
+      "terrainCache": {
+        "strategy": "single-surface",
+        "mapSize": 40,
+        "chunkSize": 16,
+        "chunksX": 3,
+        "chunksY": 3,
+        "chunkCount": 9,
+        "singleSurfacePixels": 6560000,
+        "maxSingleSurfacePixels": 7000000,
+        "singleSurfaceWithinBudget": true,
+        "retainedPixels": 0,
+        "artifact": {
+          "reads": 1,
+          "hits": 0,
+          "misses": 1,
+          "bakes": 1,
+          "writes": 1,
+          "state": "baked",
+          "pendingWritePixels": 0,
+          "readyPixels": 0
+        }
+      },
+      "runtime": {
+        "frameFailures": {
+          "total": 0,
+          "consecutive": 0,
+          "lastStage": null,
+          "lastMessage": null,
+          "lastAt": 0,
+          "lastReportedAt": null,
+          "byStage": {},
+          "paused": false,
+          "reportIntervalMs": 5000,
+          "maxConsecutive": 3
+        },
+        "boundedState": {
+          "lightFadeColors": 0,
+          "lightFadeColorLimit": 1024,
+          "lightFadeColorEvictions": 0,
+          "lightColorRgbEntries": 0,
+          "lightColorRgbLimit": 256,
+          "lightColorRgbEvictions": 0,
+          "crowdBumpCooldowns": 0,
+          "crowdBumpCooldownLimit": 512,
+          "nicknames": 1,
+          "nicknameLimit": 256,
+          "liveSpriteCanvases": 28,
+          "liveSpriteCanvasPixels": 18959360
+        },
+        "waterDescriptors": {
+          "total": 701,
+          "canvasWater": null
+        },
+        "harbor": {
+          "stateVersion": 1,
+          "stateReductions": 1,
+          "unchangedReconciliations": 1,
+          "sourceNormalizations": 1,
+          "sourceCacheHits": 1,
+          "animationAdvances": 6,
+          "semanticReconciliations": 2,
+          "rawEventCount": 5,
+          "normalizedEventCount": 5,
+          "seenEventIds": 5,
+          "maxSeenEventIds": 2048,
+          "pushEvents": 0,
+          "maxPushEvents": 1024,
+          "ships": 5,
+          "maxShips": 2048,
+          "batches": 0,
+          "maxBatches": 512,
+          "repoQuays": 2,
+          "maxRepoQuays": 512,
+          "eventTombstones": 0,
+          "maxEventTombstones": 4096,
+          "commitReplayFloors": 0,
+          "maxCommitReplayFloors": 1024,
+          "overflowDockCounts": 0,
+          "maxOverflowDockCounts": 512,
+          "overflowDockedCommits": 0,
+          "harborCrates": 0,
+          "storageTransfers": 0,
+          "activeRepoAnchorages": 4,
+          "repoFirstSeen": 4,
+          "maxRepoFirstSeen": 512,
+          "cleanLabelCache": 5,
+          "cleanLabelCacheLimit": 512
+        },
+        "trails": {
+          "capturedSamples": 37,
+          "hydratedSamples": 0,
+          "duplicateDrops": 0,
+          "malformedDrops": 0,
+          "pendingDrops": 0,
+          "compactedSamples": 0,
+          "prunedSamples": 0,
+          "pruneRuns": 1,
+          "repaintCount": 0,
+          "repaintTimeMs": 0,
+          "directDrawCount": 0,
+          "directDrawTimeMs": 0,
+          "cacheDrawCount": 0,
+          "cacheDrawTimeMs": 0,
+          "selectedOverlayDraws": 0,
+          "actionOverlayDraws": 0,
+          "highWaterSamples": 37,
+          "highWaterCachePixels": 0,
+          "oversizedCacheFallbacks": 0,
+          "cameraMotion": {
+            "stationary": {
+              "frames": 5,
+              "drawTimeMs": 0,
+              "repaintCount": 0,
+              "repaintTimeMs": 0
+            },
+            "manual-pan": {
+              "frames": 1,
+              "drawTimeMs": 0,
+              "repaintCount": 0,
+              "repaintTimeMs": 0
+            },
+            "follow": {
+              "frames": 0,
+              "drawTimeMs": 0,
+              "repaintCount": 0,
+              "repaintTimeMs": 0
+            },
+            "director-glide": {
+              "frames": 0,
+              "drawTimeMs": 0,
+              "repaintCount": 0,
+              "repaintTimeMs": 0
+            }
+          },
+          "totalSamples": 37,
+          "agentsWithSamples": 37,
+          "pendingSamples": 0,
+          "paused": false,
+          "loaded": true,
+          "perAgentLimit": 720,
+          "globalLimit": 12000,
+          "pendingLimit": 4000,
+          "renderPerAgentLimit": 240,
+          "renderGlobalLimit": 4000,
+          "directRenderLimit": 512,
+          "actionRenderLimit": 12,
+          "minimumDistanceTiles": 0.2,
+          "cacheSpace": "none",
+          "cacheBounds": null,
+          "cameraMotionMode": "stationary",
+          "renderPolicy": {
+            "historicalMode": "none",
+            "cacheSpace": "none",
+            "repaintOnCameraMotion": false,
+            "historicalVisibility": "hidden",
+            "selectedMode": "none",
+            "actionNeededMode": "recent-direct-overlay"
+          }
+        },
+        "events": {
+          "snapshots": 37,
+          "chatPairs": 0,
+          "emittedToolKeys": 21,
+          "emittedToolAgents": 21,
+          "maxEmittedToolKeysPerAgent": 32,
+          "maxEmittedToolKeysTotal": 2048,
+          "observedResultAgents": 0,
+          "openMends": 0,
+          "maxObservedResultIdsPerAgent": 16
+        },
+        "landmarks": {
+          "items": 16,
+          "seenSnapshots": 16,
+          "previousTokenTotals": 37,
+          "previousTokenClassTotals": 37,
+          "lastForgeAgents": 9,
+          "archiveReadKeys": 7,
+          "assaySessions": 37,
+          "forgeEditKeys": 4,
+          "retainedAgentSprites": 37,
+          "disposed": false
+        },
+        "monuments": {
+          "records": 0,
+          "seenCommitIds": 5,
+          "planterSeen": 0,
+          "christenedRepos": 4,
+          "releaseCrown": null,
+          "activeBanners": 6,
+          "disposed": false
+        },
+        "visits": {
+          "agents": 32,
+          "intents": 37,
+          "tokenSnapshots": 37,
+          "seenGitEvents": 5,
+          "seenGitEventLimit": 600,
+          "lastForgeAgents": 9,
+          "lastToolAgents": 32,
+          "throttleAgents": 0,
+          "pendingGathers": 0,
+          "pendingGatherLimit": 64,
+          "disposed": false,
+          "gitReplayCacheHits": 1,
+          "gitReplayCacheMisses": 1,
+          "gitReplayNormalized": 5,
+          "gitReplayRawDuplicates": 0
+        },
+        "allocator": {
+          "buildings": 9,
+          "retainedAgentSprites": 37,
+          "reservations": 37,
+          "reservationAgents": 37,
+          "agentMeta": 37,
+          "relatedCache": 32,
+          "occupancyEntries": 37,
+          "occupancyBuckets": 4,
+          "disposed": false
+        },
+        "behavior": {
+          "windowMs": 300000,
+          "sampleMs": 250,
+          "maxAgents": 256,
+          "maxDestinations": 64,
+          "sampledAt": 1784109600000,
+          "observedWindowMs": 250,
+          "windowSamples": 1,
+          "agentSamples": 37,
+          "agentSeconds": 9.25,
+          "activeAgents": 37,
+          "trackedAgents": 37,
+          "movingSamplePercent": 0,
+          "meanDistinctDestinations": 1,
+          "distinctDestinationsByAgent": {
+            "readme-rowan": 1,
+            "readme-sage": 1,
+            "readme-finch": 1,
+            "readme-sybil": 1,
+            "readme-wren": 1,
+            "readme-hazel": 1,
+            "readme-pip": 1,
+            "readme-moss": 1,
+            "readme-astra": 1,
+            "readme-vega": 1,
+            "readme-sol": 1,
+            "readme-terra": 1,
+            "readme-luna": 1,
+            "readme-juniper": 1,
+            "readme-quill": 1,
+            "readme-spark": 1,
+            "readme-prism": 1,
+            "readme-lumen": 1,
+            "readme-argos": 1,
+            "readme-lyra": 1,
+            "readme-iris": 1,
+            "readme-orin": 1,
+            "readme-moon": 1,
+            "readme-tomo": 1,
+            "readme-ember": 1,
+            "readme-flint": 1,
+            "readme-cinder": 1,
+            "readme-jade": 1,
+            "readme-onyx": 1,
+            "readme-basalt": 1,
+            "readme-delphi": 1,
+            "readme-kestrel": 1,
+            "readme-lark": 1,
+            "readme-sable": 1,
+            "readme-tansy": 1,
+            "deepseek-dsth_mpb5wjns_4d7a92c3": 1,
+            "zai-glmth_mpb63pdk_1e8b50af": 1
+          },
+          "allocations": 0,
+          "overCapacityAllocations": 0,
+          "overCapacityAllocationRatio": 0,
+          "suppressedBubbleCount": 0,
+          "bubbleSlotChanges": 0,
+          "bubbleSlotChangesPerMinute": 0,
+          "droppedAgentSamples": 0,
+          "droppedDestinationSamples": 0,
+          "buildings": {
+            "command": {
+              "agentSeconds": 1.5,
+              "occupancyShare": 0.16216216216216217,
+              "dwellVisits": 6,
+              "meanDwellSeconds": 0.25
+            },
+            "taskboard": {
+              "agentSeconds": 1,
+              "occupancyShare": 0.10810810810810811,
+              "dwellVisits": 4,
+              "meanDwellSeconds": 0.25
+            },
+            "forge": {
+              "agentSeconds": 2.25,
+              "occupancyShare": 0.24324324324324326,
+              "dwellVisits": 9,
+              "meanDwellSeconds": 0.25
+            },
+            "mine": {
+              "agentSeconds": 0,
+              "occupancyShare": 0,
+              "dwellVisits": 0,
+              "meanDwellSeconds": 0
+            },
+            "archive": {
+              "agentSeconds": 2.75,
+              "occupancyShare": 0.2972972972972973,
+              "dwellVisits": 11,
+              "meanDwellSeconds": 0.25
+            },
+            "tavern": {
+              "agentSeconds": 0,
+              "occupancyShare": 0,
+              "dwellVisits": 0,
+              "meanDwellSeconds": 0
+            },
+            "portal": {
+              "agentSeconds": 1,
+              "occupancyShare": 0.10810810810810811,
+              "dwellVisits": 4,
+              "meanDwellSeconds": 0.25
+            },
+            "watchtower": {
+              "agentSeconds": 0,
+              "occupancyShare": 0,
+              "dwellVisits": 0,
+              "meanDwellSeconds": 0
+            },
+            "harbor": {
+              "agentSeconds": 0.25,
+              "occupancyShare": 0.02702702702702703,
+              "dwellVisits": 1,
+              "meanDwellSeconds": 0.25
+            },
+            "outside": {
+              "agentSeconds": 0.5,
+              "occupancyShare": 0.05405405405405406,
+              "dwellVisits": 2,
+              "meanDwellSeconds": 0
+            }
+          }
+        },
+        "ambient": {
+          "dateKey": "2026-07-15",
+          "actors": {
+            "gulls": {
+              "live": 0,
+              "cap": 3,
+              "reason": "reduced-motion"
+            },
+            "songbirds": {
+              "live": 1,
+              "cap": 1,
+              "reason": "reduced-motion"
+            },
+            "fireflies": {
+              "live": 0,
+              "cap": 0,
+              "reason": "reduced-motion"
+            },
+            "ash motes": {
+              "live": 3,
+              "cap": 12,
+              "reason": "reduced-motion"
+            },
+            "seasonal drift": {
+              "live": 0,
+              "cap": 0,
+              "reason": "reduced-motion"
+            },
+            "ducks/herons": {
+              "live": 6,
+              "cap": 6,
+              "reason": "reduced-motion"
+            },
+            "dragonflies": {
+              "live": 0,
+              "cap": 0,
+              "reason": "phase"
+            },
+            "livestock": {
+              "live": 1,
+              "cap": 6,
+              "reason": "reduced-motion"
+            },
+            "deer": {
+              "live": 0,
+              "cap": 0,
+              "reason": "reduced-motion"
+            },
+            "lone cloud": {
+              "live": 0,
+              "cap": 0,
+              "reason": "reduced-motion"
+            },
+            "horizon life": {
+              "live": 0,
+              "cap": 0,
+              "reason": "reduced-motion"
+            }
+          },
+          "tiers": {
+            "frequent": {
+              "kind": null,
+              "reason": "reduced-motion",
+              "next": {
+                "kind": null,
+                "startMs": 1784145745794
+              }
+            },
+            "occasional": {
+              "kind": null,
+              "reason": "reduced-motion",
+              "next": {
+                "kind": null,
+                "startMs": 1784148577660
+              }
+            },
+            "rare": {
+              "kind": null,
+              "reason": "reduced-motion",
+              "next": null
+            }
+          },
+          "weatherKnots": [
+            {
+              "minute": 0,
+              "type": "clear"
+            },
+            {
+              "minute": 242,
+              "type": "clear"
+            },
+            {
+              "minute": 464,
+              "type": "partly-cloudy"
+            },
+            {
+              "minute": 680,
+              "type": "clear"
+            },
+            {
+              "minute": 935,
+              "type": "clear"
+            },
+            {
+              "minute": 1236,
+              "type": "fog"
+            }
+          ]
+        },
+        "relationships": {
+          "parents": 1,
+          "squads": 1,
+          "children": 2,
+          "teams": 1,
+          "recentArrivals": 0,
+          "recentDepartures": 0,
+          "chatPairs": 0,
+          "advisorPairs": 0,
+          "overlapFiles": 0,
+          "overlapPeers": 0,
+          "rememberedSpriteTiles": 37,
+          "rememberedMemberships": 37,
+          "disposed": false
+        },
+        "council": {
+          "teamGatherCooldowns": 0,
+          "cooldownMs": 300000,
+          "ceremonyTeam": null,
+          "ceremonyMembers": 0
+        },
+        "pathfinder": {
+          "cacheEntries": 0,
+          "cacheLimit": 384,
+          "cacheHits": 0,
+          "cacheMisses": 0,
+          "sinkCount": 16,
+          "memoryBytes": 141692,
+          "flow": {
+            "lookups": 40,
+            "avgLookupMs": 0.125,
+            "maxLookupMs": 2,
+            "avgTraceLookupMs": 0,
+            "avgGuidedLookupMs": 0.15625,
+            "avgAdhocLookupMs": 0,
+            "sinkLookups": 33,
+            "traceHits": 1,
+            "guidedSearches": 32,
+            "adhocSearches": 7,
+            "unweightedSearches": 0,
+            "staleFieldFallbacks": 0,
+            "sinkHitRate": 0.825,
+            "traceHitRate": 0.030303030303030304,
+            "rebuilds": 11,
+            "rebuildMs": 2,
+            "avgRebuildMs": 0.18181818181818182,
+            "lastRebuildMs": 0,
+            "maxRebuildMs": 1,
+            "deferredRebuilds": 0,
+            "crowdIngests": 2,
+            "crowdChanges": 2,
+            "staticLoads": 4,
+            "crowdFingerprint": 1039439386
+          }
+        },
+        "gpuWorld": {
+          "backend": "webgpu",
+          "adapter": {
+            "vendor": "nvidia",
+            "architecture": "blackwell",
+            "device": "",
+            "description": "",
+            "isFallbackAdapter": false
+          },
+          "recordStride": 72,
+          "deviceLost": null,
+          "failure": null,
+          "deviceRebuilds": 0,
+          "deviceRebuildError": null,
+          "initError": null,
+          "radianceBounce": false,
+          "timestamps": {
+            "supported": true,
+            "pending": 0,
+            "errors": 0,
+            "dropped": 0,
+            "samples": 3,
+            "gpuMs": 0.90333856,
+            "gpuMsP25": 0.60544
+          },
+          "supported": true,
+          "active": true,
+          "contextHealthy": true,
+          "suspended": false,
+          "width": 1680,
+          "height": 1032,
+          "frames": 10,
+          "skippedFrames": 0,
+          "records": 818,
+          "batches": 318,
+          "markRecords": 16,
+          "markRoleRecords": 7,
+          "lateMarkRecords": 0,
+          "lateMarkRoleRecords": 0,
+          "hdrEnabled": false,
+          "hdrMode": "subtle",
+          "hdrReason": "SDR screen",
+          "hdrGains": null,
+          "dynamicRangeHigh": false,
+          "colorGamutP3": false,
+          "p3Enabled": false,
+          "canvasFormat": "rgba8unorm",
+          "canvasColorSpace": "srgb",
+          "canvasToneMapping": "standard",
+          "emissionFormat": "rgba8unorm",
+          "displayError": null,
+          "uncapturedErrors": 0,
+          "lastUncapturedError": null,
+          "lights": 72,
+          "localLightPhase": 1,
+          "exposureBucket": "deep-night",
+          "wetReflections": 0,
+          "gradeKey": "blue-hour>night",
+          "gradeExposure": 0.750249167236455,
+          "cloudCourses": 3,
+          "aerialHaze": 0.020679608373703452,
+          "uploads": 640,
+          "uploadBytes": 226087272,
+          "uploadBytesByKind": {
+            "wholeImages": 215727140,
+            "imagePatches": 0,
+            "albedoPage": 3641028,
+            "typedFields": 6620800,
+            "lightRecords": 98304
+          },
+          "sceneTextureBindings": {
+            "groupsBound": 318,
+            "records": {
+              "albedoPage": 110,
+              "pilotAtlas": 141,
+              "agentAtlas": 0,
+              "cueAtlas": 338,
+              "other": 229
+            }
+          },
+          "skippedOccluderUploads": 138,
+          "uploadMs": 52.145730900000004,
+          "cpuMs": 60.67014959999999,
+          "shaderCpuMs": 8.524418700000002,
+          "gpuMs": 0.90333856,
+          "gpuMsP25": 0.60544,
+          "gpuTimerSamples": 3,
+          "gpuTimerEvery": 4,
+          "gpuTimerSupported": true,
+          "gpuTimerExtension": "timestamp-query",
+          "gpuTimerPendingQueries": 0,
+          "gpuTimerErrors": 0,
+          "gpuDisjointDiscards": 0,
+          "passSamplingEnabled": false,
+          "passes": {
+            "upload": {
+              "gpuMs": null,
+              "cpuMs": null,
+              "draws": null,
+              "bytes": null,
+              "samples": 0
+            },
+            "scene": {
+              "gpuMs": null,
+              "cpuMs": null,
+              "draws": null,
+              "bytes": null,
+              "samples": 0
+            },
+            "bloom": {
+              "gpuMs": null,
+              "cpuMs": null,
+              "draws": null,
+              "bytes": null,
+              "samples": 0
+            },
+            "present": {
+              "gpuMs": null,
+              "cpuMs": null,
+              "draws": null,
+              "bytes": null,
+              "samples": 0
+            }
+          },
+          "qualityTimingSource": "gpu-timer",
+          "frameGapMs": 63.657028100000005,
+          "textureBytes": 158637850,
+          "residentTextureBytes": 158637850,
+          "cachedTextureBytes": 130961162,
+          "cachedTextureCapBytes": 167411712,
+          "cachedTextureCapExceeded": false,
+          "cachedTextures": 144,
+          "albedoPage": {
+            "layers": 2,
+            "bytes": 8388608,
+            "entries": 173,
+            "liveEntries": 77,
+            "pagedRecords": 110,
+            "overflowRecords": 0,
+            "fill": 0.129,
+            "repacks": 1,
+            "uploads": 250,
+            "uploadBytes": 3641028
+          },
+          "radiance": {
+            "supported": false,
+            "override": null,
+            "reason": "not ported to WebGPU (Stage A declared exclusion)"
+          },
+          "textureEvictions": 85,
+          "maxCachedTextureBytes": 167411712,
+          "maxCachedTextures": 512,
+          "materialAttachments": 2,
+          "particleInstances": 0,
+          "footprintMarchSteps": 8,
+          "bloomScale": 0.375,
+          "qualityLevel": 0,
+          "qualityReason": "override",
+          "shedEffects": [],
+          "shedReason": "override",
+          "qualityDegradationReason": null,
+          "qualityTransitionReason": null,
+          "qualityTransitionAtMs": null,
+          "qualityTransitionMetrics": null,
+          "qualityTransitions": 0,
+          "pacing": {
+            "refreshHz": null,
+            "periodMs": null,
+            "budgetMs": 8.333333333333334,
+            "timerVeto": "under-budget",
+            "missShare": 0,
+            "intervals": 0,
+            "window": 60,
+            "pending": null,
+            "pacedLevel": 2,
+            "coolDownUntilMs": null,
+            "nextProbeAtMs": null,
+            "sampledAtMs": 3795
+          },
+          "lightAdmission": {
+            "cap": 128,
+            "admitted": 72,
+            "offered": 75,
+            "culled": 14,
+            "overCap": 0,
+            "tileFull": 3,
+            "maxPerTile": 24,
+            "clusters": true,
+            "tiles": 459,
+            "daylight": false
+          },
+          "debugLoad": null,
+          "resources": {
+            "textures": {
+              "pinnedSources": 99576650,
+              "evictableSources": 31384512,
+              "albedoPage": 8388608,
+              "radiance": 0
+            },
+            "pinnedBytes": 134344602,
+            "evictableBytes": 31384512,
+            "totalBytes": 165729114,
+            "atlasPages": [
+              {
+                "name": "world-pilot",
+                "width": 2032,
+                "height": 1766,
+                "bytes": 14354048,
+                "pinned": true
+              },
+              {
+                "name": "material:world-pilot:channels",
+                "width": 2032,
+                "height": 1766,
+                "bytes": 14354048,
+                "pinned": true
+              },
+              {
+                "name": "emissive:world-pilot:channels",
+                "width": 2032,
+                "height": 1766,
+                "bytes": 14354048,
+                "pinned": true
+              },
+              {
+                "name": "occluder:world-pilot:channels",
+                "width": 2032,
+                "height": 1766,
+                "bytes": 14354048,
+                "pinned": true
+              }
+            ],
+            "liveBodyAtlas": null,
+            "cachedSourceOverageBytes": 0,
+            "attachments": {
+              "presentation": 6935040,
+              "sceneColor": 6935040,
+              "sceneEmission": 6935040,
+              "sceneDepth": 3467520,
+              "bloomA": 975240,
+              "bloomB": 975240
+            },
+            "buffers": {
+              "vertices": 131072,
+              "marks": 2048,
+              "particles": 6720,
+              "lights": 16384
+            }
+          },
+          "atlasRecords": 141,
+          "individualRecords": 677,
+          "sourceBatchCount": 318,
+          "sourceUploadBytes": 226054504
+        },
+        "worldRendererMode": "webgpu",
+        "worldBackendReason": "?renderer=webgpu · webgpu ready · webgl2 not probed"
+      }
+    },
+    "cacheStats": {
+      "assets": {
+        "bitmaps": 290,
+        "bitmapPixels": 22885007,
+        "masks": 9,
+        "maskBytes": 732480,
+        "outlines": 9,
+        "outlinePixels": 732480,
+        "companions": 147,
+        "companionPixels": 60334245,
+        "atlasImages": 4,
+        "atlasPixels": 14354048,
+        "atlasMetadata": 1,
+        "materialTextureBytes": 298753172,
+        "missing": 0,
+        "optionalMissing": 0,
+        "decodedLoaded": true,
+        "materialAssetsEnabled": true,
+        "materialDecodedLoaded": true,
+        "suspended": false,
+        "loadInFlight": false,
+        "decodePasses": 1
+      },
+      "compositor": {
+        "entries": 0,
+        "pixels": 0,
+        "entryLimit": 24,
+        "pixelLimit": 12500000
+      },
+      "agentSprites": {
+        "processedSpriteSheets": 0,
+        "processedSpritePixels": 0,
+        "processedSpriteEntryLimit": 37,
+        "processedSpritePixelLimit": 12500000,
+        "codexEquipmentAssets": 0,
+        "codexEquipmentPixels": 0,
+        "codexEquipmentEstimateBytes": 0,
+        "canvasCellBytes": 15980032,
+        "canvasCells": 472,
+        "modelSheetBytes": 62295040,
+        "modelBaseBytes": 18146816,
+        "layerCacheBytes": 80288608,
+        "gpuEquippedSheetPixelLimit": 0,
+        "gpuEquippedSheets": 0,
+        "gpuEquippedSheetEstimateBytes": 0,
+        "gpuEquippedMaxComposeMs": 0,
+        "packedGeometrySheets": 0,
+        "packedGeometryEstimateBytes": 0,
+        "processedSpriteEstimateBytes": 0,
+        "compositorEstimateBytes": 0,
+        "privateDerivedEstimateBytes": 101568,
+        "gpuAgentMaterialAtlasEstimateBytes": 0,
+        "gpuAgentEmissiveAtlasEstimateBytes": 0,
+        "cpuDerivedEstimateBytes": 80390176,
+        "ownership": {
+          "compositorSpriteSheets": {
+            "ownershipClass": "CPU-derived",
+            "estimateBytes": 0
+          },
+          "processedSpriteSheets": {
+            "ownershipClass": "CPU-derived",
+            "estimateBytes": 0
+          },
+          "codexEquipmentCanvases": {
+            "ownershipClass": "CPU-derived",
+            "estimateBytes": 0
+          },
+          "agentLayerSheets": {
+            "ownershipClass": "CPU-derived",
+            "estimateBytes": 80288608
+          },
+          "packedGeometrySheets": {
+            "ownershipClass": "CPU-derived",
+            "estimateBytes": 0
+          },
+          "perSpriteEffectCells": {
+            "ownershipClass": "CPU-derived",
+            "estimateBytes": 101568
+          },
+          "gpuAgentMaterialAtlas": {
+            "ownershipClass": "CPU-derived",
+            "estimateBytes": 0
+          },
+          "gpuAgentEmissiveAtlas": {
+            "ownershipClass": "CPU-derived",
+            "estimateBytes": 0
+          }
+        },
+        "activeProfileKeys": [
+          "agent.claude.fable|claude|8|_|_|raw|#bb9587",
+          "agent.claude.haiku|claude|1|_|_|raw|_",
+          "agent.claude.haiku|claude|8|_|_|raw|#bb9587",
+          "agent.claude.mythos|claude|2|_|_|raw|_",
+          "agent.claude.opus.b|claude|11|_|_|raw|_",
+          "agent.claude.opus.b|claude|5|_|_|raw|_",
+          "agent.claude.sonnet|claude|11|_|_|raw|_",
+          "agent.claude.sonnet|claude|1|_|_|raw|#bb9587",
+          "agent.claude.sonnet|claude|3|_|_|raw|_",
+          "agent.codex.gpt53spark|codex|7|_|multitool|raw|_",
+          "agent.codex.gpt54|codex|10|_|engineerWrench|raw|_",
+          "agent.codex.gpt55|codex|1|_|runeblade|raw|_",
+          "agent.codex.gpt55|codex|9|_|runeblade|raw|_",
+          "agent.codex.gpt56luna.b|codex|3|_|crescentSaber|raw|_",
+          "agent.codex.gpt56sol.b|codex|3|_|dawnblade|raw|_",
+          "agent.codex.gpt56terra|codex|6|_|earthbreaker|raw|_",
+          "agent.codex.gpt6astra|codex|1|_|worldsplitter|raw|_",
+          "agent.codex.gpt6astra|codex|9|effortXhigh|worldsplitter|raw|_",
+          "agent.deepseek.flash.high|deepseek|2|_|_|raw|_",
+          "agent.deepseek.flash.xhigh|deepseek|3|effortMax|_|raw|_",
+          "agent.deepseek.flash|deepseek|4|_|_|raw|_",
+          "agent.deepseek.pro|deepseek|4|_|_|raw|_",
+          "agent.deepseek.reasoner|deepseek|9|_|_|raw|_",
+          "agent.gemini.argon|gemini|0|_|_|raw|_",
+          "agent.gemini.base|gemini|11|_|_|raw|_",
+          "agent.gemini.base|gemini|2|_|_|raw|_",
+          "agent.gemini.carbon|gemini|5|_|_|raw|_",
+          "agent.gemini.flash|gemini|1|_|_|raw|_",
+          "agent.gemini.neon|gemini|8|effortXhigh|_|raw|_",
+          "agent.grok.base|grok|4|biretta|_|raw|_",
+          "agent.grok.base|grok|5|hornedHelm|_|raw|_",
+          "agent.grok.composer|grok|11|laurelCrown|_|raw|_",
+          "agent.kimi.base|kimi|8|wingedHelm|_|raw|_",
+          "agent.kimi.base|kimi|9|wingedHelm|_|raw|_",
+          "agent.zai.flash|zai|11|_|_|raw|_",
+          "agent.zai.glm.b|zai|7|_|_|raw|_",
+          "agent.zai.glm|zai|8|effortMax|_|raw|_"
+        ],
+        "selectedProfilePins": [],
+        "primaryProfilePins": [
+          "agent.claude.opus.b|claude|5|_|_|raw|_",
+          "agent.codex.gpt55|codex|1|_|runeblade|raw|_",
+          "agent.zai.flash|zai|11|_|_|raw|_"
+        ],
+        "sharedDerivedHighWaterEstimateBytes": 201326592,
+        "toolClassifications": 22
+      }
+    },
+    "gpuDiag": {
+      "backend": "webgpu",
+      "adapter": {
+        "vendor": "nvidia",
+        "architecture": "blackwell",
+        "device": "",
+        "description": "",
+        "isFallbackAdapter": false
+      },
+      "recordStride": 72,
+      "deviceLost": null,
+      "failure": null,
+      "deviceRebuilds": 0,
+      "deviceRebuildError": null,
+      "initError": null,
+      "radianceBounce": false,
+      "timestamps": {
+        "supported": true,
+        "pending": 0,
+        "errors": 0,
+        "dropped": 0,
+        "samples": 3,
+        "gpuMs": 0.90333856,
+        "gpuMsP25": 0.60544
+      },
+      "supported": true,
+      "active": true,
+      "contextHealthy": true,
+      "suspended": false,
+      "width": 1680,
+      "height": 1032,
+      "frames": 10,
+      "skippedFrames": 0,
+      "records": 818,
+      "batches": 318,
+      "markRecords": 16,
+      "markRoleRecords": 7,
+      "lateMarkRecords": 0,
+      "lateMarkRoleRecords": 0,
+      "hdrEnabled": false,
+      "hdrMode": "subtle",
+      "hdrReason": "SDR screen",
+      "hdrGains": null,
+      "dynamicRangeHigh": false,
+      "colorGamutP3": false,
+      "p3Enabled": false,
+      "canvasFormat": "rgba8unorm",
+      "canvasColorSpace": "srgb",
+      "canvasToneMapping": "standard",
+      "emissionFormat": "rgba8unorm",
+      "displayError": null,
+      "uncapturedErrors": 0,
+      "lastUncapturedError": null,
+      "lights": 72,
+      "localLightPhase": 1,
+      "exposureBucket": "deep-night",
+      "wetReflections": 0,
+      "gradeKey": "blue-hour>night",
+      "gradeExposure": 0.750249167236455,
+      "cloudCourses": 3,
+      "aerialHaze": 0.020679608373703452,
+      "uploads": 640,
+      "uploadBytes": 226087272,
+      "uploadBytesByKind": {
+        "wholeImages": 215727140,
+        "imagePatches": 0,
+        "albedoPage": 3641028,
+        "typedFields": 6620800,
+        "lightRecords": 98304
+      },
+      "sceneTextureBindings": {
+        "groupsBound": 318,
+        "records": {
+          "albedoPage": 110,
+          "pilotAtlas": 141,
+          "agentAtlas": 0,
+          "cueAtlas": 338,
+          "other": 229
+        }
+      },
+      "skippedOccluderUploads": 138,
+      "uploadMs": 52.145730900000004,
+      "cpuMs": 60.67014959999999,
+      "shaderCpuMs": 8.524418700000002,
+      "gpuMs": 0.90333856,
+      "gpuMsP25": 0.60544,
+      "gpuTimerSamples": 3,
+      "gpuTimerEvery": 4,
+      "gpuTimerSupported": true,
+      "gpuTimerExtension": "timestamp-query",
+      "gpuTimerPendingQueries": 0,
+      "gpuTimerErrors": 0,
+      "gpuDisjointDiscards": 0,
+      "passSamplingEnabled": false,
+      "passes": {
+        "upload": {
+          "gpuMs": null,
+          "cpuMs": null,
+          "draws": null,
+          "bytes": null,
+          "samples": 0
+        },
+        "scene": {
+          "gpuMs": null,
+          "cpuMs": null,
+          "draws": null,
+          "bytes": null,
+          "samples": 0
+        },
+        "bloom": {
+          "gpuMs": null,
+          "cpuMs": null,
+          "draws": null,
+          "bytes": null,
+          "samples": 0
+        },
+        "present": {
+          "gpuMs": null,
+          "cpuMs": null,
+          "draws": null,
+          "bytes": null,
+          "samples": 0
+        }
+      },
+      "qualityTimingSource": "gpu-timer",
+      "frameGapMs": 63.657028100000005,
+      "textureBytes": 158637850,
+      "residentTextureBytes": 158637850,
+      "cachedTextureBytes": 130961162,
+      "cachedTextureCapBytes": 167411712,
+      "cachedTextureCapExceeded": false,
+      "cachedTextures": 144,
+      "albedoPage": {
+        "layers": 2,
+        "bytes": 8388608,
+        "entries": 173,
+        "liveEntries": 77,
+        "pagedRecords": 110,
+        "overflowRecords": 0,
+        "fill": 0.129,
+        "repacks": 1,
+        "uploads": 250,
+        "uploadBytes": 3641028
+      },
+      "radiance": {
+        "supported": false,
+        "override": null,
+        "reason": "not ported to WebGPU (Stage A declared exclusion)"
+      },
+      "textureEvictions": 85,
+      "maxCachedTextureBytes": 167411712,
+      "maxCachedTextures": 512,
+      "materialAttachments": 2,
+      "particleInstances": 0,
+      "footprintMarchSteps": 8,
+      "bloomScale": 0.375,
+      "qualityLevel": 0,
+      "qualityReason": "override",
+      "shedEffects": [],
+      "shedReason": "override",
+      "qualityDegradationReason": null,
+      "qualityTransitionReason": null,
+      "qualityTransitionAtMs": null,
+      "qualityTransitionMetrics": null,
+      "qualityTransitions": 0,
+      "pacing": {
+        "refreshHz": null,
+        "periodMs": null,
+        "budgetMs": 8.333333333333334,
+        "timerVeto": "under-budget",
+        "missShare": 0,
+        "intervals": 0,
+        "window": 60,
+        "pending": null,
+        "pacedLevel": 2,
+        "coolDownUntilMs": null,
+        "nextProbeAtMs": null,
+        "sampledAtMs": 3795
+      },
+      "lightAdmission": {
+        "cap": 128,
+        "admitted": 72,
+        "offered": 75,
+        "culled": 14,
+        "overCap": 0,
+        "tileFull": 3,
+        "maxPerTile": 24,
+        "clusters": true,
+        "tiles": 459,
+        "daylight": false
+      },
+      "debugLoad": null,
+      "resources": {
+        "textures": {
+          "pinnedSources": 99576650,
+          "evictableSources": 31384512,
+          "albedoPage": 8388608,
+          "radiance": 0
+        },
+        "pinnedBytes": 134344602,
+        "evictableBytes": 31384512,
+        "totalBytes": 165729114,
+        "atlasPages": [
+          {
+            "name": "world-pilot",
+            "width": 2032,
+            "height": 1766,
+            "bytes": 14354048,
+            "pinned": true
+          },
+          {
+            "name": "material:world-pilot:channels",
+            "width": 2032,
+            "height": 1766,
+            "bytes": 14354048,
+            "pinned": true
+          },
+          {
+            "name": "emissive:world-pilot:channels",
+            "width": 2032,
+            "height": 1766,
+            "bytes": 14354048,
+            "pinned": true
+          },
+          {
+            "name": "occluder:world-pilot:channels",
+            "width": 2032,
+            "height": 1766,
+            "bytes": 14354048,
+            "pinned": true
+          }
+        ],
+        "liveBodyAtlas": null,
+        "cachedSourceOverageBytes": 0,
+        "attachments": {
+          "presentation": 6935040,
+          "sceneColor": 6935040,
+          "sceneEmission": 6935040,
+          "sceneDepth": 3467520,
+          "bloomA": 975240,
+          "bloomB": 975240
+        },
+        "buffers": {
+          "vertices": 131072,
+          "marks": 2048,
+          "particles": 6720,
+          "lights": 16384
+        }
+      },
+      "atlasRecords": 141,
+      "individualRecords": 677,
+      "sourceBatchCount": 318,
+      "sourceUploadBytes": 226054504
+    },
+    "pathDiag": {
+      "cacheEntries": 0,
+      "cacheLimit": 384,
+      "cacheHits": 0,
+      "cacheMisses": 0,
+      "sinkCount": 16,
+      "memoryBytes": 141692,
+      "flow": {
+        "lookups": 40,
+        "avgLookupMs": 0.125,
+        "maxLookupMs": 2,
+        "avgTraceLookupMs": 0,
+        "avgGuidedLookupMs": 0.15625,
+        "avgAdhocLookupMs": 0,
+        "sinkLookups": 33,
+        "traceHits": 1,
+        "guidedSearches": 32,
+        "adhocSearches": 7,
+        "unweightedSearches": 0,
+        "staleFieldFallbacks": 0,
+        "sinkHitRate": 0.825,
+        "traceHitRate": 0.030303030303030304,
+        "rebuilds": 11,
+        "rebuildMs": 2,
+        "avgRebuildMs": 0.18181818181818182,
+        "lastRebuildMs": 0,
+        "maxRebuildMs": 1,
+        "deferredRebuilds": 0,
+        "crowdIngests": 2,
+        "crowdChanges": 2,
+        "staticLoads": 4,
+        "crowdFingerprint": 1039439386
+      }
+    },
+    "gpuTimerSupported": true,
+    "gpuPassTimestampsMs": null
+  },
+  "pageErrors": []
+}
