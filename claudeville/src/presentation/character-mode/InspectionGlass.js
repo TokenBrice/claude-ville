@@ -190,6 +190,55 @@ function drawProceduralRim(ctx, cx, cy) {
     }
 }
 
+// The drawable's pixel extent on one axis: the decoded natural size of an
+// image element (0 until it decodes), else the drawable size of a canvas or
+// bitmap; null when the source reports neither.
+function drawableExtent(image, natural, drawn) {
+    if (Number.isFinite(image[natural])) return image[natural];
+    if (Number.isFinite(image[drawn])) return image[drawn];
+    return null;
+}
+
+/**
+ * True when `image` may be blitted 1:1 as the rim stamp: every real
+ * drawable (image element, canvas, bitmap) must measure exactly
+ * `GLASS_RIM_SIZE x GLASS_RIM_SIZE`, so the 64 px load-failure placeholder or
+ * an undecoded (0x0) image never reaches the lens. A source that reports no
+ * size at all has nothing to measure and is accepted as is: every browser
+ * drawable reports its size, so this admits only pre-measured handles and
+ * test doubles, never a placeholder.
+ */
+export function glassRimImageFits(image) {
+    if (!image || (typeof image !== 'object' && typeof image !== 'function')) return false;
+    const width = drawableExtent(image, 'naturalWidth', 'width');
+    const height = drawableExtent(image, 'naturalHeight', 'height');
+    if (width === null && height === null) return true;
+    return width === GLASS_RIM_SIZE && height === GLASS_RIM_SIZE;
+}
+
+function isDirectDrawable(source) {
+    return typeof source.get !== 'function'
+        && typeof source.has !== 'function'
+        && (Number.isFinite(source.naturalWidth) || Number.isFinite(source.width));
+}
+
+/**
+ * The rim stamp to blit, or null for the procedural rim. `assets` is the
+ * AssetManager (or any `{ has?, get }` / id-keyed source) or the image itself.
+ * A source with `has()` must report the real PNG resident
+ * (`has(id, { request: false })` is false for a placeholder), and the image
+ * must pass `glassRimImageFits`.
+ */
+export function resolveGlassRimImage(assets) {
+    if (!assets || (typeof assets !== 'object' && typeof assets !== 'function')) return null;
+    if (isDirectDrawable(assets)) return glassRimImageFits(assets) ? assets : null;
+    if (typeof assets.has === 'function' && !assets.has(GLASS_RIM_ASSET_ID, { request: false })) return null;
+    const image = (typeof assets.get === 'function' ? assets.get(GLASS_RIM_ASSET_ID, { request: false }) : null)
+        || assets[GLASS_RIM_ASSET_ID]
+        || null;
+    return image && glassRimImageFits(image) ? image : null;
+}
+
 export class InspectionGlass {
     constructor({ enabled = null, storage = null } = {}) {
         if (typeof enabled === 'boolean') {
@@ -496,17 +545,18 @@ export class InspectionGlass {
     }
 
     /**
-     * Draw the 228x228 brass bezel stamp (or procedural 1 px fallback) centred
-     * at `(Math.round(cx - 114), Math.round(cy - 114))`. Skipped during
-     * `postcardFrame()`.
+     * Draw the 228x228 brass bezel stamp (or the procedural 1 px fallback)
+     * centred at `(Math.round(cx - 114), Math.round(cy - 114))`, 1:1. The
+     * stamp is used only when it is the real, exactly 228x228 PNG (see
+     * `resolveGlassRimImage`); anything else — a 64 px load-failure
+     * placeholder, an undecoded image — gets the procedural rim instead, so
+     * nothing is ever stretched over the lens. Skipped during `postcardFrame()`.
      */
     drawRim(ctx, assets = null) {
         if (!ctx || !this.isActive() || postcardFrame()) return false;
         const left = Math.round(this._cx - GLASS_RIM_ANCHOR[0]);
         const top = Math.round(this._cy - GLASS_RIM_ANCHOR[1]);
-        const rimImage = assets?.get?.(GLASS_RIM_ASSET_ID)
-            || (assets && typeof assets === 'object' ? assets[GLASS_RIM_ASSET_ID] : null)
-            || null;
+        const rimImage = resolveGlassRimImage(assets);
         ctx.save();
         ctx.imageSmoothingEnabled = false;
         if (rimImage) {

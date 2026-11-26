@@ -1244,6 +1244,10 @@ function buntingSpan(meta, next) {
 export class HarborTraffic {
     constructor({ sprites } = {}) {
         this.sprites = sprites || null;
+        // Layer 0 (Theatre Pure Stage, §4.5): hulls, flags and shields sail
+        // on, every plate, badge, caption and summary stands down — the
+        // postcard guards' twin (`setTheatreMode`).
+        this._theatreMode = false;
         this.state = cloneState();
         this._pendingRepoSummaries = [];
         this.harborCrates = new Map();
@@ -1369,6 +1373,12 @@ export class HarborTraffic {
         this._observeDockTargets();
         this._refreshRenderWindow();
         return true;
+    }
+
+    // §4.5 — Layer 0 (Theatre): the harbour keeps its ships and drops its
+    // signage, as BuildingSprite.setTheatreMode does for the landmarks.
+    setTheatreMode(active) {
+        this._theatreMode = Boolean(active);
     }
 
     setMotionScale(scale) {
@@ -3401,6 +3411,7 @@ export class HarborTraffic {
     }
 
     drawScreenSummary(ctx, canvas, camera, now = Date.now()) {
+        if (postcardFrame() || this._theatreMode) return;
         const summary = this.latestScreenSummary(now);
         if (!summary || !canvas) return;
         const style = PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown;
@@ -4143,8 +4154,8 @@ export class HarborTraffic {
     // badges (`4+`) and the old `N⚓` fleet banner are retired (V-R4): the
     // lane lead's plate carries the lane's count.
     _drawShipTierBadge(ctx, ship, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), zoom = 1) {
-        // XP-5 — a postcard frame flies no plates.
-        if (postcardFrame() || !this._hasShipBadge(ship, shipClass, zoom)) return;
+        // XP-5 — a postcard frame (or a Pure Stage) flies no plates.
+        if (postcardFrame() || this._theatreMode || !this._hasShipBadge(ship, shipClass, zoom)) return;
         const badge = shipClass.badge;
         ctx.save();
         ctx.globalAlpha = 0.94 * alpha;
@@ -4548,7 +4559,7 @@ export class HarborTraffic {
     // 3.6 — small superscript on the flag indicating amend count (²).
     _drawAmendSuperscript(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
         const count = Math.max(1, Number(ship.amendCount || 0));
-        if (count <= 0 || postcardFrame()) return;
+        if (count <= 0 || postcardFrame() || this._theatreMode) return;
         const labels = ['', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
         const text = count > 1 ? (labels[count] || `^${count}`) : '¹';
         // C5 — screen-fixed glyphs at the repo flag's fly end (world anchor).
@@ -4710,7 +4721,7 @@ export class HarborTraffic {
         ctx.fillStyle = profile.accent || '#f6d384';
         for (const [y, x0, x1] of runs) if (y < 3) ctx.fillRect(cx + x0, top + y, x1 - x0, 1);
         ctx.restore();
-        if (!label || postcardFrame()) return;
+        if (!label || postcardFrame() || this._theatreMode) return;
         ctx.save();
         ctx.globalAlpha = Math.max(0, alpha) * 0.96;
         ctx.translate(cx, top + Math.round(h * 0.62));
@@ -4794,7 +4805,7 @@ export class HarborTraffic {
             ctx.closePath();
             ctx.fill();
         }
-        if (ship.convoyLeader && !postcardFrame()) {
+        if (ship.convoyLeader && !postcardFrame() && !this._theatreMode) {
             const count = Math.max(RELEASE_CONVOY_MIN_SHIPS, Number(ship.convoy?.visibleCount || ship.convoy?.count || 0));
             const label = `CVY ${count}`;
             // C5 — screen-fixed plate at the ship anchor, whole screen px.
@@ -4827,7 +4838,7 @@ export class HarborTraffic {
     // plate overlaps another: lead plates reserve theirs first
     // (beginPlateFrame), the rest take the first free lift or stay hidden.
     _drawCommitPennant(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const spec = postcardFrame() ? null : this._plateSpec(ship, zoom);
+        const spec = postcardFrame() || this._theatreMode ? null : this._plateSpec(ship, zoom);
         if (!spec) return;
         const z = zoom || 1;
         const bob = this._shipBob(ship);
@@ -5081,7 +5092,7 @@ export class HarborTraffic {
     // 3.6 — hover lore: cargo label above the hovered ship carrying the commit subject.
     _drawHoverCargoLabel(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
         const label = shortGitLabel(this._hoverCargoText(ship), 44, '…');
-        if (!label || postcardFrame()) return;
+        if (!label || postcardFrame() || this._theatreMode) return;
         const base = this._plateBase(ship, shipClass, zoom) - (this._hasShipBadge(ship, shipClass, zoom) ? 18 : 0);
         ctx.save();
         ctx.globalAlpha = Math.min(1, 0.96 * alpha);
@@ -5233,7 +5244,7 @@ export class HarborTraffic {
         ctx.font = WORLD_DISPLAY_FONT_8;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        if (!postcardFrame()) ctx.fillText(style.shortLabel, 0, -48);
+        if (!postcardFrame() && !this._theatreMode) ctx.fillText(style.shortLabel, 0, -48);
         ctx.restore();
         ctx.restore();
     }
@@ -5265,7 +5276,7 @@ export class HarborTraffic {
 
         // Overflow chip — repos that did not get their own anchorage slot.
         if (payload.overflowMore) {
-            if (postcardFrame()) return;
+            if (postcardFrame() || this._theatreMode) return;
             const text = payload.repoName || `+${payload.overflowMore}`;
             // C5 — screen-fixed chip: zoom cancelled, whole screen px.
             ctx.save();
@@ -5412,7 +5423,7 @@ export class HarborTraffic {
             }
             this._plateBoxes.push(box);
         }
-        if (postcardFrame()) {
+        if (postcardFrame() || this._theatreMode) {
             ctx.restore();
             return;
         }

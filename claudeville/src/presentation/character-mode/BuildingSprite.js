@@ -443,6 +443,13 @@ function taskboardPhaseMarker(index) {
     return TASKBOARD_PHASE_MARKERS[index] || String(index + 1);
 }
 
+// Element-wise identity equality of two arrays (cache-key comparison).
+function sameEntries(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+}
+
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
 }
@@ -1491,17 +1498,20 @@ export class BuildingSprite {
     _signForeignMasks(worldAsh = undefined) {
         const ash = worldAsh === false ? null : worldAsh || this._resolveWorldAshMask();
         const buildings = this.buildings || [];
-        let key = '';
+        const types = [];
         const masks = [];
         for (const b of buildings) {
-            const mask = this.assets.getMask?.(`building.${b.type}`) || null;
-            masks.push(mask);
-            key += `${b.type}:${mask ? 1 : 0}|`;
+            types.push(b.type);
+            masks.push(this.assets.getMask?.(`building.${b.type}`) || null);
         }
         // Landmark integrals and the ash's are cached apart: a caller handing
-        // a fresh ash object never rebuilds the nine landmark tables.
+        // a fresh ash object never rebuilds the nine landmark tables. The
+        // cache keys on each resident mask's identity, not its presence, so a
+        // replaced mask (an asset reload or a re-baked sheet) rebuilds its
+        // summed-area table at once.
         let landmarks = this._foreignLandmarkCache;
-        if (!landmarks || landmarks.buildings !== buildings || landmarks.key !== key) {
+        if (!landmarks || landmarks.buildings !== buildings
+            || !sameEntries(landmarks.types, types) || !sameEntries(landmarks.masks, masks)) {
             const entries = [];
             buildings.forEach((b, index) => {
                 const mask = masks[index];
@@ -1513,7 +1523,7 @@ export class BuildingSprite {
                 const entry = worldMaskEntry(b.type, mask, dims.w, dims.h, Math.round(center.x - anchor[0]), Math.round(center.y - anchor[1]));
                 if (entry) entries.push(entry);
             });
-            landmarks = this._foreignLandmarkCache = { buildings, key, entries };
+            landmarks = this._foreignLandmarkCache = { buildings, types, masks, entries };
             this._foreignMaskCache = null;
         }
         let ashCache = this._foreignAshCache;
@@ -3001,7 +3011,9 @@ export class BuildingSprite {
     // when the drop steps, and is absent when no one needs action.
     _drawAttentionBannerBoard(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null, column = null) {
         const state = this.attentionBanner;
-        if (!state?.count || postcardFrame()) return;
+        // A postcard and Layer 0 (Theatre Pure Stage) hang the cloth without
+        // its count board.
+        if (!state?.count || postcardFrame() || this._theatreMode === true) return;
         const banner = getBuildingAttentionBanner(building.type);
         if (!banner) return;
         const drop = banner.drops[Math.max(0, Math.min(banner.drops.length - 1, state.tier | 0))];

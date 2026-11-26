@@ -16,7 +16,7 @@ import {
     unpinnedCacheKeys,
 } from './CanvasBudget.js';
 
-const PLACEHOLDER_PATH = 'assets/sprites/_placeholder/checker-64.png';
+export const PLACEHOLDER_PATH = 'assets/sprites/_placeholder/checker-64.png';
 const OUTLINE_COLOR = '#f2d36b';
 const ALPHA_THRESHOLD = 16;
 const OPTIONAL_SIDECAR_HIGH_WATER_ESTIMATE_BYTES = 192 * 1024 * 1024;
@@ -1043,6 +1043,10 @@ export class AssetManager {
         if (entry.id.startsWith('equipment.')) return `assets/sprites/equipment/${entry.id}.png`;
         if (entry.id.startsWith('overlay.accessory.')) return `assets/sprites/overlays/${entry.id}.png`;
         if (entry.id.startsWith('overlay.status.')) return `assets/sprites/overlays/${entry.id}.png`;
+        // Every other overlay (e.g. `overlay.inspectionGlass.rim`) lives flat
+        // in `overlays/` under its own id; an explicit `assetPath` (the
+        // pennant strip) has already won above.
+        if (entry.id.startsWith('overlay.')) return `assets/sprites/overlays/${entry.id}.png`;
         if (entry.id.startsWith('building.')) return `assets/sprites/buildings/${entry.id}/base.png`;
         if (entry.id.startsWith('prop.')) return `assets/sprites/props/${entry.id}.png`;
         if (entry.id.startsWith('veg.')) return `assets/sprites/vegetation/${entry.id}.png`;

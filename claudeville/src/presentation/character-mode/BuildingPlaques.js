@@ -224,131 +224,136 @@ export function paintPlaque(ctx, plaque, { x, y, labelScale, poleBottom, isHover
     const dim = quiet && !lit && !alert && !plaque.countText && !plaque.rows.length
         && !plaque.patronCell && !plaque.attention;
     ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(labelScale, labelScale);
-    snapScreenOrigin(ctx);
-    const left = -Math.round(width / 2);
-    const top = -Math.round(height / 2);
-    const postTop = top + height;
-    // The post: one screen pixel from the board's foot into the roof.
-    const postBottom = Number.isFinite(poleBottom) ? Math.round((poleBottom - y) / labelScale) : postTop;
-    if (postBottom > postTop) {
-        ctx.fillStyle = WALNUT.outline;
-        ctx.fillRect(-1, postTop, 3, postBottom - postTop);
-        ctx.fillStyle = WALNUT.bevel;
-        ctx.fillRect(0, postTop, 1, postBottom - postTop);
-    }
-    if (isSelected) {
-        ctx.fillStyle = LABEL_INK.gold;
-        ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
-    }
-    paintWalnutBoard(ctx, left, top, width, height, { nails: (isLandmark && !dim) || lit, lit });
-    // A verified failed push on the watchtower carries a red left rail;
-    // nothing else on a plaque claims an outcome.
-    if (alert) {
-        ctx.fillStyle = '#e06c5b';
-        ctx.fillRect(left + 1, top + 1, 2, height - 2);
-    }
-    let cursor = left + 1 + PLAQUE_PAD;
-    if (plaque.motif) {
-        drawOutlinedMotif(ctx, plaque.motif, cursor, top + 4, {
-            color: lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : accent,
-            outline: WALNUT.outline,
-        });
-        cursor += 8 + 5;
-    }
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'alphabetic';
-    if (plaque.title) {
-        ctx.font = WORLD_DISPLAY_FONT_8;
-        ctx.fillStyle = lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : WALNUT.text;
-        ctx.fillText(plaque.title, cursor, top + 13);
-    }
-    if (plaque.countText) {
-        const dividerX = left + 1 + plaque.headWidth;
-        ctx.fillStyle = WALNUT.divider;
-        ctx.fillRect(dividerX, top + 2, 1, PLAQUE_HEAD_H - 4);
-        ctx.font = WORLD_BODY_FONT_11;
-        ctx.fillStyle = WALNUT.count;
-        ctx.fillText(plaque.countText, dividerX + 1 + PLAQUE_PAD, top + 12);
-    }
-    if (plaque.patronCell) {
-        // AG-1 — after the head band and any work count: a divider, the
-        // tankard in the district accent, the count in count ink and the
-        // oldest wait in dim ink; at seat capacity the cell fills with the
-        // accent and its marks take plate ink.
-        const cellLeft = left + 1 + plaque.patronCellLeft;
-        const full = plaque.patronFull;
-        if (full) {
-            ctx.fillStyle = accent;
-            ctx.fillRect(cellLeft + 1, top + 1, plaque.patronCell - 1, PLAQUE_HEAD_H - 2);
-        } else {
+    // try/finally: a throw anywhere in the board (the Glass pass included)
+    // never leaks this plaque's transform or font state into the frame.
+    try {
+        ctx.translate(x, y);
+        ctx.scale(labelScale, labelScale);
+        snapScreenOrigin(ctx);
+        const left = -Math.round(width / 2);
+        const top = -Math.round(height / 2);
+        const postTop = top + height;
+        // The post: one screen pixel from the board's foot into the roof.
+        const postBottom = Number.isFinite(poleBottom) ? Math.round((poleBottom - y) / labelScale) : postTop;
+        if (postBottom > postTop) {
+            ctx.fillStyle = WALNUT.outline;
+            ctx.fillRect(-1, postTop, 3, postBottom - postTop);
+            ctx.fillStyle = WALNUT.bevel;
+            ctx.fillRect(0, postTop, 1, postBottom - postTop);
+        }
+        if (isSelected) {
+            ctx.fillStyle = LABEL_INK.gold;
+            ctx.fillRect(left - 1, top - 1, width + 2, height + 2);
+        }
+        paintWalnutBoard(ctx, left, top, width, height, { nails: (isLandmark && !dim) || lit, lit });
+        // A verified failed push on the watchtower carries a red left rail;
+        // nothing else on a plaque claims an outcome.
+        if (alert) {
+            ctx.fillStyle = '#e06c5b';
+            ctx.fillRect(left + 1, top + 1, 2, height - 2);
+        }
+        let cursor = left + 1 + PLAQUE_PAD;
+        if (plaque.motif) {
+            drawOutlinedMotif(ctx, plaque.motif, cursor, top + 4, {
+                color: lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : accent,
+                outline: WALNUT.outline,
+            });
+            cursor += 8 + 5;
+        }
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+        if (plaque.title) {
+            ctx.font = WORLD_DISPLAY_FONT_8;
+            ctx.fillStyle = lit ? '#ffe7a3' : dim ? LABEL_INK.textDim : WALNUT.text;
+            ctx.fillText(plaque.title, cursor, top + 13);
+        }
+        if (plaque.countText) {
+            const dividerX = left + 1 + plaque.headWidth;
             ctx.fillStyle = WALNUT.divider;
-            ctx.fillRect(cellLeft, top + 2, 1, PLAQUE_HEAD_H - 4);
+            ctx.fillRect(dividerX, top + 2, 1, PLAQUE_HEAD_H - 4);
+            ctx.font = WORLD_BODY_FONT_11;
+            ctx.fillStyle = WALNUT.count;
+            ctx.fillText(plaque.countText, dividerX + 1 + PLAQUE_PAD, top + 12);
         }
-        const motifX = cellLeft + 1 + PLAQUE_PAD;
-        drawOutlinedMotif(ctx, PATRON_MOTIF, motifX, top + 4, {
-            color: full ? LABEL_INK.plate : accent,
-            outline: full ? 'transparent' : WALNUT.outline,
-        });
-        const textX = motifX + 8 + PLAQUE_ATTENTION_GAP;
-        ctx.font = WORLD_BODY_FONT_11;
-        ctx.fillStyle = full ? LABEL_INK.plate : WALNUT.count;
-        ctx.fillText(plaque.patronText, textX, top + 12);
-        if (plaque.patronAge) {
-            ctx.fillStyle = full ? LABEL_INK.plate : LABEL_INK.textDim;
-            ctx.fillText(plaque.patronAge, textX + plaque.patronWidth, top + 12);
+        if (plaque.patronCell) {
+            // AG-1 — after the head band and any work count: a divider, the
+            // tankard in the district accent, the count in count ink and the
+            // oldest wait in dim ink; at seat capacity the cell fills with the
+            // accent and its marks take plate ink.
+            const cellLeft = left + 1 + plaque.patronCellLeft;
+            const full = plaque.patronFull;
+            if (full) {
+                ctx.fillStyle = accent;
+                ctx.fillRect(cellLeft + 1, top + 1, plaque.patronCell - 1, PLAQUE_HEAD_H - 2);
+            } else {
+                ctx.fillStyle = WALNUT.divider;
+                ctx.fillRect(cellLeft, top + 2, 1, PLAQUE_HEAD_H - 4);
+            }
+            const motifX = cellLeft + 1 + PLAQUE_PAD;
+            drawOutlinedMotif(ctx, PATRON_MOTIF, motifX, top + 4, {
+                color: full ? LABEL_INK.plate : accent,
+                outline: full ? 'transparent' : WALNUT.outline,
+            });
+            const textX = motifX + 8 + PLAQUE_ATTENTION_GAP;
+            ctx.font = WORLD_BODY_FONT_11;
+            ctx.fillStyle = full ? LABEL_INK.plate : WALNUT.count;
+            ctx.fillText(plaque.patronText, textX, top + 12);
+            if (plaque.patronAge) {
+                ctx.fillStyle = full ? LABEL_INK.plate : LABEL_INK.textDim;
+                ctx.fillText(plaque.patronAge, textX + plaque.patronWidth, top + 12);
+            }
         }
+        if (plaque.attention) {
+            // Right-aligned inside the outline, over the head band's bevel
+            // and shade rows like the T1 plate's status cell.
+            const cellLeft = left + width - 1 - plaque.attentionCell;
+            ctx.fillStyle = plaque.attention.color;
+            ctx.fillRect(cellLeft, top + 1, plaque.attentionCell, PLAQUE_HEAD_H - 2);
+            drawOutlinedMotif(ctx, plaque.attention.motif, cellLeft + PLAQUE_PAD, top + 4, {
+                color: LABEL_INK.plate,
+                outline: 'transparent',
+            });
+            ctx.font = WORLD_BODY_FONT_11;
+            ctx.fillStyle = LABEL_INK.plate;
+            ctx.fillText(plaque.attentionText, cellLeft + PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP, top + 12);
+        }
+        if (plaque.rows.length) {
+            ctx.fillStyle = WALNUT.shade;
+            ctx.fillRect(left + 2, top + PLAQUE_HEAD_H - 1, width - 4, 1);
+            ctx.font = WORLD_BODY_FONT_11;
+            plaque.rows.forEach((row, index) => {
+                const baseline = top + PLAQUE_HEAD_H + 1 + index * PLAQUE_ROW_H + 9;
+                let rowX = left + 1 + PLAQUE_PAD;
+                if (row.profile) {
+                    // Repo swatch: a 3×3 pixel diamond in the repo accent.
+                    ctx.fillStyle = row.profile.accent || WALNUT.text;
+                    ctx.fillRect(rowX + 1, baseline - 6, 1, 3);
+                    ctx.fillRect(rowX, baseline - 5, 3, 1);
+                    rowX += 8;
+                }
+                ctx.fillStyle = row.color || WALNUT.count;
+                ctx.fillText(row.label, rowX, baseline);
+                if (row.tailText) {
+                    ctx.fillStyle = row.tailColor || WALNUT.count;
+                    ctx.fillText(row.tailText, rowX + Math.round(measureLabelText(ctx, row.label)), baseline);
+                }
+                if (row.musterLeft) {
+                    // `· 6 ▸ 2` in count ink; the ▸ is a 3×5 carved
+                    // triangle (Departure Mono has no U+25B8).
+                    let tailX = rowX + Math.round(measureLabelText(ctx, row.label));
+                    ctx.fillStyle = WALNUT.count;
+                    ctx.fillText(row.musterLeft, tailX, baseline);
+                    tailX += row.leftWidth;
+                    ctx.fillRect(tailX, baseline - 6, 1, 5);
+                    ctx.fillRect(tailX + 1, baseline - 5, 1, 3);
+                    ctx.fillRect(tailX + 2, baseline - 4, 1, 1);
+                    ctx.fillText(row.musterRight, tailX + PLAQUE_MUSTER_ARROW_W, baseline);
+                }
+            });
+        }
+    } finally {
+        ctx.restore();
     }
-    if (plaque.attention) {
-        // Right-aligned inside the outline, over the head band's bevel
-        // and shade rows like the T1 plate's status cell.
-        const cellLeft = left + width - 1 - plaque.attentionCell;
-        ctx.fillStyle = plaque.attention.color;
-        ctx.fillRect(cellLeft, top + 1, plaque.attentionCell, PLAQUE_HEAD_H - 2);
-        drawOutlinedMotif(ctx, plaque.attention.motif, cellLeft + PLAQUE_PAD, top + 4, {
-            color: LABEL_INK.plate,
-            outline: 'transparent',
-        });
-        ctx.font = WORLD_BODY_FONT_11;
-        ctx.fillStyle = LABEL_INK.plate;
-        ctx.fillText(plaque.attentionText, cellLeft + PLAQUE_PAD + 8 + PLAQUE_ATTENTION_GAP, top + 12);
-    }
-    if (plaque.rows.length) {
-        ctx.fillStyle = WALNUT.shade;
-        ctx.fillRect(left + 2, top + PLAQUE_HEAD_H - 1, width - 4, 1);
-        ctx.font = WORLD_BODY_FONT_11;
-        plaque.rows.forEach((row, index) => {
-            const baseline = top + PLAQUE_HEAD_H + 1 + index * PLAQUE_ROW_H + 9;
-            let rowX = left + 1 + PLAQUE_PAD;
-            if (row.profile) {
-                // Repo swatch: a 3×3 pixel diamond in the repo accent.
-                ctx.fillStyle = row.profile.accent || WALNUT.text;
-                ctx.fillRect(rowX + 1, baseline - 6, 1, 3);
-                ctx.fillRect(rowX, baseline - 5, 3, 1);
-                rowX += 8;
-            }
-            ctx.fillStyle = row.color || WALNUT.count;
-            ctx.fillText(row.label, rowX, baseline);
-            if (row.tailText) {
-                ctx.fillStyle = row.tailColor || WALNUT.count;
-                ctx.fillText(row.tailText, rowX + Math.round(measureLabelText(ctx, row.label)), baseline);
-            }
-            if (row.musterLeft) {
-                // `· 6 ▸ 2` in count ink; the ▸ is a 3×5 carved
-                // triangle (Departure Mono has no U+25B8).
-                let tailX = rowX + Math.round(measureLabelText(ctx, row.label));
-                ctx.fillStyle = WALNUT.count;
-                ctx.fillText(row.musterLeft, tailX, baseline);
-                tailX += row.leftWidth;
-                ctx.fillRect(tailX, baseline - 6, 1, 5);
-                ctx.fillRect(tailX + 1, baseline - 5, 1, 3);
-                ctx.fillRect(tailX + 2, baseline - 4, 1, 1);
-                ctx.fillText(row.musterRight, tailX + PLAQUE_MUSTER_ARROW_W, baseline);
-            }
-        });
-    }
-    ctx.restore();
 }
 
 // True when a painted plaque shows every member its building counts: the

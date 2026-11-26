@@ -158,6 +158,10 @@ const CHIP_TEXT_PAD = 4;
 const CHIP_GLYPH_W = 7;
 const CHIP_SINGLE_GLYPHS = 3;
 const CHIP_FIXED_W = 1 + CHIP_MOTIF_CELL + CHIP_TEXT_PAD + 1;
+// The age notch's column inside the motif cell: past the 4 px pad and the
+// 8 px motif, one pixel clear of it, so the 3 px notch ends at the cell's
+// last column, flush against the text cell's glyph side bearing.
+const CHIP_NOTCH_X = 4 + 8 + 1;
 // A wait this old (or older) shows the full plate at rest.
 export const CREST_FULL_AGE_MS = 5 * 60_000;
 export const CREST_CHIP = Object.freeze({
@@ -1414,8 +1418,10 @@ export function elbowLeaderFills(fill, x, fromY, anchorX, toY, ink) {
 }
 
 // §4.3 — the crest chip: rim, one status-colour field, the motif in plate
-// ink (an edge chip's behind its arrow cell), the age notches at the right
-// pad, then the same notch to the beacon (or the edge arrow) as the plate.
+// ink (an edge chip's behind its arrow cell), the age notches in the motif
+// cell's right gutter (one pixel clear of the motif, ending at the cell's
+// last column — never after the digits, where `1m▪` would read as a full
+// stop), then the same notch to the beacon (or the edge arrow) as the plate.
 function chipFills(plate, fill, stamp) {
     const { rect } = plate;
     const left = rect.left;
@@ -1425,7 +1431,7 @@ function chipFills(plate, fill, stamp) {
     fill(LABEL_INK.plateOutline, left, top, width, PLATE_H, ROLE_RIM);
     fill(plate.color, left + 1, top + 1, width - 2, PLATE_H - 2, ROLE_MARK);
     if (stamp && plate.motif) stamp(plate.motif, left + 1 + offset + 4, top + 4);
-    const notchLeft = left + width - 1 - CHIP_TEXT_PAD;
+    const notchLeft = left + 1 + offset + CHIP_NOTCH_X;
     for (let row = 0; row < notchRows(plate.tier); row++) {
         fill(LABEL_INK.plate, notchLeft, top + 11 - row * 3, AGE_NOTCH_W, 2, ROLE_RIM);
     }
