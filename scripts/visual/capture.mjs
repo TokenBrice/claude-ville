@@ -25,6 +25,7 @@
 //     --golden-dir=<dir>      Golden root (default: claudeville/visual/golden)
 //     --accept                Also write/update golden baselines under --golden-dir
 //     --allow-fallback        Permit software fallback adapters (for CPU-only tests)
+//     --authored-solar        Pin the authored diurnal keys (zero day shift)
 //     --url=<url>             Existing server URL (default: isolated ephemeral port)
 //     --headed                Show browser window
 //     --help                  Show help
@@ -63,6 +64,103 @@ export const MAX_GREEN_FILL_SHARE = 0.50;
 // Deterministic calendar date pinned for any undated `--case` run so captures
 // never depend on the host's wall-clock date/time.
 export const DEFAULT_CAPTURE_DATE = '2026-07-15';
+// W2-Fix-B — an undated snow case lands mid-winter (snow only settles in
+// December–February; `GroundState.snowCoverAt`).
+export const DEFAULT_SNOW_CAPTURE_DATE = '2026-01-15';
+// W2-Fix-B — the page's zone, pinned like `scripts/world/golden-hours.mjs`:
+// the village keeps this city's real sun (LA-2) whatever the host's zone.
+export const CAPTURE_TIMEZONE = 'Europe/Belgrade';
+// `--authored-solar`: the authored grade keys at their own minutes
+// (06:00 / 12:30 / 18:00 / 18:27 / 19:45 / 22:00), whatever the date.
+export const AUTHORED_DAY_SHIFT = Object.freeze({ sunriseShift: 0, sunsetShift: 0, goldenShift: 0 });
+// Canvas: the CanvasWaterState sea chunks build within a per-frame budget;
+// wait (bounded) until a render builds none before reading back.
+export const CANVAS_SEA_SETTLE_MS = 10_000;
+export const CANVAS_SEA_SETTLE_RENDERS = 240;
+
+/**
+ * W2-Fix-B — the pinned weather for a capture item's `weather` key. Unknown
+ * keys throw (never a silent fallback to clear). `snow` is not an atmosphere
+ * weather type: it poses as winter rain (precipitation falls as snow in
+ * December–February) over a pinned timeline of frozen rain, so the ground
+ * history (`GroundState.groundStateAt`) lays real snow cover; the capture
+ * then requires `snowCover >= minSnowCover` and its bucket (`snowBucketOf`)
+ * >= `minSnowBucket`, the bucket the icicles, the lagoon rim ice and the
+ * trampled avenue crowns need.
+ */
+export function resolveCaptureWeather(key) {
+    const name = String(key ?? '');
+    const preset = Object.prototype.hasOwnProperty.call(BENCH_WEATHER, name) ? BENCH_WEATHER[name] : null;
+    if (!preset) throw new Error(`Unknown capture weather "${name}" (expected one of ${Object.keys(BENCH_WEATHER).join(', ')})`);
+    if (preset.type !== 'snow') return Object.freeze({ key: name, profile: preset, knots: null, snow: false, minSnowCover: 0, minSnowBucket: 0 });
+    const { snowCover = 1, ...rest } = preset;
+    const profile = Object.freeze({ ...rest, type: 'rain' });
+    const knot = (minute) => Object.freeze({
+        minute, type: 'rain', intensity: rest.intensity, precipitation: rest.precipitation,
+        cloudCover: rest.cloudCover, fog: rest.fog, windX: rest.windX, frozen: true,
+    });
+    return Object.freeze({
+        key: name,
+        profile,
+        knots: Object.freeze([knot(0), knot(1439)]),
+        snow: true,
+        minSnowCover: snowCover,
+        minSnowBucket: Math.max(3, snowBucketOf(snowCover)),
+    });
+}
+
+/**
+ * W2-Fix-B — the instant the page clock pins for a capture date: 12:00 on
+ * that date in `timeZone` (the page's zone), whatever the host's zone, so the
+ * page never lands on a neighbouring date.
+ */
+export function captureInstant(dateStr, timeZone = CAPTURE_TIMEZONE) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr));
+    if (!match) throw new Error(`Capture date must be YYYY-MM-DD, received ${dateStr}`);
+    const guess = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+        timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(new Date(guess)).map((part) => [part.type, part.value]));
+    const zoned = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second));
+    return new Date(guess - (zoned - guess));
+}
+
+// GroundState `snowBucketOf` (0 bare, 1–4 quarters), for the Node side.
+export function snowBucketOf(snowCover) {
+    const cover = Number(snowCover) || 0;
+    return cover <= 0 ? 0 : Math.min(4, Math.ceil(cover * 4 - 1e-9));
+}
+
+/**
+ * W2-Fix-B — the capture date for an item: `--date`, else the item's date,
+ * else the default (mid-winter for snow). Snow on a non-winter date throws.
+ */
+export function resolveCaptureDate({ optionDate = null, itemDate = null, weather = null } = {}) {
+    const explicit = optionDate || itemDate || null;
+    const date = explicit || (weather?.snow ? DEFAULT_SNOW_CAPTURE_DATE : DEFAULT_CAPTURE_DATE);
+    if (weather?.snow && inferSeasonFromDate(date) !== 'winter') {
+        throw new Error(`Snow capture needs a winter date (December–February), received ${date}`);
+    }
+    return date;
+}
+
+/**
+ * W2-Fix-B — a forced backend's definitive start failure (`worldBackendReason`
+ * from IsometricRenderer `_noteWorldBackend`): a forced WebGPU that reported
+ * no adapter, unavailable or failed to start will never present, so the
+ * fence fails at once. Returns the reason, or null.
+ */
+export function definitiveBackendFailure(expectedBackend, reason) {
+    if (expectedBackend !== 'webgpu' || typeof reason !== 'string') return null;
+    return /\bwebgpu (?:unavailable\b|failed to start)|no-adapter/.test(reason) ? reason : null;
+}
+
+// The fence's diagnostic tail: grade key, warm terms, backend reason, snow.
+export function describeFenceState(state) {
+    const grade = state?.grade || null;
+    return `gradeKey=${grade?.key ?? null} afterglow=${grade?.afterglow ?? null} rimStrength=${grade?.rimStrength ?? null} `
+        + `worldBackendReason=${JSON.stringify(state?.worldBackendReason ?? null)} snowCover=${state?.snowCover ?? null} snowBucket=${state?.snowBucket ?? null}`;
+}
 
 /**
  * Merge newly captured cases into an existing `manifest.json` case list by
@@ -175,6 +273,7 @@ export function evaluateCaptureFenceState(state, {
     expectedSeason = null,
     expectedBackend = null,
     minPresentGeneration = 0,
+    minSnowBucket = 0,
 } = {}) {
     const pendingReasons = [];
     if (!state || typeof state !== 'object') {
@@ -200,6 +299,9 @@ export function evaluateCaptureFenceState(state, {
     }
     if (!state.terrainKey || typeof state.terrainKey !== 'string' || state.terrainKey.trim() === '') {
         pendingReasons.push('empty published terrain key');
+    }
+    if (minSnowBucket > 0 && !(Number(state.snowBucket) >= minSnowBucket)) {
+        pendingReasons.push(`snowBucket ${state.snowBucket ?? null} < ${minSnowBucket}`);
     }
     const gen = Number.isFinite(state.presentGeneration) ? state.presentGeneration : state.fallbackFrameCount;
     if (!Number.isFinite(gen) || gen <= minPresentGeneration) {
@@ -245,6 +347,8 @@ Options:
   --golden-dir=<dir>      Golden root (default: claudeville/visual/golden)
   --accept                Write/update golden baselines in --golden-dir
   --allow-fallback        Do not fail on software fallback adapter
+  --authored-solar        Pin a zero day shift: authored diurnal keys at
+                          06:00/12:30/18:00/18:27/19:45/22:00 on any date/host
   --url=<url>             Existing server URL (default: isolated ephemeral port)
   --headed                Show Chromium window
   --help                  Print this help`);
@@ -263,6 +367,7 @@ export function parseArgs(argv) {
         goldenDir: DEFAULT_GOLDEN_DIR,
         accept: false,
         allowFallback: false,
+        authoredSolar: false,
         url: null,
         headed: false,
         help: false,
@@ -272,6 +377,7 @@ export function parseArgs(argv) {
         if (arg === '--help' || arg === '-h') { opts.help = true; continue; }
         if (arg === '--accept') { opts.accept = true; continue; }
         if (arg === '--allow-fallback') { opts.allowFallback = true; continue; }
+        if (arg === '--authored-solar') { opts.authoredSolar = true; continue; }
         if (arg === '--headed') { opts.headed = true; continue; }
         const [flag, inline] = arg.split('=', 2);
         const value = inline ?? argv[++i];
@@ -294,6 +400,8 @@ export function parseArgs(argv) {
                     if (!scenario || !Number.isFinite(hour) || hour < 0 || hour >= 24) {
                         throw new Error(`Invalid --case spec: ${spec}`);
                     }
+                    // W2-Fix-B — an unknown weather fails here, never as clear.
+                    resolveCaptureWeather(weather);
                     opts.cases.push({
                         id: `${scenario}-h${String(hour).replace('.', 'p')}-${weather}-z${zoom}`,
                         scenario,
@@ -379,6 +487,11 @@ function installVisualCaptureHelpers() {
             : null;
         const assetStats = r?.assets?.cacheStats?.() || null;
         const assetsLoading = Boolean(r?.assets?.isLoading || (Number(assetStats?.pending) > 0));
+        // W2-Fix-B — the frame's grade keys and warm terms, the backend's
+        // own start reason, and the ground's snow (GroundState snowBucketOf).
+        const grade = r?._lastAtmosphere?.lightGrade || null;
+        const snowCover = Number(r?._groundState?.snowCover) || 0;
+        const solar = r?._lastAtmosphere?.solar || null;
         return {
             bootState: app?._bootState || null,
             worldReadyAttr: Boolean(modeEl),
@@ -394,16 +507,35 @@ function installVisualCaptureHelpers() {
             fallbackFrameCount,
             activeBackend: r?.worldRendererMode || null,
             gpuWorldActive: r?.gpuWorld?.isActive?.() === true,
+            worldBackendReason: r?.worldBackendReason ?? null,
+            grade: grade ? { key: grade.key ?? null, afterglow: grade.afterglow ?? null, rimStrength: grade.rimStrength ?? null } : null,
+            snowCover,
+            snowBucket: snowCover <= 0 ? 0 : Math.min(4, Math.ceil(snowCover * 4 - 1e-9)),
+            solar: solar ? {
+                zone: solar.site?.zone ?? null,
+                sunriseShift: solar.sunriseShift ?? null,
+                sunsetShift: solar.sunsetShift ?? null,
+                goldenShift: solar.goldenShift ?? null,
+            } : null,
         };
     };
 
-    C.pinAndPose = async ({ scenario, hour, weather, zoom }) => {
+    C.pinAndPose = async ({ scenario, hour, weather, knots = null, zoom, authoredSolar = null }) => {
         const r = window.__claudeVilleApp.renderer;
         r._startLoop?.();
         r.cameraDirector?.setAutoMode?.(false);
         const atmosphere = r.atmosphereState || window.__claudeVilleAtmosphere;
+        // W2-Fix-B — `--authored-solar`: the city's sun with a zero day
+        // shift, so the grade keys sit at their authored minutes.
+        if (authoredSolar) {
+            if (typeof atmosphere?.setSolarSite !== 'function') throw new Error('--authored-solar: atmosphereState.setSolarSite is unavailable');
+            atmosphere.setSolarSite({ zone: authoredSolar.zone, dayShift: { ...authoredSolar.dayShift } });
+        }
         atmosphere?.setTimelineMode?.('fixed');
         atmosphere?.setHour?.(hour);
+        // W2-Fix-B — a pinned timeline (snow: frozen rain every day), so the
+        // ground history the terrain bakes from is the weather's own.
+        if (knots) atmosphere?.setTimelineKnots?.(knots);
         if (weather) atmosphere?.setWeather?.(weather);
         // Pin wind cloud drift and calm MarkGovernor if present.
         if (r.wind && typeof r.wind.cloudCourseDrift === 'number') r.wind.cloudCourseDrift = 0;
@@ -571,7 +703,7 @@ function installVisualCaptureHelpers() {
         return readWebglFallback(gpuWorld, renderer);
     };
 
-    C.freezeAndCapture = async ({ settleFrames = 2 } = {}) => {
+    C.freezeAndCapture = async ({ settleFrames = 2, seaSettleMs = 10_000, seaSettleRenders = 240 } = {}) => {
         const r = window.__claudeVilleApp.renderer;
         // Opus P0-3 night reproducibility: wait for pending asset loads /
         // terrain restages and run 2 real render ticks after pose+hour+weather
@@ -629,6 +761,34 @@ function installVisualCaptureHelpers() {
             };
         }
 
+        // W2-Fix-B — Canvas: the sea chunks (CanvasWaterState deep field and
+        // swell caps) build within a per-frame budget, so render until a
+        // frame builds none (and no drift swap is pending), yielding a real
+        // animation frame between renders, bounded in time and count.
+        const canvasSea = { settled: true, renders: 0, capBuilds: null, chunks: null };
+        if (!(isGpu && frozenFrame)) {
+            const seaSignature = () => {
+                const water = r._canvasWater;
+                if (!water) return null;
+                return `${water.stats?.capBuilds ?? 0}|${water.chunks?.size ?? 0}|${water.caps?.size ?? 0}|${water.nextCaps ? 'swap' : ''}`;
+            };
+            const seaDeadline = Date.now() + seaSettleMs;
+            let previous = seaSignature();
+            let quiet = 0;
+            canvasSea.settled = false;
+            while (canvasSea.renders < seaSettleRenders && Date.now() < seaDeadline) {
+                r.renderNow?.();
+                canvasSea.renders++;
+                await nextRaf();
+                const next = seaSignature();
+                quiet = next !== null && next === previous && !r._canvasWater?.nextCaps ? quiet + 1 : 0;
+                previous = next;
+                if (quiet >= 2 || next === null) { canvasSea.settled = true; break; }
+            }
+            canvasSea.capBuilds = r._canvasWater?.stats?.capBuilds ?? null;
+            canvasSea.chunks = r._canvasWater?.chunks?.size ?? null;
+        }
+
         let prevComposite = null;
         let finalCap = null;
         let identicalStreak = 0;
@@ -641,6 +801,9 @@ function installVisualCaptureHelpers() {
                 if (gpu.backend === 'webgpu') await gpu.drain?.();
                 finalCap = await readGpuTargets(gpu, r);
             } else {
+                // Yield a real frame between Canvas attempts (budgets and
+                // chunked work advance on the frame clock).
+                if (attempt > 0) await nextRaf();
                 r.renderNow?.();
                 finalCap = readCanvasWorld(r);
             }
@@ -672,6 +835,7 @@ function installVisualCaptureHelpers() {
             height: finalCap?.height ?? 0,
             source: finalCap?.source || null,
             selfStableBytes: identicalStreak >= settleFrames - 1,
+            canvasSea,
             ladderLevel,
             adapter: adapterInfo ? {
                 vendor: adapterInfo.vendor || null,
@@ -702,20 +866,26 @@ function installVisualCaptureHelpers() {
     };
 }
 
-async function waitForStrictCaptureFence(page, { expectedSeason, expectedBackend = null, minPresentGeneration, timeoutMs = 30_000 }) {
+async function waitForStrictCaptureFence(page, { expectedSeason, expectedBackend = null, minPresentGeneration, minSnowBucket = 0, timeoutMs = 30_000 }) {
     const start = Date.now();
     let lastState = null;
     let lastEval = null;
     while (Date.now() - start < timeoutMs) {
         lastState = await page.evaluate(() => window.__cvVisualCapture.readFenceState());
-        lastEval = evaluateCaptureFenceState(lastState, { expectedSeason, expectedBackend, minPresentGeneration });
+        lastEval = evaluateCaptureFenceState(lastState, { expectedSeason, expectedBackend, minPresentGeneration, minSnowBucket });
         if (lastEval.ready) return { state: lastState, elapsedMs: Date.now() - start };
+        // W2-Fix-B — a forced WebGPU that reported no adapter / unavailable
+        // never presents: fail now with its reason, not after the timeout.
+        const failure = definitiveBackendFailure(expectedBackend, lastState?.worldBackendReason);
+        if (failure) {
+            throw new Error(`Capture fence failed fast: forced --backend=${expectedBackend} did not start (${failure}); ${describeFenceState(lastState)}`);
+        }
         await page.waitForTimeout(100);
     }
     throw new Error(
         `Capture fence timed out after ${timeoutMs}ms: pending=[${(lastEval?.pendingReasons || []).join('; ')}] `
         + `backend=${lastState?.activeBackend} terrainKey=${JSON.stringify(lastState?.terrainKey)} `
-        + `season=${lastState?.season} firstFrameReason=${lastState?.firstFrameReason}`,
+        + `season=${lastState?.season} firstFrameReason=${lastState?.firstFrameReason} ${describeFenceState(lastState)}`,
     );
 }
 
@@ -734,18 +904,23 @@ export async function captureVisualRun(options) {
                 const caseDir = path.join(outDir, caseId);
                 mkdirSync(caseDir, { recursive: true });
 
+                // W2-Fix-B — resolve the weather and date before any browser
+                // work: an unknown weather key or a snow case off-winter throws.
+                const weather = resolveCaptureWeather(item.weather);
+                const effectiveDate = resolveCaptureDate({ optionDate: options.date, itemDate: item.date, weather });
                 const context = await browser.newContext({
                     viewport: { width: size.width, height: size.height },
                     deviceScaleFactor: size.dpr,
                     reducedMotion: options.reducedMotion ? 'reduce' : 'no-preference',
+                    // W2-Fix-B — the village's zone, never the host's.
+                    timezoneId: CAPTURE_TIMEZONE,
                 });
                 await context.addInitScript(() => {
                     try { localStorage.setItem('cv-auto-camera', '0'); } catch {}
                 });
                 const page = await context.newPage();
-                const effectiveDate = options.date || item.date || DEFAULT_CAPTURE_DATE;
                 const expectedSeason = inferSeasonFromDate(effectiveDate) || item.season || null;
-                await page.clock.setFixedTime(new Date(`${effectiveDate}T12:00:00`));
+                await page.clock.setFixedTime(captureInstant(effectiveDate));
                 const pageErrors = [];
                 page.on('pageerror', (err) => pageErrors.push(String(err?.message || err).slice(0, 300)));
                 page.on('console', (msg) => {
@@ -769,8 +944,10 @@ export async function captureVisualRun(options) {
                     const posed = await page.evaluate((a) => window.__cvVisualCapture.pinAndPose(a), {
                         scenario: item.scenario,
                         hour: item.hour,
-                        weather: BENCH_WEATHER[item.weather] || BENCH_WEATHER.clear,
+                        weather: weather.profile,
+                        knots: weather.knots,
                         zoom: item.zoom,
+                        authoredSolar: options.authoredSolar ? { zone: CAPTURE_TIMEZONE, dayShift: AUTHORED_DAY_SHIFT } : null,
                     });
 
                     // Wait for Astra's strict present-generation capture fence.
@@ -778,12 +955,25 @@ export async function captureVisualRun(options) {
                         expectedSeason,
                         expectedBackend: options.backend,
                         minPresentGeneration: posed.beforePresentGeneration,
+                        minSnowBucket: weather.minSnowBucket,
                     });
+                    if (weather.snow && !(fenced.state.snowCover >= weather.minSnowCover)) {
+                        throw new Error(`Snow capture ${caseId}: snowCover ${fenced.state.snowCover} < ${weather.minSnowCover}; ${describeFenceState(fenced.state)}`);
+                    }
+                    if (options.authoredSolar) {
+                        const shift = fenced.state.solar;
+                        if (!shift || shift.sunriseShift !== 0 || shift.sunsetShift !== 0 || shift.goldenShift !== 0) {
+                            throw new Error(`--authored-solar did not pin a zero day shift for ${caseId}: ${JSON.stringify(shift)}`);
+                        }
+                    }
 
                     const captured = await page.evaluate(
                         (a) => window.__cvVisualCapture.freezeAndCapture(a),
-                        { settleFrames: options.settleFrames },
+                        { settleFrames: options.settleFrames, seaSettleMs: CANVAS_SEA_SETTLE_MS, seaSettleRenders: CANVAS_SEA_SETTLE_RENDERS },
                     );
+                    if (captured.backend === 'canvas' && captured.canvasSea && !captured.canvasSea.settled) {
+                        throw new Error(`Canvas sea chunks still building for ${caseId} after ${captured.canvasSea.renders} renders (${JSON.stringify(captured.canvasSea)})`);
+                    }
 
                     // Hard fail on silent backend fallback (e.g. webgpu/webgl -> canvas).
                     if (captured.backend !== options.backend) {
@@ -831,8 +1021,17 @@ export async function captureVisualRun(options) {
                         weather: item.weather,
                         zoom: item.zoom,
                         date: effectiveDate || null,
+                        timezone: CAPTURE_TIMEZONE,
                         season: fenced.state.season,
                         backend: captured.backend,
+                        worldBackendReason: fenced.state.worldBackendReason ?? null,
+                        // W2-Fix-B — the frame's grade keys (`from>to`) and warm terms.
+                        gradeKey: fenced.state.grade?.key ?? null,
+                        afterglow: fenced.state.grade?.afterglow ?? null,
+                        rimStrength: fenced.state.grade?.rimStrength ?? null,
+                        solar: { authored: options.authoredSolar, ...(fenced.state.solar || {}) },
+                        weatherProfile: weather.profile,
+                        snow: weather.snow ? { cover: fenced.state.snowCover, bucket: fenced.state.snowBucket, minBucket: weather.minSnowBucket } : null,
                         backing: [captured.width, captured.height],
                         dpr: size.dpr,
                         adapter: captured.adapter,
@@ -840,6 +1039,7 @@ export async function captureVisualRun(options) {
                             selfStableBytes: captured.selfStableBytes,
                             ladderLevel: captured.ladderLevel,
                             nondeterministicMasks: [],
+                            canvasSea: captured.backend === 'canvas' ? captured.canvasSea : null,
                         },
                         fence: {
                             elapsedMs: fenced.elapsedMs,
@@ -896,6 +1096,7 @@ export async function captureVisualRun(options) {
         zoom: r.meta.zoom,
         date: r.meta.date,
         backend: r.meta.backend,
+        gradeKey: r.meta.gradeKey,
         backing: r.meta.backing,
         selfStableBytes: r.meta.determinism.selfStableBytes,
     }));

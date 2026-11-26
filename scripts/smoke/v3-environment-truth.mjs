@@ -41,6 +41,26 @@
 //            differ by at least MIN_MOTION_PX, so a 0-px static result means
 //            the motion was held, not absent.
 //
+// W2-Fix-B — two harness truths:
+//   presentation - WebGPU only, before any arm: a still frame's composite
+//            read back from the GPU (`debugCaptureTargets`) is matched
+//            against a screenshot at a sample grid (Astra's known-colour
+//            liveness check). Headless Chromium can leave the WebGPU canvas's
+//            swapchain out of `page.screenshot()`; every frame then reads as
+//            the same stale picture, so static and truth pass vacuously and
+//            motion fails. When the screenshot misses the GPU frame, the
+//            session captures from the GPU readback (composite plus the
+//            overlay canvas) instead and the report says so; an empty GPU
+//            composite fails the session outright.
+//   bloom policy - the daytime work bloom (GpuWorldPolicy: an open Forge,
+//            Portal or Command work gate by day sets the core and bloom
+//            energies to DAYTIME_WORK_BLOOM_CORE / _STRENGTH) is agent-led by
+//            design: `frameState.coreEnergy` and `.bloomStrength` are checked
+//            against that declared policy on every capture (and must equal
+//            the baseline whenever the policy's switch did not change),
+//            while the sky, weather and every other environment path stay
+//            strict.
+//
 // Diagnostics (failing frames and diff overlays) and report.json go to
 // `--out` (default output/v3-environment-truth/<stamp>/).
 // Exit: 0 every check passed; 1 any failure; 2 nothing failed but a
@@ -152,6 +172,19 @@ const IGNORED_PATHS = [
 const SKY_LSB_BUDGET = 256;
 // Particle presets that belong to agents, buildings or moments (not weather).
 const AGENT_PARTICLE = /^(footfall|spark|sparkle|smoke|dust|chip|bump|sweat|scuff|crowd|forge|recovery|splash-agent|sigil|rune|comet|ember|mote|confetti|coin)/i;
+// W2-Fix-B — the daytime work bloom's agent-led outputs and switch, checked
+// against the declared policy (`bloomPolicyFailures`) instead of the
+// baseline: the policy's own inputs (the light bucket and energies, the
+// bloom mode, HDR) stay strict environment paths.
+const BLOOM_POLICY_PATHS = /^(frameState\.(coreEnergy|bloomStrength)|bloomPolicy\.(daytimeWorkBloom|lightCount))$/;
+const BLOOM_TOLERANCE = 1e-4;
+// W2-Fix-B — presentation liveness: a 32x18 sample grid, a per-channel
+// tolerance for the overlay's sparse marks and colour conversion, and the
+// share of samples that must agree for the screenshot to show the GPU frame.
+const LIVENESS_GRID = Object.freeze([32, 18]);
+const LIVENESS_TOLERANCE = 24;
+const LIVENESS_MIN_AGREEMENT = 0.6;
+const LIVENESS_MIN_DISTINCT = 4;
 
 function usage() {
   return `Usage: node scripts/smoke/v3-environment-truth.mjs [options]
@@ -192,6 +225,122 @@ function parseArgs(argv) {
 // Page setup and pinning.
 
 class BackendUnavailable extends Error {}
+class PresentationFailure extends Error {}
+
+// W2-Fix-B — how each page's frames are taken: 'screenshot' (the page as
+// presented) or 'gpu-readback' (WebGPU swapchain missing from screenshots).
+const presentationModes = new WeakMap();
+
+// The GPU composite at the liveness grid, from a still frame (the loop is
+// stopped so the screenshot and the readback see the same logical frame).
+function gpuLivenessSamples(page, grid) {
+  return page.evaluate(async ([gx, gy]) => {
+    const r = window.__claudeVilleApp.renderer;
+    const gpu = r.gpuWorld;
+    if (typeof gpu?.debugCaptureTargets !== 'function') return { unsupported: true };
+    r._stopLoop?.();
+    r.renderNow?.();
+    const t = await gpu.debugCaptureTargets();
+    if (!t?.composite || !(t.width > 0) || !(t.height > 0)) return { empty: true };
+    const canvas = r.fxCanvas || document.getElementById('worldFxCanvas');
+    const rect = canvas.getBoundingClientRect();
+    const src = t.composite;
+    const scale = src instanceof Float32Array ? 255 : 1;
+    const samples = [];
+    for (let y = 0; y < gy; y++) {
+      for (let x = 0; x < gx; x++) {
+        const bx = Math.min(t.width - 1, Math.floor((x + 0.5) / gx * t.width));
+        const by = Math.min(t.height - 1, Math.floor((y + 0.5) / gy * t.height));
+        const i = (by * t.width + bx) * 4;
+        const c = [0, 1, 2].map(k => Math.max(0, Math.min(255, Math.round(src[i + k] * scale))));
+        samples.push([Math.floor(rect.left + (bx + 0.5) * rect.width / t.width), Math.floor(rect.top + (by + 0.5) * rect.height / t.height), ...c]);
+      }
+    }
+    return { width: t.width, height: t.height, samples };
+  }, grid);
+}
+
+/**
+ * W2-Fix-B — Astra's known-colour presentation-liveness check: the share of
+ * GPU composite samples (outside DOM chrome) the screenshot shows within
+ * `tolerance` per channel, and the GPU frame's distinct sample colours.
+ */
+export function livenessAgreement(png, samples, excluded = [], tolerance = LIVENESS_TOLERANCE) {
+  let compared = 0;
+  let agree = 0;
+  const distinct = new Set();
+  for (const [x, y, r, g, b] of samples) {
+    if (x < 0 || y < 0 || x >= png.width || y >= png.height) continue;
+    if (excluded.some(([x0, y0, x1, y1]) => x >= x0 && x < x1 && y >= y0 && y < y1)) continue;
+    compared++;
+    distinct.add((r << 16) | (g << 8) | b);
+    const i = (y * png.width + x) * 4;
+    if (Math.abs(png.data[i] - r) <= tolerance && Math.abs(png.data[i + 1] - g) <= tolerance && Math.abs(png.data[i + 2] - b) <= tolerance) agree++;
+  }
+  return { compared, agree, agreement: compared ? agree / compared : 0, distinct: distinct.size };
+}
+
+async function probePresentation(page) {
+  const gpu = await gpuLivenessSamples(page, LIVENESS_GRID);
+  try {
+    if (gpu.unsupported) return { mode: 'screenshot', note: 'no debugCaptureTargets: screenshot unverified' };
+    if (gpu.empty) throw new PresentationFailure('WebGPU presentation not verifiable: debugCaptureTargets() returned no composite');
+    const dom = await collectDom(page);
+    const png = PNG.sync.read(await page.screenshot());
+    const result = livenessAgreement(png, gpu.samples, dom);
+    if (result.distinct < LIVENESS_MIN_DISTINCT) {
+      throw new PresentationFailure(`WebGPU composite is degenerate (${result.distinct} distinct sample colours): nothing to verify`);
+    }
+    const mode = result.agreement >= LIVENESS_MIN_AGREEMENT ? 'screenshot' : 'gpu-readback';
+    return {
+      mode,
+      agreement: Math.round(result.agreement * 1000) / 1000,
+      compared: result.compared,
+      gpuDistinct: result.distinct,
+      backing: [gpu.width, gpu.height],
+      note: mode === 'screenshot'
+        ? 'screenshot shows the WebGPU frame'
+        : 'page.screenshot() omits the WebGPU swapchain: frames come from debugCaptureTargets() plus the overlay canvas',
+    };
+  } finally {
+    await page.evaluate(() => window.__claudeVilleApp.renderer._startLoop?.());
+  }
+}
+
+// The presented frame rebuilt from the GPU readback: the composite at the
+// fx canvas's CSS rect, then the overlay canvas, at the page's size.
+async function readbackFrame(page) {
+  const dataUrl = await page.evaluate(async () => {
+    const r = window.__claudeVilleApp.renderer;
+    const t = await r.gpuWorld?.debugCaptureTargets?.();
+    if (!t?.composite) return null;
+    const n = t.width * t.height;
+    const rgba = new Uint8ClampedArray(n * 4);
+    const src = t.composite;
+    const scale = src instanceof Float32Array ? 255 : 1;
+    for (let i = 0; i < n * 4; i++) rgba[i] = (i & 3) === 3 ? 255 : src[i] * scale;
+    const world = document.createElement('canvas');
+    world.width = t.width;
+    world.height = t.height;
+    world.getContext('2d').putImageData(new ImageData(rgba, t.width, t.height), 0, 0);
+    const out = document.createElement('canvas');
+    out.width = window.innerWidth;
+    out.height = window.innerHeight;
+    const g = out.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    const fx = r.fxCanvas || document.getElementById('worldFxCanvas');
+    const rect = fx.getBoundingClientRect();
+    g.drawImage(world, rect.left, rect.top, rect.width, rect.height);
+    const overlay = r.overlayCanvas || document.getElementById('worldOverlayCanvas');
+    if (overlay && overlay.width > 0 && overlay.height > 0 && getComputedStyle(overlay).display !== 'none') {
+      const o = overlay.getBoundingClientRect();
+      g.drawImage(overlay, o.left, o.top, o.width, o.height);
+    }
+    return out.toDataURL('image/png');
+  });
+  if (!dataUrl) throw new PresentationFailure('WebGPU readback returned no composite mid-run');
+  return PNG.sync.read(Buffer.from(dataUrl.split(',')[1], 'base64'));
+}
 
 async function openArm(browser, baseUrl, { renderer, reduced }) {
   const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1, reducedMotion: reduced ? 'reduce' : 'no-preference' });
@@ -250,6 +399,19 @@ async function openArm(browser, baseUrl, { renderer, reduced }) {
     const r = window.__claudeVilleApp.renderer;
     return { gpu: r.gpuWorld?.constructor?.name || null, ladderLevel: r.gpuWorld?.qualityLadder?.getLevel?.() ?? null, postFx: Boolean(r.postFx), motionScale: r.motionScale, reason: r.worldBackendReason || null };
   });
+  // W2-Fix-B — a WebGPU page proves its screenshots show the GPU frame (or
+  // switches to the GPU readback) before any arm trusts a pixel.
+  if (renderer === 'webgpu') {
+    try {
+      backend.presentation = await probePresentation(page);
+    } catch (error) {
+      await context.close();
+      throw error;
+    }
+  } else {
+    backend.presentation = { mode: 'screenshot' };
+  }
+  presentationModes.set(page, backend.presentation.mode);
   return { context, page, errors, backend };
 }
 
@@ -415,6 +577,25 @@ function collectEnv(page) {
       const k = p.type || p.preset || p.kind || '?';
       particles[k] = (particles[k] || 0) + 1;
     }
+    // W2-Fix-B — the daytime work bloom's declared inputs (GpuWorldPolicy).
+    const gpuWorld = r.gpuWorld;
+    let bloomPolicy = null;
+    if (gpuWorld?._frameState && 'coreEnergy' in gpuWorld._frameState) {
+      const policy = await import('/src/presentation/character-mode/gpu/GpuWorldPolicy.js');
+      const level = gpuWorld.qualityLadder?.getLevel?.() ?? 0;
+      const mode = policy.effectBudgetMode('bloom', level);
+      bloomPolicy = {
+        daytimeWorkBloom: gpuWorld._daytimeWorkBloom === true,
+        lightCount: gpuWorld.lightCount ?? 0,
+        bucket: gpuWorld.sourceEnergy?.bucket ?? null,
+        energyCore: gpuWorld.sourceEnergy?.core ?? null,
+        energyBloom: gpuWorld.sourceEnergy?.bloom ?? null,
+        bloomBase: mode === 'off' ? 0 : mode === 'reduced' ? 0.42 : 0.72,
+        hdr: gpuWorld._display?.hdr === true,
+        workCore: policy.DAYTIME_WORK_BLOOM_CORE,
+        workStrength: policy.DAYTIME_WORK_BLOOM_STRENGTH,
+      };
+    }
     const wl = r.wildlifeRenderer;
     let gulls;
     try {
@@ -436,6 +617,7 @@ function collectEnv(page) {
         waterFrame: plain(r.waterFrame),
         feed: pick(r._gpuRenderContext?.feed || window.__v3LastFeed || null),
         frameState: r.gpuWorld?._frameState ? plain(r.gpuWorld._frameState) : null,
+        bloomPolicy: bloomPolicy ? plain(bloomPolicy) : null,
         postFx: pick(r.postFx),
         weatherRenderer: pick(r.weatherRenderer),
         skyRenderer: pick(r.skyRenderer),
@@ -470,7 +652,9 @@ async function capture(page, { pose, zoom, keepAmbient = false }) {
   }, repaint);
   const bakeBefore = await bakeState(true);
   const before = await collectDom(page);
-  const png = PNG.sync.read(await page.screenshot());
+  const png = presentationModes.get(page) === 'gpu-readback'
+    ? await readbackFrame(page)
+    : PNG.sync.read(await page.screenshot());
   const after = await collectDom(page);
   const bakeAfter = await bakeState(false);
   const baking = bakeBefore.pending || bakeAfter.pending || bakeBefore.revision !== bakeAfter.revision;
@@ -496,7 +680,42 @@ function diffPaths(a, b, at = '', out = []) {
 
 function envDiff(a, b) {
   const agentParticle = p => /^particles\./.test(p) && AGENT_PARTICLE.test(p.slice('particles.'.length));
-  return diffPaths(a, b).filter(p => !IGNORED_PATHS.some(re => re.test(p)) && !agentParticle(p));
+  return diffPaths(a, b).filter(p => !IGNORED_PATHS.some(re => re.test(p)) && !BLOOM_POLICY_PATHS.test(p) && !agentParticle(p));
+}
+
+const clampEnergy = (value, fallback = 1) => Math.max(0, Math.min(2, Number.isFinite(Number(value)) ? Number(value) : fallback));
+
+/**
+ * W2-Fix-B — `frameState.coreEnergy` / `.bloomStrength` against the declared
+ * daytime work bloom policy (GpuWorldRendererWebGPU `_setFrameUniforms`): the
+ * work bloom only by daylight, its core and strength the policy constants,
+ * otherwise the light bucket's energies; the strength 0 without a source.
+ * With a baseline whose switch matches, both must equal the baseline's.
+ */
+export function bloomPolicyFailures(env, base = null) {
+  const policy = env?.bloomPolicy;
+  const frame = env?.frameState;
+  if (!policy || !frame || frame.coreEnergy === undefined) return [];
+  const failures = [];
+  const work = policy.daytimeWorkBloom === true;
+  if (work && policy.bucket !== 'daylight') failures.push(`daytime work bloom outside daylight (bucket ${policy.bucket})`);
+  const core = work ? policy.workCore : clampEnergy(policy.energyCore);
+  if (Math.abs(frame.coreEnergy - core) > BLOOM_TOLERANCE) {
+    failures.push(`frameState.coreEnergy ${frame.coreEnergy} != declared ${core} (daytimeWorkBloom ${work})`);
+  }
+  const sources = policy.lightCount > 0 || work;
+  let strength = sources ? policy.bloomBase * (work ? policy.workStrength : clampEnergy(policy.energyBloom)) : 0;
+  if (policy.hdr) strength *= 0.5;
+  if (frame.bloomStrength !== undefined && Math.abs(frame.bloomStrength - strength) > BLOOM_TOLERANCE) {
+    failures.push(`frameState.bloomStrength ${frame.bloomStrength} != declared ${Math.round(strength * 1e5) / 1e5} (daytimeWorkBloom ${work}, lights ${policy.lightCount})`);
+  }
+  const was = base?.bloomPolicy;
+  const baseFrame = base?.frameState;
+  if (was && baseFrame && was.daytimeWorkBloom === work && (was.lightCount > 0) === (policy.lightCount > 0)) {
+    if (Math.abs(frame.coreEnergy - baseFrame.coreEnergy) > BLOOM_TOLERANCE) failures.push(`frameState.coreEnergy moved without the policy switch (${baseFrame.coreEnergy} -> ${frame.coreEnergy})`);
+    if (Math.abs((frame.bloomStrength ?? 0) - (baseFrame.bloomStrength ?? 0)) > BLOOM_TOLERANCE) failures.push(`frameState.bloomStrength moved without the policy switch (${baseFrame.bloomStrength} -> ${frame.bloomStrength})`);
+  }
+  return failures;
 }
 
 // Changed pixels inside the world canvas and outside the excluded rects: all of them
@@ -590,6 +809,8 @@ async function runTruth(page, tl, record, renderer) {
   if (control.changed) controlFailures.push(`${control.changed} px changed with nothing changed (box ${control.box})`);
   if (controlPaths.length) controlFailures.push(`env state drifted: ${controlPaths.slice(0, 6).join(', ')}`);
   if (base.agents !== 0) controlFailures.push(`baseline has ${base.agents} agents`);
+  controlFailures.push(...bloomPolicyFailures(base.env), ...bloomPolicyFailures(again.env, base.env));
+  if (base.env.bloomPolicy?.daytimeWorkBloom) controlFailures.push('the 0-agent baseline runs the daytime work bloom (no work gate is open)');
   record({ arm: 'truth', timeline: tl, state: 'control', weather: base.env.atmosphere?.weather?.type ?? null, px: control.changed, sky: control.sky, envPaths: controlPaths.length, failures: controlFailures }, [base, again]);
   for (const [state, apply, expected] of STATES) {
     if (!FULL_MATRIX_TIMELINES.has(tl) && !SHORT_STATES.has(state)) continue;
@@ -601,6 +822,7 @@ async function runTruth(page, tl, record, renderer) {
     const failures = [];
     if (expected == null ? cap.agents < 1 : cap.agents !== expected) failures.push(`state did not take: ${cap.agents} agents (expected ${expected ?? '>= 1'})`);
     if (paths.length) failures.push(`environment state follows agent state: ${paths.slice(0, 8).join(', ')}`);
+    failures.push(...bloomPolicyFailures(cap.env, base.env));
     if (d.skyOver1 || d.sky > lsbBudget) failures.push(`${d.sky} sky px changed with agent state (${d.skyOver1} by more than 1 LSB)`);
     record({ arm: 'truth', timeline: tl, state, weather: cap.env.atmosphere?.weather?.type ?? null, agents: cap.agents, px: d.changed, sky: d.sky, skyOver1: d.skyOver1, envPaths: paths.length, failures }, [base, cap]);
   }
@@ -688,6 +910,12 @@ async function main() {
         try {
           opened = await openArm(browser, server.baseUrl, { renderer, reduced });
         } catch (error) {
+          if (error instanceof PresentationFailure) {
+            failed++;
+            report.rows.push({ renderer, arm, timeline: tl, state: 'presentation', failures: [error.message] });
+            console.log(`[v3-truth] FAIL ${renderer} ${arm} presentation: ${error.message}`);
+            continue;
+          }
           if (!(error instanceof BackendUnavailable)) throw error;
           unavailable++;
           report.backends[renderer] = { unavailable: error.message };
@@ -696,6 +924,7 @@ async function main() {
         }
         const { context, page, errors, backend } = opened;
         report.backends[renderer] = backend;
+        if (backend.presentation?.mode === 'gpu-readback') console.log(`[v3-truth] ${renderer} ${arm}: ${backend.presentation.note} (agreement ${backend.presentation.agreement})`);
         const record = (row, frames) => {
           row.renderer = renderer;
           report.rows.push(row);
@@ -732,7 +961,10 @@ async function main() {
   process.exit(failed ? 1 : unavailable ? 2 : 0);
 }
 
-main().catch((error) => {
-  console.error(`[v3-truth] FAIL: ${error.stack || error.message}`);
-  process.exit(1);
-});
+// Run only as a script: the tests import the pure checks above.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(`[v3-truth] FAIL: ${error.stack || error.message}`);
+    process.exit(1);
+  });
+}

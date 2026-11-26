@@ -1277,9 +1277,12 @@ export class SkyRenderer {
         const cy0 = cellsY / 2;
         const rcY = Math.max(1, rc * squashQ);
         const side = waxing ? -1 : 1;
-        // Negative cos(π * illum) maps illum=0 → -1 (full shadow), illum=0.5 → 0
-        // (half shadow), illum=1 → +1 (full lit), keeping the exact cosine profile.
-        const cosPhase = -Math.cos(Math.PI * illumQ);
+        // W2-Fix-B — `illumination` is already the lit fraction: the
+        // terminator is the ellipse x = k·chord(y), and the disc lit left of
+        // it is (1 + k) / 2 of the area, so k = 2·illum − 1 (0 → new,
+        // 0.5 → half, 1 → full). The old −cos(π·illum) cosined it twice (a
+        // 0.24 crescent drew 13.5 % lit).
+        const cosPhase = 2 * illumQ - 1;
         const insideDisc = (gx, gy) => Math.hypot((gx + 0.5 - cx0) / rc, (gy + 0.5 - cy0) / rcY) <= 1;
 
         for (let gy = 0; gy < cellsY; gy++) {

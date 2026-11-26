@@ -13,7 +13,7 @@ import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { RECEIVER_LUMA_CEILING, WEATHER_SNOW_COLORS } from '../../config/artPalette.js';
 import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 import { baseWindX, cloudCourseDrift, windAt } from './Wind.js';
-import { applyGradeToRgb, capSaturation } from './GradeEvaluator.js';
+import { applyGradeToRgb, capSaturation, gradeKeyMinute } from './GradeEvaluator.js';
 import { COAST_FIELD_FLAGS, OCEAN_HORIZON_WORLD_Y, overcastPearlShare, RAIN_START_PRECIPITATION } from './CoastBake.js';
 import { extractPuddleSites } from './GroundWeatherField.js';
 import { lookStrength } from './LookStrengths.js';
@@ -113,6 +113,8 @@ export const RAIN_DIM = '#96aabb';
 // Frame B = 5×3 art-px hollow ellipse outline (exact 8 px).
 export const PUDDLE_RING_FRAME_MS = 120;
 export const PUDDLE_RING_RATE_PER_10 = 1.5;
+// The resident puddle courses draw nothing at or under this level.
+const PUDDLE_LEVEL_EPSILON = 0.001;
 export const PUDDLE_RING_FRAMES = Object.freeze([
     Object.freeze(['.....', '.###.', '.....']),
     Object.freeze(['.###.', '#...#', '.###.']),
@@ -506,7 +508,7 @@ export class WeatherRenderer {
         this._lastFrameDt = 16;
         this._lightningSheen = 0;
         this.sceneContext = null;
-        const fogTiles = Object.values(this._fogVariants || {}).flatMap(variant => [variant.canvas, variant.waterCanvas]);
+        const fogTiles = Object.values(this._fogVariants || {}).flatMap(variant => [variant.canvas, variant.waterCanvas, variant.waterDeltaCanvas]);
         for (const tile of [this._washTile, ...fogTiles]) {
             if (!tile) continue;
             tile.width = 0;
@@ -643,7 +645,9 @@ export class WeatherRenderer {
     // `landShare` is the LA-7 sea fret's share over land (1 = even banks).
     // W2-B (§4.10–4.11): top course takes a dawn rose-gold crest when dawn
     // share > 0; water density is boosted ×1.35 (capped at FOG_BUCKETS), with
-    // safe ×1.0 fallback when no coast field is bound.
+    // safe ×1.0 fallback when no coast field is bound. W2-Fix-B: the boost
+    // rides `waterDeltaCanvas` (null when unbound or when ×1.35 lifts no
+    // bucket), which the ground pass lays over the coast `water` cells only.
     groundFogLayer({ atmosphere = null, viewport = null, timeMs = null, waterFields = null } = {}) {
         const weather = normalizeWeather(atmosphere);
         if (!weather || !(weather.intensity > 0) || typeof document === 'undefined') return null;
@@ -671,10 +675,13 @@ export class WeatherRenderer {
         const variant = variants.plain ||= {
             canvas: null,
             waterCanvas: null,
+            waterDeltaCanvas: null,
             waterKey: '',
             layer: {
                 canvas: null,
                 waterCanvas: null,
+                waterDeltaCanvas: null,
+                waterKey: '',
                 key: '',
                 x: 0,
                 y: 0,
@@ -688,18 +695,27 @@ export class WeatherRenderer {
             variant.canvas = bakeFogBankTile(variant.canvas, strength / FOG_BUCKETS, FOG_COLOR, topCourseRgb);
         }
         const fields = waterFields || this.sceneContext?.waterFields?.() || this.sceneContext?.coastField || null;
-        let waterCanvas = variant.canvas;
+        // W2-Fix-B — the boosted water banks and their delta over the land
+        // banks (what the ground pass lays over the water cells), baked
+        // only while a coast field is bound and the boost lifts a bucket.
+        let waterCanvas = null;
+        let waterDeltaCanvas = null;
+        const deltaKey = `${key}>${waterKey}`;
         if (fields?.coastField && waterStrength > strength) {
-            if (variant.waterKey !== waterKey || !variant.waterCanvas) {
+            if (variant.waterKey !== deltaKey || !variant.waterCanvas || !variant.waterDeltaCanvas) {
                 variant.waterCanvas = bakeFogBankTile(variant.waterCanvas, waterStrength / FOG_BUCKETS, FOG_COLOR, topCourseRgb);
-                variant.waterKey = waterKey;
+                variant.waterDeltaCanvas = bakeFogWaterDeltaTile(variant.waterDeltaCanvas, strength / FOG_BUCKETS, waterStrength / FOG_BUCKETS, FOG_COLOR, topCourseRgb);
+                variant.waterKey = deltaKey;
             }
             waterCanvas = variant.waterCanvas;
+            waterDeltaCanvas = variant.waterDeltaCanvas;
         }
         const drift = cloudCourseDrift(reduced ? null : timeMs, weather);
         const layer = variant.layer;
         layer.canvas = variant.canvas;
         layer.waterCanvas = waterCanvas;
+        layer.waterDeltaCanvas = waterDeltaCanvas;
+        layer.waterKey = waterDeltaCanvas ? deltaKey : '';
         layer.key = key;
         layer.x = Math.round(drift.x);
         layer.y = Math.round(drift.y);
@@ -1181,10 +1197,13 @@ export class WeatherRenderer {
         this._puddleRings.length = kept;
 
         const view = this._visibleWorldRect(camera);
+        // W2-Fix-B — rings ride the ground history's standing water: no level
+        // (or a dry one) means no rings, matching the resident puddle courses
+        // that draw nothing at `puddles <= 0.001`.
         const rawPuddles = this.sceneContext?.puddleLevel?.() ?? atmosphere?.groundState?.puddles;
-        const puddleLevel = Number.isFinite(Number(rawPuddles)) ? clamp(Number(rawPuddles), 0, 1) : 1;
+        const puddleLevel = Number.isFinite(Number(rawPuddles)) ? clamp(Number(rawPuddles), 0, 1) : 0;
         const visible = [];
-        for (const site of sites) {
+        for (const site of puddleLevel > PUDDLE_LEVEL_EPSILON ? sites : []) {
             if (site.threshold != null && puddleLevel < site.threshold) continue;
             if (!inRect(site, view)) continue;
             visible.push(site);
@@ -1875,12 +1894,60 @@ export function puddleRingColor(grade = null, fallbackHex = RAIN_LIGHT) {
 }
 
 function bakeFogBankTile(canvas, strength, rgb, topCourseRgb = rgb) {
-    const { w, h, values, slope, sorted } = fogField();
+    const { w, h } = fogField();
     const tile = canvas || document.createElement('canvas');
     tile.width = w;
     tile.height = h;
     const tctx = tile.getContext('2d', { willReadFrequently: true });
     const image = tctx.createImageData(w, h);
+    fogBankTexels(image.data, strength, rgb, topCourseRgb);
+    tctx.putImageData(image, 0, 0);
+    return tile;
+}
+
+/**
+ * W2-Fix-B (§4.11) — the water boost as a tile laid over the land banks:
+ * per texel, `delta` over `land` composites to exactly the `water` texel
+ * (source-over: a_d = (a_w − a_l) / (1 − a_l), and the colour solved so
+ * a_d·C_d + (1 − a_d)·a_l·C_l = a_w·C_w). The boosted tile's courses cover
+ * every texel the land tile does (a lower threshold, a higher alpha scale),
+ * so the delta is never negative. Pure: fills and returns `out`.
+ */
+export function fogWaterDeltaTexels(out, landStrength, waterStrength, rgb, topCourseRgb = rgb) {
+    const { w, h } = fogField();
+    const land = fogBankTexels(new Uint8ClampedArray(w * h * 4), landStrength, rgb, topCourseRgb);
+    const water = fogBankTexels(new Uint8ClampedArray(w * h * 4), waterStrength, rgb, topCourseRgb);
+    for (let offset = 0; offset < out.length; offset += 4) {
+        const aw = water[offset + 3] / 255;
+        const al = land[offset + 3] / 255;
+        if (!(aw > al) || al >= 1) {
+            out[offset] = out[offset + 1] = out[offset + 2] = out[offset + 3] = 0;
+            continue;
+        }
+        const ad = (aw - al) / (1 - al);
+        for (let channel = 0; channel < 3; channel++) {
+            out[offset + channel] = clamp((aw * water[offset + channel] - (1 - ad) * al * land[offset + channel]) / ad, 0, 255);
+        }
+        out[offset + 3] = Math.round(ad * 255);
+    }
+    return out;
+}
+
+function bakeFogWaterDeltaTile(canvas, landStrength, waterStrength, rgb, topCourseRgb = rgb) {
+    const { w, h } = fogField();
+    const tile = canvas || document.createElement('canvas');
+    tile.width = w;
+    tile.height = h;
+    const tctx = tile.getContext('2d', { willReadFrequently: true });
+    const image = tctx.createImageData(w, h);
+    fogWaterDeltaTexels(image.data, landStrength, waterStrength, rgb, topCourseRgb);
+    tctx.putImageData(image, 0, 0);
+    return tile;
+}
+
+// The three-course bank texels at `strength` (RGBA8 into `data`).
+function fogBankTexels(data, strength, rgb, topCourseRgb = rgb) {
+    const { w, h, values, slope, sorted } = fogField();
     const share = 0.3 + 0.34 * strength;
     const threshold = s => sorted[Math.round((1 - clamp(s, 0, 1)) * (sorted.length - 1))];
     const t1 = threshold(share);
@@ -1895,14 +1962,13 @@ function bakeFogBankTile(canvas, strength, rgb, topCourseRgb = rgb) {
             if (!course) continue;
             const c = course === 1 ? topCourseRgb : rgb;
             const offset = (y * w + x) * 4;
-            image.data[offset] = c[0];
-            image.data[offset + 1] = c[1];
-            image.data[offset + 2] = c[2];
-            image.data[offset + 3] = Math.round(FOG_COURSE_ALPHA[course - 1] * alphaScale * 255);
+            data[offset] = c[0];
+            data[offset + 1] = c[1];
+            data[offset + 2] = c[2];
+            data[offset + 3] = Math.round(FOG_COURSE_ALPHA[course - 1] * alphaScale * 255);
         }
     }
-    tctx.putImageData(image, 0, 0);
-    return tile;
+    return data;
 }
 
 function normalizeWeather(atmosphere) {
@@ -2074,12 +2140,13 @@ function mix3(a, b, t) {
 }
 
 // §4.10 — dawn mist share: `1 - |minute - sunrise| / 60` clamped to 0..1.
+// W2-Fix-B — the crest keys on the grade's own sunrise key (the day's
+// shifted 06:00), the same minute the resident `u_dawnShare` reads
+// (GpuFrameState `resolveDiurnalFrame`), never the raw solar sunrise.
 function dawnMistShareOf(atmosphere) {
     const minute = Number(atmosphere?.clock?.minuteOfDay);
     if (!Number.isFinite(minute)) return 0;
-    const sunrise = Number.isFinite(Number(atmosphere?.solar?.sunriseMinute))
-        ? Number(atmosphere.solar.sunriseMinute)
-        : 6 * 60;
+    const sunrise = gradeKeyMinute('sunrise', atmosphere?.solar || undefined);
     return clamp(1 - Math.abs(minute - sunrise) / 60, 0, 1);
 }
 

@@ -14,6 +14,9 @@ export const BENCH_WEATHER = Object.freeze({
   clear: Object.freeze({ type: 'clear', intensity: 0, precipitation: 0, fog: 0, cloudCover: 0.08, windX: 0 }),
   rain: Object.freeze({ type: 'rain', intensity: 0.82, precipitation: 0.9, fog: 0.16, cloudCover: 0.92, windX: -0.4 }),
   storm: Object.freeze({ type: 'storm', intensity: 1, precipitation: 1, fog: 0.34, cloudCover: 1, windX: -0.78 }),
+  overcast: Object.freeze({ type: 'overcast', intensity: 0, precipitation: 0, fog: 0.08, cloudCover: 0.96, windX: -0.15 }),
+  fog: Object.freeze({ type: 'fog', intensity: 0, precipitation: 0, fog: 0.82, cloudCover: 0.72, windX: -0.05 }),
+  snow: Object.freeze({ type: 'snow', intensity: 0.78, precipitation: 0.85, fog: 0.14, cloudCover: 0.94, windX: -0.25, snowCover: 0.92 }),
 });
 
 // Real-GPU Chromium (Metal ANGLE on macOS, Vulkan on Linux; see

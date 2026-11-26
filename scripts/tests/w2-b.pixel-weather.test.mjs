@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { RECEIVER_LUMA_CEILING } from '../../claudeville/src/config/artPalette.js';
-import { evaluateGrade, applyGradeToRgb } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
+import { evaluateGrade, applyGradeToRgb, gradeKeyMinute } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
 import { COAST_FIELD_FLAGS } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import {
     GROUND_WEATHER_COLS,
@@ -22,12 +22,30 @@ import {
     PUDDLE_RING_RATE_PER_10,
     WeatherRenderer,
     fogBankDensityAt,
+    fogWaterDeltaTexels,
     fogCourseAtWorld,
     isCoastWaterAt,
     lightningSheenFor,
     puddleRingColor,
     stormStrikeAt,
 } from '../../claudeville/src/presentation/character-mode/WeatherRenderer.js';
+
+import { BENCH_WEATHER } from '../smoke/support/world-bench.mjs';
+import {
+    AUTHORED_DAY_SHIFT,
+    CAPTURE_TIMEZONE,
+    DEFAULT_SNOW_CAPTURE_DATE,
+    captureInstant,
+    definitiveBackendFailure,
+    describeFenceState,
+    evaluateCaptureFenceState,
+    parseArgs as parseCaptureArgs,
+    resolveCaptureDate,
+    resolveCaptureWeather,
+    snowBucketOf as captureSnowBucketOf,
+} from '../visual/capture.mjs';
+import { snowBucketOf } from '../../claudeville/src/presentation/character-mode/GroundState.js';
+import { bloomPolicyFailures, livenessAgreement } from '../smoke/v3-environment-truth.mjs';
 
 const readSource = name => readFileSync(
     new URL(`../../claudeville/src/presentation/character-mode/${name}`, import.meta.url),
@@ -287,6 +305,37 @@ test('W2-B §4.12 _drawCodeMoon: integer 2-px pixel disc with maria, limb, Bayer
     const newLimb = newStamp.fillRects.filter(r => r.fillStyle === 'rgba(190, 216, 255, 0.36)');
     assert.ok(newDisc.length > newLimb.length && newLimb.length > 20, 'new moon has dark disc + 1-cell limb');
 
+    // W2-Fix-B — `illumination` is the lit fraction itself: the terminator
+    // ellipse x = (2·illum − 1)·chord leaves exactly illum of the disc lit
+    // (the old −cos(π·illum) cosined it twice: 0.25 drew 14.6 %).
+    const shadowStyle = 'rgba(20, 36, 58, 0.82)';
+    const litFraction = (illumination, waxing) => {
+        const ctx = createRecordingCtx();
+        sky._drawCodeMoon(ctx, canvas, {
+            xFrac: 0.5, yFrac: 0.2, alpha: 1, squashY: 1,
+            phase: { phaseName: illumination >= 0.5 ? 'gibbous' : 'crescent', illumination, waxing },
+        });
+        const stamp = ctx.ops.drawImages.at(-1).img;
+        const cells = new Map();
+        for (const r of stamp.fillRects) {
+            const k = `${r.x},${r.y}`;
+            const cell = cells.get(k) || { shadow: false };
+            if (r.fillStyle === shadowStyle) cell.shadow = true;
+            cells.set(k, cell);
+        }
+        let shadow = 0;
+        for (const cell of cells.values()) if (cell.shadow) shadow++;
+        return 1 - shadow / cells.size;
+    };
+    for (const illumination of [0.25, 0.5, 0.75]) {
+        for (const waxing of [true, false]) {
+            const lit = litFraction(illumination, waxing);
+            t.diagnostic(`code moon illum ${illumination} ${waxing ? 'waxing' : 'waning'}: ${(lit * 100).toFixed(1)} % lit`);
+            assert.ok(Math.abs(lit - illumination) <= 0.03, `illumination ${illumination}: lit ${lit.toFixed(3)}`);
+        }
+    }
+    assert.ok(litFraction(0.25, true) < litFraction(0.5, true) && litFraction(0.5, true) < litFraction(0.75, true), 'lit share grows with illumination');
+
     // 4) squashY applies to cell rows while cells remain square 2×2 blocks.
     const squashedCtx = createRecordingCtx();
     sky._drawCodeMoon(squashedCtx, canvas, {
@@ -386,6 +435,8 @@ test('W2-B §4.11 & §4.10 time-tinted fog preserves v0.67.1 night exact, tints 
     }
 
     // 3) Dawn mist crest (§4.10): top course of groundFogLayer tints toward skyHorizon at sunrise, untouched at noon.
+    // W2-Fix-B: the crest keys on the grade's own sunrise key (the day's
+    // shifted 06:00), the minute GpuFrameState's u_dawnShare reads.
     const dawnGrade = evaluateGrade({ minuteOfDay: 6 * 60, weather: { type: 'fog', intensity: 0.7, fog: 0.7 } });
     const dawnLayer = renderer.groundFogLayer({
         atmosphere: {
@@ -451,11 +502,107 @@ test('W2-B §4.11 fog by height: ×1.35 density over coast water flag, capped by
     const atm = { weather: { type: 'fog', intensity: 0.5, fog: 0.5 } };
     const unbound = renderer.groundFogLayer({ atmosphere: atm, viewport: { width: 1280, height: 720 } });
     assert.equal(unbound.waterStrength, unbound.landStrength, 'unbound coast falls back to ×1.0');
-    assert.equal(unbound.waterCanvas, unbound.canvas);
+    assert.equal(unbound.waterCanvas, null, 'unbound: no water tile');
 
     const bound = renderer.groundFogLayer({ atmosphere: atm, viewport: { width: 1280, height: 720 }, waterFields });
     assert.ok(bound.waterStrength > bound.landStrength, 'bound coast boosts waterStrength');
     assert.notEqual(bound.waterCanvas, bound.canvas, 'waterCanvas baked at boosted bucket');
+});
+
+test('W2-Fix-B §4.11: the ×1.35 water banks are drawn as a delta over the banks, zero-cost unbound', (t) => {
+    const prevDoc = globalThis.document;
+    const { doc } = createMockDocument();
+    globalThis.document = doc;
+    t.after(() => {
+        if (prevDoc === undefined) delete globalThis.document;
+        else globalThis.document = prevDoc;
+    });
+    const coastField = new Uint8Array(4 * 4 * 2);
+    coastField[(1 * 4 + 1) * 2 + 1] = COAST_FIELD_FLAGS.water;
+    const waterFields = { x: 0, y: 0, cols: 4, rows: 4, coastField };
+    const renderer = new WeatherRenderer();
+    const atm = { weather: { type: 'fog', intensity: 0.5, fog: 0.5 } };
+
+    // Unbound: no water tiles at all (the ground pass draws today's banks).
+    const unbound = renderer.groundFogLayer({ atmosphere: atm, viewport: { width: 1280, height: 720 } });
+    assert.equal(unbound.waterCanvas, null, 'unbound: no water tile');
+    assert.equal(unbound.waterDeltaCanvas, null, 'unbound: no delta tile');
+    assert.equal(unbound.waterKey, '');
+
+    // Bound: the delta tile and its revision key.
+    const bound = renderer.groundFogLayer({ atmosphere: atm, viewport: { width: 1280, height: 720 }, waterFields });
+    assert.ok(bound.waterDeltaCanvas, 'bound: delta tile baked');
+    assert.notEqual(bound.waterDeltaCanvas, bound.canvas);
+    assert.match(bound.waterKey, /^ground-fog-\d+.*>ground-fog-\d+/);
+    const again = renderer.groundFogLayer({ atmosphere: atm, viewport: { width: 1280, height: 720 }, waterFields });
+    assert.equal(again.waterDeltaCanvas, bound.waterDeltaCanvas, 'delta tile cached per key');
+
+    // Pure: delta over the land texel composites (source-over) to the water texel.
+    const land = bound.landStrength;
+    const water = bound.waterStrength;
+    const size = bound.canvas.width * bound.canvas.height * 4;
+    const delta = fogWaterDeltaTexels(new Uint8ClampedArray(size), land, water, [224, 231, 229]);
+    const landTile = bound.canvas.imageData.data;
+    const waterTile = bound.waterCanvas.imageData.data;
+    let covered = 0;
+    let maxAlphaErr = 0;
+    let maxColourErr = 0;
+    for (let o = 0; o < size; o += 4) {
+        const al = landTile[o + 3] / 255;
+        const ad = delta[o + 3] / 255;
+        const aw = waterTile[o + 3] / 255;
+        assert.ok(aw >= al, 'the boosted tile covers every land texel');
+        const a = ad + (1 - ad) * al;
+        maxAlphaErr = Math.max(maxAlphaErr, Math.abs(a - aw));
+        if (aw > 0) {
+            covered++;
+            for (let k = 0; k < 3; k++) {
+                const c = (ad * delta[o + k] + (1 - ad) * al * landTile[o + k]) / Math.max(1e-6, a);
+                maxColourErr = Math.max(maxColourErr, Math.abs(c - waterTile[o + k]));
+            }
+        }
+    }
+    assert.ok(covered > 0);
+    assert.ok(maxAlphaErr <= 1 / 255 + 1e-9, `delta-over-banks alpha matches the water banks (max err ${maxAlphaErr})`);
+    assert.ok(maxColourErr <= 2, `delta-over-banks colour matches the water banks (max err ${maxColourErr})`);
+
+    // Both ground passes lay the delta over water only.
+    const frame = readSource('WorldFrameRenderer.js');
+    assert.match(frame, /const delta = layer\.waterDeltaCanvas \|\| null;\n\s+if \(\(!cutLand && !delta\) \|\| !fields\?\.coastField/, 'Canvas: the delta needs the coast field');
+    assert.match(frame, /fctx\.drawImage\(seaFretLandMask\(fields\), fields\.x, fields\.y, fields\.cols \* 2, fields\.rows \* 2\);\n\s+fctx\.globalCompositeOperation = 'destination-over';/, 'Canvas: delta cut off the land, banks laid under');
+    assert.match(frame, /if \(layer\.waterDeltaCanvas && renderer\.gpuWorld\?\.waterFieldsActive === true\)/, 'GPU: delta records only with the coast field bound');
+    assert.match(frame, /water\.landShare = 0;/, 'GPU: delta records at land share 0 (seaFret keeps water only)');
+    assert.match(frame, /id: 'ground:fog-water', textureKey: 'ground-fog-water-tile'/);
+});
+
+test('W2-Fix-B §4.10: the dawn mist crest keys on the grade sunrise key (shifted 06:00), not the raw solar sunrise', (t) => {
+    const prevDoc = globalThis.document;
+    const { doc } = createMockDocument();
+    globalThis.document = doc;
+    t.after(() => {
+        if (prevDoc === undefined) delete globalThis.document;
+        else globalThis.document = prevDoc;
+    });
+    const renderer = new WeatherRenderer();
+    const solar = { sunriseMinute: 7 * 60 + 40, sunriseShift: -40 };
+    const key = gradeKeyMinute('sunrise', solar);
+    assert.equal(key, 6 * 60 - 40);
+    const layerAt = minute => renderer.groundFogLayer({
+        atmosphere: {
+            weather: { type: 'fog', intensity: 0.7, fog: 0.7 },
+            clock: { minuteOfDay: minute },
+            solar,
+            lightGrade: evaluateGrade({ minuteOfDay: minute, sunriseShift: -40 }),
+        },
+        viewport: { width: 1280, height: 720 },
+    });
+    const atKey = layerAt(key);
+    assert.ok(atKey.dawnCrestRgb[0] > atKey.dawnCrestRgb[2], 'crest at the grade sunrise key');
+    const atRawSunrise = layerAt(solar.sunriseMinute);
+    assert.deepEqual(atRawSunrise.dawnCrestRgb, [224, 231, 229], 'no crest 100 min after the key, at the raw solar sunrise');
+    const source = readSource('WeatherRenderer.js');
+    assert.match(source, /const sunrise = gradeKeyMinute\('sunrise', atmosphere\?\.solar \|\| undefined\);/);
+    assert.match(readSource('gpu/GpuFrameState.js'), /const sunrise = gradeKeyMinute\('sunrise', feed\.atmosphere\?\.solar \|\| undefined\);/);
 });
 
 test('W2-B §4.11 lightningSheen: 1 during 83 ms peak with motion on, 0 otherwise / reduced motion, read-only getter', () => {
@@ -626,4 +773,150 @@ test('W2-B §4.12 GroundWeatherField.extractPuddleSites & 2-frame concentric rai
         gpuRainShare: 1,
     });
     assert.equal(renderer._puddleRings.length, 0, 'precipitation <= 0.15 spawns zero puddle rings');
+});
+
+test('W2-Fix-B §4.12: puddle rings follow the ground history — none on dry ground under the first drops', () => {
+    // Production wiring: the renderer's scene context hands the weather
+    // overlay the ground history's puddle level.
+    const iso = readSource('IsometricRenderer.js');
+    assert.match(iso, /puddleLevel: \(\) => this\._groundState\?\.puddles \?\? 0,/);
+
+    const sites = Array.from({ length: 10 }, (_, i) => ({ x: 50 + i * 20, y: 100, threshold: i < 5 ? 0 : 0.4 }));
+    const camera = {
+        zoom: 2,
+        _viewportWidth: () => 400,
+        _viewportHeight: () => 300,
+        screenToWorld: (x, y) => ({ x, y }),
+        worldToScreen: (x, y) => ({ x, y }),
+    };
+    const rain = {
+        weather: { type: 'rain', intensity: 0.8, precipitation: 0.8, cloudCover: 0.9, fog: 0.1, windX: 0.2, seed: 42 },
+        clock: { localDate: '2026-06-15' },
+        lightGrade: evaluateGrade({ minuteOfDay: 12.5 * 60 }),
+        motion: { particleEnabled: true },
+    };
+    const run = (level, steps = 60) => {
+        const renderer = new WeatherRenderer();
+        const context = { camera, puddleSites: () => sites };
+        if (level !== undefined) context.puddleLevel = () => level;
+        renderer.setSceneContext(context);
+        let spawned = 0;
+        const seen = new Set();
+        for (let step = 0; step < steps; step++) {
+            renderer.drawForeground(createRecordingCtx(), { canvas: { width: 400, height: 300 }, atmosphere: rain, dt: 50, gpuRainShare: 1 });
+            for (const ring of renderer._puddleRings) {
+                if (seen.has(ring)) continue;
+                seen.add(ring);
+                spawned++;
+                assert.ok(ring.site.threshold <= (level ?? 0), `ring on a site (threshold ${ring.site.threshold}) the level ${level} has not filled`);
+            }
+        }
+        return spawned;
+    };
+    // Raining hard on dry ground (no standing water yet): zero rings, even on
+    // the deepest (threshold 0) sites; a missing level reads as dry too.
+    assert.equal(run(0), 0, 'puddleLevel 0: zero rings while raining');
+    assert.equal(run(undefined), 0, 'no puddle level wired: zero rings');
+    assert.equal(run(0.0005), 0, 'a level at the resident courses\' epsilon: zero rings');
+    // Puddles accumulating: the deep sites first, then every site.
+    const shallow = run(0.2);
+    const full = run(0.9);
+    assert.ok(shallow > 0, `puddles 0.2: rings on the deep sites (${shallow})`);
+    assert.ok(full >= shallow, `puddles 0.9: rings on every site (${full} >= ${shallow})`);
+});
+
+test('W2-Fix-B harness: bench weather presets, strict capture weather, snow cover, authored solar and backend fail-fast', () => {
+    assert.deepEqual(BENCH_WEATHER.overcast, { type: 'overcast', intensity: 0, precipitation: 0, fog: 0.08, cloudCover: 0.96, windX: -0.15 });
+    assert.deepEqual(BENCH_WEATHER.fog, { type: 'fog', intensity: 0, precipitation: 0, fog: 0.82, cloudCover: 0.72, windX: -0.05 });
+    assert.deepEqual(BENCH_WEATHER.snow, { type: 'snow', intensity: 0.78, precipitation: 0.85, fog: 0.14, cloudCover: 0.94, windX: -0.25, snowCover: 0.92 });
+    for (const key of ['clear', 'rain', 'storm']) assert.ok(BENCH_WEATHER[key], `${key} kept`);
+
+    // Unknown weather keys throw, at parse time and at resolve time.
+    assert.throws(() => resolveCaptureWeather('blizzard'), /Unknown capture weather "blizzard"/);
+    assert.throws(() => resolveCaptureWeather(undefined), /Unknown capture weather/);
+    assert.throws(() => resolveCaptureWeather('toString'), /Unknown capture weather/, 'no prototype keys');
+    assert.throws(() => parseCaptureArgs(['--case=readme-showcase:12:blizzard:1']), /Unknown capture weather/);
+    assert.equal(resolveCaptureWeather('fog').profile, BENCH_WEATHER.fog);
+    assert.equal(resolveCaptureWeather('clear').knots, null);
+
+    // Snow: winter rain over a pinned frozen-rain timeline; bucket >= 3.
+    const snow = resolveCaptureWeather('snow');
+    assert.equal(snow.snow, true);
+    assert.equal(snow.profile.type, 'rain', 'snow poses as winter precipitation (an atmosphere weather type)');
+    assert.equal('snowCover' in snow.profile, false);
+    assert.ok(snow.knots.length >= 2 && snow.knots.every(k => k.frozen === true && k.precipitation === 0.85));
+    assert.equal(snow.minSnowCover, 0.92);
+    assert.ok(snow.minSnowBucket >= 3);
+    for (const cover of [0, 0.2, 0.5, 0.74, 0.76, 0.92, 1]) assert.equal(captureSnowBucketOf(cover), snowBucketOf(cover), `bucket of ${cover}`);
+    assert.equal(resolveCaptureDate({ weather: snow }), DEFAULT_SNOW_CAPTURE_DATE);
+    assert.equal(resolveCaptureDate({ itemDate: '2026-12-20', weather: snow }), '2026-12-20');
+    assert.throws(() => resolveCaptureDate({ optionDate: '2026-07-15', weather: snow }), /winter date/);
+    assert.equal(resolveCaptureDate({ weather: resolveCaptureWeather('clear') }), '2026-07-15');
+
+    // The fence holds a snow case until the bucket is reached.
+    const ready = {
+        worldReadyAttr: true, worldStackOpacity: 1, firstFrameReason: null, revealSnapshotPending: false, assetsLoading: false,
+        terrainRestaging: false, season: 'winter', terrainKey: 'k', presentGeneration: 9, activeBackend: 'webgpu', snowBucket: 2,
+    };
+    assert.equal(evaluateCaptureFenceState(ready, { minPresentGeneration: 4 }).ready, true, 'no snow requirement: unchanged');
+    const held = evaluateCaptureFenceState(ready, { minPresentGeneration: 4, minSnowBucket: 3 });
+    assert.equal(held.ready, false);
+    assert.match(held.pendingReasons.join(';'), /snowBucket 2 < 3/);
+    assert.equal(evaluateCaptureFenceState({ ...ready, snowBucket: 4 }, { minPresentGeneration: 4, minSnowBucket: 3 }).ready, true);
+
+    // Pinned zone, authored diurnal keys, noon in the village's zone.
+    assert.equal(CAPTURE_TIMEZONE, 'Europe/Belgrade');
+    assert.deepEqual(AUTHORED_DAY_SHIFT, { sunriseShift: 0, sunsetShift: 0, goldenShift: 0 });
+    assert.equal(parseCaptureArgs(['--authored-solar']).authoredSolar, true);
+    assert.equal(parseCaptureArgs([]).authoredSolar, false);
+    assert.equal(captureInstant('2026-01-15').toISOString(), '2026-01-15T11:00:00.000Z', 'CET noon');
+    assert.equal(captureInstant('2026-07-15').toISOString(), '2026-07-15T10:00:00.000Z', 'CEST noon');
+    const capture = readFileSync(new URL('../visual/capture.mjs', import.meta.url), 'utf8');
+    assert.match(capture, /timezoneId: CAPTURE_TIMEZONE,/);
+    assert.match(capture, /atmosphere\.setSolarSite\(\{ zone: authoredSolar\.zone, dayShift: \{ \.\.\.authoredSolar\.dayShift \} \}\);/);
+    assert.equal(/BENCH_WEATHER\[item\.weather\] \|\| BENCH_WEATHER\.clear/.test(capture), false, 'no silent clear fallback');
+    // Canvas captures yield real frames between settle attempts.
+    assert.match(capture, /if \(attempt > 0\) await nextRaf\(\);\n\s+r\.renderNow\?\.\(\);/);
+
+    // A forced WebGPU that reported no adapter / unavailable fails at once.
+    assert.equal(definitiveBackendFailure('webgpu', '?renderer=webgpu · webgpu unavailable: no-adapter · webgl2 not probed'),
+        '?renderer=webgpu · webgpu unavailable: no-adapter · webgl2 not probed');
+    assert.ok(definitiveBackendFailure('webgpu', 'default · webgpu failed to start · webgl2 hardware'));
+    assert.equal(definitiveBackendFailure('webgpu', 'default · webgpu ready · webgl2 hardware'), null);
+    assert.equal(definitiveBackendFailure('webgpu', 'default · webgpu compiling (switches when ready) · webgl2 hardware'), null);
+    assert.equal(definitiveBackendFailure('webgl', '?renderer=webgl · webgpu not requested · webgl2 not probed'), null);
+    assert.equal(definitiveBackendFailure('webgpu', null), null);
+    const described = describeFenceState({ grade: { key: 'golden-hour>blue-hour', afterglow: 0.6, rimStrength: 0.4 }, worldBackendReason: 'x', snowCover: 1, snowBucket: 4 });
+    assert.match(described, /gradeKey=golden-hour>blue-hour afterglow=0\.6 rimStrength=0\.4 worldBackendReason="x" snowCover=1 snowBucket=4/);
+});
+
+test('W2-Fix-B v3 truth: presentation liveness agreement and the declared daytime work bloom policy', () => {
+    // Liveness: a screenshot that shows the GPU frame agrees; a stale one does not.
+    const png = { width: 4, height: 2, data: new Uint8Array(4 * 2 * 4) };
+    const put = (x, y, rgb) => png.data.set([...rgb, 255], (y * 4 + x) * 4);
+    const samples = [[0, 0, 200, 10, 10], [1, 0, 10, 200, 10], [2, 0, 10, 10, 200], [3, 0, 120, 120, 120], [0, 1, 60, 70, 80]];
+    for (const [x, y, ...rgb] of samples) put(x, y, rgb);
+    const live = livenessAgreement(png, samples);
+    assert.equal(live.agreement, 1);
+    assert.equal(live.distinct, 5);
+    const stale = { width: 4, height: 2, data: new Uint8Array(4 * 2 * 4) };
+    assert.equal(livenessAgreement(stale, samples).agreement, 0, 'a blank screenshot misses the GPU frame');
+    assert.equal(livenessAgreement(png, samples, [[0, 0, 2, 1]]).compared, 3, 'DOM chrome excluded');
+
+    const policy = (fields = {}) => ({
+        daytimeWorkBloom: false, lightCount: 0, bucket: 'daylight', energyCore: 0.14, energyBloom: 0.5,
+        bloomBase: 0.72, hdr: false, workCore: 0.36, workStrength: 0.22, ...fields,
+    });
+    const base = { bloomPolicy: policy(), frameState: { coreEnergy: 0.14, bloomStrength: 0 } };
+    assert.deepEqual(bloomPolicyFailures(base), []);
+    // An open work gate by day: the declared constants.
+    const work = { bloomPolicy: policy({ daytimeWorkBloom: true }), frameState: { coreEnergy: 0.36, bloomStrength: 0.72 * 0.22 } };
+    assert.deepEqual(bloomPolicyFailures(work, base), []);
+    // Off-policy values fail, and so does a move without the switch.
+    assert.match(bloomPolicyFailures({ ...work, frameState: { coreEnergy: 0.5, bloomStrength: 0.72 * 0.22 } }, base).join(';'), /coreEnergy 0\.5 != declared 0\.36/);
+    assert.match(bloomPolicyFailures({ bloomPolicy: policy(), frameState: { coreEnergy: 0.2, bloomStrength: 0 } }, base).join(';'), /moved without the policy switch|!= declared/);
+    assert.match(bloomPolicyFailures({ bloomPolicy: policy({ daytimeWorkBloom: true, bucket: 'night' }), frameState: { coreEnergy: 0.36, bloomStrength: 0.72 * 0.22 } }).join(';'), /outside daylight/);
+    // HDR halves the strength; no frame state (Canvas, WebGL2) checks nothing.
+    assert.deepEqual(bloomPolicyFailures({ bloomPolicy: policy({ daytimeWorkBloom: true, hdr: true }), frameState: { coreEnergy: 0.36, bloomStrength: 0.72 * 0.22 * 0.5 } }), []);
+    assert.deepEqual(bloomPolicyFailures({ bloomPolicy: null, frameState: null }), []);
 });

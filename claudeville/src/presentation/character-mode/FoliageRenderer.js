@@ -201,8 +201,9 @@ export function isCanopyPixel(data, index, y, height) {
 const TURN_LINE = 0.35;
 const TURN_LINE_SPAN = 0.65;
 // `line`: the turning crown's line (`turnedClump`); `turningShift`: the stops
-// the turning ramp is lifted (a part-turned lit crown, BI-2).
-const plan = (fields) => Object.freeze({ ramp: null, stops: 0, shift: 0, turning: null, turningShift: 0, line: TURN_LINE, blossom: false, ...fields });
+// the turning ramp is lifted (a part-turned lit crown, BI-2); `turningStops`:
+// the turning ramp cut to its first stops (0 = all of them), like `stops`.
+const plan = (fields) => Object.freeze({ ramp: null, stops: 0, shift: 0, turning: null, turningShift: 0, turningStops: 0, line: TURN_LINE, blossom: false, ...fields });
 const PLAN_DEEP = plan({ ramp: 'foliageDeep' });
 const PLAN_SUN = plan({ ramp: 'foliageSun' });
 // A sunlit pine stops short of the two yellow highlight stops: conifers stay
@@ -224,17 +225,23 @@ const PLAN_SCARLET_TURNING = plan({ turning: 'canopyScarlet' });
 // The evergreen world ash by season: a fresh, lighter crown in spring, its
 // authored crown through summer, a cool deep crown in winter (the leaves
 // under its snow sheet). W2.4 — in autumn only its crown top turns
-// burnished amber (`canopyOchre`) in whole clumps while the rest stays the
-// authored evergreen. `turnedClump`'s `line` is the share measured from the
+// burnished russet-amber in whole clumps while the rest stays the authored
+// evergreen. W2-Fix-B: the turn reads `canopyRusset` cut to its first
+// WORLD_ASH_TURNING_STOPS stops (plum shadow up to #ab6c41): ochre's lit
+// stops (#c79554, 0.042 OKLab) and russet's top two (#c38650 / #d7a461,
+// 0.054 / 0.057) sit on the WAIT status amber (#df8c3f), and the village's
+// landmark crown must never read as a waiting plate; every turned texel
+// stays >= 0.12 OKLab from it. `turnedClump`'s `line` is the share measured from the
 // crown's top row down (a clump turns while its centre sits above line plus
 // up to 0.3 of hash jitter, so the literal 0.22 turns 35 % of the ash's
 // canopy), and WORLD_ASH_AUTUMN_LINE 0.14 turns 22 % of its canopy texels,
 // nine in ten of them in the crown's top third (measured on `ash.world`).
 export const WORLD_ASH_AUTUMN_LINE = 0.14;
+export const WORLD_ASH_TURNING_STOPS = 6;
 const WORLD_ASH_PLANS = Object.freeze({
     spring: PLAN_SUN,
     summer: null,
-    autumn: plan({ turning: 'canopyOchre', line: WORLD_ASH_AUTUMN_LINE }),
+    autumn: plan({ turning: 'canopyRusset', turningStops: WORLD_ASH_TURNING_STOPS, line: WORLD_ASH_AUTUMN_LINE }),
     winter: PLAN_DEEP,
 });
 
@@ -484,7 +491,7 @@ export function recolorCanopy(data, width, height, canopy) {
     }
     const span = hi - lo || 1;
     const ramp = canopy.ramp ? canopyRamp(canopy.ramp, canopy.stops) : null;
-    const turning = canopy.turning ? canopyRamp(canopy.turning) : null;
+    const turning = canopy.turning ? canopyRamp(canopy.turning, canopy.turningStops) : null;
     const blossom = canopy.blossom ? canopyRamp(blossomRampKey(canopy)) : null;
     const clumps = turning || blossom ? canopyClumps(data, width, height, indices) : null;
     const turned = turning ? turningMask(width, height, indices, clumps.label, clumps.clumps.map((c) => turnedClump(c, top, bottom, canopy.line))) : null;
@@ -548,6 +555,17 @@ const MARCESCENT_SHED = 0.85;
 // coloured puff floats off the bare crown.
 export const MARCESCENT_FROM = 0.7;
 export const MARCESCENT_RADIAL = 0.45;
+// W2-Fix-B — a columnar crown (the poplar: a narrow column the height of the
+// trunk) measured by the radial rule kept its centroid clumps, a straw
+// collar floating mid-trunk. Its shed key reads depth instead (the crown's
+// top holds last, so the column empties from the foot up) and from
+// MARCESCENT_FROM only clumps in its top COLUMNAR_KEEP of the crown stay: a
+// last tuft on the leader's tip, never a band around the bare stem.
+export const COLUMNAR_SPECIES = Object.freeze(['poplar']);
+export const COLUMNAR_KEEP = 1 / 3;
+// W2-Fix-B — the oak's marcescent remnant erodes twice (two 1-px passes),
+// so its kept bunches read crisp and irregular, never round balls.
+export const MARCESCENT_EROSION_PASSES = 2;
 // The species-aware clump key's two shares: its fixed hash and its nearness
 // to the crown centre (outer clumps fall first).
 const SHED_KEY_HASH = 0.55;
@@ -582,6 +600,23 @@ export function canopyRadial(indices, width) {
     const rx = Math.max(1, (x1 - x0) / 2);
     const ry = Math.max(1, (y1 - y0) / 2);
     return (c) => Math.min(1, Math.hypot((c.x - cx) / rx, (c.y - cy) / ry));
+}
+
+/**
+ * W2-Fix-B — a clump's depth down a columnar crown: its centre's row from
+ * the canopy's top row over the canopy's height (0 the crown's tip, 1 its
+ * foot), clamped to [0, 1]. `indices` are the canopy's RGBA byte offsets.
+ */
+export function canopyDepth(indices, width) {
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (const i of indices) {
+        const y = Math.floor((i >> 2) / width);
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+    }
+    const span = Math.max(1, y1 - y0);
+    return (c) => Math.min(1, Math.max(0, (c.y - y0) / span));
 }
 
 // The fixed per-clump shed key of a species-aware shed (see shedCanopy):
@@ -643,11 +678,15 @@ function marcescentRemap(data, indices, canopy) {
  * (`shedKeys`), so outer clumps fall first; from MARCESCENT_FROM an oak's
  * kept clumps remap by luminance rank
  * onto `leafMarcescent` and its kept texels with two or more shed
- * 4-neighbours go bare (one erosion pass), while any other species also
- * drops every clump past MARCESCENT_RADIAL. Both rules are monotone in the
- * share, so the stages still nest. `options.leafOut` (spring, the shed
- * running back as leaf-out) keeps the new leaves green: every species takes
- * the radial rule, no oak turns bronze.
+ * 4-neighbours go bare (MARCESCENT_EROSION_PASSES erosion passes;
+ * `options.erosionPasses` overrides it for measurement), while any other
+ * species also drops every clump past MARCESCENT_RADIAL. W2-Fix-B: a
+ * columnar species (COLUMNAR_SPECIES) keys its clumps by depth (the tip
+ * holds last) and from MARCESCENT_FROM keeps only its top COLUMNAR_KEEP.
+ * Every rule is monotone in the share, so the stages still nest.
+ * `options.leafOut` (spring, the shed running back as leaf-out) keeps the
+ * new leaves green: every species takes the radial (or columnar) rule, no
+ * oak turns bronze.
  */
 export function shedCanopy(data, leafy, bare, width, height, share, salt, options = {}) {
     const n = width * height;
@@ -670,11 +709,14 @@ export function shedCanopy(data, leafy, bare, width, height, share, salt, option
     if (species == null) {
         gone = clumps.map((c) => pixelHash(Math.round(c.x), Math.round(c.y), salt) < share);
     } else {
+        const columnar = COLUMNAR_SPECIES.includes(species);
         const radial = canopyRadial(indices, width);
-        const keys = shedKeys(clumps, radial, salt);
+        const depth = columnar ? canopyDepth(indices, width) : null;
+        const keys = shedKeys(clumps, columnar ? depth : radial, salt);
         gone = keys.map((key) => key < share);
         if (share >= MARCESCENT_FROM) {
             if (species === 'oak' && !options.leafOut) marcescent = true;
+            else if (columnar) gone = gone.map((g, k) => g || depth(clumps[k]) > COLUMNAR_KEEP);
             else gone = gone.map((g, k) => g || radial(clumps[k]) > MARCESCENT_RADIAL);
         }
     }
@@ -717,21 +759,28 @@ export function shedCanopy(data, leafy, bare, width, height, share, salt, option
     if (marcescent) {
         // W2.4 — the oak's kept clumps turn marcescent bronze by their own
         // luminance rank (every written texel a `leafMarcescent` stop), then
-        // one erosion pass: a kept texel with two or more shed 4-neighbours
-        // goes bare, so the remnant's silhouette is ragged, never a pom-pom.
+        // erosion passes (W2-Fix-B: MARCESCENT_EROSION_PASSES, was one): a
+        // kept texel with two or more shed 4-neighbours goes bare, each pass
+        // reading the last one's, so the remnant's silhouette is ragged,
+        // never a pom-pom. The shed only grows with the share, so the passes
+        // stay monotone and the stages still nest.
         changed += marcescentRemap(data, indices, canopy);
         const eroded = [];
-        for (const i of indices) {
-            const p = i >> 2;
-            if (canopy[p] !== 1) continue;
-            const x = p % width;
-            let open = 0;
-            for (const q of [x > 0 ? p - 1 : -1, x < width - 1 ? p + 1 : -1, p - width, p + width]) {
-                if (q >= 0 && q < n && shed[q]) open++;
+        const passes = Number.isInteger(options?.erosionPasses) ? Math.max(0, options.erosionPasses) : MARCESCENT_EROSION_PASSES;
+        for (let pass = 0; pass < passes; pass++) {
+            eroded.length = 0;
+            for (const i of indices) {
+                const p = i >> 2;
+                if (canopy[p] !== 1 || shed[p]) continue;
+                const x = p % width;
+                let open = 0;
+                for (const q of [x > 0 ? p - 1 : -1, x < width - 1 ? p + 1 : -1, p - width, p + width]) {
+                    if (q >= 0 && q < n && shed[q]) open++;
+                }
+                if (open >= 2) eroded.push(p);
             }
-            if (open >= 2) eroded.push(p);
+            for (const p of eroded) toBare(p);
         }
-        for (const p of eroded) toBare(p);
     }
     // Each kept clump's darkest colour (luminance), before any edge is set.
     const dark = new Array(clumps.length).fill(-1);

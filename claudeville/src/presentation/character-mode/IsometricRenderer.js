@@ -2138,6 +2138,10 @@ export class IsometricRenderer {
             // W2.3 — baked puddle sites for 2-frame concentric rain rings.
             groundWeatherField: () => this.groundField?.weather || null,
             groundPuddleMask: () => this.groundPuddleMask || null,
+            // W2-Fix-B — rings appear only where the ground history has
+            // standing water (the same level the resident puddle courses
+            // draw); dry ground under the first drops stays ringless.
+            puddleLevel: () => this._groundState?.puddles ?? 0,
         });
         // #21 — cinematic director listens for VillageDirector camera cues and
         // drives time-boxed glides on the camera (abort-on-input is in Camera).

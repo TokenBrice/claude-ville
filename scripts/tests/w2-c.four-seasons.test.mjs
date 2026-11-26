@@ -10,9 +10,10 @@ import {
     validGroundArtifact, GROUND_BAKE_BUDGET,
 } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
 import {
-    MARCESCENT_FROM, MARCESCENT_RADIAL, TREE_SPRITES, WORLD_ASH_AUTUMN_LINE, blossomRampKey, canopyClumps, canopyPlan, canopyRadial,
-    isCanopyPixel, recolorCanopy, shedCanopy,
+    COLUMNAR_KEEP, COLUMNAR_SPECIES, MARCESCENT_EROSION_PASSES, MARCESCENT_FROM, MARCESCENT_RADIAL, TREE_SPRITES, WORLD_ASH_AUTUMN_LINE,
+    WORLD_ASH_TURNING_STOPS, blossomRampKey, canopyClumps, canopyDepth, canopyPlan, canopyRadial, isCanopyPixel, recolorCanopy, shedCanopy,
 } from '../../claudeville/src/presentation/character-mode/FoliageRenderer.js';
+import { THEME } from '../../claudeville/src/config/theme.js';
 import {
     DEW_DENSITY, DEW_GLINT_COLOR, PHENOLOGY_STAGES, RIVER_PETAL_COLORS, SeasonalAmbience, dawnDewActive, dawnDewGlints, phenologyAt,
 } from '../../claudeville/src/presentation/character-mode/SeasonalAmbience.js';
@@ -33,13 +34,23 @@ const rgbKey = (d, o) => (d[o] << 16) | (d[o + 1] << 8) | d[o + 2];
 const setOf = (...ramps) => new Set(ramps.flat().map(pack));
 const rampSet = (key) => new Set(ART_RAMPS[key].map((h) => pack(hex(h))));
 const lumaOf = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
-const okL = ([r, g, b]) => {
+const okLab = ([r, g, b]) => {
     const lin = (v) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
     const [R, G, B] = [lin(r), lin(g), lin(b)];
     const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
     const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B);
     const s = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B);
-    return 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+    return [
+        0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    ];
+};
+const okL = (rgb) => okLab(rgb)[0];
+const okDistance = (a, b) => {
+    const [l1, a1, b1] = okLab(a);
+    const [l2, a2, b2] = okLab(b);
+    return Math.hypot(l1 - l2, a1 - a2, b1 - b2);
 };
 const hsv = ([r, g, b]) => {
     const mx = Math.max(r, g, b);
@@ -473,17 +484,33 @@ test('§4.13: the sunlit birch blossoms ivory, every canopy texel on its ramps',
     }
 });
 
-test('§4.13: the world ash turns only the top 22 % of its crown amber in autumn', (t) => {
+test('§4.13: the world ash turns only the top 22 % of its crown russet-amber in autumn, apart from WAIT', (t) => {
     assert.equal(WORLD_ASH_AUTUMN_LINE, 0.14);
     const plan = canopyPlan('ash', 0, 'autumn');
-    assert.equal(plan.turning, 'canopyOchre');
+    // W2-Fix-B — burnished russet, cut short of the top two stops that sit
+    // on the WAIT status amber.
+    assert.equal(plan.turning, 'canopyRusset');
+    assert.equal(plan.turningStops, WORLD_ASH_TURNING_STOPS);
+    assert.equal(WORLD_ASH_TURNING_STOPS, 6);
     assert.equal(plan.ramp, null, 'the rest keeps its authored evergreen');
     assert.equal(canopyPlan('ash', 0, 'summer'), null);
     const sprite = TREE_SPRITES['ash.world'];
     const { width, height, data } = sheet(sprite.id, sprite.height);
     const out = Uint8ClampedArray.from(data);
     recolorCanopy(out, width, height, plan);
-    const ochre = rampSet('canopyOchre');
+    const ochre = new Set(ART_RAMPS.canopyRusset.slice(0, WORLD_ASH_TURNING_STOPS).map((h) => pack(hex(h))));
+    const wait = hex(THEME.waiting);
+    const turnedColours = new Map();
+    for (let i = 0; i < data.length; i += 4) {
+        if (!isCanopyPixel(data, i, Math.floor(i / 4 / width), height) || !ochre.has(rgbKey(out, i))) continue;
+        turnedColours.set(rgbKey(out, i), (turnedColours.get(rgbKey(out, i)) || 0) + 1);
+    }
+    let nearest = Infinity;
+    for (const key of turnedColours.keys()) nearest = Math.min(nearest, okDistance([key >> 16, (key >> 8) & 255, key & 255], wait));
+    t.diagnostic(`world ash autumn: nearest turned colour ${nearest.toFixed(3)} OKLab from WAIT ${THEME.waiting}`);
+    assert.ok(nearest >= 0.08, `every turned ash texel >= 0.08 OKLab from WAIT (nearest ${nearest.toFixed(3)})`);
+    // The old ochre turn's lit stop sat on WAIT (the council's 0.054 measure).
+    assert.ok(okDistance(hex('#c79554'), wait) < 0.08, 'canopyOchre lit stop is the WAIT collision');
     let top = height;
     let bottom = -1;
     for (let i = 0; i < data.length; i += 4) {
@@ -550,6 +577,12 @@ test('§4.13: late-autumn shed — oaks keep marcescent bronze, the rest no floa
                 recolorCanopy(plain, width, height, canopyPlan(species, variant, 'autumn', nov19.turned + share));
                 shedCanopy(plain, leafy.data, bare.data, width, height, share, 11 + variant * 7, { species, leafOut: true });
                 assert.ok(kept > 0, `${key}/${variant}: an oak keeps a few clumps`);
+            } else if (COLUMNAR_SPECIES.includes(species)) {
+                // W2-Fix-B — a columnar crown keeps only a tip tuft, never a
+                // mid-trunk collar.
+                const depth = canopyDepth(indices, width);
+                for (const id of keptClumps) assert.ok(depth(clumps[id]) <= COLUMNAR_KEEP, `${key}/${variant}: a mid-trunk collar clump`);
+                assert.equal(bronze, 0);
             } else {
                 for (const id of keptClumps) assert.ok(radial(clumps[id]) <= MARCESCENT_RADIAL, `${key}/${variant}: a floating outer clump`);
                 assert.equal(bronze, 0);
@@ -557,6 +590,110 @@ test('§4.13: late-autumn shed — oaks keep marcescent bronze, the rest no floa
             if (variant === 0) t.diagnostic(`${key} @ ${share}: kept ${kept} texels in ${keptClumps.size} clumps`);
         }
     }
+});
+
+test('W2-Fix-B: a columnar poplar sheds from the foot up, keeps only a tip tuft from 0.70 and nests 0.50 → 0.95', (t) => {
+    const same = (a, b, i) => a[i] === b[i] && a[i + 1] === b[i + 1] && a[i + 2] === b[i + 2] && a[i + 3] === b[i + 3];
+    assert.deepEqual([...COLUMNAR_SPECIES], ['poplar']);
+    const sprite = TREE_SPRITES['poplar.tall'];
+    const leafy = sheet(sprite.id, sprite.height);
+    const bare = sheet(TREE_SPRITES[sprite.bare].id, sprite.height);
+    const { width, height } = leafy;
+    const indices = [];
+    for (let i = 0; i < leafy.data.length; i += 4) if (isCanopyPixel(leafy.data, i, Math.floor(i / 4 / width), height)) indices.push(i);
+    const { label, clumps } = canopyClumps(leafy.data, width, height, indices);
+    const depth = canopyDepth(indices, width);
+    for (const leafOut of [false, true]) {
+        for (const variant of [0, 1, 2]) {
+            const salt = 11 + variant * 7;
+            let fallen = null;
+            const tuft = [];
+            for (const share of [0.5, 0.6, 0.69, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]) {
+                const out = Uint8ClampedArray.from(leafy.data);
+                shedCanopy(out, leafy.data, bare.data, width, height, share, salt, { species: 'poplar', leafOut });
+                const now = new Set();
+                const kept = new Set();
+                for (let i = 0; i < out.length; i += 4) {
+                    if (same(out, leafy.data, i)) {
+                        if (isCanopyPixel(leafy.data, i, Math.floor(i / 4 / width), height)) kept.add(label.get(i >> 2));
+                        continue;
+                    }
+                    if (same(out, bare.data, i)) now.add(i);
+                }
+                if (fallen) for (const i of fallen) assert.ok(now.has(i), `poplar/${salt}: texel ${i} came back at ${share}`);
+                fallen = now;
+                if (share < MARCESCENT_FROM) continue;
+                for (const id of kept) assert.ok(depth(clumps[id]) <= COLUMNAR_KEEP, `poplar/${salt} ${share}: clump at depth ${depth(clumps[id]).toFixed(2)} floats mid-trunk`);
+                tuft.push(kept.size);
+            }
+            if (!leafOut && variant === 0) t.diagnostic(`poplar.tall/${salt} tip tuft clumps 0.70 → 0.95: ${tuft.join(', ')}`);
+        }
+    }
+    // The first-variant crown keeps a tip tuft at fall-3 (0.70) instead of
+    // the old centroid collar (depth 0.47 – 0.57).
+    const fall3 = Uint8ClampedArray.from(leafy.data);
+    shedCanopy(fall3, leafy.data, bare.data, width, height, 0.7, 11, { species: 'poplar' });
+    assert.ok(indices.some((i) => same(fall3, leafy.data, i)), 'a tip tuft at 0.70');
+});
+
+test('W2-Fix-B: the marcescent oak remnant erodes twice into ragged bunches, still nested and never bare before 1', (t) => {
+    assert.equal(MARCESCENT_EROSION_PASSES, 2);
+    const same = (a, b, i) => a[i] === b[i] && a[i + 1] === b[i + 1] && a[i + 2] === b[i + 2] && a[i + 3] === b[i + 3];
+    for (const key of ['oak.large', 'oak.tall', 'oak.small']) {
+        const sprite = TREE_SPRITES[key];
+        const leafy = sheet(sprite.id, sprite.height);
+        const bare = sheet(TREE_SPRITES[sprite.bare].id, sprite.height);
+        const { width, height } = leafy;
+        const indices = [];
+        for (let i = 0; i < leafy.data.length; i += 4) if (isCanopyPixel(leafy.data, i, Math.floor(i / 4 / width), height)) indices.push(i);
+        const keptOf = (out) => indices.filter((i) => !same(out, bare.data, i));
+        // Interior roundness: kept texels with all four 4-neighbours kept.
+        const interior = (kept) => {
+            const set = new Set(kept.map((i) => i >> 2));
+            return kept.filter((i) => {
+                const p = i >> 2;
+                return set.has(p - 1) && set.has(p + 1) && set.has(p - width) && set.has(p + width);
+            }).length;
+        };
+        for (const salt of [11, 18, 25]) {
+            let fallen = null;
+            for (const share of [0.5, 0.7, 0.85, 0.95]) {
+                const once = Uint8ClampedArray.from(leafy.data);
+                shedCanopy(once, leafy.data, bare.data, width, height, share, salt, { species: 'oak', erosionPasses: 1 });
+                const twice = Uint8ClampedArray.from(leafy.data);
+                const changed = shedCanopy(twice, leafy.data, bare.data, width, height, share, salt, { species: 'oak' });
+                assert.ok(changed > 0);
+                const k1 = keptOf(once);
+                const k2 = keptOf(twice);
+                const now = new Set();
+                for (let i = 0; i < twice.length; i += 4) if (!same(twice, leafy.data, i) && same(twice, bare.data, i)) now.add(i);
+                if (fallen) for (const i of fallen) assert.ok(now.has(i), `${key}/${salt}: texel ${i} came back at ${share}`);
+                fallen = now;
+                if (share < MARCESCENT_FROM) {
+                    assert.equal(k2.length, k1.length, `${key}/${salt} ${share}: no erosion before marcescence`);
+                    continue;
+                }
+                const k1Set = new Set(k1);
+                assert.ok(k2.every((i) => k1Set.has(i)), `${key}/${salt} ${share}: the second pass only removes texels`);
+                assert.ok(k2.length > 0, `${key}/${salt} ${share}: a remnant survives two passes`);
+                assert.ok(k2.length <= k1.length, `${key}/${salt} ${share}: two passes never keep more`);
+                if (salt === 11) t.diagnostic(`${key} @ ${share}: one pass keeps ${k1.length} (${interior(k1)} interior), two keep ${k2.length} (${interior(k2)} interior)`);
+            }
+        }
+    }
+    // Across the three oaks the second pass bites somewhere (ragged, not round).
+    let bitten = 0;
+    for (const key of ['oak.large', 'oak.tall', 'oak.small']) {
+        const sprite = TREE_SPRITES[key];
+        const leafy = sheet(sprite.id, sprite.height);
+        const bare = sheet(TREE_SPRITES[sprite.bare].id, sprite.height);
+        const once = Uint8ClampedArray.from(leafy.data);
+        const twice = Uint8ClampedArray.from(leafy.data);
+        shedCanopy(once, leafy.data, bare.data, leafy.width, leafy.height, 0.85, 11, { species: 'oak', erosionPasses: 1 });
+        shedCanopy(twice, leafy.data, bare.data, leafy.width, leafy.height, 0.85, 11, { species: 'oak' });
+        for (let i = 0; i < once.length; i += 4) if (!same(once, twice, i)) bitten++;
+    }
+    assert.ok(bitten > 0, 'the second erosion pass removes texels the first left');
 });
 
 // ---- §4.13 eave icicles, §4.11 lightning sheen ------------------------------

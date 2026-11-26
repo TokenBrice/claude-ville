@@ -1953,11 +1953,18 @@ function seaFretLandMask(fields) {
 // LA-7 — the Canvas twin of the resident `seaFretAlpha`: the banks over the
 // span go into one reused world-px canvas, and the land mask cuts them to
 // `landShare` over land with one `destination-out`; water and the sea off
-// the lattice keep the full banks. Null at share 1 (today's single fill) or
+// the lattice keep the full banks. W2-Fix-B (§4.11): with the ×1.35 water
+// boost baked (`waterDeltaCanvas`), the delta goes in first and the land
+// mask clears it off the land, then the banks go in underneath
+// (`destination-over`), so the water cells read delta-over-banks — the
+// boosted water banks exactly — and the land keeps today's banks. Null
+// with neither a sea fret (share 1) nor a boost (today's single fill), or
 // before the coast bake.
 function seaFretBanks(renderer, layer, span) {
     const fields = renderer._coastBake?.waterFields;
-    if (!(layer.landShare < 1) || !fields?.coastField || typeof document === 'undefined') return null;
+    const cutLand = layer.landShare < 1;
+    const delta = layer.waterDeltaCanvas || null;
+    if ((!cutLand && !delta) || !fields?.coastField || typeof document === 'undefined') return null;
     const w = span.right - span.left;
     const h = span.bottom - span.top;
     const fret = renderer._seaFretBanks ||= { canvas: document.createElement('canvas'), ctx: null, pattern: null, source: null };
@@ -1974,17 +1981,33 @@ function seaFretBanks(renderer, layer, span) {
         fret.key = layer.key;
     }
     if (!fret.pattern) return null;
-    fret.pattern.setTransform?.(new DOMMatrix([layer.texel, 0, 0, layer.texel, layer.x, layer.y]));
+    if (delta && (fret.deltaSource !== delta || fret.deltaKey !== layer.waterKey || !fret.deltaPattern)) {
+        fret.deltaPattern = fctx.createPattern(delta, 'repeat');
+        fret.deltaSource = delta;
+        fret.deltaKey = layer.waterKey;
+    }
+    const lattice = new DOMMatrix([layer.texel, 0, 0, layer.texel, layer.x, layer.y]);
+    fret.pattern.setTransform?.(lattice);
     fctx.setTransform(1, 0, 0, 1, -span.left, -span.top);
     fctx.imageSmoothingEnabled = false;
     fctx.globalAlpha = 1;
     fctx.globalCompositeOperation = 'source-over';
     fctx.clearRect(span.left, span.top, w, h);
+    if (delta && fret.deltaPattern) {
+        fret.deltaPattern.setTransform?.(lattice);
+        fctx.fillStyle = fret.deltaPattern;
+        fctx.fillRect(span.left, span.top, w, h);
+        fctx.globalCompositeOperation = 'destination-out';
+        fctx.drawImage(seaFretLandMask(fields), fields.x, fields.y, fields.cols * 2, fields.rows * 2);
+        fctx.globalCompositeOperation = 'destination-over';
+    }
     fctx.fillStyle = fret.pattern;
     fctx.fillRect(span.left, span.top, w, h);
-    fctx.globalCompositeOperation = 'destination-out';
-    fctx.globalAlpha = 1 - layer.landShare;
-    fctx.drawImage(seaFretLandMask(fields), fields.x, fields.y, fields.cols * 2, fields.rows * 2);
+    if (cutLand) {
+        fctx.globalCompositeOperation = 'destination-out';
+        fctx.globalAlpha = 1 - layer.landShare;
+        fctx.drawImage(seaFretLandMask(fields), fields.x, fields.y, fields.cols * 2, fields.rows * 2);
+    }
     fctx.globalCompositeOperation = 'source-over';
     fctx.globalAlpha = 1;
     return fret.canvas;
@@ -1992,6 +2015,13 @@ function seaFretBanks(renderer, layer, span) {
 
 // The resident path: one ground record per lattice cell in view, each cut to
 // the visible span on the texel grid (records reused frame to frame).
+// W2-Fix-B (§4.11) — with the ×1.35 water boost baked, a second lattice of
+// `ground:fog-water` records lays the delta tile over the banks under the
+// `seaFret` flag at land share 0: the scene fragment's `seaFretAlpha` keeps
+// it on the coast `water` cells and the open sea and drops it everywhere
+// else, so the water reads delta-over-banks (the boosted banks) and the land
+// keeps the banks. Only while the GPU world binds the coast field
+// (`waterFieldsActive`): unbound, `seaFretAlpha` reads every texel as water.
 function groundFogRecords(renderer, atmosphere, viewport) {
     const out = renderer._groundFogRecords || (renderer._groundFogRecords = []);
     out.length = 0;
@@ -1999,6 +2029,30 @@ function groundFogRecords(renderer, atmosphere, viewport) {
     const span = layer && groundFogSpan(renderer, viewport, layer);
     if (!span) return out;
     const pool = renderer._groundFogRecordPool || (renderer._groundFogRecordPool = []);
+    pushGroundFogLattice(out, pool, layer, span, GROUND_FOG_BANKS);
+    if (layer.waterDeltaCanvas && renderer.gpuWorld?.waterFieldsActive === true) {
+        // The delta lattice: the banks' own lattice and drift, its tile and
+        // revision, land share 0 (the `seaFret` flag then keeps only water).
+        const water = renderer._groundFogWaterLayer || (renderer._groundFogWaterLayer = {});
+        water.x = layer.x;
+        water.y = layer.y;
+        water.width = layer.width;
+        water.height = layer.height;
+        water.texel = layer.texel;
+        water.canvas = layer.waterDeltaCanvas;
+        water.key = layer.waterKey;
+        water.landShare = 0;
+        const waterPool = renderer._groundFogWaterRecordPool || (renderer._groundFogWaterRecordPool = []);
+        pushGroundFogLattice(out, waterPool, water, span, GROUND_FOG_WATER);
+    }
+    return out;
+}
+
+const GROUND_FOG_BANKS = Object.freeze({ id: 'ground:fog', textureKey: 'ground-fog-tile' });
+const GROUND_FOG_WATER = Object.freeze({ id: 'ground:fog-water', textureKey: 'ground-fog-water-tile' });
+
+function pushGroundFogLattice(out, pool, layer, span, kind) {
+    let used = 0;
     const { width: W, height: H, texel } = layer;
     const snapDown = (value, origin) => origin + Math.floor((value - origin) / texel) * texel;
     const snapUp = (value, origin) => origin + Math.ceil((value - origin) / texel) * texel;
@@ -2012,10 +2066,10 @@ function groundFogRecords(renderer, atmosphere, viewport) {
             const x0 = snapDown(Math.max(span.left, tileX), tileX);
             const x1 = snapUp(Math.min(span.right, tileX + W), tileX);
             if (!(x1 > x0)) continue;
-            const record = pool[out.length] || (pool[out.length] = {
-                id: 'ground:fog',
-                stableKey: 'ground:fog',
-                textureKey: 'ground-fog-tile',
+            const record = pool[used] || (pool[used] = {
+                id: kind.id,
+                stableKey: kind.id,
+                textureKey: kind.textureKey,
                 material: materialClassId('default'),
                 alpha: 1,
                 elevation: 0,
@@ -2026,6 +2080,7 @@ function groundFogRecords(renderer, atmosphere, viewport) {
                 // World-px rects (not V9 screenSpace): kept off the albedo page.
                 pageable: false,
             });
+            used++;
             record.source = layer.canvas;
             record.sourceWidth = layer.canvas.width;
             record.sourceHeight = layer.canvas.height;
@@ -2044,7 +2099,6 @@ function groundFogRecords(renderer, atmosphere, viewport) {
             out.push(record);
         }
     }
-    return out;
 }
 
 // After the terrain and the ground haze, ahead of the retained cue texture
