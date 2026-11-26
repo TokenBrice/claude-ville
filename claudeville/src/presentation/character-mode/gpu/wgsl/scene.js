@@ -614,7 +614,7 @@ fn terrainHit(world: vec2f) -> vec2f {
       let front = (1.0 - max(local.x, local.y)) * 32.0;
       let h = min(top, front);
       if (h > best.x && h >= -min(local.x, local.y) * 32.0 && (h >= -1.0 || h == top)) {
-        best = vec2f(h, select(select(0.0, 2.0, raw.a == 2.0), 1.0, h < top));
+        best = vec2f(h, select(select(0.0, 2.0, raw.a == 2.0), 1.0, h < top && raw.a > 0.0 && top > 0.0));
       }
     }
   }

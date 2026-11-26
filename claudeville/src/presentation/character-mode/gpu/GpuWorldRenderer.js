@@ -1601,6 +1601,7 @@ vec4 sampleEmission(vec2 uv, float albedoAlpha) {
 }
 uniform sampler2D u_occluderMap;
 uniform bool u_hasOccluderMap;
+uniform vec2 u_surfaceOffset;
 // B.2 — V9 flag 32 (packedGeometry): the material map also carries the
 // record's geometry (R material id, 255 = none; G height; B strength,
 // 0 = none; A presence) in place of a separate occluder companion. Gated like
@@ -2544,6 +2545,33 @@ float seaFretAlpha(vec2 world, float landShare) {
     return (flags & ${COAST_FIELD_FLAGS.water}u) != 0u || offMap ? 1.0 : landShare;
 }
 
+// x is absolute surface height. y identifies a visible wall (1) or pool (2).
+// Along an orthographic view ray both plan coordinates advance by H / 32.
+vec2 terrainHit(vec2 world) {
+    vec2 uv0 = vec2(world.y * 2.0 + world.x, world.y * 2.0 - world.x) / 64.0;
+    ivec2 lo = ivec2(floor(uv0 + 0.5 + u_surfaceOffset.x / 32.0));
+    ivec2 hi = ivec2(floor(uv0 + 0.5 + u_surfaceOffset.y / 32.0));
+    ivec2 dims = textureSize(u_occluderMap, 0);
+    vec2 best = vec2(-2048.0, 0.0);
+    for (int j = lo.y; j <= hi.y; j++) {
+        for (int i = lo.x; i <= hi.x; i++) {
+            ivec2 cell = ivec2(i, j);
+            if (any(lessThan(cell, ivec2(0))) || any(greaterThanEqual(cell, dims))) continue;
+            vec4 raw = round(texelFetch(u_occluderMap, cell, 0) * 255.0);
+            vec2 local = uv0 - vec2(cell) + 0.5;
+            vec3 plane = raw.a > 0.0 ? raw.rgb - 128.0 : vec3(0.0);
+            float top = (plane.x + dot(plane.yz, local)) / (1.0 - (plane.y + plane.z) / 32.0);
+            float front = (1.0 - max(local.x, local.y)) * 32.0;
+            float h = min(top, front);
+            if (h > best.x && h >= -min(local.x, local.y) * 32.0 && (h >= -1.0 || h == top)) {
+                float kind = (h < top && raw.a > 0.0 && top > 0.0) ? 1.0 : (raw.a == 2.0 ? 2.0 : 0.0);
+                best = vec2(h, kind);
+            }
+        }
+    }
+    return best.x == -2048.0 ? vec2(0.0) : best;
+}
+
 void main() {
 #ifdef CAPTURE_ATTRIBUTION
     if (u_captureMark) {
@@ -2563,6 +2591,11 @@ void main() {
     fatTexelFw = max(fwidth(v_texel), vec2(1e-5));
     fatWorldFw = max(fwidth(v_world), vec2(1e-5));
     fatOn = u_fatPixels && (v_flags & ${GPU_RECORD_FLAGS.fatOptOut}u) == 0u;
+    vec2 terraceHit = vec2(0.0);
+    if (u_terrainBatch && u_hasOccluderMap) {
+        terraceHit = terrainHit(floor(v_world) + 0.5);
+        if (terraceHit.y == 1.0) fatOn = false;
+    }
     // 3.8 / 3.11 — reflect records (hull and body water twins): only over
     // painted water (3.6's coast field, flag 4), every fifth row dropped, a
     // whole-texel row ripple on the shared palette tick (a fixed per-row
@@ -2613,7 +2646,7 @@ void main() {
             uv.x = clamp(uv.x - castWobble * uvStepX, v_uvClamp.x, v_uvClamp.z);
         }
     }
-    if (u_terrainBatch && u_waterFx.x > 0.0) uv = reflectionRippleUv(uv, uvStepX);
+    if (u_terrainBatch && terraceHit.y == 0.0 && u_waterFx.x > 0.0) uv = reflectionRippleUv(uv, uvStepX);
     vec4 albedo = sampleAlbedo(uv);
     float recordAlpha = (v_flags & ${GPU_RECORD_FLAGS.seaFret}u) != 0u ? seaFretAlpha(v_world, v_alpha) : v_alpha;
     float alpha = albedo.a * recordAlpha * rowKeep * (castOnWater ? ${GROUND_CAST_WATER_SHARE.toFixed(2)} : 1.0);
@@ -2628,6 +2661,8 @@ void main() {
     bool packedMap = (v_flags & ${GPU_RECORD_FLAGS.packedGeometry}u) != 0u;
     float materialId = floor(sidecar.r * 255.0 + 0.5);
     float material = sidecar.a > 0.0 && !(packedMap && materialId > 254.5) ? materialId : v_material;
+    if (terraceHit.y == 1.0) material = 1.0;
+    if (terraceHit.y == 2.0) material = 8.0;
     float emissive = v_emissive;
     vec3 emissionColor = albedo.rgb;
     bool unlitPane = false;
@@ -2652,7 +2687,7 @@ void main() {
     float strength = recolorRecord ? float(int(sidecar.b * 255.0 + 0.5) & 1) : sidecar.b;
     vec4 geometry = packedMap
         ? (u_packedGeometry && strength > 0.0 ? vec4(sidecar.g, strength, 0.0, 1.0) : vec4(0.0))
-        : u_hasOccluderMap ? textureLod(u_occluderMap, uv, 0.0) : vec4(0.0);
+        : (u_hasOccluderMap && !u_terrainBatch) ? textureLod(u_occluderMap, uv, 0.0) : vec4(0.0);
     // 2.3 — a surface-coded landmark (V9 flag 16) carries the true height
     // above ground / 255 in R and its face and height code in B; its fog lift
     // runs over 128 world px (the old R was a row ramp reaching 1 at the
@@ -2684,7 +2719,7 @@ void main() {
         bool mirrorGone;
         color = mirrorStormColour(color, v_world, mirrorGone);
         // 3.6 — the swash laps the baked shore before any weather darkening.
-        if (u_terrainBatch && u_waterFx.w > 0.0) color = applyCoastSwash(color, v_world);
+        if (u_terrainBatch && terraceHit.y == 0.0 && u_waterFx.w > 0.0) color = applyCoastSwash(color, v_world);
         if (u_terrainBatch && sidecar.g > 0.0 && wetSandColour(color)) material = wetSandMaterial(sidecar, ivec2(v_texel));
         waterMaterial = materialNear(material, 8.0) > 0.5 || mirrorGone;
         // W6.11 — the grass gust course steps the authored albedo first.
@@ -2778,9 +2813,9 @@ void main() {
     // record, so it lays no pool and stays far below the lamps).
     if (surfGlowTexel) color = mix(color, SURF_GLOW, u_surfGlow);
     // GW-1 — wet paving tops take one course of the graded sky.
-    color = applyWetSheen(color, v_world);
+    if (terraceHit.y != 1.0) color = applyWetSheen(color, v_world);
     // 5.2 — puddles take the graded sky over the graded street.
-    if (u_puddleGround && u_puddles > 0.0) color = applyPuddle(color, v_world);
+    if (terraceHit.y != 1.0 && u_puddleGround && u_puddles > 0.0) color = applyPuddle(color, v_world);
     color = applyGradeVignette(color, px, u_resolution);
     // 1.3 / NE P1.3 — emitters keep their own light: a lit authored-emitter
     // pixel skips the grade in proportion to its lit contribution (emissive
@@ -4642,7 +4677,7 @@ export class GpuWorldRenderer {
         this.timerExtension = gl.getExtension?.('EXT_disjoint_timer_query_webgl2') || null;
         this.sceneUniforms = uniformLocations(gl, this.sceneProgram, [
             'u_camera', 'u_resolution', 'u_fatPixels', 'u_albedo', 'u_albedoPage', 'u_albedoPaged', 'u_materialMap', 'u_emissiveMap',
-            'u_hasMaterialMap', 'u_occluderMap', 'u_hasOccluderMap', 'u_packedGeometry', 'u_hasEmissiveMap', 'u_emitterRoles',
+            'u_hasMaterialMap', 'u_occluderMap', 'u_hasOccluderMap', 'u_surfaceOffset', 'u_packedGeometry', 'u_hasEmissiveMap', 'u_emitterRoles',
             ...GRADE_UNIFORM_NAMES,
             'u_fogColor', 'u_weather', 'u_time', 'u_motionScale',
             'u_sun', 'u_overcast', 'u_additive',
@@ -5568,7 +5603,8 @@ export class GpuWorldRenderer {
                     first?.emissiveRevision ?? first?.sidecarRevision, first?.emissiveTextureUpdates)
                 : null;
             if (!occluderChannelEnabled && batch.occluderSource) this.skippedOccluderUploads++;
-            batch.occluderTexture = occluderChannelEnabled && batch.occluderSource
+            batch.occluderTexture = first?.terrainPlanes ? this.uploadTypedTexture('terrain:planes', first.terrainPlanes)
+                : occluderChannelEnabled && batch.occluderSource
                 ? this._textureFor(`occluder:${sidecar}`, batch.occluderSource,
                     first?.sidecarRevision, first?.occluderTextureUpdates)
                 : null;
@@ -5620,6 +5656,10 @@ export class GpuWorldRenderer {
                 gl.activeTexture(gl.TEXTURE0 + units.occluder);
                 gl.bindTexture(gl.TEXTURE_2D, batch.occluderTexture);
             }
+        }
+        if (uniforms.u_surfaceOffset) {
+            const off = batch.records[0]?.surfaceOffset;
+            gl.uniform2f(uniforms.u_surfaceOffset, off ? finite(off[0], 0) : 0, off ? finite(off[1], 0) : 0);
         }
         if (uniforms.u_puddleGround || uniforms.u_terrainBatch) {
             const terrain = batch.records[0]?.id === 'terrain:static';
