@@ -61,19 +61,22 @@ export const PROP_SIDECAR_RULES = Object.freeze({
         accept: ({ h, s, v }) => (h >= 15 && h <= 62 && s >= 0.2 && v >= 0.45)
             || ((h >= 340 || h <= 8) && s >= 0.5 && v >= 0.7),
     },
-    // NE v0.67.1 E — authored 4x5 lantern head (20 texels on ART_RAMPS.emissive
-    // at alpha 200) so street lamp glass reads as a warm lantern head at night;
-    // the iron cap, bracket and post stay albedo.
+    // W1-C 1.4 — authored 6x8 hexagonal glass pane inside 32x44 prop.lantern
+    // (48 texels on ART_RAMPS.emissive at alpha 200; matches bake-plaza-props.mjs
+    // byte-for-byte). Iron hood, brackets, 3px post and ashlar base stay albedo.
     'prop.lantern': {
-        rect: [14, 2, 4, 5],
+        rect: [14, 7, 6, 8],
         alpha: 200,
         accept: () => true,
         stops: [
-            [0, 0, 0, 0],
-            [1, 0, 1, 1],
-            [2, 1, 2, 2],
-            [1, 0, 2, 1],
-            [0, 0, 1, 0],
+            [0, 1, 1, 1, 1, 0],
+            [1, 1, 2, 2, 1, 1],
+            [1, 2, 2, 2, 2, 1],
+            [1, 2, 2, 2, 2, 1],
+            [1, 1, 2, 2, 1, 1],
+            [0, 1, 2, 1, 1, 0],
+            [0, 1, 1, 1, 0, 0],
+            [0, 0, 1, 1, 0, 0],
         ],
     },
     // The blue rune glass; the carved timber stays albedo.

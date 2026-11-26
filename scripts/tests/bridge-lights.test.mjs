@@ -23,9 +23,11 @@ import { collectSpriteEntries, loadSpriteManifest, pathForEntry, spritesRoot } f
 
 const CENTRAL_ID = 'bridge.landmark.civic.ns';
 const TRESTLE_ID = 'bridge.landmark.rustic.ns';
+const FARM_ID = 'bridge.landmark.farm.ew';
 const entries = new Map(collectSpriteEntries(loadSpriteManifest()).map((entry) => [entry.id, entry]));
 const central = entries.get(CENTRAL_ID);
 const trestle = entries.get(TRESTLE_ID);
+const farm = entries.get(FARM_ID);
 const date = new Date(2026, 9, 24, 19);
 const at = (minuteOfDay) => ({ clock: { minuteOfDay, date } });
 
@@ -137,8 +139,9 @@ test('the declared flames light at their drawn world positions, only while the l
     renderer._lanternGlowSources = () => [];
     const rusticSpans = renderer.bridgeSpans.filter((span) => span.style === 'rustic').length;
     const civicSpans = renderer.bridgeSpans.filter((span) => span.style === 'civic').length;
+    const farmLightsCount = renderer.bridgeTiles?.get?.('3,7')?.bridgeId === 'north-farm-bridge' ? (farm?.lights?.length || 0) : 0;
     const pools = renderer._lanternGroundLightSources({}).filter((light) => light.id.startsWith('bridge-light:'));
-    assert.equal(pools.length, civicSpans * central.lights.length + rusticSpans * trestle.lights.length);
+    assert.equal(pools.length, civicSpans * central.lights.length + rusticSpans * trestle.lights.length + farmLightsCount);
 });
 
 test('the bridge catches on the Lamplighter\'s Round in one step, flames and pools together', () => {

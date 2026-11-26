@@ -50,7 +50,7 @@
 // backend, GW-1 / GW-2 on the GPU paths; at looks 0 nothing is allocated,
 // baked or saved), in the same pass as the ground bake (`bakeGround`), cached
 // with it, published as `renderer.groundField.weather` and persisted inside
-// the terrain artifact's ground field (TerrainArtifactStore schema 2, keyed
+// the terrain artifact's ground field (TerrainArtifactStore schema 3, keyed
 // 'weather').
 
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';

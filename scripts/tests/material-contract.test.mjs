@@ -312,9 +312,9 @@ test('NE v0.67.1 E: boosted lantern, Forge, and Mine emissive sidecars match wor
     const manifest = loadSpriteManifest();
     assert.notEqual(manifest.style.assetVersion, '2026-11-23-harbor-v1-restored', 'assetVersion bumped for E sidecar PNG changes');
 
-    // prop.lantern: 20 lit texels on ART_RAMPS.emissive inside [14,2,4,5] at alpha 200.
+    // W1-C 1.4 prop.lantern (32x44): 48 lit texels on ART_RAMPS.emissive inside [14,7,6,8] at alpha 200.
     const lanternRule = PROP_SIDECAR_RULES['prop.lantern'];
-    assert.deepEqual(lanternRule.rect, [14, 2, 4, 5]);
+    assert.deepEqual(lanternRule.rect, [14, 7, 6, 8]);
     assert.equal(lanternRule.alpha, 200);
     const rampRgb = ART_RAMPS.emissive.map(hexToRgb);
     const lanternAlbedo = readPng('props/prop.lantern.png');
@@ -338,7 +338,7 @@ test('NE v0.67.1 E: boosted lantern, Forge, and Mine emissive sidecars match wor
                 `prop.lantern ramp stop at ${x},${y}`);
         }
     }
-    assert.equal(lanternLit, 20);
+    assert.equal(lanternLit, 48);
 
     // Forge (alphas 175 & 210) and Mine (alphas 145, 155, 200).
     const alphaHistogram = (png) => {

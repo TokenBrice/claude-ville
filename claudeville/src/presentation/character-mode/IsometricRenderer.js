@@ -904,6 +904,7 @@ export class IsometricRenderer {
         this.pathTiles = new Set();
         this.townSquareTiles = new Set();
         this.mainAvenueTiles = new Set();
+        this.avenueTiles = new Set();
         this.dirtPathTiles = new Set();
         this.busyWalkTiles = new Set();
         this.commandCenterRoadTiles = new Set();
@@ -1338,6 +1339,7 @@ export class IsometricRenderer {
         if (rank(material) > rank(current)) this.roadMaterialTiles.set(key, material);
         if (material === 'avenue') {
             this.commandCenterRoadTiles.add(key);
+            this.avenueTiles?.add(key);
         }
     }
 
@@ -9727,8 +9729,49 @@ export class IsometricRenderer {
                 materialClass: (id) => this.assets?.getEntry?.(id)?.materialClass || null,
             },
         }));
-        // 7.1 — rest-seat furniture: back and front slices around each seat.
-        sprites.push(...buildRestSeatPropSprites());
+        // 7.1 / W1-D 1.6 — rest-seat furniture: authored oak trestle sheets
+        // (with night-only candle emissives on the lamp clock) and pier kerbs.
+        sprites.push(...buildRestSeatPropSprites({ assets: this.assets, lampsLit: () => this.villageLampsLit() }));
+        // W1-C 1.1 — 4-frame animated spout & basin ripple overlay over the
+        // civic plaza fountain (`prop.plazaFountainWater`, 4 fps, frame 0 when
+        // reduced motion is active).
+        const civicFountain = DISTRICT_PROPS.find((p) => p.id === 'prop.plazaFountain' && p.district === 'civic');
+        if (civicFountain && this.assets?.has?.('prop.plazaFountainWater')) {
+            const waterId = 'prop.plazaFountainWater';
+            const frameW = 80;
+            const frameH = 88;
+            const [ax, ay] = this.assets.getAnchor(waterId);
+            const waterSprite = new StaticPropSprite({
+                tileX: civicFountain.tileX,
+                tileY: civicFountain.tileY,
+                id: waterId,
+                bounds: { left: -ax, right: frameW - ax, top: -ay, bottom: frameH - ay, splitY: 0 },
+                splitForOcclusion: false,
+                sortY: tileToWorld(civicFountain.tileX, civicFountain.tileY).y - 0.25,
+                materialClass: 'water',
+                drawFn: (ctx, x, y) => {
+                    const sheet = this.assets?.get?.(waterId);
+                    if (!sheet) return;
+                    const frame = (this.motionScale ?? 1) > 0
+                        ? (Math.floor((this.motionTimeMs || 0) / 250) % 4)
+                        : 0;
+                    ctx.drawImage(sheet, frame * frameW, 0, frameW, frameH, Math.round(x - ax), Math.round(y - ay), frameW, frameH);
+                },
+            });
+            let cachedFrame = -1;
+            const origGetCached = waterSprite._getCachedCanvas.bind(waterSprite);
+            waterSprite._getCachedCanvas = (zoom) => {
+                const frame = (this.motionScale ?? 1) > 0
+                    ? (Math.floor((this.motionTimeMs || 0) / 250) % 4)
+                    : 0;
+                if (frame !== cachedFrame) {
+                    cachedFrame = frame;
+                    waterSprite.invalidateCache();
+                }
+                return origGetCached(zoom);
+            };
+            sprites.push(waterSprite);
+        }
         // The Tavern's arches and beam, over the drinkers on its floor.
         sprites.push(...buildTavernArcadeSprites({ building: this.world?.buildings?.get?.('tavern'), assets: this.assets }));
         return sprites;
@@ -10687,6 +10730,7 @@ export class IsometricRenderer {
         }
         // Row-major, as the per-tile loop drew them, so decks overlap alike.
         tiles.sort((a, b) => a.tileY - b.tileY || a.tileX - b.tileX);
+        let farmBridgeDrawn = false;
         for (const { tileX, tileY, bInfo } of tiles) {
             const screenX = (tileX - tileY) * TILE_WIDTH / 2;
             const screenY = (tileX + tileY) * TILE_HEIGHT / 2;
@@ -10699,6 +10743,18 @@ export class IsometricRenderer {
                     if (this.sprites) this.sprites.drawSprite(ctx, `dock.${orientation}`, screenX, screenY);
                 }
             } else if (bInfo?.kind === 'plank') {
+                // W1-C 1.5 — north-farm-bridge renders once as the cohesive
+                // inked farm footbridge (`bridge.landmark.farm.ew`, mirrored
+                // horizontally onto integer texels for its NS span) when the
+                // asset is present; falls back to per-tile mirrored `bridge.ew`.
+                if (bInfo.bridgeId === 'north-farm-bridge' && this.assets?.has?.('bridge.landmark.farm.ew')) {
+                    if (!farmBridgeDrawn) {
+                        farmBridgeDrawn = true;
+                        const spanCenter = tileToWorld(3, 7.5);
+                        this._drawMirroredPlankSprite(ctx, 'bridge.landmark.farm.ew', spanCenter.x, spanCenter.y, true);
+                    }
+                    continue;
+                }
                 // 2.8 — single-file plank crossings use the per-tile
                 // bridge.${orientation} asset (the pond plank's bridge.ew),
                 // mirroring the dock tile path. An NS plank mirrors bridge.ew
@@ -10716,8 +10772,8 @@ export class IsometricRenderer {
         }
     }
 
-    _drawMirroredPlankSprite(ctx, id, wx, wy) {
-        const img = this.assets?.get?.(id);
+    _drawMirroredPlankSprite(ctx, id, wx, wy, useWinter = false) {
+        const img = (useWinter ? this.propWinter?.image?.(id) : null) || this.assets?.get?.(id);
         if (!img) return;
         const dims = this.assets.getDims(id) || { w: img.width, h: img.height };
         const [ax, ay] = this.assets.getAnchor(id);
@@ -11232,7 +11288,10 @@ export class IsometricRenderer {
     _hearthLightSources(lighting = null) {
         const lampsLit = lampsLitAt(this._lastAtmosphere);
         if (!lampsLit) return [];
-        const extra = [...(this.villageCalendar?.lightFixtures?.() || [])];
+        const extra = [
+            ...(this.villageCalendar?.lightFixtures?.() || []),
+            ...(this.isleLandmarks?.lightFixtures?.() || []),
+        ];
         // D4 — each hearth catches on the round with the lamps.
         const lit = this.lampRoundLit();
         const caught = row => lit(row.tileX, row.tileY);
@@ -11270,6 +11329,38 @@ export class IsometricRenderer {
                 const foot = worldToTile(placement.x + sx, placement.y + sy + height);
                 out.push({
                     id: `bridge-light:${span.id || spriteId}:${index}`,
+                    tileX: foot.tileX,
+                    tileY: foot.tileY,
+                    height,
+                    radius: Math.min(Number(light.radius) || BRIDGE_LIGHT_POOL_RADIUS, SOURCE_HALO_RADIUS_CAP),
+                    intensity: BRIDGE_LIGHT_INTENSITY,
+                    color: BRIDGE_LIGHT_COLOR,
+                });
+            });
+        }
+        // W1-C 1.5 — north-farm-bridge mirrors `bridge.landmark.farm.ew`
+        // horizontally around `(3, 7.5)` so its 4 end-post lanterns light on
+        // the Lamplighter's Round as well.
+        const farmId = 'bridge.landmark.farm.ew';
+        const farmLights = this.assets?.getEntry?.(farmId)?.lights;
+        if (this.bridgeTiles?.get?.('3,7')?.bridgeId === 'north-farm-bridge'
+            && Array.isArray(farmLights) && farmLights.length && this.assets?.has?.(farmId)
+            && this.bridgeLightsLit({ start: tileToWorld(3, 5), end: tileToWorld(3, 10) })) {
+            const dims = this.assets.getDims(farmId) || { w: 192, h: 112 };
+            const [ax, ay] = this.assets.getAnchor(farmId);
+            const mid = tileToWorld(3, 7.5);
+            const baseX = Math.round(mid.x);
+            const baseY = Math.round(mid.y - ay);
+            farmLights.forEach((light, index) => {
+                const [sx, sy] = Array.isArray(light?.at) ? light.at : [];
+                if (!Number.isFinite(sx) || !Number.isFinite(sy)) return;
+                const height = Math.max(0, Number(light.height) || 0);
+                // Mirrored around baseX: local x' = baseX - (ax - dims.w + sx) = baseX + dims.w - ax - sx
+                const wx = baseX + (dims.w - ax - sx);
+                const wy = baseY + sy + height;
+                const foot = worldToTile(wx, wy);
+                out.push({
+                    id: `bridge-light:north-farm-bridge:${index}`,
                     tileX: foot.tileX,
                     tileY: foot.tileY,
                     height,
@@ -11898,11 +11989,11 @@ export class IsometricRenderer {
         }
         for (const prop of DISTRICT_PROPS) {
             if (prop.id === 'prop.lantern') push(prop.tileX, prop.tileY);
-            if (prop.id === 'prop.runeBrazier') push(prop.tileX, prop.tileY, 'brazier');
+            if (prop.id === 'prop.runeBrazier' || prop.id === 'prop.plazaBrazier') push(prop.tileX, prop.tileY, 'brazier');
         }
         for (const prop of SCENIC_POINT_PROPS) {
             if (prop.id === 'prop.lantern') push(prop.tileX, prop.tileY);
-            if (prop.id === 'prop.runeBrazier') push(prop.tileX, prop.tileY, 'brazier');
+            if (prop.id === 'prop.runeBrazier' || prop.id === 'prop.plazaBrazier') push(prop.tileX, prop.tileY, 'brazier');
         }
         this._lanternGlowSourcesCache = out;
         return out;

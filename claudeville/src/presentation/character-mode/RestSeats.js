@@ -213,15 +213,22 @@ export function tavernTableArt(facing = 'south-west') {
     const LONG = longLit ? OAK[2] : OAK[1];
     const LONG_HI = longLit ? OAK[3] : OAK[2];
     const CAP = longLit ? OAK[1] : OAK[2];
-    const grain = (a, c, salt) => seatHash(`${Math.floor(a * 9)}:${Math.floor(c * 40)}:${salt}`) % 7 === 0;
+    const grain = (a, c, salt) => seatHash(`${Math.floor(a * 9)}:${Math.floor(c * 40)}:${salt}`) % 5 === 0;
+    const knot = (a, c, salt) => seatHash(`${Math.floor(a * 11)}:${Math.floor(c * 32)}:${salt}:k`) % 6 === 0;
 
     // A board top at height h over [a0, a1] x [c0, c1], `seams` across.
+    // Distinct weathered oak plank grooves (`OAK[0]`), plank-to-plank shade
+    // variation (`OAK[2]`/`OAK[3]`) and adzed dark grain flecks (`OAK[1]`)
+    // give the tabletop crisp 1x1 tactile texture matching the Tavern's own timber.
     const boardTop = (a0, a1, c0, c1, h, seams, part, salt) => each((x, y, cx, cy) => {
         const [a, c] = topAt(cx, cy, h);
         if (a < a0 || a > a1 || c < c0 || c > c1) return;
-        let colour = OAK[3];
-        if (seams.some((s) => Math.abs(c - s) < 0.017)) colour = OAK[1];
-        else if (grain(a, c, salt)) colour = OAK[2];
+        let boardIdx = 0;
+        for (let i = 0; i < seams.length; i++) if (c >= seams[i]) boardIdx = i + 1;
+        let colour = (boardIdx & 1) === 1 ? OAK[2] : OAK[3];
+        if (seams.some((s) => Math.abs(c - s) < 0.02)) colour = OAK[0];
+        else if (knot(a, c, salt)) colour = OAK[0];
+        else if (grain(a, c, salt)) colour = (boardIdx & 1) === 1 ? OAK[3] : OAK[1];
         put(x, y, colour, part);
     });
     // The long face at across = A over [a0, a1], rows h in [h0, h1).
@@ -289,7 +296,11 @@ export function tavernTableArt(facing = 'south-west') {
     aFrame(T.frame, false);
     const seams = [c - d / 3, c + d / 3];
     boardTop(-L, L, c - d, c + d, T.height, seams, 'front', 2);
-    longFace(c + d, -L, L, legTop, T.height, 'front', (row) => (row === T.apron - 1 ? LONG_HI : row === 0 ? OAK[1] : LONG));
+    longFace(c + d, -L, L, legTop, T.height, 'front', (row, a) => {
+        if (row === T.apron - 1) return LONG_HI;
+        if (row === 0) return OAK[0];
+        return seatHash(`ap:${Math.floor(a * 12)}`) % 4 === 0 ? (longLit ? OAK[0] : OAK[3]) : LONG;
+    });
     endGrain(L, c - d, c + d, legTop, T.height, seams, 'front');
 
     // --- selective outline on the union silhouette: ink below and right,

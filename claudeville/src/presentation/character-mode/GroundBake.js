@@ -719,7 +719,7 @@ function segDistance(s, x, y) {
 }
 
 // The Command Plaza's medallion centre: the civic fountain (scenery.js).
-const CIVIC_FOUNTAIN = DISTRICT_PROPS.find(p => p.id === 'prop.runeFountain' && p.district === 'civic') || null;
+const CIVIC_FOUNTAIN = DISTRICT_PROPS.find(p => (p.id === 'prop.plazaFountain' || p.id === 'prop.runeFountain') && p.district === 'civic') || null;
 
 // LANDMARK_PLINTH_FALLBACKS — authored painted-base plinth fallbacks
 // (matching bake-surface-channel.mjs) for hero stone landmarks whose logical

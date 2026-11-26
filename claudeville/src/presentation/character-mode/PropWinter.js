@@ -82,6 +82,8 @@ export const WINTER_PROPS = Object.freeze({
     'prop.windmill': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, poly: [[63, 24], [33, 60], [34, 69], [64, 78], [95, 69], [96, 60]] } },
     'prop.hourglassBelfry': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, poly: [[64, 14], [25, 52], [64, 74], [102, 52]] } },
     'bridge.landmark.rustic.ns': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
+    'bridge.landmark.farm.ew': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
+    'prop.archiveCistern': { dormancy: 'evergreen', surface: 'round' },
 });
 
 // The village wall's walk (VillageWall `paintWallRun`, the stone curtain's

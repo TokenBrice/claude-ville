@@ -565,12 +565,10 @@ export const VILLAGE_NIGHT_LAMPS = Object.freeze([
 ].map(row => Object.freeze({ ...row, id: 'prop.lantern', layer: 'cache', walkBlock: true })));
 
 export const DISTRICT_PROPS = [
-    // Command's rune brazier stands at the forecourt's north-west corner, by
-    // the west end of the gate steps (CM-1: it moved with the front from
-    // 11,19; two rows north is the Archive's reading lamp). Its stand and the
-    // alcove crates' keep the steps' row west of the door clear of standing
-    // places (COMMAND_QUEUE).
-    { tileX: 12, tileY: 18, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
+    // Command's plaza brazier stands at the forecourt's north-west corner, by
+    // the west end of the gate steps (cold ash/charcoal by day, lit on the
+    // village lamp clock at night; CM-1 moved it with the front from 11,19).
+    { tileX: 12, tileY: 18, id: 'prop.plazaBrazier', layer: 'cache', district: 'command' },
     { tileX: 6.9, tileY: 27.3, id: 'prop.lakeShrine', layer: 'cache', district: 'elderwood' },
     { tileX: 32.3, tileY: 19.6, id: 'prop.netRack', layer: 'cache', district: 'harbor' },
     { tileX: 33.2, tileY: 22.2, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
@@ -595,7 +593,7 @@ export const DISTRICT_PROPS = [
     // focal fountain at (16, 20.5) with flanking garden props, keeping
     // COMMAND_QUEUE (west forecourt) and the central bridge north landing
     // (18, 22) clear.
-    { tileX: 16.2, tileY: 20.0, id: 'prop.runeFountain', layer: 'cache', district: 'civic', walkBlock: true },
+    { tileX: 16.2, tileY: 20.0, id: 'prop.plazaFountain', layer: 'cache', district: 'civic', walkBlock: true },
     { tileX: 17.5, tileY: 20.1, id: 'veg.planter', layer: 'cache', district: 'civic' },
     { tileX: 15.2, tileY: 21.1, id: 'veg.flower.a', layer: 'cache', district: 'civic' },
     { tileX: 19.0, tileY: 20.0, id: 'veg.planter', layer: 'cache', district: 'civic' },
@@ -609,7 +607,7 @@ export const DISTRICT_PROPS = [
     // Workshop district: the Forge → Task Board handoff brazier stands on the
     // yard's verge, off the handoff path, and lights the yard at night (the
     // handoff crates are at the scenic point below).
-    { tileX: 26, tileY: 32, id: 'prop.runeBrazier', layer: 'cache', district: 'workshop' },
+    { tileX: 26, tileY: 32, id: 'prop.plazaBrazier', layer: 'cache', district: 'workshop' },
     // Living Isle W8.3a (AD-P5): working yards. Each prop stands on one
     // whole tile so `walkBlock` closes exactly its own lattice node, never a
     // lane, visit slot, seat or queue place; listed back to front per yard
@@ -649,12 +647,11 @@ export const DISTRICT_PROPS = [
     { tileX: 10, tileY: 27, id: 'prop.fence.nwSe', layer: 'cache', district: 'civic', walkBlock: true },
     { tileX: 8, tileY: 28, id: 'prop.fence.neSw', layer: 'cache', district: 'civic', walkBlock: true },
     { tileX: 10.6, tileY: 28.6, id: 'veg.flower.c', layer: 'cache', district: 'civic' },
-    // Archive west lawn: standing stone and mossy boulder replacing the old
-    // programmer-art ancient ruins at (2,16), plus the rune fountain shrine.
+    // Archive west lawn: standing stone, mossy boulder, and quiet abbey
+    // rainwater cistern (W1-C; sparse cool rune rim gated strictly to night).
     { tileX: 1.0, tileY: 15.0, id: 'veg.boulder.mossy.large', layer: 'cache', district: 'knowledge', walkBlock: true },
     { tileX: 2.0, tileY: 17.0, id: 'veg.standingStone.mossy', layer: 'cache', district: 'knowledge', walkBlock: true },
-    { tileX: 1.15, tileY: 19.0, id: 'prop.runeFountain', layer: 'cache', district: 'knowledge', walkBlock: true },
-    { tileX: 1.9, tileY: 18.25, id: 'prop.runeBrazier', layer: 'cache', district: 'knowledge', walkBlock: true },
+    { tileX: 1.15, tileY: 19.0, id: 'prop.archiveCistern', layer: 'cache', district: 'knowledge', walkBlock: true },
     // Previously unused authored props populating foreground dead zones
     // (Tavern–Lighthouse headland, Mine–Gate–Tasks lawn, Archive & Tavern
     // greens), all clear of standing places.

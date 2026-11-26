@@ -84,42 +84,91 @@ export function cacheEmitterRecords(renderer, channelRevision) {
     bridgeEmitterRecords(renderer, records);
     if (!renderer._gpuAtlasResident) return records;
     for (const prop of cacheLayerProps()) {
-        if (!hasEmissiveSidecar(assets, prop.id)) continue;
-        const frame = assets.getAtlasFrame?.(prop.id);
+        // W1-C 1.3 — plaza braziers bake cold charcoal/ash by day and swap to
+        // the lit flame sheet (`prop.plazaBrazier.lit`) only once the
+        // Lamplighter's Round reaches them at night.
+        const isPlazaBrazier = prop.id === 'prop.plazaBrazier';
+        const resolvedId = isPlazaBrazier ? 'prop.plazaBrazier.lit' : prop.id;
+        if (!hasEmissiveSidecar(assets, resolvedId)) continue;
+        const nightGated = isPlazaBrazier || prop.id === 'prop.lantern' || prop.id === 'prop.archiveCistern';
+        const gate = nightGated ? lanternGate(renderer, prop) : 1;
+        if (isPlazaBrazier && !(gate > 0)) continue;
+        const frame = assets.getAtlasFrame?.(resolvedId);
         const atlasId = frame?.atlas;
-        const albedo = atlasId ? assets.getAtlas?.(atlasId, 'albedo') : null;
-        const emissive = atlasId ? assets.getAtlas?.(atlasId, 'emissive') : null;
-        if (!albedo || !emissive || !frame?.rect) continue;
-        const { sx, sy, sw, sh } = atlasSourceRect(frame.rect);
-        const [ax, ay] = assets.getAnchor(prop.id);
-        const key = `cache-emitter:${prop.id}:${prop.tileX},${prop.tileY}`;
+        if (atlasId) {
+            const albedo = assets.getAtlas?.(atlasId, 'albedo') || null;
+            const emissive = assets.getAtlas?.(atlasId, 'emissive') || null;
+            if (!albedo || !emissive || !frame?.rect) continue;
+            const { sx, sy, sw, sh } = atlasSourceRect(frame.rect);
+            const [ax, ay] = assets.getAnchor(resolvedId);
+            const key = `cache-emitter:${resolvedId}:${prop.tileX},${prop.tileY}`;
+            records.push({
+                id: key,
+                stableKey: key,
+                textureKey: atlasId,
+                sidecarKey: `${atlasId}:channels`,
+                source: albedo,
+                materialSource: assets.getAtlas?.(atlasId, 'material') || null,
+                emissiveSource: emissive,
+                sourceWidth: albedo.width,
+                sourceHeight: albedo.height,
+                sx,
+                sy,
+                sw,
+                sh,
+                x: Math.round(prop.x - ax),
+                y: Math.round(prop.y - ay),
+                width: sw,
+                height: sh,
+                material: materialClassId(assets.getMaterialMetadata?.(resolvedId)?.materialClass || 'default'),
+                elevation: 0.34,
+                emissive: 0,
+                emissiveGate: gate,
+                occluder: 0,
+                textureRevision: assets.assetVersion || 0,
+                sidecarRevision: channelRevision(assets, atlasId),
+                sequence: -0.5,
+                sourceKind: 'atlas',
+            });
+            continue;
+        }
+        // Individual cache emissive props (e.g., prop.archiveCistern's cool
+        // night-only rune rim): redraw only their emissive texels when lit.
+        if (!(gate > 0) || typeof document === 'undefined') continue;
+        const sidecar = assets.getCompanion?.(resolvedId, 'emissive') || null;
+        const albedo = renderer.propWinter?.image?.(resolvedId) || assets.get?.(resolvedId) || null;
+        if (!sidecar || !albedo?.width) continue;
+        const [ax, ay] = assets.getAnchor(resolvedId);
+        const key = `cache-emitter:${resolvedId}:${prop.tileX},${prop.tileY}`;
+        const textureKey = `${key}:${assets.assetVersion || 0}`;
         records.push({
             id: key,
             stableKey: key,
-            textureKey: atlasId,
-            sidecarKey: `${atlasId}:channels`,
-            source: albedo,
-            materialSource: assets.getAtlas?.(atlasId, 'material') || null,
-            emissiveSource: emissive,
+            textureKey,
+            sidecarKey: `${textureKey}:channels`,
+            source: maskedSource(albedo, sidecar, key, textureKey),
+            materialSource: assets.getCompanion?.(resolvedId, 'material') || null,
+            emissiveSource: sidecar,
+            occluderSource: null,
             sourceWidth: albedo.width,
             sourceHeight: albedo.height,
-            sx,
-            sy,
-            sw,
-            sh,
+            sx: 0,
+            sy: 0,
+            sw: albedo.width,
+            sh: albedo.height,
             x: Math.round(prop.x - ax),
             y: Math.round(prop.y - ay),
-            width: sw,
-            height: sh,
-            material: materialClassId(assets.getMaterialMetadata?.(prop.id)?.materialClass || 'default'),
+            width: albedo.width,
+            height: albedo.height,
+            material: materialClassId(assets.getMaterialMetadata?.(resolvedId)?.materialClass || 'stone'),
             elevation: 0.34,
             emissive: 0,
-            emissiveGate: prop.id === 'prop.lantern' ? lanternGate(renderer, prop) : 1,
+            emissiveGate: gate,
             occluder: 0,
-            textureRevision: assets.assetVersion || 0,
-            sidecarRevision: channelRevision(assets, atlasId),
+            textureRevision: textureKey,
+            sidecarRevision: textureKey,
             sequence: -0.5,
-            sourceKind: 'atlas',
+            sourceKind: 'individual',
         });
     }
     return records;
@@ -183,7 +232,7 @@ function mirrorAccentRecords(renderer, records) {
 // material sidecar marking them as water, which the light loop keeps out of
 // every diffuse pool. Everything else stays the terrain bake's own pixels
 // and class, so a cache prop baked in front of the basin is never covered.
-const CACHE_WATER_PROPS = new Set(['prop.runeFountain', 'prop.well']);
+const CACHE_WATER_PROPS = new Set(['prop.runeFountain', 'prop.plazaFountain', 'prop.archiveCistern', 'prop.well']);
 const CACHE_WATER_GROUND_CLASS = 7;
 const waterMaps = new Map();
 
@@ -288,6 +337,77 @@ function bridgeEmitterRecords(renderer, records) {
             sourceKind: 'individual',
         });
     }
+    // W1-C 1.5 — north-farm-bridge mirrors `bridge.landmark.farm.ew` horizontally
+    // around (3, 7.5); emit its 4 lantern flames at night on the Lamplighter's Round.
+    const farmId = 'bridge.landmark.farm.ew';
+    if (renderer.bridgeTiles?.get?.('3,7')?.bridgeId === 'north-farm-bridge'
+        && hasEmissiveSidecar(assets, farmId)
+        && renderer.bridgeLightsLit?.({ start: tileToWorld(3, 5), end: tileToWorld(3, 10) }) === true) {
+        const sidecar = assets.getCompanion?.(farmId, 'emissive');
+        const baseImg = renderer.propWinter?.image?.(farmId) || assets.get?.(farmId);
+        const dims = assets.getDims?.(farmId);
+        if (sidecar && baseImg && dims) {
+            const [ax, ay] = assets.getAnchor(farmId);
+            const mid = tileToWorld(3, 7.5);
+            const winter = baseImg !== assets.get?.(farmId);
+            const key = 'bridge-emitter:north-farm-bridge';
+            const textureKey = `bridge-emitter:${farmId}:mirror:${assets.assetVersion || 0}${winter ? `:${renderer.propWinter?.key}` : ''}`;
+            const flipped = mirroredBridgeFlames(baseImg, sidecar, dims.w, dims.h, key, textureKey);
+            records.push({
+                id: key,
+                stableKey: key,
+                textureKey,
+                sidecarKey: `${textureKey}:channels`,
+                source: flipped.albedo,
+                materialSource: null,
+                emissiveSource: flipped.emissive,
+                occluderSource: null,
+                sourceWidth: dims.w,
+                sourceHeight: dims.h,
+                sx: 0,
+                sy: 0,
+                sw: dims.w,
+                sh: dims.h,
+                x: Math.round(mid.x + ax - dims.w),
+                y: Math.round(mid.y - ay),
+                width: dims.w,
+                height: dims.h,
+                material: BRIDGE_FLAME_MATERIAL,
+                elevation: 0,
+                emissive: 0,
+                emissiveGate: 1,
+                occluder: 0,
+                textureRevision: textureKey,
+                sidecarRevision: textureKey,
+                sequence: -0.5,
+                sourceKind: 'individual',
+            });
+        }
+    }
+}
+
+const mirroredBridgeCache = new Map();
+function mirroredBridgeFlames(source, sidecar, w, h, key, textureKey) {
+    const cached = mirroredBridgeCache.get(key);
+    if (cached?.textureKey === textureKey) return cached;
+    const flip = (img) => {
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext('2d', { willReadFrequently: true });
+        ctx.translate(w, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, 0, 0);
+        return c;
+    };
+    const emissive = flip(sidecar);
+    const albedo = flip(source);
+    const aCtx = albedo.getContext('2d', { willReadFrequently: true });
+    aCtx.globalCompositeOperation = 'destination-in';
+    aCtx.drawImage(emissive, 0, 0);
+    const entry = { textureKey, albedo, emissive };
+    mirroredBridgeCache.set(key, entry);
+    return entry;
 }
 
 function cacheWaterRecords(renderer) {
@@ -576,13 +696,16 @@ function* emitterPlacements(renderer) {
         yield { id: sprite.id, x: sprite.x, y: sprite.y, sortY: sprite.sortY, gate };
     }
     for (const prop of cacheLayerProps()) {
-        if (!hasEmissiveSidecar(assets, prop.id)) continue;
+        const isPlazaBrazier = prop.id === 'prop.plazaBrazier';
+        const resolvedId = isPlazaBrazier ? 'prop.plazaBrazier.lit' : prop.id;
+        if (!hasEmissiveSidecar(assets, resolvedId)) continue;
         // Baked into the terrain, so every villager and every static sprite
         // draws over it: static sprites carve by their own drawn silhouette
         // whatever their depth.
-        const gate = prop.id === 'prop.lantern' ? lanternGate(renderer, prop) : 1;
+        const nightGated = isPlazaBrazier || prop.id === 'prop.lantern' || prop.id === 'prop.archiveCistern';
+        const gate = nightGated ? lanternGate(renderer, prop) : 1;
         if (!(gate > 0)) continue;
-        yield { id: prop.id, x: prop.x, y: prop.y, sortY: -Infinity, staticSortY: -Infinity, gate };
+        yield { id: resolvedId, x: prop.x, y: prop.y, sortY: -Infinity, staticSortY: -Infinity, gate };
     }
     // BR-6 — a terrain-baked bridge's flames, anchored at the span middle
     // as `_bridgeSpritePlacement` draws the sprite. Skip its own near-parapet

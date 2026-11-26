@@ -70,7 +70,7 @@ const FACING_TILE_STEP = Object.freeze({ 'south-east': [1, 0], 'south-west': [0,
 // fixture.
 const FIXTURE_BODY = Object.freeze({ halfPx: 16, heightPx: 60, backPx: 8 });
 const FIXTURE_PARTS = Object.freeze({
-    'prop.runeBrazier': [14, 0], 'prop.lantern': [5, 16], 'prop.bridgeLanternPost': [6, 0],
+    'prop.runeBrazier': [14, 0], 'prop.plazaBrazier': [14, 0], 'prop.lantern': [7, 16], 'prop.bridgeLanternPost': [6, 0],
     'prop.well': [22, 0], 'prop.oreCart': [19, 0], 'prop.flowerCart': [24, 0],
     'prop.marketStall': [32, 0], 'prop.marketStall.ochre': [32, 0], 'prop.marketStall.canvas': [32, 0],
     'prop.signpost': [13, 0], 'prop.noticePillar': [21, 0],

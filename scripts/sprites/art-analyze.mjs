@@ -836,13 +836,13 @@ const SEASONAL_RAMP_RULES = Object.freeze({
     blossom: {},
     foliageDeep: { maxSat: 0.5, midHue: [90, 110] },
     foliageSun: { maxSat: 0.5, midHue: [90, 110] },
-    // Opus 02 §1.3 (Wave 1/2 additions — enforced as soon as present in ART_RAMPS)
-    grassDormant: { maxSat: 0.36, midHue: [60, 75], optionalUntilAdded: true },
-    grassSpring: { maxSat: 0.60, optionalUntilAdded: true },
-    blossomIvory: { optionalUntilAdded: true },
-    leafMarcescent: { maxSat: 0.62, optionalUntilAdded: true },
-    cliff: { maxSat: 0.30, optionalUntilAdded: true },
-    tideline: { maxSat: 0.36, optionalUntilAdded: true },
+    // Opus 02 §1.3 (Wave 1/2 additions — enforced permanently once in ART_RAMPS)
+    grassDormant: { maxSat: 0.36, midHue: [60, 75] },
+    grassSpring: { maxSat: 0.60 },
+    blossomIvory: {},
+    leafMarcescent: { maxSat: 0.62 },
+    cliff: { maxSat: 0.30 },
+    tideline: { maxSat: 0.36 },
 });
 
 function hexHsv(hex) {

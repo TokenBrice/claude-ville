@@ -25,7 +25,7 @@ import { shadeSelfProp } from '../ShadeField.js';
 import { cacheEmitterRecords } from '../EmitterCuts.js';
 import { IDLE_FRAMES, WALK_FRAMES } from '../SpriteSheet.js';
 
-const PILOT_PROP_IDS = Object.freeze(['prop.lantern', 'prop.runeBrazier', 'prop.bridgeLanternPost']);
+const PILOT_PROP_IDS = Object.freeze(['prop.lantern', 'prop.plazaBrazier', 'prop.plazaBrazier.lit', 'prop.bridgeLanternPost']);
 const TERRAIN_TILE_SOURCES = Object.freeze([
     Object.freeze({ tiles: 'deepWaterTiles', id: 'terrain.shallow-deep' }),
     Object.freeze({ tiles: 'waterTiles', id: 'terrain.shore-shallow' }),
