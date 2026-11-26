@@ -112,7 +112,7 @@ function worldHarness(t) {
         setHovered() {},
     };
     const ship = { id: 's1', project: '/r/demo', branch: 'main' };
-    const belfrySprite = { id: 'belfry' };
+    const pillarSprite = { id: 'prop.quotaPillar', provider: 'claude' };
     const state = { forgeEverywhere: false };
     let fleetCards = 0;
     const renderer = Object.assign(Object.create(IsometricRenderer.prototype), {
@@ -131,9 +131,9 @@ function worldHarness(t) {
         },
         _agentHoverRafId: null,
         isleLandmarks: {
-            hitTestBelfry: (x, y) => (x >= 500 && x <= 540 && y >= 20 && y <= 180 ? belfrySprite : null),
-            belfryWorldBounds: () => ({ left: 490, top: 10, right: 550, bottom: 190 }),
-            belfryTooltip: () => 'Hourglass Belfry · sand left = quota left',
+            hitTestQuotaPillar: (x, y) => (x >= 500 && x <= 540 && y >= 20 && y <= 180 ? pillarSprite : null),
+            quotaPillarWorldBounds: (p) => (p === pillarSprite ? { left: 490, top: 10, right: 550, bottom: 190 } : null),
+            quotaPillarTooltip: () => 'Claude Weekly · 62% left\nResets in 3d 4h · 5h: 18% used',
         },
         _isGateTransit: () => false,
         _openFleetCard() { fleetCards++; },
@@ -189,11 +189,11 @@ test('renderer: the building shows only after an arrival there, standing still',
     assert.ok(!text().includes('Forge'), 'chatting away from the Forge is not being there');
 });
 
-test('renderer: the belfry passes its drawn tower bounds, and the plate keeps clear of them', (t) => {
+test('renderer: a quota pillar passes its drawn bounds, and the plate keeps clear of them', (t) => {
     const { move, plate } = worldHarness(t);
     move(500, 120);
     t.mock.timers.tick(250);
-    assert.deepEqual(plate().lines, ['Hourglass Belfry · sand left = quota left']);
+    assert.deepEqual(plate().lines, ['Claude Weekly · 62% left', 'Resets in 3d 4h · 5h: 18% used']);
     const left = Number.parseInt(plate().style.left, 10);
     const top = Number.parseInt(plate().style.top, 10);
     const rect = { left, top, right: left + 160, bottom: top + 28 };

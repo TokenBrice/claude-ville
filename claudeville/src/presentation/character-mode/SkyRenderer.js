@@ -369,7 +369,7 @@ export function auroraPhaseIndex(ribbon, timeMs, motionScale = 1) {
 export const SKY_WEATHER_PLATE_SPACE = 'vertical-canvas';
 
 // W6.3 — the sky keys (`atmosphere.skyKeys`, config/villageCalendar.js):
-// Lantern Night, the Solstice Belfry Alignment and the 2026–2027 eclipses.
+// Lantern Night, the Solstice Terrace Alignment and the 2026–2027 eclipses.
 // Every key leans named sky-plate stops toward a master-palette ramp stop by
 // a stepped share (quarters for an eclipse), so a keyed plate is still the
 // one band ladder; on an ordinary date `skyKeyPalette` returns the palette
@@ -378,7 +378,7 @@ export const SKY_WEATHER_PLATE_SPACE = 'vertical-canvas';
 export const SKY_KEY_TINTS = Object.freeze({
     // A clear full-moon evening: the lanterns' warmth on the horizon haze.
     lanternNight: Object.freeze({ hex: ART_RAMPS.emissive[0], share: 0.12, stops: Object.freeze(['horizon', 'haze']) }),
-    // The solstice noon over the belfry: a thin gold course in the mid sky.
+    // The solstice noon over the Runic Tide-Terrace: a thin gold course in the mid sky.
     solstice: Object.freeze({ hex: ART_RAMPS.trimGold[2], share: 0.1, stops: Object.freeze(['midBand', 'horizon']) }),
 });
 // The umbra (a solar eclipse key): the sky toward the void and deep-water

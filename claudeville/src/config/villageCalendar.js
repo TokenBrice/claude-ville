@@ -112,9 +112,9 @@ export function isLanternNight({ moonAgeDays, phase, minuteOfDay, weatherType, c
     return (Number(cloudCover) || 0) <= LANTERN_NIGHT_MAX_CLOUD_COVER && !((Number(precipitation) || 0) > 0);
 }
 
-// The Solstice Belfry Alignment: the two local calendar days at each
+// The Solstice Terrace Alignment: the two local calendar days at each
 // solstice (month 1-based), and the half hour either side of the real sun's
-// transit when the noon sun stands over the belfry.
+// transit when the noon sun stands over the Runic Tide-Terrace sundial.
 export const SOLSTICE_ALIGNMENT_DAYS = Object.freeze([
     Object.freeze({ kind: 'june', month: 6, days: Object.freeze([20, 21]) }),
     Object.freeze({ kind: 'december', month: 12, days: Object.freeze([21, 22]) }),

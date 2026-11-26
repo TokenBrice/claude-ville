@@ -148,8 +148,8 @@ test('an Ambient cohort shot frames only the members standing at its building', 
 // MB-1 — a 2508 × 1398 window at DPR 1 (the World canvas 2268 × 1350) meets
 // wide and medium at z2, so the broadcast's establishing shot was a z2 crop.
 // Its wide steps out to the survey, the scale the opening frames the island
-// at, and keeps the isle landmarks' crowns: the Belfry is the account instrument.
-test('2268×1350 at DPR 1: the Ambient wide is the opening\'s island scale and keeps the Belfry crown (MB-1)', () => {
+// at, and keeps the isle landmarks' crowns (Windmill + Runic Tide-Terrace pillars).
+test('2268×1350 at DPR 1: the Ambient wide is the opening\'s island scale and keeps the terrace pillar crowns (MB-1)', () => {
     assert.deepEqual(scalesFor(2268, 1350, 1), { survey: 1, wide: 2, medium: 2, close: 3 });
     const camera = new Camera(canvasOf(2268, 1350));
     camera.setSpriteMetrics(spriteMetrics);
@@ -162,8 +162,11 @@ test('2268×1350 at DPR 1: the Ambient wide is the opening\'s island scale and k
     assert.equal(options.maxZoom, camera.shotTier('survey'));
     assert.equal(options.keepLandmarks, true);
 
-    const belfry = camera._landmarkSilhouettes().find((mark) => mark.type === 'prop.hourglassBelfry');
-    assert.ok(belfry?.noPlate, 'the isle landmarks are crown-protected, without a plate');
+    const pillars = camera._landmarkSilhouettes().filter((mark) => mark.spriteId === 'prop.quotaPillar');
+    assert.equal(pillars.length, 4, 'all 4 Runic Tide-Terrace pillars are crown-protected');
+    for (const pillar of pillars) {
+        assert.ok(pillar.noPlate, 'the isle landmarks are crown-protected, without a plate');
+    }
     // The south districts at work (the Forge, the Task Board, the Harbor).
     const box = { minX: -460, maxX: 320, minY: 680, maxY: 1020 };
     const pose = camera._poseForWorldBox(box, options);
@@ -172,8 +175,10 @@ test('2268×1350 at DPR 1: the Ambient wide is the opening\'s island scale and k
     const view = viewOf(camera, pose);
     const island = islandAreaInWorldRect(view.left, view.top, view.left + view.w, view.top + view.h) / ISLAND_AREA;
     assert.ok(island >= 0.95, `the whole island (${island.toFixed(3)})`);
-    assert.ok(markInColumns(view, belfry), 'the Belfry stands in the frame');
-    assert.ok(crownY(view, belfry, pose.zoom) >= LANDMARK_EDGE_AIR_PX, `Belfry crown at ${crownY(view, belfry, pose.zoom)} px`);
+    for (const pillar of pillars) {
+        assert.ok(markInColumns(view, pillar), `${pillar.type} stands in the frame`);
+        assert.ok(crownY(view, pillar, pose.zoom) >= LANDMARK_EDGE_AIR_PX, `${pillar.type} crown at ${crownY(view, pillar, pose.zoom)} px`);
+    }
     for (const body of bodies) assert.ok(bodyWhole(view, body), `body at ${body.x},${body.y}`);
     director.dispose();
 
@@ -184,27 +189,31 @@ test('2268×1350 at DPR 1: the Ambient wide is the opening\'s island scale and k
     tileDirector.dispose();
 });
 
-// MB-1 / D8 — ordinary Auto keeps today's policy (cap, pan, no zoom-in) but no
-// longer parks the Belfry under the top edge; a villager it shows whole wins.
+// MB-1 / D8 — ordinary Auto keeps today's policy (cap, pan, no zoom-in) and
+// protects north-shore landmark crowns; a villager it shows whole wins.
 test('ordinary Auto keeps landmark crowns whole, never at a whole villager\'s expense (MB-1)', () => {
     const camera = new Camera(canvasOf(2268, 1350));
     camera.setSpriteMetrics(spriteMetrics);
     camera.zoom = camera.tierZoom(1);
     const director = new CameraDirector(camera);
-    const belfry = camera._landmarkSilhouettes().find((mark) => mark.type === 'prop.hourglassBelfry');
-    // A crowd in the south: the land-weighted rest sat low enough to cut the
-    // Belfry's glasses off under the top bar (lane 03's live frame).
+    const windmill = camera._landmarkSilhouettes().find((mark) => mark.type === 'prop.windmill');
+    const pillars = camera._landmarkSilhouettes().filter((mark) => mark.spriteId === 'prop.quotaPillar');
+    // A crowd in the south: the land-weighted rest sits low enough to crop
+    // north-shore landmark crowns under the top edge unless keepLandmarks lifts it.
     const bodies = [{ x: -411, y: 960 }, { x: 189, y: 960 }, { x: -111, y: 800 }];
     const box = { minX: -461, maxX: 239, minY: 710, maxY: 1010 };
     const options = director._ordinaryGlideOptions(bodies);
     assert.equal(options.keepLandmarks, true);
     assert.equal(options.allowZoomIn, false, 'the Auto policy is unchanged');
     const plain = camera._poseForWorldBox(box, { ...options, keepLandmarks: false });
-    assert.ok(crownY(viewOf(camera, plain), belfry, plain.zoom) < 0, 'the plain rest crops the Belfry');
+    assert.ok(crownY(viewOf(camera, plain), windmill, plain.zoom) < 0, 'the plain rest crops the north-shore windmill');
     const kept = camera._poseForWorldBox(box, options);
     assert.equal(kept.zoom, plain.zoom);
     const view = viewOf(camera, kept);
-    assert.ok(crownY(view, belfry, kept.zoom) >= LANDMARK_EDGE_AIR_PX, `Belfry crown at ${crownY(view, belfry, kept.zoom)} px`);
+    assert.ok(crownY(view, windmill, kept.zoom) >= LANDMARK_EDGE_AIR_PX, `Windmill crown at ${crownY(view, windmill, kept.zoom)} px`);
+    for (const pillar of pillars) {
+        assert.ok(crownY(view, pillar, kept.zoom) >= LANDMARK_EDGE_AIR_PX, `${pillar.type} crown at ${crownY(view, pillar, kept.zoom)} px`);
+    }
     for (const body of bodies) assert.ok(bodyWhole(view, body), `body at ${body.x},${body.y}`);
 
     // At z2 a villager standing low in the frame holds the pose: the crown
@@ -217,11 +226,11 @@ test('ordinary Auto keeps landmark crowns whole, never at a whole villager\'s ex
     const lowView = viewOf(camera, nudged);
     assert.ok(bodyWhole(viewOf(camera, z2), low), 'the body starts whole');
     assert.ok(bodyWhole(lowView, low), 'and stays whole');
-    assert.ok(crownY(lowView, belfry, nudged.zoom) < LANDMARK_EDGE_AIR_PX, 'the Belfry crown gives way');
+    assert.ok(crownY(lowView, windmill, nudged.zoom) < LANDMARK_EDGE_AIR_PX, 'the landmark crown gives way');
     director.dispose();
 });
 
-test('1920×1080 DPR 1 opening first frame clears Belfry and Windmill crowns when sky room is null', () => {
+test('1920×1080 DPR 1 opening first frame clears Runic Tide-Terrace pillar and Windmill crowns when sky room is null', () => {
     const camera = new Camera(canvasOf(1680, 1032, 1));
     camera.setSpriteMetrics(spriteMetrics);
     const islandBox = { minX: -1248, maxX: 1248, minY: 0, maxY: 1248 };
@@ -229,10 +238,10 @@ test('1920×1080 DPR 1 opening first frame clears Belfry and Windmill crowns whe
     assert.equal(camera.establishingShot(islandBox, { targetBox: clusterBox }), true);
     const view = viewOf(camera, { x: camera.x, y: camera.y, zoom: camera.zoom });
     assert.equal(camera.zoom, 1, 'first frame opens on wide z1');
-    for (const type of ['prop.hourglassBelfry', 'prop.windmill']) {
-        const mark = camera._landmarkSilhouettes().find((m) => m.type === type);
-        assert.ok(mark, `${type} silhouette loaded`);
-        assert.ok(crownY(view, mark, camera.zoom) >= LANDMARK_EDGE_AIR_PX, `${type} crown at ${crownY(view, mark, camera.zoom)} px`);
+    const northMarks = camera._landmarkSilhouettes().filter((m) => m.type === 'prop.windmill' || m.spriteId === 'prop.quotaPillar');
+    assert.equal(northMarks.length, 5, '1 windmill + 4 quota pillars loaded');
+    for (const mark of northMarks) {
+        assert.ok(crownY(view, mark, camera.zoom) >= LANDMARK_EDGE_AIR_PX, `${mark.type} crown at ${crownY(view, mark, camera.zoom)} px`);
     }
     assert.equal(camera._directorGlide?.toZoom, 2, 'opening dollies in to medium z2 on active cluster');
 });

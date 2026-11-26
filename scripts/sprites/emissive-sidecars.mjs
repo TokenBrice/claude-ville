@@ -131,34 +131,6 @@ export const PROP_SIDECAR_RULES = Object.freeze({
             ] },
         ],
     },
-    // W1-D 1.10 / W1-Fix-C — the Hourglass Belfry's recessed lantern chamber
-    // behind each glass: a warm stop-1 glow tucked strictly into each upper
-    // arch-head pocket, framed by a softer lower-alpha stop-0 halo along the
-    // arch soffit and outer jamb reveals, every texel strictly outside every
-    // cell of `prop.hourglassBelfryGlass` (no reading's shroud, peak or limit
-    // cord ever lies over a lit texel).
-    'prop.hourglassBelfry': {
-        maskAlpha: [96, 136, 168],
-        masks: [
-            { at: [37, 85], rows: [
-                '..0000................',
-                '.00..0000...00........',
-                '0...001100...0........',
-                '0..01111100...........',
-                '0..001111100..........',
-                '0.......00000.........',
-            ] },
-            { at: [69, 85], rows: [
-                '...............00000..',
-                '........00..00000..00.',
-                '..........00111100...0',
-                '..........01111110...0',
-                '.........001111100...0',
-                '........00000000.....0',
-            ] },
-            ...[37, 58, 69, 90].map((x) => maskColumn(x, 91, 118, () => '0')),
-        ],
-    },
 });
 
 // A 1-texel-wide mask from (x, y0) down to (x, y1), its stop per row.

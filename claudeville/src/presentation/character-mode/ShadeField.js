@@ -1229,7 +1229,7 @@ function gatherCasters(renderer) {
         const tree = id === 'fantasy.tree';
         // A tree's lean frames share one profile (the frame is the key's
         // tail); its season, stage and snow are in the key. A prop keeps the
-        // profile it was first seen with: a repaint (the belfry's glass, a
+        // profile it was first seen with: a repaint (a quota pillar's gauge strip, a
         // dusting of snow) leaves its outline alone.
         const shape = tree && frame.textureKey
             ? frame.textureKey.slice(0, frame.textureKey.lastIndexOf('|'))

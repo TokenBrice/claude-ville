@@ -384,6 +384,204 @@
     cursor: default;
 }
 
+/* v0.69 E2 — Runic Tide-Terrace 4-provider weekly Quota Ledger popover
+   (pure DOM bg2 card beside the clicked pillar; mobile bottom sheet lives
+   exclusively in mobile.css under :root[data-cv-profile="mobile"]). */
+.quota-ledger-card {
+    position: absolute;
+    z-index: 4;
+    left: 16px;
+    top: 16px;
+    display: flex;
+    width: 344px;
+    max-height: min(480px, calc(100% - 24px));
+    box-sizing: border-box;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px 10px 10px;
+    color: var(--ink-1);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+}
+
+.quota-ledger-card:focus-visible {
+    outline: 1px solid var(--gold-hi);
+    outline-offset: 2px;
+}
+
+.quota-ledger-card__head {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.quota-ledger-card__title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.quota-ledger-card__title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    color: var(--ink-1);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.quota-ledger-card__subtitle {
+    color: var(--ink-3);
+}
+
+.quota-ledger-card__close {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    color: var(--ink-3);
+    background: none;
+    border: 0;
+    font: inherit;
+    line-height: 16px;
+    cursor: pointer;
+}
+
+.quota-ledger-card__close:hover,
+.quota-ledger-card__close:focus-visible {
+    color: var(--gold-hi);
+    outline: none;
+}
+
+.quota-ledger-card__list {
+    display: flex;
+    min-height: 0;
+    margin: 0;
+    padding: 6px 0 0;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+    list-style: none;
+    border-top: 1px solid var(--line-1);
+}
+
+.quota-ledger-card__row {
+    --quota-accent: var(--ink-3);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    background: var(--bg-1);
+    border: 1px solid var(--line-1);
+    border-left: 3px solid var(--quota-accent);
+}
+
+.quota-ledger-card__row--active {
+    border-color: var(--line-2);
+    border-left-color: var(--quota-accent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--quota-accent) 35%, transparent);
+}
+
+.quota-ledger-card__row--limit {
+    --quota-accent: var(--cv-status-rate-limited);
+    border-color: color-mix(in srgb, var(--cv-status-rate-limited) 50%, transparent);
+    border-left-color: var(--cv-status-rate-limited);
+}
+
+.quota-ledger-card__row--unknown {
+    border-left-color: var(--line-2);
+}
+
+.quota-ledger-card__row-head {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+}
+
+.quota-ledger-card__provider {
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 0.4px;
+    color: var(--ink-1);
+}
+
+.quota-ledger-card__badge {
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    color: var(--cv-status-rate-limited);
+}
+
+.quota-ledger-card__pct {
+    margin-left: auto;
+    color: var(--ink-1);
+    font-variant-numeric: tabular-nums;
+}
+
+.quota-ledger-card__row--unknown .quota-ledger-card__pct {
+    color: var(--ink-3);
+}
+
+.quota-ledger-card__used {
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.quota-ledger-card__bar-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.quota-ledger-card__gauge {
+    display: inline-flex;
+    flex: none;
+    gap: 2px;
+}
+
+.quota-ledger-card__gauge > span {
+    width: 6px;
+    height: 8px;
+    background: var(--line-2);
+}
+
+.quota-ledger-card__gauge > span.on {
+    background: var(--quota-accent);
+}
+
+.quota-ledger-card__reset {
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.quota-ledger-card__subs {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    color: var(--ink-3);
+}
+
+.quota-ledger-card__sub-label {
+    color: var(--ink-3);
+}
+
+.quota-ledger-card__sub-val {
+    color: var(--ink-2);
+}
+
+.quota-ledger-card__sub--warn .quota-ledger-card__sub-val {
+    color: var(--cv-status-waiting);
+}
+
+.quota-ledger-card__fresh {
+    color: var(--ink-3);
+}
+
+.quota-ledger-card__fresh--error {
+    color: var(--cv-status-waiting);
+}
+
 /* 7.2 system: flat --bg-1 plate, 1px --line-2 bevel and 1px black seam, the
    parchment ink ramp, gold only for light, C5 type (PS2P 8/16, DM 11). */
 .world-empty {

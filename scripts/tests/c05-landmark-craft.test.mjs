@@ -127,9 +127,10 @@ test('C-05 snow: world-anchored flakes hold their world coordinates across zoom 
         `z1 flakes inside the z2 view must hold their world spot, got ${kept}/${inside.length}`);
 });
 
-test('C-05 landmarks: Belfry snow invalidates in-place without GPU texture-key churn; Windmill & Rustic Bridge in WINTER_PROPS', t => {
+test('C-05 landmarks: Runic Tide-Terrace pillar snow invalidates in-place without GPU texture-key churn; Windmill & Rustic Bridge in WINTER_PROPS', t => {
     assert.ok(WINTER_PROPS['prop.windmill'], 'prop.windmill must be in WINTER_PROPS');
-    assert.ok(WINTER_PROPS['prop.hourglassBelfry'], 'prop.hourglassBelfry must be in WINTER_PROPS');
+    assert.ok(WINTER_PROPS['prop.quotaPillar'], 'prop.quotaPillar must be in WINTER_PROPS');
+    assert.ok(WINTER_PROPS['prop.quotaTerraceApron'], 'prop.quotaTerraceApron must be in WINTER_PROPS');
     assert.ok(WINTER_PROPS['bridge.landmark.rustic.ns'], 'bridge.landmark.rustic.ns must be in WINTER_PROPS');
 
     globalThis.document = {
@@ -156,9 +157,9 @@ test('C-05 landmarks: Belfry snow invalidates in-place without GPU texture-key c
             image: (id) => (host.propWinter.key === 'winter:4' ? { id, snow: true } : null),
         },
         assets: {
-            get: () => ({ width: 128, height: 128 }),
-            getAnchor: () => [64, 100],
-            getEntry: () => ({ width: 128, height: 128, anchor: [64, 100] }),
+            get: () => ({ width: 32, height: 68 }),
+            getAnchor: () => [16, 60],
+            getEntry: () => ({ width: 32, height: 68, anchor: [16, 60] }),
         },
         sprites: {
             drawSprite(_ctx, id, _x, _y, opts) { winterImagesUsed.push({ id, snow: Boolean(opts?.image?.snow) }); },
@@ -166,28 +167,28 @@ test('C-05 landmarks: Belfry snow invalidates in-place without GPU texture-key c
     };
     const landmarks = new IsleLandmarks(host);
     const sprites = landmarks.buildSprites();
-    const belfry = sprites.find(s => s.id === 'prop.hourglassBelfry');
+    const pillar = sprites.find(s => s.id === 'prop.quotaPillar' && s.provider === 'claude');
     const windmill = sprites.find(s => s.id === 'prop.windmill');
-    assert.ok(belfry && windmill, 'expected Belfry and Windmill sprites');
+    assert.ok(pillar && windmill, 'expected QuotaPillar and Windmill sprites');
 
-    // Step Belfry across stream phases and snow buckets: _gpuCacheRevision bumps, textureKey never churns.
-    belfry.setGlasses({ claude: { state: 'level', level: 3, used: 0.4 }, codex: { state: 'level', level: 3, used: 0.4 } });
-    belfry.setDrain({ claude: { used: 0.4, roseAt: Date.now() }, codex: { used: 0.4, roseAt: Date.now() } });
-    const c0 = belfry._getCachedCanvas(1);
-    const rev0 = belfry._gpuCacheRevision;
-    assert.equal(c0.textureKey, undefined, 'Belfry must use stable StaticPropSprite key, not a per-step textureKey');
+    // Step pillar across stream phases and snow buckets: _gpuCacheRevision bumps, textureKey never churns.
+    pillar.setReading({ state: 'level', level: 3, used: 0.4 });
+    pillar.setDrain({ claude: { used: 0.4, roseAt: Date.now() } });
+    const c0 = pillar._getCachedCanvas(1);
+    const rev0 = pillar._gpuCacheRevision;
+    assert.equal(c0.textureKey, undefined, 'QuotaPillar must use stable StaticPropSprite key, not a per-step textureKey');
 
     host.motionTimeMs = 500;
-    const c1 = belfry._getCachedCanvas(1);
-    assert.ok(belfry._gpuCacheRevision > rev0, 'Belfry must bump _gpuCacheRevision on stream step');
-    assert.equal(c1.textureKey, undefined, 'Belfry textureKey must not churn on stream step');
+    const c1 = pillar._getCachedCanvas(1);
+    assert.ok(pillar._gpuCacheRevision > rev0, 'QuotaPillar must bump _gpuCacheRevision on stream step');
+    assert.equal(c1.textureKey, undefined, 'QuotaPillar textureKey must not churn on stream step');
 
-    const revBeforeSnow = belfry._gpuCacheRevision;
+    const revBeforeSnow = pillar._gpuCacheRevision;
     host.propWinter.key = 'winter:4';
-    const c2 = belfry._getCachedCanvas(1);
-    assert.ok(belfry._gpuCacheRevision > revBeforeSnow, 'Belfry must invalidate cache when propWinter.key changes');
-    assert.equal(c2.textureKey, undefined, 'Belfry textureKey must remain stable on snow change');
-    assert.ok(winterImagesUsed.some(e => e.id === 'prop.hourglassBelfry' && e.snow), 'Belfry must draw winter image');
+    const c2 = pillar._getCachedCanvas(1);
+    assert.ok(pillar._gpuCacheRevision > revBeforeSnow, 'QuotaPillar must invalidate cache when propWinter.key changes');
+    assert.equal(c2.textureKey, undefined, 'QuotaPillar textureKey must remain stable on snow change');
+    assert.ok(winterImagesUsed.some(e => e.id === 'prop.quotaPillar' && e.snow), 'QuotaPillar must draw winter image');
 
     // Windmill invalidates sail frames and bumps revision on snow bucket change without leaking keys.
     host.propWinter.key = 'winter:0';

@@ -44,7 +44,7 @@ const SITES = {
     'AttentionPlates.js drawPlateText': { beacons: true, why: 'T1 plate: name, waiting reason' },
     'AttentionPlates.js drawTallyTab': { beacons: true, why: 'T1 tally' },
     'BuildingPlaques.js paintPlaque': { tier: 'if (!postcard) renderer.buildingRenderer?.drawLabels(', why: 'building plaques (W4-A extraction from BuildingSprite): patron names, counts, squads' },
-    'BuildingSprite.js _drawInstrumentPlate': { flag: true, why: 'instrument plates: workloads, ritual labels, belfry and mine rows' },
+    'BuildingSprite.js _drawInstrumentPlate': { flag: true, why: 'instrument plates: workloads, ritual labels, quota and mine rows' },
     'BuildingSprite.js _drawAttentionBannerBoard': { flag: true, why: 'attention banner board' },
     'BuildingSprite.js _paintTaskboardChalk': { flag: '_drawTaskboardBoard', why: 'taskboard chalk: tasks and agents (a cached raster, so gated before the blit)' },
     'BuildingSprite.js _drawTaskboardPlanTabs': { flag: true, why: 'plan tabs: repo crests and counts' },

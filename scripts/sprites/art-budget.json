@@ -619,11 +619,6 @@
       "minGrainRatio": 0.6657,
       "reason": "pre-Wave-0 props baseline; ratchet down on touch"
     },
-    "prop.hourglassBelfryGlass": {
-      "maxTierA": 0.0651,
-      "minGrainRatio": 0.0904,
-      "reason": "pre-Wave-0 props baseline; ratchet down on touch"
-    },
     "prop.interior.anvilBench": {
       "maxColours": 57,
       "minGrainRatio": 0.6809,

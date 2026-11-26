@@ -598,14 +598,15 @@ test('resolveLegacySurface preserves known routes and never teleports onto disco
 
 // ------------------------------------------------------------------ 6. D5 landmark guard & E2 sculpted sites / pilot
 
-test('strict D5 landmark guard permits 9 landmarks + Belfry + Windmill and rejects cottages/sheds', () => {
-    for (const id of ['command', 'taskboard', 'forge', 'mine', 'archive', 'tavern', 'portal', 'watchtower', 'harbor', 'belfry', 'windmill']) {
+test('strict D5 landmark guard permits 9 landmarks + Runic Tide-Terrace + Windmill and rejects cottages/sheds', () => {
+    for (const id of ['command', 'taskboard', 'forge', 'mine', 'archive', 'tavern', 'portal', 'watchtower', 'harbor', 'quotaTerrace', 'quotaTerraceApron', 'quotaPillar', 'windmill']) {
         assert.equal(isSemanticLandmark(id), true, `expected ${id} allowed`);
         assert.doesNotThrow(() => assertSemanticLandmark(id));
     }
     assert.ok(ALLOWED_SEMANTIC_LANDMARKS.has('command'));
     assert.ok(ALLOWED_SEMANTIC_LANDMARKS.has('windmill'));
-    assert.ok(ALLOWED_SEMANTIC_LANDMARKS.has('belfry'));
+    assert.ok(ALLOWED_SEMANTIC_LANDMARKS.has('quotaTerrace'));
+    assert.ok(ALLOWED_SEMANTIC_LANDMARKS.has('quotaPillar'));
 
     for (const bad of ['cottage', 'fisherCottage', 'shed', 'tool_shed', 'woodcutter_hut', 'peasant_house', 'decorative_dwelling', 'unknownHall']) {
         assert.equal(isSemanticLandmark(bad), false, `expected ${bad} rejected`);

@@ -525,7 +525,40 @@ export const SCENERY_CLEARINGS = [
     // livestock region draws over every tree); the wood closes in beyond.
     { name: 'farm-crofts', centerX: 4.2, centerY: 2.0, radius: 3.4, strength: 1.4 },
     { name: 'farm-paddock', centerX: 7.2, centerY: 3.0, radius: 2.6, strength: 1.4 },
+    // Runic Tide-Terrace clearing on the NW lagoon headland so no stray trunk
+    // grows over the stone apron or obscures any of the four quota pillars.
+    { name: 'quota-terrace', centerX: 1.0, centerY: 10.0, radius: 2.0, strength: 1.4 },
 ];
+
+// v0.69 E2 — Modular N-provider Runic Tide-Terrace (replaces the Hourglass Belfry).
+// Adding a 5th provider only requires appending to QUOTA_TERRACE_PROVIDERS and
+// QUOTA_TERRACE_SLOTS (plus a hue ramp in scripts/sprites/bake-quota-terrace.mjs).
+export const QUOTA_TERRACE_PROVIDERS = Object.freeze([
+    'claude',
+    'codex',
+    'glm',
+    'antigravity',
+]);
+
+// Center of the carved stone sundial apron on the NW lagoon headland
+// (worldX = -288, worldY = 176 — dry tiles x ∈ [0..1], y ∈ [9..10], clear of
+// the north farm plank bridge at x = 3 and the Archive at y = 15..18).
+export const QUOTA_TERRACE_CENTER = Object.freeze({ tileX: 1.0, tileY: 10.0 });
+
+// Four modular pillar sockets arranged in a gentle SE-facing crescent along
+// the terrace apron. Tile coordinates are exact 1/8-tile fractions so
+// tileToWorld() lands on exact integer offsets matching the baked plinth
+// sockets in prop.quotaTerraceApron.png:
+//   claude      -> dx = -44, dy =  +2  (world -332, 178)
+//   codex       -> dx = -16, dy = -12  (world -304, 164)
+//   glm         -> dx = +16, dy = -12  (world -272, 164)
+//   antigravity -> dx = +44, dy =  +2  (world -244, 178)
+export const QUOTA_TERRACE_SLOTS = Object.freeze([
+    Object.freeze({ provider: 'claude', tileX: 0.375, tileY: 10.75, apronOffset: Object.freeze([-44, 2]) }),
+    Object.freeze({ provider: 'codex', tileX: 0.375, tileY: 9.875, apronOffset: Object.freeze([-16, -12]) }),
+    Object.freeze({ provider: 'glm', tileX: 0.875, tileY: 9.375, apronOffset: Object.freeze([16, -12]) }),
+    Object.freeze({ provider: 'antigravity', tileX: 1.75, tileY: 9.375, apronOffset: Object.freeze([44, 2]) }),
+]);
 
 // Retired (2026-11-23): replaced by authored veg.standingStone.mossy and
 // veg.boulder.mossy.large in DISTRICT_PROPS west of the Archive.
@@ -691,17 +724,33 @@ export const DISTRICT_PROPS = [
     // whole-tile row keeps its walkBlock to two lattice nodes, neither a path
     // nor an approach-file place. Static everyday dressing, never an actor.
     { tileX: 27.5, tileY: 12.0, id: 'prop.handcart', layer: 'cache', district: 'knowledge', walkBlock: true },
-    // Living Isle W8.5b (AD-P10): the isle landmarks, no occupancy, label or
-    // gate; `landmark` props are built by IsleLandmarks.js (the windmill's
-    // sails step on wind gusts, the Hourglass Belfry's glasses on the
-    // account quota), sorted with the trees, and `walkBlock` keeps every
-    // body off them. Each stands on open grass no lane, visit slot, queue,
-    // seat or scenic point reaches: the windmill on the north shore's open
-    // crest beside the farm, and the belfry on the west tip by the Archive
-    // (clear of the north farm plank bridge and its landings). The headland between the Tavern and the
-    // Lighthouse stays bare: it is both buildings' tall-scenery sightline zone.
+    // Living Isle W8.5b (AD-P10) + v0.69 E2: the isle landmarks, no occupancy,
+    // label or gate; `landmark` props are built by IsleLandmarks.js (the
+    // windmill's sails step on wind gusts; the Runic Tide-Terrace's four
+    // modular pillars read the 4-provider weekly account quotas), sorted with
+    // the trees, and `walkBlock` keeps every body off the standing pillars.
+    // The terrace apron sits beneath the pillars on the `cache` layer
+    // (`walkBlock: false`) so the pillars own collision and cast real shadows
+    // across its flagstones and bronze sundial.
     { tileX: 9.6, tileY: 0.9, id: 'prop.windmill', layer: 'sorted', district: 'north', walkBlock: true, landmark: true },
-    { tileX: 0.6, tileY: 9.6, id: 'prop.hourglassBelfry', layer: 'sorted', district: 'knowledge', walkBlock: true, landmark: true },
+    {
+        tileX: QUOTA_TERRACE_CENTER.tileX,
+        tileY: QUOTA_TERRACE_CENTER.tileY,
+        id: 'prop.quotaTerraceApron',
+        layer: 'cache',
+        district: 'quota-terrace',
+        walkBlock: false,
+    },
+    ...QUOTA_TERRACE_SLOTS.map((slot) => ({
+        tileX: slot.tileX,
+        tileY: slot.tileY,
+        id: 'prop.quotaPillar',
+        provider: slot.provider,
+        layer: 'sorted',
+        district: 'quota-terrace',
+        walkBlock: true,
+        landmark: true,
+    })),
     // Living Isle W8.3c (AD-P5 group D): civic/garden and wetland/forest
     // dressing, all baked into the terrain (`cache`). Garden furniture stands
     // on lawns no lane, visit slot, queue place or scenic point reaches;
@@ -729,7 +778,7 @@ export const DISTRICT_PROPS = [
     // the farm's paddock fronts the north shore's middle, so its fern stands
     // at the west wood's foot, clear of the grazers).
     { tileX: 0.5, tileY: 5.8, id: 'veg.fernCluster', layer: 'cache', district: 'elderwood' },
-    { tileX: 1.4, tileY: 11.6, id: 'veg.bramblePatch', layer: 'cache', district: 'elderwood' },
+    { tileX: 0.7, tileY: 6.6, id: 'veg.bramblePatch', layer: 'cache', district: 'elderwood' },
     { tileX: 2.1, tileY: 4.7, id: 'veg.fernCluster', layer: 'cache', district: 'elderwood' },
     { tileX: 1.3, tileY: 3.4, id: 'veg.bramblePatch', layer: 'cache', district: 'elderwood' },
     // W8.3b (AD-P5) — the gate avenue market: the bread stall on the
@@ -746,8 +795,7 @@ export const DISTRICT_PROPS = [
     // W8.3b (AD-P5) — the farm, out of the town on the north shore: the
     // clearing at the north wood's edge between the west cliff and the
     // windmill, facing the lagoon (it stood on the lagoon lawn behind the
-    // Archive, which hid it; the Hourglass Belfry it replaced here took the
-    // chapel's place). Dovecote, scarecrow and two crop beds fenced on their
+    // Archive, which hid it; the quota terrace now stands on that NW headland). Dovecote, scarecrow and two crop beds fenced on their
     // back (wood-side) edges, the skeps and the laundry line beside them,
     // and a small paddock east of the beds (gate, back rail, trough) with the
     // hay cart at its foot. Fences only run along back edges, so anything

@@ -34,8 +34,8 @@ test('standing authored props stay inside the density budget', () => {
     assert.ok(standing.length <= STANDING_PROP_BUDGET, `${standing.length} standing props > ${STANDING_PROP_BUDGET}`);
 });
 
-test('no land prop gathers more than three neighbours (the farm pocket and the beer garden are compositions)', () => {
-    const land = authoredProps().filter((prop) => !WATER_DRESSING.test(prop.id) && prop.district !== 'farm' && prop.district !== 'tavern-garden');
+test('no land prop gathers more than three neighbours (the farm pocket, the beer garden and the quota terrace are compositions)', () => {
+    const land = authoredProps().filter((prop) => !WATER_DRESSING.test(prop.id) && prop.district !== 'farm' && prop.district !== 'tavern-garden' && prop.district !== 'quota-terrace');
     for (const prop of land) {
         const near = land.filter((other) => other !== prop
             && Math.hypot(other.tileX - prop.tileX, other.tileY - prop.tileY) <= CROWD_RADIUS);

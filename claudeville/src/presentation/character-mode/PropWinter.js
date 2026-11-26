@@ -78,9 +78,10 @@ export const WINTER_PROPS = Object.freeze({
     // pent roofs (slate colour rule).
     'prop.firewoodStack': { dormancy: 'evergreen', surface: 'round', roof: true },
     'prop.toolRack': { dormancy: 'evergreen', surface: 'round', roof: true },
-    // C-05 — north-shore masonry landmarks & rustic trestle snow caps.
+    // C-05 / v0.69 E2 — north-shore masonry landmarks & rustic trestle snow caps.
     'prop.windmill': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, poly: [[63, 24], [33, 60], [34, 69], [64, 78], [95, 69], [96, 60]] } },
-    'prop.hourglassBelfry': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, poly: [[64, 14], [25, 52], [64, 74], [102, 52]] } },
+    'prop.quotaPillar': { dormancy: 'evergreen', surface: 'round', roof: { caps: true, flats: true } },
+    'prop.quotaTerraceApron': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
     'bridge.landmark.rustic.ns': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
     'bridge.landmark.farm.ew': { dormancy: 'evergreen', surface: 'round', roof: { caps: true } },
     'prop.archiveCistern': { dormancy: 'evergreen', surface: 'round' },

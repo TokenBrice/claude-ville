@@ -27,7 +27,8 @@ import { PNG } from 'pngjs';
 import { pathForEntry, spritesRoot } from './manifest-utils.mjs';
 
 const TARGETS = Object.freeze([
-    'prop.hourglassBelfry',
+    'prop.quotaPillar',
+    'prop.quotaTerraceApron',
     'prop.windmill',
     'prop.plazaFountain',
     'building.forge',

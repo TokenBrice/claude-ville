@@ -614,6 +614,22 @@
     min-height: 28px;
 }
 
+/* v0.69 E2 — Runic Tide-Terrace Quota Ledger card renders as a bottom sheet on /m/. */
+:root[data-cv-profile="mobile"] .quota-ledger-card {
+    left: 8px;
+    right: 8px;
+    top: auto;
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    width: auto;
+    max-height: 62%;
+}
+
+:root[data-cv-profile="mobile"] .quota-ledger-card__close {
+    width: 32px;
+    height: 32px;
+    line-height: 32px;
+}
+
 /* Reduced motion: the drawer and its scrim cut in (the operator's override
    already shortens every animation through topbar.css); the sheet cuts
    through activity-panel.css. */

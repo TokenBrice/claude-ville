@@ -30,6 +30,7 @@ import {
 import { getReservedRects } from '../shared/ReservedRects.js';
 import { HARBOR_FOCUS_FLEET_EVENT } from '../shared/HarborLedger.js';
 import { HarborFleetCard, isInFleetCard } from '../shared/HarborFleetCard.js';
+import { QuotaLedgerCard, buildQuotaLedgerModel, isInQuotaLedgerCard } from '../shared/QuotaLedgerCard.js';
 import { WorldHoverPlate, villagerHoverLine } from '../shared/WorldHoverPlate.js';
 import { dialogueSourceLabel } from '../../config/dialogue.js';
 import { emitAgentSelected } from '../shared/AgentSelection.js';
@@ -2998,6 +2999,10 @@ export class IsometricRenderer {
         this._onKeyDown = null;
         this._fleetCard?.close();
         this._fleetCard = null;
+        this._quotaLedgerCard?.close();
+        this._quotaLedgerCard = null;
+        this._quotaLedgerProvider = null;
+        this._quotaLedgerVersion = -1;
         window.removeEventListener('keyup', this._onReadKeyUp);
         window.removeEventListener('blur', this._onReadBlur);
         this.setReadMode(false);
@@ -3139,6 +3144,8 @@ export class IsometricRenderer {
             this.inspectionGlass?.setArmed(false);
             eventBus.emit('world:glass-armed', false);
             this.postcardStudio?.close();
+            this._closeFleetCard();
+            this._closeQuotaLedgerCard();
         }
         this._worldModeActive = nextActive;
         this._lastFrameTime = performance.now();
@@ -3738,8 +3745,9 @@ export class IsometricRenderer {
     }
 
     setQuotaState(state) {
-        // The Hourglass Belfry reads both accounts, so it takes the whole usage.
+        // The Runic Tide-Terrace reads all four providers, so it takes the whole usage payload.
         (this.isleLandmarks ||= new IsleLandmarks(this)).setUsage(state);
+        if (this._quotaLedgerCard?.isOpen) this._updateQuotaLedgerCard();
         const quota = state?.quota || state || null;
         this.quotaState = quota;
         this.buildingRenderer?.setQuotaState?.(quota);
@@ -4676,8 +4684,8 @@ export class IsometricRenderer {
         const activeElement = typeof document !== 'undefined' ? document.activeElement : null;
         if (this._isKeyboardEditTarget(activeElement)) return;
         if (this._isModalOpen()) return;
-        // #7 — inside the fleet card the keyboard belongs to the card.
-        if (isInFleetCard(activeElement)) return;
+        // #7 — inside the fleet card or quota ledger card, the keyboard belongs to the card.
+        if (isInFleetCard(activeElement) || isInQuotaLedgerCard(activeElement)) return;
         if (event.defaultPrevented) return;
         const blocked = shortcutBlocked(event);
         if (event.code === 'KeyB') {
@@ -4699,6 +4707,8 @@ export class IsometricRenderer {
             this.togglePostcardStudio?.();
         } else if (event.code === 'Escape') {
             if (this.postcardStudio?.isOpen()) this.postcardStudio.close();
+            else if (this._quotaLedgerCard?.isOpen) this._closeQuotaLedgerCard({ restoreFocus: true });
+            else if (this._fleetCard?.isOpen) this._closeFleetCard();
             else if (this.focusedSquadIds) this._clearCouncilFocus();
             else if (this._readLocked) this.setReadLock(false);
             else if (this.selectedAgent) {
@@ -4783,7 +4793,7 @@ export class IsometricRenderer {
         // their controls are ordinary Tab stops: only the World surface itself
         // turns Tab into agent cycling.
         if (element.closest?.('#worldDock, [popover], button, a[href], [role="button"]')) return false;
-        if (isInFleetCard(element)) return false;
+        if (isInFleetCard(element) || isInQuotaLedgerCard(element)) return false;
         return Boolean(document.getElementById('characterMode')?.contains?.(element));
     }
 
@@ -5775,11 +5785,22 @@ export class IsometricRenderer {
         if (!clicked) {
             const ship = this.harborTraffic?.hitTestShip?.(worldX, worldY) ?? null;
             if (ship) {
+                this._closeQuotaLedgerCard();
                 this._openFleetCard({ project: ship.project, branch: ship.branch || '', shipId: ship.id });
+                return;
+            }
+            // v0.69 E2 — clicking any Runic Tide-Terrace pillar opens the
+            // 4-provider weekly Quota Ledger card beside that pillar without
+            // disturbing the selected agent.
+            const pillar = this.isleLandmarks?.hitTestQuotaPillar?.(worldX, worldY) ?? null;
+            if (pillar) {
+                this._closeFleetCard();
+                this._openQuotaLedgerCard(pillar.provider, { focus: true });
                 return;
             }
         }
         this._closeFleetCard();
+        this._closeQuotaLedgerCard();
 
         // Deselect all
         for (const sprite of this.agentSprites.values()) sprite.selected = false;
@@ -5950,10 +5971,10 @@ export class IsometricRenderer {
         const repoStone = (hoveredBuilding || hoveredShip || bridgeLantern || tokenItem)
             ? null
             : (this.chronicleMonuments?.repoStones?.hitTest?.(worldX, worldY) ?? null);
-        // The Hourglass Belfry reads out both accounts' quota windows.
-        const belfry = (hoveredBuilding || hoveredShip || bridgeLantern || tokenItem || repoStone)
+        // The Runic Tide-Terrace pillars read each provider's weekly quota window.
+        const quotaPillar = (hoveredBuilding || hoveredShip || bridgeLantern || tokenItem || repoStone)
             ? null
-            : (this.isleLandmarks?.hitTestBelfry?.(worldX, worldY) ?? null);
+            : (this.isleLandmarks?.hitTestQuotaPillar?.(worldX, worldY) ?? null);
         const text = hoveredBuilding
             ? this._buildingVisitorTooltip(hoveredBuilding)
             : (hoveredShip
@@ -5964,18 +5985,18 @@ export class IsometricRenderer {
                         ? this.landmarkActivity.tokenItemTooltip(tokenItem)
                         : (repoStone
                             ? this.chronicleMonuments.repoStones.tooltipFor(repoStone)
-                            : (belfry ? this.isleLandmarks.belfryTooltip() : '')))));
+                            : (quotaPillar ? this.isleLandmarks.quotaPillarTooltip(quotaPillar) : '')))));
         if (!text) return null;
         const key = hoveredBuilding ? `building:${hoveredBuilding.type}`
             : hoveredShip ? `ship:${hoveredShip.id}`
                 : repoStone ? `stone:${repoStone.worldX},${repoStone.worldY}`
-                    : belfry ? 'belfry' : `lore:${text}`;
+                    : quotaPillar ? `quota-pillar:${quotaPillar.provider}` : `lore:${text}`;
         // Drawn bounds where the hit has them (buildings, ships, repo stones,
-        // the belfry tower); small marks (lanterns, token items) take the pad.
+        // quota pillars); small marks (lanterns, token items) take the pad.
         const bounds = hoveredBuilding ? this.buildingRenderer?.worldBounds?.(hoveredBuilding)
             : hoveredShip ? this.harborTraffic?.shipWorldBounds?.(hoveredShip)
                 : repoStone ? this.chronicleMonuments?.repoStones?.worldBounds?.(repoStone)
-                    : belfry ? this.isleLandmarks?.belfryWorldBounds?.() : null;
+                    : quotaPillar ? this.isleLandmarks?.quotaPillarWorldBounds?.(quotaPillar) : null;
         if (bounds) return { text, key, target: this._screenRectForWorld(bounds.left, bounds.top, bounds.right, bounds.bottom) };
         const point = this.camera.worldToScreen(worldX, worldY);
         const pad = HOVER_PLATE_POINTER_PAD;
@@ -6012,6 +6033,45 @@ export class IsometricRenderer {
 
     _closeFleetCard() {
         this._fleetCard?.close();
+    }
+
+    // ─── v0.69 E2 Runic Tide-Terrace Quota Ledger card ───────────────────
+    _openQuotaLedgerCard(provider = null, { focus = false } = {}) {
+        const landmarks = this.isleLandmarks;
+        const host = this.canvas?.parentElement;
+        if (!landmarks || !host) return;
+        const snap = landmarks.usageSnapshot?.() || { usage: null, version: 0 };
+        const model = buildQuotaLedgerModel(snap.usage, { activeProvider: provider });
+        this._quotaLedgerCard ||= new QuotaLedgerCard({
+            host,
+            onClose: () => {
+                this._quotaLedgerProvider = null;
+                this._quotaLedgerVersion = -1;
+            },
+        });
+        this._quotaLedgerProvider = provider || null;
+        this._quotaLedgerVersion = snap.version;
+        this._quotaLedgerCard.open(model, { activeProvider: provider, focus });
+        this._updateQuotaLedgerCard();
+        this._invalidateIdleFrame();
+    }
+
+    _closeQuotaLedgerCard(opts) {
+        this._quotaLedgerCard?.close(opts);
+    }
+
+    _updateQuotaLedgerCard() {
+        const card = this._quotaLedgerCard;
+        const landmarks = this.isleLandmarks;
+        if (!card?.isOpen || !landmarks) return;
+        const snap = landmarks.usageSnapshot?.() || { usage: null, version: 0 };
+        if (snap.version !== this._quotaLedgerVersion) {
+            this._quotaLedgerVersion = snap.version;
+            card.refresh(buildQuotaLedgerModel(snap.usage, { activeProvider: this._quotaLedgerProvider }));
+        }
+        const anchor = landmarks.quotaTerraceAnchor?.(this._quotaLedgerProvider);
+        const point = anchor ? this.camera?.worldToScreen?.(anchor.x, anchor.y) : null;
+        if (point) card.position(point, getReservedRects());
     }
 
     // Each frame the card follows its fleet on screen; when the harbor's
@@ -6922,6 +6982,7 @@ export class IsometricRenderer {
             this.camera.updateFollow(dt);
         }
         if (this._fleetCard?.isOpen) this._updateFleetCard();
+        if (this._quotaLedgerCard?.isOpen) this._updateQuotaLedgerCard();
         this._refreshHoverPlate();
 
         // Chat matching only depends on session/tool state, not frame-perfect motion.
@@ -11788,7 +11849,7 @@ export class IsometricRenderer {
         // BI-6 — the live reed and cattail clumps (DISTRICT_PROPS layer 'live'):
         // their cache-era placements, kept whole (no tall-scenery filter).
         sprites.push(...buildReedSprites(this));
-        // W8.5b — the isle landmarks (the windmill and the Hourglass Belfry):
+        // W8.5b / v0.69 E2 — the isle landmarks (the windmill and the Runic Tide-Terrace pillars):
         // walkBlock placements, so they skip the tall-scenery tile filter
         // above, which their own block would trip.
         sprites.push(...(this.isleLandmarks ||= new IsleLandmarks(this)).buildSprites());
@@ -13508,7 +13569,7 @@ export class IsometricRenderer {
         const motionTimeMs = hasMotionTime ? this.motionTimeMs : null;
         const archive = this.world?.buildings?.get?.('archive');
         const archivePoint = archive ? buildingCenterToWorld(archive) : null;
-        const bell = this._evensongActive && archive && DISTRICT_PROPS.find(p => p.id === 'prop.hourglassBelfry');
+        const bell = this._evensongActive && archive && DISTRICT_PROPS.find(p => p.id === 'prop.quotaTerraceApron');
         const bellPoint = bell && tileToWorldElevated(bell.tileX, bell.tileY, undefined, this.surfaceRegistry);
         this._seatedSeatByAgent ||= new Map();
         this._allyNodCooldowns ||= new Map();

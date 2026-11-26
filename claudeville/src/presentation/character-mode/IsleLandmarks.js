@@ -1,75 +1,75 @@
-// Living Isle W8.5b (AD-P10) — the isle landmarks: the windmill and the
-// Hourglass Belfry (DISTRICT_PROPS `landmark`; the wayside chapel was
-// withdrawn).
+// Living Isle W8.5b (AD-P10) + v0.69 E2 — the isle landmarks: the windmill and
+// the modular N-provider Runic Tide-Terrace (DISTRICT_PROPS `landmark`).
 //
 // They are not places: no occupancy, label, gate or session reading of any
-// kind (V3). Each is a sorted StaticPropSprite (tall, among the trees) whose
-// placement carries `walkBlock`, so no body ever stands on or behind one. The
-// windmill is scenery and moves from the environment only; the belfry is the
-// account instrument and reads the account quota alone:
+// kind (V3). Each standing landmark is a sorted StaticPropSprite (tall, among
+// the trees) whose placement carries `walkBlock`, so no body ever stands on or
+// behind one. The windmill is scenery and moves from the environment only; the
+// Runic Tide-Terrace is the multi-provider account quota monument and reads
+// `/api/usage` alone:
 //
 // - The windmill's sails (`prop.windmillSails`, 8 frames of the cross turned
-//   11.25° a step, MB-7) advance one frame per 125 ms (8 fps, the `slow`
-//   ambient band; one turn per 4 s as before) only while a gust of the one
-//   wind field (`Wind.windAt`) crosses the mill; calm air holds the frame they stopped on, and reduced motion
-//   (`motionScale <= 0`) holds frame 0. Each frame is one cached composite of
-//   the tower and its sails, shared by the Canvas and GPU paths
-//   (`textureKey` per frame, like a tree's lean frame).
-// - The Hourglass Belfry (2026-10-28, where the ruined tower stood; it now
-//   stands on the Archive's north-east lagoon lawn) holds one
-//   glass per account, Claude's in the lit west arch and Codex's in the
-//   shaded east arch: the sand left is the quota left (BelfryQuota.js, from
-//   `/api/usage` through `setUsage`), a shroud covers a glass with no reading,
-//   and a lavender cord marks Codex at its limit. Each glass is one cell of
-//   `prop.hourglassBelfryGlass` laid on the base; a change swaps cells whole
-//   and repaints the cache once (static band). A rise of a known level is a
-//   window reset: that glass shows the C4 cream frame for 150 ms, then its
-//   sand climbs one level per 150 ms step to the new reading (at most 750 ms,
-//   the `medium` band); reduced motion swaps at once. MB-5 — while an
-//   account spends (its reading rose within the last 10 minutes,
-//   `belfryDraining`), its glass's one-texel sand stream steps down through
-//   BELFRY_STREAM_PHASES baked phases at 2 fps (the `slow` band), each step
-//   one repaint of the cache; reduced motion keeps today's static stream.
-//   Hovering it reads out both accounts' windows (`belfryTooltip`). It never
-//   reads a villager.
-// - W1-D 1.10 — both keep a light in at night, on the village lamp clock
-//   only (`villageLampsLit`, BuildingSprite.lampsLitAt; never occupancy or
-//   quota): each sprite carries its `.emissive.png` sidecar
-//   (scripts/sprites/emissive-sidecars.mjs: the miller's doorway and two
-//   windows; the belfry's lantern chamber round each glass) as its emissive
-//   channel, gated by `emitterGate`, the windmill's cut back wherever its
-//   sails cross a pane. `lightFixtures()` gives one warm `lamps` pool each
-//   (LANDMARK_LIGHTS, radius 36) as hearth rows for the renderer's
-//   `_hearthLightSources` extras.
+//   11.25° a step, MB-7) advance one frame per 125 ms (8 fps in gusts) or
+//   300 ms (~3.3 fps in steady breeze) only while wind crosses the mill; calm
+//   air holds the frame they stopped on, and reduced motion (`motionScale <= 0`)
+//   holds frame 0.
+// - The Runic Tide-Terrace (v0.69 E2, replacing the 2-account Hourglass Belfry
+//   on the NW lagoon headland) sets a baked weathered ashlar sundial apron
+//   (`prop.quotaTerraceApron`, `layer: 'cache'`, `walkBlock: false`) beneath
+//   one modular `prop.quotaPillar` per provider in `QUOTA_TERRACE_PROVIDERS`
+//   (Claude, Codex, GLM, Antigravity). Each pillar stamps its own cell from
+//   `prop.quotaPillarStrip` into its recessed 5-course runic gauge channel via
+//   an offscreen composite cached in-place (`_gpuCacheRevision` bumps with
+//   zero GPU `textureKey` churn):
+//   - `l0`–`l5`: 5 bold runic crystal courses showing weekly quota left
+//   - `unknown`: draped woven linen shroud veil
+//   - `limit`: calm lavender wax-seal ribbon
+//   - `peak`: C4 cream weekly-reset refill flash (150 ms) followed by 150 ms/step
+//     climb up to the new level (`medium` band; instant under reduced motion)
+//   - MB-5 (`slow` band): while a provider's spend rose within the last 10 min
+//     (`quotaDraining`), its pillar cycles 3 baked trickle/shimmer phases at
+//     2 fps (500 ms); reduced motion keeps the static cell.
+// - W1-D 1.10 — both keep a light in at night, on the village lamp clock only
+//   (`villageLampsLit`; never occupancy or quota): the windmill's doorway and
+//   windows, and each quota pillar's stone lantern-crown soffit (strictly off
+//   the gauge channel) carry `.emissive.png` sidecars gated by `emitterGate`.
 
 import { StaticPropSprite } from './StaticPropDrawables.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { baseWindX, windAt } from './Wind.js';
-import { DISTRICT_PROPS } from '../../config/scenery.js';
+import { DISTRICT_PROPS, QUOTA_TERRACE_CENTER, QUOTA_TERRACE_PROVIDERS } from '../../config/scenery.js';
+import { tileToWorld } from './Projection.js';
 import {
-    BELFRY_ACCOUNTS,
-    BELFRY_LEVELS,
-    belfryDrainStep,
-    belfryDraining,
-    belfryGlassKey,
-    belfryGlasses,
-    belfryTooltip,
-} from './BelfryQuota.js';
+    QUOTA_PILLAR_LEVELS,
+    QUOTA_PILLAR_STATES,
+    QUOTA_PILLAR_STREAM_PHASES,
+    QUOTA_PILLAR_STRIP_FRAME,
+    QUOTA_PILLAR_STRIP_ORIGIN,
+    quotaDrainStep,
+    quotaDraining,
+    quotaPillarKey,
+    quotaPillarReadings,
+    quotaPillarStateCell,
+    quotaPillarStreamCell,
+    quotaPillarTooltip,
+} from './QuotaTerrace.js';
 
 export const WINDMILL_SAIL_HUB = Object.freeze([50, 86]); // windmill base-local px
-// The belfry's glass strip (scripts/sprites/bake-hourglass-belfry.mjs): one
-// cell per state per glass, Claude's glass first, each laid on its glass at
-// its base-local origin; then (MB-5) the running-stream cells, per glass and
-// per level l1–l5, BELFRY_STREAM_PHASES phases each (`belfryStreamCell`).
-export const BELFRY_GLASS_STATES = Object.freeze(['l0', 'l1', 'l2', 'l3', 'l4', 'l5', 'limit', 'unknown', 'peak']);
-export const BELFRY_STREAM_PHASES = 3;
-export const BELFRY_GLASS_FRAME = Object.freeze([20, 38]);
-export const BELFRY_GLASS_ORIGINS = Object.freeze({ claude: Object.freeze([38, 95]), codex: Object.freeze([70, 95]) });
-const BELFRY_ID = 'prop.hourglassBelfry';
-const BELFRY_GLASS_ID = 'prop.hourglassBelfryGlass';
-const BELFRY_PEAK_MS = 150;
-const BELFRY_STEP_MS = 150;
-const BELFRY_STREAM_STEP_MS = 500; // 2 fps
+export const QUOTA_PILLAR_ID = 'prop.quotaPillar';
+export const QUOTA_PILLAR_STRIP_ID = 'prop.quotaPillarStrip';
+export const QUOTA_TERRACE_APRON_ID = 'prop.quotaTerraceApron';
+export {
+    QUOTA_PILLAR_STATES,
+    QUOTA_PILLAR_STREAM_PHASES,
+    QUOTA_PILLAR_STRIP_FRAME,
+    QUOTA_PILLAR_STRIP_ORIGIN,
+    quotaPillarStateCell,
+    quotaPillarStreamCell,
+};
+
+const PILLAR_PEAK_MS = 150;
+const PILLAR_STEP_MS = 150;
+const PILLAR_STREAM_STEP_MS = 500; // 2 fps
 const SAIL_FRAMES = 8;
 const SAIL_FRAME_PX = 112;
 const SAIL_STEP_MS = 125; // 8 fps in gusts
@@ -78,25 +78,20 @@ const SAIL_CALM = 0.15; // knot wind below this is still air (pennants rest too)
 
 const LANDMARK_PROPS = Object.freeze(DISTRICT_PROPS.filter((prop) => prop.landmark));
 
-// W1-D 1.10 — each landmark's night pool, a `lamps` fixture: `foot` the
-// ground point in tiles from the placement (the windmill's door step; the
-// belfry's lawn under its two arches), `height` world px up to the source
-// (the doorway's fanlight; the lantern chamber's middle).
+// W1-D 1.10 — night pools on the village lamp clock (`lamps` fixtures).
+// Windmill casts from its doorway; the Runic Tide-Terrace casts a soft warm
+// lantern pool across its stone apron from the terrace crown arc.
 export const LANDMARK_LIGHT_RADIUS = 36;
 export const LANDMARK_LIGHTS = Object.freeze({
     'prop.windmill': Object.freeze({ foot: Object.freeze([-0.25, 0.5]), height: 16, intensity: 0.62 }),
-    'prop.hourglassBelfry': Object.freeze({ foot: Object.freeze([0.4, 0.4]), height: 62, intensity: 0.5 }),
+    'prop.quotaTerraceApron': Object.freeze({ foot: Object.freeze([0.0, 0.1]), height: 50, intensity: 0.44 }),
 });
 const LANDMARK_LIGHT_COLOR = '#ffc95e';
 
-// The landmark sprites' shared lamp-clock gate (IsometricRenderer
-// `villageLampsLit`: emission, pools and the glass all stand down by day).
 function lampsLit(host) {
     return host?.villageLampsLit?.() === true;
 }
 
-// The sidecar companion once resident (it can land after the first paint:
-// a change repaints the cache, as a snow change does).
 function glowKey(host, id) {
     return host?.assets?.getCompanion?.(id, 'emissive') ? '1' : '0';
 }
@@ -109,8 +104,6 @@ function boundsFor(assets, id, extraLeft = 0) {
         right: dims.w - ax,
         top: -ay,
         bottom: dims.h - ay,
-        // The split sits half a tile behind the footing: bodies never reach
-        // a landmark (walkBlock), so this only orders the trees around it.
         splitY: -16,
     };
 }
@@ -202,8 +195,6 @@ class WindmillSprite extends StaticPropSprite {
         ctx.drawImage(sails, frame * SAIL_FRAME_PX, 0, SAIL_FRAME_PX, SAIL_FRAME_PX, ox, oy, SAIL_FRAME_PX, SAIL_FRAME_PX);
     }
 
-    // The emissive channel: the sidecar's doorway and windows, cut back
-    // wherever this frame's sails cross a pane (the sails are timber).
     _paintGlow(ctx, x, y, frame) {
         const host = this.host;
         if (!host.sprites?.drawCompanion?.(ctx, this.id, 'emissive', x, y)) return;
@@ -224,21 +215,13 @@ class WindmillSprite extends StaticPropSprite {
     }
 }
 
-// A glass key's sand level; `limit` is the spent glass, `unknown` has none.
 function keyLevel(key) {
     if (key === 'limit') return 0;
     return /^l\d$/.test(key) ? Number(key.slice(1)) : null;
 }
 
-/** MB-5 — the strip cell of a glass's running stream: after every state cell, per glass, level and phase. */
-export function belfryStreamCell(account, level, phase) {
-    const glass = BELFRY_ACCOUNTS.indexOf(account);
-    return BELFRY_ACCOUNTS.length * BELFRY_GLASS_STATES.length
-        + (glass * BELFRY_LEVELS + level - 1) * BELFRY_STREAM_PHASES + phase;
-}
-
-class BelfrySprite extends StaticPropSprite {
-    constructor(host, prop, glasses) {
+export class QuotaPillarSprite extends StaticPropSprite {
+    constructor(host, prop, reading) {
         super({
             tileX: prop.tileX,
             tileY: prop.tileY,
@@ -247,69 +230,65 @@ class BelfrySprite extends StaticPropSprite {
             splitForOcclusion: false,
             materialClass: 'stone',
             drawFn: (ctx, x, y) => this._paint(ctx, x, y),
-            // The lantern chamber's sidecar: every lit texel lies outside
-            // every glass cell, so no cell ever needs cutting from it.
-            channels: { emissive: (ctx, x, y) => host.sprites?.drawCompanion?.(ctx, prop.id, 'emissive', x, y) },
+            channels: {
+                emissive: (ctx, x, y) => host.sprites?.drawCompanion?.(ctx, prop.id, 'emissive', x, y),
+                material: (ctx, x, y) => host.sprites?.drawCompanion?.(ctx, prop.id, 'material', x, y),
+                occluder: (ctx, x, y) => host.sprites?.drawCompanion?.(ctx, prop.id, 'occluder', x, y),
+            },
         });
         this.host = host;
+        this.provider = prop.provider;
         this.emitterGate = () => (lampsLit(host) ? 1 : 0);
         this._shownGlow = '';
-        this._targets = { claude: 'unknown', codex: 'unknown' };
-        this._moments = { claude: null, codex: null };
-        this._shown = { claude: 'unknown', codex: 'unknown' };
-        this._shownPhase = { claude: null, codex: null };
         this._shownSnow = '';
+        this._target = 'unknown';
+        this._moment = null;
+        this._shown = 'unknown';
+        this._shownPhase = null;
         this._drain = null;
-        this.setGlasses(glasses);
+        this.setReading(reading);
     }
 
-    /** MB-5 — the drain record (`belfryDrainStep`) the streams run on. */
+    /** MB-5 — the drain record (`quotaDrainStep`) the trickle shimmer runs on. */
     setDrain(drain) {
         this._drain = drain || null;
     }
 
     /**
-     * MB-5 — a glass's running-stream phase now, or null: its account drains,
-     * sand remains (`l1`–`l5`, no reset moment playing) and motion is on.
+     * MB-5 — this pillar's running spend phase now, or null: its provider
+     * drains, quota remains (`l1`–`l5`, no reset moment playing) and motion is on.
      */
-    streamPhase(account, now = Date.now()) {
-        if (!((this.host.motionScale ?? 1) > 0) || this._moments[account]) return null;
-        if (!(keyLevel(this._targets[account]) > 0) || !belfryDraining(this._drain, account, now)) return null;
-        return Math.floor((this.host.motionTimeMs || 0) / BELFRY_STREAM_STEP_MS) % BELFRY_STREAM_PHASES;
+    streamPhase(now = Date.now()) {
+        if (!((this.host.motionScale ?? 1) > 0) || this._moment) return null;
+        if (!(keyLevel(this._target) > 0) || !quotaDraining(this._drain, this.provider, now)) return null;
+        return Math.floor((this.host.motionTimeMs || 0) / PILLAR_STREAM_STEP_MS) % QUOTA_PILLAR_STREAM_PHASES;
     }
 
-    /**
-     * New readings; true when a glass changed. A known level that rises is a
-     * window reset: that glass refills once.
-     */
-    setGlasses(glasses) {
+    /** Update reading; returns true when the target strip state changed. */
+    setReading(reading) {
         const motion = (this.host.motionScale ?? 1) > 0;
-        let changed = false;
-        for (const account of BELFRY_ACCOUNTS) {
-            const key = belfryGlassKey(glasses?.[account]);
-            if (key === this._targets[account]) continue;
-            const from = keyLevel(this._targets[account]);
-            const to = keyLevel(key);
-            this._moments[account] = motion && from !== null && to !== null && to > from
-                ? { from, to, at: this.host.motionTimeMs || 0 }
-                : null;
-            this._targets[account] = key;
-            changed = true;
-        }
-        return changed;
+        const key = quotaPillarKey(reading);
+        if (key === this._target) return false;
+        const from = keyLevel(this._target);
+        const to = keyLevel(key);
+        this._moment = motion && from !== null && to !== null && to > from
+            ? { from, to, at: this.host.motionTimeMs || 0 }
+            : null;
+        this._target = key;
+        return true;
     }
 
-    /** One glass's cell now: its reading, or the step of its reset moment. */
-    glassKey(account) {
-        const moment = this._moments[account];
-        if (!moment) return this._targets[account];
+    /** Current drawn strip state key: steady reading, or the active reset-refill step. */
+    pillarKey() {
+        const moment = this._moment;
+        if (!moment) return this._target;
         const t = (this.host.motionTimeMs || 0) - moment.at;
-        const level = moment.from + 1 + Math.floor((t - BELFRY_PEAK_MS) / BELFRY_STEP_MS);
+        const level = moment.from + 1 + Math.floor((t - PILLAR_PEAK_MS) / PILLAR_STEP_MS);
         if (!((this.host.motionScale ?? 1) > 0) || t < 0 || level >= moment.to) {
-            this._moments[account] = null;
-            return this._targets[account];
+            this._moment = null;
+            return this._target;
         }
-        return t < BELFRY_PEAK_MS ? 'peak' : `l${level}`;
+        return t < PILLAR_PEAK_MS ? 'peak' : `l${level}`;
     }
 
     draw(ctx) {
@@ -324,11 +303,10 @@ class BelfrySprite extends StaticPropSprite {
         ctx.restore();
     }
 
-    // The cache holds the cells it was painted with; a new cell repaints it
-    // and makes the GPU backend re-upload (invalidateCache). Until the strip
-    // loads there is no cache, and a draw shows the base alone.
+    // Repaints the cached composite in place and bumps `_gpuCacheRevision`
+    // without touching `textureKey` (zero GPU texture-key churn).
     _getCachedCanvas(zoom) {
-        if (!this.host.assets?.get?.(BELFRY_GLASS_ID)) return null;
+        if (!this.host.assets?.get?.(QUOTA_PILLAR_STRIP_ID)) return null;
         let changed = false;
         const snowKey = this.host.propWinter?.key || '0';
         if (snowKey !== this._shownSnow) {
@@ -340,12 +318,11 @@ class BelfrySprite extends StaticPropSprite {
             this._shownGlow = glow;
             changed = true;
         }
-        for (const account of BELFRY_ACCOUNTS) {
-            const key = this.glassKey(account);
-            const phase = this.streamPhase(account);
-            if (key === this._shown[account] && phase === this._shownPhase[account]) continue;
-            this._shown[account] = key;
-            this._shownPhase[account] = phase;
+        const key = this.pillarKey();
+        const phase = this.streamPhase();
+        if (key !== this._shown || phase !== this._shownPhase) {
+            this._shown = key;
+            this._shownPhase = phase;
             changed = true;
         }
         if (changed && this._cacheCanvas) this.invalidateCache();
@@ -357,18 +334,17 @@ class BelfrySprite extends StaticPropSprite {
         host._drawPropContactShadow?.(ctx, x, y, this.id, this.tileX, this.tileY);
         const winter = host.propWinter?.image?.(this.id) || null;
         host.sprites?.drawSprite(ctx, this.id, x, y, winter ? { image: winter } : undefined);
-        const glass = host.assets?.get?.(BELFRY_GLASS_ID);
-        if (!glass) return;
+        const strip = host.assets?.get?.(QUOTA_PILLAR_STRIP_ID);
+        if (!strip) return;
         const [ax, ay] = host.assets.getAnchor(this.id);
-        const [fw, fh] = BELFRY_GLASS_FRAME;
-        BELFRY_ACCOUNTS.forEach((account, index) => {
-            const phase = this._shownPhase[account];
-            const cell = phase === null
-                ? index * BELFRY_GLASS_STATES.length + BELFRY_GLASS_STATES.indexOf(this._shown[account])
-                : belfryStreamCell(account, keyLevel(this._shown[account]), phase);
-            const [ox, oy] = BELFRY_GLASS_ORIGINS[account];
-            ctx.drawImage(glass, cell * fw, 0, fw, fh, Math.round(x) - ax + ox, Math.round(y) - ay + oy, fw, fh);
-        });
+        const [fw, fh] = QUOTA_PILLAR_STRIP_FRAME;
+        const [ox, oy] = QUOTA_PILLAR_STRIP_ORIGIN;
+        const phase = this._shownPhase;
+        const level = keyLevel(this._shown);
+        const cell = phase !== null && level > 0
+            ? quotaPillarStreamCell(this.provider, level, phase)
+            : quotaPillarStateCell(this.provider, this._shown);
+        ctx.drawImage(strip, cell * fw, 0, fw, fh, Math.round(x) - ax + ox, Math.round(y) - ay + oy, fw, fh);
     }
 }
 
@@ -391,43 +367,67 @@ function plainSprite(host, prop) {
 export class IsleLandmarks {
     constructor(host) {
         this.host = host;
-        this._belfry = { sprite: null, usage: null, glasses: belfryGlasses(null), drain: null, opaque: null };
+        this._terrace = {
+            pillars: [],
+            pillarsByProvider: new Map(),
+            usage: null,
+            readings: quotaPillarReadings(null),
+            drain: null,
+            opaque: null,
+            version: 0,
+        };
     }
 
     /** One sorted sprite per landmark placement; built with the district props. */
     buildSprites() {
         const out = [];
+        this._terrace.pillars = [];
+        this._terrace.pillarsByProvider.clear();
         for (const prop of LANDMARK_PROPS) {
-            if (prop.id === 'prop.windmill') out.push(new WindmillSprite(this.host, prop));
-            else if (prop.id === BELFRY_ID) {
-                this._belfry.sprite = new BelfrySprite(this.host, prop, this._belfry.glasses);
-                this._belfry.sprite.setDrain(this._belfry.drain);
-                out.push(this._belfry.sprite);
-            } else out.push(plainSprite(this.host, prop));
+            if (prop.id === 'prop.windmill') {
+                out.push(new WindmillSprite(this.host, prop));
+            } else if (prop.id === QUOTA_PILLAR_ID && prop.provider) {
+                const sprite = new QuotaPillarSprite(this.host, prop, this._terrace.readings[prop.provider]);
+                sprite.setDrain(this._terrace.drain);
+                this._terrace.pillars.push(sprite);
+                this._terrace.pillarsByProvider.set(prop.provider, sprite);
+                out.push(sprite);
+            } else {
+                out.push(plainSprite(this.host, prop));
+            }
         }
         return out;
     }
 
     /**
-     * W1-D 1.10 — the landmarks' night pools while the village lamps are lit
-     * (else none): hearth rows `{ id, tileX, tileY, height, radius, intensity,
-     * color }` for the renderer's `_hearthLightSources` extras
-     * (LightSourceRegistry.hearthLightSources), each at its landmark's
-     * placement (LANDMARK_LIGHTS). Clock and geography only.
+     * W1-D 1.10 — night pools while the village lamps are lit (else none).
+     * Clock and geography only; never gated on quota or occupancy.
      */
     lightFixtures() {
         if (!lampsLit(this.host)) return [];
         const out = [];
-        for (const prop of LANDMARK_PROPS) {
-            const light = LANDMARK_LIGHTS[prop.id];
-            if (!light) continue;
+        const windmill = LANDMARK_PROPS.find((prop) => prop.id === 'prop.windmill');
+        if (windmill) {
+            const light = LANDMARK_LIGHTS['prop.windmill'];
             out.push({
-                id: `landmark.${prop.id}`,
-                tileX: prop.tileX + light.foot[0],
-                tileY: prop.tileY + light.foot[1],
+                id: 'landmark.prop.windmill',
+                tileX: windmill.tileX + light.foot[0],
+                tileY: windmill.tileY + light.foot[1],
                 height: light.height,
                 radius: LANDMARK_LIGHT_RADIUS,
                 intensity: light.intensity,
+                color: LANDMARK_LIGHT_COLOR,
+            });
+        }
+        const terraceLight = LANDMARK_LIGHTS[QUOTA_TERRACE_APRON_ID];
+        if (terraceLight && this._terrace.pillars.length > 0) {
+            out.push({
+                id: `landmark.${QUOTA_TERRACE_APRON_ID}`,
+                tileX: QUOTA_TERRACE_CENTER.tileX + terraceLight.foot[0],
+                tileY: QUOTA_TERRACE_CENTER.tileY + terraceLight.foot[1],
+                height: terraceLight.height,
+                radius: LANDMARK_LIGHT_RADIUS,
+                intensity: terraceLight.intensity,
                 color: LANDMARK_LIGHT_COLOR,
             });
         }
@@ -436,50 +436,82 @@ export class IsleLandmarks {
 
     /** The account quota from `/api/usage` (IsometricRenderer.setQuotaState), received at `now`. */
     setUsage(usage, now = Date.now()) {
-        const belfry = this._belfry;
-        belfry.usage = usage || null;
-        belfry.glasses = belfryGlasses(belfry.usage);
-        belfry.drain = belfryDrainStep(belfry.drain, belfry.glasses, now);
-        belfry.sprite?.setDrain(belfry.drain);
-        // A still world (reduced motion) skips idle paints: a new reading asks for one.
-        if (belfry.sprite?.setGlasses(belfry.glasses)) this.host._invalidateIdleFrame?.();
+        const terrace = this._terrace;
+        terrace.usage = usage || null;
+        terrace.version++;
+        terrace.readings = quotaPillarReadings(terrace.usage, now, QUOTA_TERRACE_PROVIDERS);
+        terrace.drain = quotaDrainStep(terrace.drain, terrace.readings, now, QUOTA_TERRACE_PROVIDERS);
+        let anyChanged = false;
+        for (const sprite of terrace.pillars) {
+            sprite.setDrain(terrace.drain);
+            if (sprite.setReading(terrace.readings[sprite.provider])) anyChanged = true;
+        }
+        if (anyChanged) this.host._invalidateIdleFrame?.();
     }
 
-    /** The belfry when world point (x, y) lies on one of its opaque texels, else null. */
-    hitTestBelfry(worldX, worldY) {
-        const sprite = this._belfry.sprite;
-        const assets = this.host.assets;
-        const image = assets?.get?.(BELFRY_ID);
-        if (!sprite || !image) return null;
-        const [ax, ay] = assets.getAnchor(BELFRY_ID);
-        const x = Math.floor(worldX - (Math.round(sprite.x) - ax));
-        const y = Math.floor(worldY - (Math.round(sprite.y) - ay));
-        if (x < 0 || y < 0 || x >= image.width || y >= image.height) return null;
-        const opaque = this._belfryOpaque(image);
-        return !opaque || opaque[y * image.width + x] ? sprite : null;
+    getQuotaPillars() {
+        return this._terrace.pillars;
     }
 
-    /** XP-4 — the belfry base's drawn world rect, for the hover plate to keep clear of. */
-    belfryWorldBounds() {
-        const sprite = this._belfry.sprite;
+    getQuotaPillar(provider) {
+        return this._terrace.pillarsByProvider.get(provider) || null;
+    }
+
+    usageSnapshot() {
+        return { usage: this._terrace.usage, version: this._terrace.version };
+    }
+
+    /** Front-most quota pillar whose opaque texel contains world point (x, y), else null. */
+    hitTestQuotaPillar(worldX, worldY) {
+        const pillars = this._terrace.pillars;
         const assets = this.host.assets;
-        const image = assets?.get?.(BELFRY_ID);
+        const image = assets?.get?.(QUOTA_PILLAR_ID);
+        if (!pillars.length || !image) return null;
+        const [ax, ay] = assets.getAnchor(QUOTA_PILLAR_ID);
+        const opaque = this._pillarOpaque(image);
+        // Check front-most pillars first (larger world Y wins).
+        const ordered = pillars.length > 1
+            ? [...pillars].sort((a, b) => (b.y - a.y) || (a.x - b.x))
+            : pillars;
+        for (const sprite of ordered) {
+            const lx = Math.floor(worldX - (Math.round(sprite.x) - ax));
+            const ly = Math.floor(worldY - (Math.round(sprite.y) - ay));
+            if (lx < 0 || ly < 0 || lx >= image.width || ly >= image.height) continue;
+            if (!opaque || opaque[ly * image.width + lx]) return sprite;
+        }
+        return null;
+    }
+
+    /** XP-4 — the hovered pillar's drawn world rect, for the hover plate to keep clear of. */
+    quotaPillarWorldBounds(pillar) {
+        const sprite = typeof pillar === 'string' ? this.getQuotaPillar(pillar) : pillar;
+        const assets = this.host.assets;
+        const image = assets?.get?.(QUOTA_PILLAR_ID);
         if (!sprite || !image) return null;
-        const [ax, ay] = assets.getAnchor(BELFRY_ID);
+        const [ax, ay] = assets.getAnchor(QUOTA_PILLAR_ID);
         const left = Math.round(sprite.x) - ax;
         const top = Math.round(sprite.y) - ay;
         return { left, top, right: left + image.width, bottom: top + image.height };
     }
 
-    /** The belfry's hover text: both accounts' windows, at `now`. */
-    belfryTooltip(now = Date.now()) {
-        return belfryTooltip(this._belfry.usage, now);
+    /** World anchor `{ x, y }` for positioning the Quota Ledger card beside a pillar (or terrace center). */
+    quotaTerraceAnchor(pillar = null) {
+        const sprite = typeof pillar === 'string' ? this.getQuotaPillar(pillar) : pillar;
+        if (sprite) return { x: sprite.x, y: sprite.y - 34 };
+        const center = tileToWorld(QUOTA_TERRACE_CENTER.tileX, QUOTA_TERRACE_CENTER.tileY);
+        return { x: center.x, y: center.y - 24 };
     }
 
-    // The base's alpha, read once (a box test where no canvas exists).
-    _belfryOpaque(image) {
-        const belfry = this._belfry;
-        if (belfry.opaque || typeof document === 'undefined') return belfry.opaque;
+    /** Crisp 2-line hover text for one specific pillar at `now`. */
+    quotaPillarTooltip(pillar, now = Date.now()) {
+        const provider = typeof pillar === 'string' ? pillar : pillar?.provider;
+        if (!provider) return '';
+        return quotaPillarTooltip(provider, this._terrace.usage, now);
+    }
+
+    _pillarOpaque(image) {
+        const terrace = this._terrace;
+        if (terrace.opaque || typeof document === 'undefined') return terrace.opaque;
         const canvas = document.createElement('canvas');
         canvas.width = image.width;
         canvas.height = image.height;
@@ -487,8 +519,8 @@ export class IsleLandmarks {
         if (!ctx) return null;
         ctx.drawImage(image, 0, 0);
         const data = ctx.getImageData(0, 0, image.width, image.height).data;
-        belfry.opaque = new Uint8Array(image.width * image.height);
-        for (let i = 0; i < belfry.opaque.length; i++) belfry.opaque[i] = data[i * 4 + 3] > 0 ? 1 : 0;
-        return belfry.opaque;
+        terrace.opaque = new Uint8Array(image.width * image.height);
+        for (let i = 0; i < terrace.opaque.length; i++) terrace.opaque[i] = data[i * 4 + 3] > 0 ? 1 : 0;
+        return terrace.opaque;
     }
 }

@@ -9,7 +9,7 @@
 //   - Plane H:     (plane16[0] + plane16[1] * a + plane16[2] * b) / 16
 //   - Exact ray-plane intersection with projected triangle/edge top-left fill
 //     fallback when denom === 0 (parallel/coplanar case, zero division-by-zero).
-//   - Strict D5 enforcement: 9 semantic landmarks + Belfry + Windmill ONLY;
+//   - Strict D5 enforcement: 9 semantic landmarks + Runic Tide-Terrace + Windmill ONLY;
 //     zero decorative cottages, sheds, or dwellings permitted anywhere.
 //
 // Pure vanilla ES module: imports cleanly in both browser and Node.
@@ -52,7 +52,8 @@ export const FACE_VALUE_DELTAS = Object.freeze({
 });
 
 // Strict D5 semantic landmark allowlist: 9 semantic buildings (+ lighthouse alias)
-// plus Belfry and Windmill. Zero cottages, sheds, or decorative dwellings.
+// plus Runic Tide-Terrace (apron + modular quota pillars) and Windmill. Zero
+// cottages, sheds, or decorative dwellings.
 export const ALLOWED_SEMANTIC_LANDMARKS = Object.freeze(new Set([
     'command',
     'taskboard',
@@ -64,8 +65,9 @@ export const ALLOWED_SEMANTIC_LANDMARKS = Object.freeze(new Set([
     'watchtower',
     'lighthouse',
     'harbor',
-    'belfry',
-    'hourglassBelfry',
+    'quotaTerrace',
+    'quotaTerraceApron',
+    'quotaPillar',
     'windmill',
 ]));
 
@@ -510,7 +512,7 @@ export function pickSurfaceHeight(sx, sy, tx, ty, plane16, poly = FULL_TILE_POLY
 
 // ------------------------------------------------------------------ D5 guard & validation
 
-/** Returns true iff `landmark` is one of the 9 semantic landmarks + Belfry + Windmill. */
+/** Returns true iff `landmark` is one of the 9 semantic landmarks + Runic Tide-Terrace + Windmill. */
 export function isSemanticLandmark(landmark) {
     if (typeof landmark !== 'string' || !landmark.trim()) return false;
     if (FORBIDDEN_D5_PATTERN.test(landmark)) return false;
@@ -526,7 +528,7 @@ export function assertSemanticLandmark(landmark, context = 'landmark') {
         throw new Error(`D5 violation (${context}): decorative cottage/shed/dwelling "${landmark}" is forbidden`);
     }
     if (!ALLOWED_SEMANTIC_LANDMARKS.has(landmark)) {
-        throw new Error(`D5 violation (${context}): non-semantic landmark "${landmark}" is not in the 9 landmarks + Belfry + Windmill roster`);
+        throw new Error(`D5 violation (${context}): non-semantic landmark "${landmark}" is not in the 9 landmarks + Runic Tide-Terrace + Windmill roster`);
     }
 }
 
