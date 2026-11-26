@@ -92,6 +92,7 @@ import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { LANDMARK_MASSING, PROP_MASSING } from '../../config/landmarkMassing.js';
 import { VILLAGE_GATE, VILLAGE_GATE_GEOMETRY, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
 import { footprintFieldRect } from './FootprintField.js';
+import { tileCoords, planeHeight } from './SurfaceProjection.js';
 import { buildingCenterToWorld, tileToWorld } from './Projection.js';
 
 export const SHADE_CELL_W = 2;
@@ -237,12 +238,12 @@ function ring(cx, cy, radius, sides = ROUND_SIDES) {
  * solid stands on the ground and is convex, so each facet is the top of a
  * column down to the ground.
  */
-export function solidFacets(solid, toWorld) {
+export function solidFacets(solid, toWorld, supportH = 0) {
     const at = solid.at || [0, 0, 0, 0];
     const [x0, y0, x1, y1] = at;
-    const p = (tx, ty, z) => [...toWorld(tx, ty), z];
+    const p = (tx, ty, z) => [...toWorld(tx, ty), z + supportH];
     const out = [];
-    const add = (points, height) => out.push(facet(points, { height, base: solid.base }));
+    const add = (points, height) => out.push(facet(points, { height, base: (solid.base || 0) + supportH }));
     // SD-2 — a round top's facets carry the solid's axis (world px), so the
     // side turned from the sun is told about it smoothly, not gore by gore.
     const round = (from, centre) => {
@@ -351,13 +352,13 @@ export function solidFacets(solid, toWorld) {
  * facets in world px round `centre` (the footprint centre's world point;
  * `{ x: 0, y: 0 }` gives sprite-anchor-relative px, as the tooling wants).
  */
-export function massingFacets(massing, { width, height }, centre = { x: 0, y: 0 }) {
+export function massingFacets(massing, { width, height }, centre = { x: 0, y: 0 }, supportH = 0) {
     const toWorld = (tx, ty) => {
         const local = tileToWorld(tx - width / 2, ty - height / 2);
         return [centre.x + local.x, centre.y + local.y];
     };
     const out = [];
-    for (const solid of massing?.solids || []) out.push(...solidFacets(solid, toWorld));
+    for (const solid of massing?.solids || []) out.push(...solidFacets(solid, toWorld, supportH));
     return out;
 }
 
@@ -732,8 +733,8 @@ export function createShadeFieldBuild({ rect = shadeFieldRect(), sweep, facets =
             stamps.set(key, stamp);
         }
         if (!stamp) return;
-        const col0 = Math.floor((lathe.x - originX) / cellW) + stamp.ox;
-        const row0 = Math.floor((lathe.y - originY) / cellH) + stamp.oy;
+        const col0 = Math.floor((lathe.x + (lathe.supportH || 0) * sx - originX) / cellW) + stamp.ox;
+        const row0 = Math.floor((lathe.y + (lathe.supportH || 0) * sy - originY) / cellH) + stamp.oy;
         for (let r = 0; r < stamp.rows; r++) {
             const row = row0 + r;
             if (row < 0 || row >= rows) continue;
@@ -1165,8 +1166,21 @@ function profileFor(key, frame, sprite, tree) {
 // Everything that casts, gathered from the renderer: landmark and masonry
 // facets, and a lathe per tree and standing prop. `key` moves when a caster
 // or its image does.
+const terraceCasters = new WeakMap();
+
 function gatherCasters(renderer) {
-    const facets = [];
+    const registry = renderer?.surfaceRegistry;
+    if (registry && !terraceCasters.has(registry)) {
+        terraceCasters.set(registry, registry.surfaces.filter(s => s.id !== 0 && s.kind !== 'water').map(s => {
+            const { tx, ty } = tileCoords(s.tile);
+            return facet(s.poly.map(([pa, pb]) => {
+                const a = pa / 256, b = pb / 256;
+                const { x, y } = tileToWorld(tx + a - 0.5, ty + b - 0.5);
+                return [x, y, planeHeight(s.plane16, a, b)];
+            }));
+        }));
+    }
+    const facets = registry ? terraceCasters.get(registry).slice() : [];
     const lathes = [];
     let key = `${renderer?.assets?.assetVersion ?? ''}`;
     for (const building of renderer?.buildingRenderer?.buildings || []) {
@@ -1174,7 +1188,9 @@ function gatherCasters(renderer) {
         if (!massing?.solids?.length) continue;
         const position = building.position || building;
         key += `|${building.type}:${position.tileX ?? position.x},${position.tileY ?? position.y}`;
-        facets.push(...massingFacets(massing, building, buildingCenterToWorld(building)));
+        const centre = buildingCenterToWorld(building, registry ? null : undefined);
+        const h = registry ? centre.y - buildingCenterToWorld(building, registry).y : 0;
+        facets.push(...massingFacets(massing, building, centre, h));
     }
     const sprites = renderer?._staticPropSprites || [];
     const hasWall = sprites.some(sprite => sprite?.id?.startsWith?.('village.wall.'));
@@ -1201,12 +1217,13 @@ function gatherCasters(renderer) {
         // casts from its solids, in tiles from its foot.
         const massing = PROP_MASSING[id];
         if (massing) {
-            const foot = { x: Math.round(sprite.x), y: Math.round(sprite.y) };
+            const h = sprite.supportH || 0;
+            const foot = { x: Math.round(sprite.x), y: Math.round(sprite.y + h) };
             key += `|${id}:${foot.x},${foot.y}`;
-            facets.push(...massingFacets(massing, { width: 0, height: 0 }, foot));
+            facets.push(...massingFacets(massing, { width: 0, height: 0 }, foot, h));
             continue;
         }
-        if (LATHE_SKIP.test(id) || !(-(sprite.bounds?.top || 0) >= LATHE_MIN_HEIGHT)) continue;
+        if (sprite.terraceFrame || LATHE_SKIP.test(id) || !(-(sprite.bounds?.top || 0) >= LATHE_MIN_HEIGHT)) continue;
         const frame = sprite._getCachedCanvas?.(zoom);
         if (!frame?.canvas?.width) continue;
         const tree = id === 'fantasy.tree';
@@ -1221,7 +1238,7 @@ function gatherCasters(renderer) {
         if (!profile?.slabs.length) continue;
         const x = Math.round(sprite.x);
         const y = Math.round(sprite.y);
-        lathes.push({ x, y, profile, key: shape, canopy: tree });
+        lathes.push({ x, y: y + (sprite.supportH || 0), supportH: sprite.supportH || 0, profile, key: shape, canopy: tree });
         key += `|${shape}@${x},${y}`;
     }
     return { facets, lathes, key };

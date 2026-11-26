@@ -370,6 +370,7 @@ function recordForTerrain(renderer) {
         id: 'terrain:static',
         stableKey: 'terrain:static',
         frontierCoast: renderer._coastBake?.exposure ? renderer._coastBake : null,
+        spillwaySplashes: renderer._spillwaySplashes,
         harborTiles: renderer.harborWaterApronTiles,
         waterMeta: renderer.waterMeta,
         textureKey,
@@ -671,6 +672,8 @@ function recordForBuilding(renderer, drawable, sequence) {
     const materialMeta = drawable.entry?.material || drawable.entry?.gpuMaterial || {};
     const materialName = materialMeta.class || drawable.entry?.materialClass || MATERIAL_BY_BUILDING[buildingType] || 'stone';
     const footprint = drawable.building ? landmarkFootprint(drawable.building) : null;
+    const supportH = drawable.supportH ?? (drawable.building && renderer.surfaceRegistry
+        ? buildingCenterToWorld(drawable.building, null).y - buildingCenterToWorld(drawable.building, renderer.surfaceRegistry).y : 0);
     // V8 — landmark emission follows the work tier (isWorkingVisitor counts +
     // observed-tool recency), never idle, seated or passing bodies.
     const workTier = renderer?.buildingRenderer?._workTierFor?.(drawable.building);
@@ -738,9 +741,10 @@ function recordForBuilding(renderer, drawable, sequence) {
         // facing its side's face, one in front of them an apron lit as ground.
         // `surfaceCode` (2.3) says the occluder companion carries true height
         // in R and the authored face/height code in B, which override it.
-        footY: footprint ? Math.round(footprint.front.y) : undefined,
+        supportH,
+        footY: footprint ? Math.round(footprint.front.y - supportH) : undefined,
         frontCornerX: footprint ? Math.round(footprint.front.x) : undefined,
-        frontCornerY: footprint ? Math.round(footprint.front.y) : undefined,
+        frontCornerY: footprint ? Math.round(footprint.front.y - supportH) : undefined,
         surfaceCode,
         faceGrade: surfaceCode,
         goldenRim: surfaceCode,
@@ -763,7 +767,7 @@ function recordForBuilding(renderer, drawable, sequence) {
             const register = (layer, rank) => {
                 const offsetX = dx + layer.x - spriteLeft - layer.sx;
                 const offsetY = dy + layer.y - Math.round(drawable.wy - ay) - layer.sy;
-                registerSurface(layer, id, page, offsetX, offsetY, rank, drawable.supportH);
+                registerSurface(layer, id, page, offsetX, offsetY, rank, supportH);
             };
             register(record, drawable.sublayerRank ?? 0);
             if (glass) register(glass, 1);
@@ -1080,6 +1084,13 @@ function roofWeatherRecords(renderer, drawable, record, spriteLeft, col, horizon
 // showing that frame, so no texture exists per tree (plan 0.7).
 function recordForProp(renderer, drawable, sequence) {
     const sprite = drawable?.payload?.sprite || drawable?.sprite;
+    if (sprite?.terraceFrame) {
+        const frame = sprite.terraceFrame();
+        if (!frame) return null;
+        return { ...frame, id: `${sprite.id}:${sprite.tileX},${sprite.tileY}`, textureKey: sprite.id,
+            sourceWidth: frame.source.width, sourceHeight: frame.source.height, supportH: sprite.supportH,
+            material: materialClassId(sprite.materialClass), footY: sprite.y, sequence };
+    }
     if (!sprite?._getCachedCanvas) return null;
     const cached = sprite._getCachedCanvas(renderer?.camera?.zoom || 1);
     if (!cached?.canvas) return null;
@@ -1224,6 +1235,7 @@ function recordForProp(renderer, drawable, sequence) {
         height: destH,
         // V5 — a prop (split halves and columns alike) receives light at its
         // own ground line, not its painter sort.
+        supportH: sprite.supportH ?? 0,
         footY: Math.round(finite(sprite.y)),
         // SD-2 — a prop the shade field holds as a mass of its own.
         sunSelf: shadeSelfProp(propId),
@@ -1256,7 +1268,7 @@ function recordForProp(renderer, drawable, sequence) {
                 ? cached.y - Math.round(centre.y - anchor[1])
                 : (crop?.y ?? crop?.sy ?? crop?.[1]) - record.sy;
             if (Number.isFinite(x) && Number.isFinite(y)) {
-                registerSurface(record, id, page, x + (surface.offsetX || 0), y + (surface.offsetY || 0), 7);
+                registerSurface(record, id, page, x + (surface.offsetX || 0), y + (surface.offsetY || 0), 7, record.supportH);
             }
         }
     }
@@ -1277,6 +1289,7 @@ function recordsForAgent(drawable, sequence) {
     const footY = Math.round(Number.isFinite(sprite._placeY) ? sprite._placeY : finite(sprite.y));
     const axisX = Math.round(Number.isFinite(sprite._placeX) ? sprite._placeX : finite(sprite.x));
     const ownerSlot = ownerSlotFor(sprite.agent?.id);
+    const supportH = sprite._currentBridgeLift?.() ?? sprite.supportH ?? 0;
     const baseRecords = records.map((record, index) => ({
         ...record,
         id: record.id || `agent:${sprite.agent?.id || sequence}:${index}`,
@@ -1285,6 +1298,7 @@ function recordsForAgent(drawable, sequence) {
         material: record.material ?? materialClassId(gpuMaterialNameForProvider(sprite.agent?.provider)),
         elevation: record.elevation ?? 0.52,
         occluder: record.occluder ?? 0.58,
+        supportH,
         footY: record.footY ?? footY,
         frontCornerX: record.frontCornerX ?? axisX,
         ownerSlot: record.ownerSlot ?? ownerSlot,

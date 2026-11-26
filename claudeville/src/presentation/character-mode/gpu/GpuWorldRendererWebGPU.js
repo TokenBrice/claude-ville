@@ -99,7 +99,7 @@ import {
 } from './wgpu/GpuWgpuTextures.js';
 import { PlanarWaterPass, bayerCollarSelect, isMirrorAdmittedRecord, srgb8ToLinear16 } from './wgpu/PlanarWaterPass.js';
 import { RAIN_GROUND_CELL } from '../WeatherRenderer.js';
-import { WaterRippleCompute, RIPPLE_GRID_WIDTH, RIPPLE_GRID_HEIGHT } from './wgpu/WaterRippleCompute.js';
+import { WaterRippleCompute, RIPPLE_FIXED_DT, RIPPLE_GRID_WIDTH, RIPPLE_GRID_HEIGHT } from './wgpu/WaterRippleCompute.js';
 import { WindFieldCompute, WIND_EMBER_MAX_CAPACITY, WIND_WORLD_BOUNDS } from './wgpu/WindFieldCompute.js';
 import { VolumetricShaftsPass } from './wgpu/VolumetricShaftsPass.js';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../../config/constants.js';
@@ -231,7 +231,7 @@ function waterInputs(terrain) {
             if (contactStarts || !wetAbove) { mask[i] = d + 1; break; }
         }
     }
-    return { bake: terrain.frontierCoast, mask, contact, exposure, basin: localBasin, planarRect: rect, rippleScale, rippleOrigin, boundary };
+    return { bake: terrain.frontierCoast, mask, contact, exposure, basin: localBasin, planarRect: rect, rippleScale, rippleOrigin, boundary, spillwaySplashes: terrain.spillwaySplashes };
 }
 
 function finite(value, fallback = 0) {
@@ -1998,6 +1998,13 @@ export class GpuWorldRendererWebGPU {
                 const bow = r.bowOffsetX || r.width * 0.3;
                 impulseAt(r.frontCornerX + bow, r.footY, 'boat', 3, 1, r.id + ':bow');
                 impulseAt(r.frontCornerX - bow, r.footY, 'wake', 2, 0.65, r.id + ':stern');
+            }
+            if (water.spillwaySplashes?.length) {
+                water.spillElapsed = motion.reducedMotion || motion.visibilityReturned ? 0 : (water.spillElapsed || 0) + dtSec;
+                if (water.spillElapsed >= RIPPLE_FIXED_DT) {
+                    water.spillElapsed %= RIPPLE_FIXED_DT;
+                    for (const { x, y } of water.spillwaySplashes) impulseAt(x, y, 'spillway', 2, 0.6);
+                }
             }
             feed.duckPaddles?.forEach(([x, y], i) => impulseAt(x, y, 'wake', 1, 0.35, i));
             this._hullPositions = moved;

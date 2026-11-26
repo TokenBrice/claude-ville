@@ -236,7 +236,15 @@ export class Pathfinder {
     // `clock` drives the crowd rebuild windows: wall-clock milliseconds by
     // default, the clock VisitTileAllocator buckets its congestion snapshots
     // on, so a new window's crowd always finds its sinks free to rebuild.
-    constructor(grid, { clock = null } = {}) {
+    constructor(grid, { clock = null, surfaceRegistry = null } = {}) {
+        this.surfaceRegistry = surfaceRegistry;
+        this._surfaceHeights = surfaceRegistry && Float32Array.from({ length: CELLS },
+            (_, i) => surfaceRegistry.aggregateHeightAt(i % MAP_N, Math.floor(i / MAP_N)));
+        this._surfaceLinks = new Set();
+        for (const link of surfaceRegistry?.links || []) {
+            this._surfaceLinks.add(link.from[0] * CELLS + link.to[0]);
+            if (link.bidirectional) this._surfaceLinks.add(link.to[0] * CELLS + link.from[0]);
+        }
         this._clock = typeof clock === 'function' ? clock : Date.now;
         this._perfNow = () => (globalThis.performance?.now?.() ?? Date.now());
 
@@ -344,10 +352,48 @@ export class Pathfinder {
         const tiles = [];
         for (let y = 0; y < MAP_SIZE; y++) {
             for (let x = 0; x < MAP_SIZE; x++) {
-                if (grid[y * MAP_SIZE + x] === 1) tiles.push({ tileX: x, tileY: y });
+                if (grid[y * MAP_SIZE + x] === 1 && this._surfaceWalkable(y * MAP_SIZE + x)) tiles.push({ tileX: x, tileY: y });
             }
         }
         return tiles;
+    }
+
+    _surfaceWalkable(index) {
+        const floors = this.surfaceRegistry?.getTileSurfacesByIndex(index);
+        return !floors?.length || floors.some(s => s.walk);
+    }
+
+    _surfaceStep(from, to) {
+        if (this._surfaceHeights[from] === this._surfaceHeights[to]) return true;
+        return this._surfaceLinks.has(from * CELLS + to);
+    }
+
+    // Visit each cell that the actual foot segment enters. Bresenham alone
+    // can miss a short visit to the lower bank beside a stair landing.
+    surfaceSegmentClear(x0, y0, x1, y1) {
+        if (!this.surfaceRegistry) return true;
+        let x = Math.round(x0), y = Math.round(y0);
+        const endX = Math.round(x1), endY = Math.round(y1);
+        if (!(Math.min(x, y, endX, endY) >= 0 && Math.max(x, y, endX, endY) < MAP_N)) return false;
+        const dx = x1 - x0, dy = y1 - y0;
+        const sx = Math.sign(dx), sy = Math.sign(dy);
+        while (x !== endX || y !== endY) {
+            const crossX = x === endX ? Infinity : (x + 0.5 * sx - x0) / dx;
+            const crossY = y === endY ? Infinity : (y + 0.5 * sy - y0) / dy;
+            const nx = crossX <= crossY ? x + sx : x;
+            const ny = crossY <= crossX ? y + sy : y;
+            const from = y * MAP_N + x;
+            if (!this._surfaceStep(from, ny * MAP_N + nx)) return false;
+            if (nx !== x && ny !== y
+                && (!this._surfaceStep(from, y * MAP_N + nx) || !this._surfaceStep(from, ny * MAP_N + x))) return false;
+            x = nx; y = ny;
+        }
+        return true;
+    }
+
+    _stepLength(from, to, dir) {
+        const rise = this._surfaceHeights && this._surfaceHeights[to] - this._surfaceHeights[from];
+        return rise ? Math.hypot(DIR_LENGTH[dir], rise / 32) : DIR_LENGTH[dir];
     }
 
     // Walk bit + per-tile legal step mask under findPath's step rule: an
@@ -360,7 +406,7 @@ export class Pathfinder {
         const flags = this.staticFlags;
         const grid = this.grid;
         for (let index = 0; index < CELLS; index++) {
-            if (grid?.[index] === 1) flags[index] |= FLAG_WALK;
+            if (grid?.[index] === 1 && this._surfaceWalkable(index)) flags[index] |= FLAG_WALK;
             else flags[index] &= ~FLAG_WALK;
         }
         const mask = this.stepMask;
@@ -382,6 +428,8 @@ export class Pathfinder {
                     const next = ny * MAP_N + nx;
                     if (!(flags[next] & FLAG_WALK)) continue;
                     if (dx !== 0 && dy !== 0 && (!(flags[y * MAP_N + nx] & FLAG_WALK) || !(flags[ny * MAP_N + x] & FLAG_WALK))) continue;
+                    if (this.surfaceRegistry && (!this._surfaceStep(index, next)
+                        || (dx && dy && (!this._surfaceStep(index, y * MAP_N + nx) || !this._surfaceStep(index, ny * MAP_N + x))))) continue;
                     if (tier[next] !== tier[index]) {
                         const stair = dx === 0 || dy === 0
                             ? Math.abs(tier[next] - tier[index]) === 1 && (flags[next] & FLAG_STAIR) && (flags[index] & FLAG_STAIR)
@@ -540,6 +588,8 @@ export class Pathfinder {
     _snapshotGrid() {
         const grid = this.grid;
         this._syncedGrid = grid;
+        this._surfaceGridSnapshot = this.surfaceRegistry ? Uint8Array.from(grid, v => Number(v === 1)) : null;
+        this._surfaceWords = this._surfaceGridSnapshot && new Uint32Array(this._surfaceGridSnapshot.buffer);
         this._gridWords = null;
         if (!(grid instanceof Uint8Array) || grid.length !== CELLS || CELLS % 4 !== 0 || grid.byteOffset % 4 !== 0) return;
         for (let index = 0; index < CELLS; index++) if (grid[index] > 1) return;
@@ -555,7 +605,7 @@ export class Pathfinder {
         }
         const words = this._gridWords;
         if (words) {
-            const flagWords = this._flagWords;
+            const flagWords = this._surfaceWords || this._flagWords;
             for (let index = 0; index < words.length; index++) {
                 if (words[index] !== (flagWords[index] & WALK_WORD)) {
                     this.setGrid(grid);
@@ -566,7 +616,7 @@ export class Pathfinder {
         }
         const flags = this.staticFlags;
         for (let index = 0; index < CELLS; index++) {
-            if ((grid[index] === 1) !== ((flags[index] & FLAG_WALK) !== 0)) {
+            if ((grid[index] === 1) !== (this._surfaceGridSnapshot ? this._surfaceGridSnapshot[index] === 1 : (flags[index] & FLAG_WALK) !== 0)) {
                 this.setGrid(grid);
                 return true;
             }
@@ -1157,7 +1207,7 @@ export class Pathfinder {
     // `dir`: distance × the cheaper surface, a soft standing-body cost unless
     // `to` is a goal, and the blurred crowd cost of the tile entered.
     _stepCost(fromWeight, to, dir, staticMask, crowdMask, policy, goal) {
-        const length = DIR_LENGTH[dir];
+        const length = this._stepLength(to - DIR_OFFSET[dir], to, dir);
         const toWeight = this._tileWeight(to, staticMask, policy);
         let cost = length * (fromWeight < toWeight ? fromWeight : toWeight);
         if ((crowdMask & CROWD_STANDING) && !goal && this.standingGrid[to]) cost += TILE_WEIGHTS.standing;
@@ -1321,7 +1371,7 @@ export class Pathfinder {
                 if (!(bits & (1 << dir))) continue;
                 const u = v + DIR_OFFSET[dir];
                 if (visited[u]) continue;
-                const length = DIR_LENGTH[dir];
+                const length = this._stepLength(u, v, dir);
                 const weightU = base[u];
                 const next = costV + length * (weightU < weightV ? weightU : weightV) + standingCost + length * crowd;
                 if (next < field[u]) {
@@ -1750,6 +1800,7 @@ export class Pathfinder {
     // across an orthogonal stair pair. The straight-line shortcut and
     // `_lookahead` both walk this, so neither can skip a terrace edge.
     _lineWalkableTiles(x0, y0, x1, y1) {
+        if (!this.surfaceSegmentClear(x0, y0, x1, y1)) return null;
         const dx = Math.abs(x1 - x0);
         const dy = Math.abs(y1 - y0);
         const sx = x0 < x1 ? 1 : -1;

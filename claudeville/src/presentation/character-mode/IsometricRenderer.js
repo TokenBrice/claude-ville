@@ -50,7 +50,7 @@ import { Pathfinder } from './Pathfinder.js';
 import { createWalkClearance } from './WalkClearance.js';
 import { bridgeCrossingTiles, constrainSteeringInto, constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
-import { DIRECTIONS } from './SpriteSheet.js';
+import { DIRECTIONS, dirFromVelocity } from './SpriteSheet.js';
 import { SkyRenderer } from './SkyRenderer.js';
 import { AtmosphereState, sourceEnergyFor } from './AtmosphereState.js';
 import { WeatherRenderer } from './WeatherRenderer.js';
@@ -70,7 +70,7 @@ import { OCEAN_HORIZON_WORLD_Y, coastDistanceProbe, drawCanvasWaterMood, drawOut
 import { frostQuarterOf, frostRisingOf, snowBucketOf } from './GroundState.js';
 import {
     TerrainArtifactStore, terrainArtifactConfiguration, terrainArtifactInputsSettled, terrainArtifactKey, terrainContentHash,
-    captureTerrainArtifactFields, captureTerrainArtifact, restoreTerrainArtifact,
+    captureTerrainArtifactFields, captureTerrainArtifact, restoreTerrainArtifact, terrainArtifactManifest,
 } from './TerrainArtifactStore.js';
 import { drawCanvasWaterState } from './CanvasWaterState.js';
 import { REVEAL_SAMPLE_H, REVEAL_SAMPLE_W, sampleRevealBands, sampleRevealBandsAsync } from './RevealBands.js';
@@ -94,7 +94,7 @@ import {
     computePreferredVelocity,
     isAgentPlanted,
     solveOrcaVelocity,
-    stepCrowdOrca,
+    stepCrowdOrca, sharesAvoidancePlane,
 } from './CrowdOrca.js';
 import {
     LABEL_MAX_SPEAKERS,
@@ -125,7 +125,8 @@ import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
 import { Chronicler } from './Chronicler.js';
 import { VillageDirector } from './VillageDirector.js';
-import { tileToWorld, worldToTile, buildingCenterToWorld } from './Projection.js';
+import { VILLAGE_SURFACES, supportHeight, tileCoords, planeHeight } from './SurfaceProjection.js';
+import { tileToWorld, worldToTile, buildingCenterToWorld, tileToWorldElevated, pickSurfaceAtWorld } from './Projection.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { attentionKeyAt, attentionScreenRects, isAttentionStatus, layoutAttentionPlates, reserveAttentionLayoutInGrid } from './AttentionPlates.js';
 import { IDENTITY_LABEL, identityLabelTop, identityLabelWidth } from './WorldLabelKit.js';
@@ -729,7 +730,45 @@ class FountainWaterSprite extends StaticPropSprite {
     }
 }
 
+// Both Canvas paths and both GPU backends use the same source rectangle.
+class TerraceProp extends StaticPropSprite {
+    constructor(renderer, id, tileX, tileY, image, width, height, anchorY, materialClass) {
+        super({ id, tileX, tileY, drawFn: ctx => this.draw(ctx), materialClass,
+            bounds: { left: -width / 2, right: width / 2, top: -anchorY, bottom: height - anchorY } });
+        this.renderer = renderer;
+        this.image = image;
+        this.frameWidth = width;
+        this.frameHeight = height;
+    }
+
+    terraceFrame() {
+        const source = this.renderer.assets?.get?.(this.id) || this.image;
+        if (!source?.width || source.complete === false || source.naturalWidth === 0) return null;
+        const w = this.frameWidth, h = this.frameHeight;
+        const frames = Math.floor(source.width / w);
+        if (!frames || source.height < h) return null;
+        const frame = this.renderer.motionScale > 0 ? Math.floor(this.renderer.motionTimeMs * 6 / 1000) % frames : 0;
+        return { source, sx: frame * w, sy: 0, sw: w, sh: h,
+            x: Math.round(this.x + this.bounds.left), y: Math.round(this.y + this.bounds.top), width: w, height: h };
+    }
+
+    draw(ctx) {
+        const f = this.terraceFrame();
+        if (f) ctx.drawImage(f.source, f.sx, f.sy, f.sw, f.sh, f.x, f.y, f.width, f.height);
+    }
+
+    drawCached(ctx) { this.draw(ctx); }
+}
+
 class WorldAgentSprite extends AgentSprite {
+    _isScreenSegmentWalkable(x0, y0, x1, y1) {
+        if (this.pathfinder?.surfaceRegistry) {
+            const a = worldToTile(x0, y0), b = worldToTile(x1, y1);
+            if (!this.pathfinder.surfaceSegmentClear(a.tileX, a.tileY, b.tileX, b.tileY)) return false;
+        }
+        return super._isScreenSegmentWalkable(x0, y0, x1, y1);
+    }
+
     _thoughtOwnsHead() {
         return this.theatreMode || super._thoughtOwnsHead();
     }
@@ -742,6 +781,11 @@ class WorldAgentSprite extends AgentSprite {
 export class IsometricRenderer {
     constructor(world, options = {}) {
         this.world = world;
+        this.surfaceRegistry = VILLAGE_SURFACES;
+        this._spillwaySplashes = this.surfaceRegistry.spills.map(spill => {
+            const { tx, ty } = tileCoords(spill.lower[0]);
+            return tileToWorldElevated(tx, ty, spill.lower[1], this.surfaceRegistry);
+        });
         this.replay = options.replay || null;
         this.assets = options.assets || null;
         this.sprites = this.assets ? new SpriteRenderer(this.assets) : null;
@@ -1166,12 +1210,16 @@ export class IsometricRenderer {
                 drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y, this._winterPropOpts(id)); },
             });
         });
-        this.districtPropSprites = this._buildDistrictPropSprites();
+        this.districtPropSprites = [...this._buildDistrictPropSprites(), ...this._buildTerraceProps()];
         this._staticPropSprites = [
             ...this.treePropSprites,
             ...this.boulderPropSprites,
             ...this.districtPropSprites,
         ];
+        for (const sprite of this._staticPropSprites) {
+            sprite.supportH = supportHeight(sprite.tileX, sprite.tileY, this.surfaceRegistry);
+            sprite.y -= sprite.supportH;
+        }
         // The cached flora and roofed props (and the bridge's near-rail
         // slices, cut from the bridge image; the gatehouse, whose towers and
         // arch take roof snow; the wall runs, whose walk takes it) that
@@ -1195,7 +1243,7 @@ export class IsometricRenderer {
         // splashes and fireflies, monument sites, the debug overlay) keeps
         // every open tile.
         this.walkabilityGrid = this.scenery.getWalkabilityGrid();
-        this.pathfinder = new Pathfinder(this.walkabilityGrid.slice());
+        this.pathfinder = new Pathfinder(this.walkabilityGrid.slice(), { surfaceRegistry: this.surfaceRegistry });
         this.pathfinder.keepReachableFrom(VILLAGE_GATE.inside);
         this._walkClearance = createWalkClearance({
             buildings: this.world?.buildings,
@@ -1732,7 +1780,7 @@ export class IsometricRenderer {
 
         this.ambientEmitters = emitters.map(emitter => ({
             ...emitter,
-            ...tileToWorld(emitter.tileX, emitter.tileY),
+            ...tileToWorldElevated(emitter.tileX, emitter.tileY),
         }));
     }
 
@@ -2333,6 +2381,10 @@ export class IsometricRenderer {
 
         // Subscribe to domain events
         this._unsubscribers.push(
+            eventBus.on('audio:evensong', ({ active }) => {
+                this._evensongActive = Boolean(active);
+                this._invalidateIdleFrame();
+            }),
             eventBus.on('agent:added', (agent) => {
                 if (!this._worldModeActive || this._visibilityPaused) {
                     this._worldSpritesDirty = true;
@@ -4751,7 +4803,7 @@ export class IsometricRenderer {
                 compositor: this.compositor,
                 getIntentForAgent: (agentId) => this.visitIntentManager?.getIntentForAgent?.(agentId) || null,
                 getBuilding: (type) => this._getBuildingByType(type),
-                getBridgeLift: (tileX, tileY) => this.getBridgeLift(tileX, tileY),
+                getBridgeLift: (tileX, tileY) => this.getBridgeLift(tileX, tileY) || supportHeight(tileX, tileY, this.surfaceRegistry),
                 allocateVisitTile: (request) => this._allocateVisitTile(request),
                 releaseVisitReservation: (agentId) => this.visitTileAllocator?.release?.(agentId),
                 renewVisitReservation: (agentId) => this.visitTileAllocator?.renew?.(agentId),
@@ -5526,18 +5578,27 @@ export class IsometricRenderer {
         return false;
     }
 
+    _surfaceHidesBody(surface, sprite) {
+        if (!surface || surface.h <= 0) return false;
+        const h = sprite._currentBridgeLift?.() || 0;
+        // Upright cutout height at the pointer, measured from the lifted foot.
+        const bodyH = Math.max(h, sprite.y - surface.y);
+        return surface.d > 2 * sprite.y + bodyH / 2;
+    }
+
     _handleClick(worldX, worldY, touch = false) {
         if (!this.agentSprites.size && !this.buildingRenderer) return;
         this._invalidateIdleFrame();
 
         let clicked = null;
+        const surface = pickSurfaceAtWorld(worldX, worldY);
 
         // Per-pixel agent hit test (sorted: most front first)
         const sorted = Array.from(this.agentSprites.values())
             .sort((a, b) => b.y - a.y);            // front-most first
         for (const sprite of sorted) {
             if (this._isGateTransit(sprite, 'departure')) continue;
-            if (sprite.hitTest(worldX, worldY)) {
+            if (sprite.hitTest(worldX, worldY) && !this._surfaceHidesBody(surface, sprite)) {
                 clicked = sprite;
                 break;
             }
@@ -5567,7 +5628,7 @@ export class IsometricRenderer {
             const radius = 22 / this.camera.zoom;
             let nearest = radius * radius;
             for (const sprite of sorted) {
-                if (this._isGateTransit(sprite, 'departure') || sprite.isArrivalPending()) continue;
+                if (this._isGateTransit(sprite, 'departure') || sprite.isArrivalPending() || this._surfaceHidesBody(surface, sprite)) continue;
                 const box = sprite._bodyBox;
                 const x = sprite._placeX ?? sprite.x;
                 const y = sprite._placeY ?? sprite.y;
@@ -5654,13 +5715,14 @@ export class IsometricRenderer {
     }
 
     _applyAgentHover(worldX, worldY) {
+        const surface = pickSurfaceAtWorld(worldX, worldY);
         let hit = null;
         if (this.agentSprites.size) {
             const sorted = Array.from(this.agentSprites.values())
                 .sort((a, b) => b.y - a.y);            // front-most first
             for (const sprite of sorted) {
                 if (this._isGateTransit(sprite, 'departure')) continue;
-                if (sprite.hitTest(worldX, worldY)) {
+                if (sprite.hitTest(worldX, worldY) && !this._surfaceHidesBody(surface, sprite)) {
                     hit = sprite;
                     break;
                 }
@@ -5716,8 +5778,9 @@ export class IsometricRenderer {
     _hoverPlateContent(hit, lore = null) {
         if (!hit) return { text: lore?.text || '', target: lore?.target || null, key: lore?.key ?? null };
         const box = hit._bodyBox;
+        const anchorY = hit._visualAnchorY?.() ?? hit.y;
         const target = box
-            ? this._screenRectForWorld(hit.x + box.left, hit.y + box.top, hit.x + box.right, hit.y + Math.max(box.bottom, 4))
+            ? this._screenRectForWorld(hit.x + box.left, anchorY + box.top, hit.x + box.right, anchorY + Math.max(box.bottom, 4))
             : null;
         const behavior = hit.behavior;
         const arrived = !hit.moving && hit._lastBuildingType
@@ -6996,6 +7059,10 @@ export class IsometricRenderer {
 
     _isSpritePositionWalkable(sprite, x, y) {
         if (!this.pathfinder || typeof sprite?._screenToTile !== 'function') return true;
+        if (this.pathfinder.surfaceRegistry) {
+            const a = worldToTile(sprite.x, sprite.y), b = worldToTile(x, y);
+            if (!this.pathfinder.surfaceSegmentClear(a.tileX, a.tileY, b.tileX, b.tileY)) return false;
+        }
         return this._isWorldPointWalkable(x, y);
     }
 
@@ -7243,7 +7310,6 @@ export class IsometricRenderer {
 
         const ax = desc.x;
         const ay = desc.y;
-        const aTier = desc.surfaceTier;
         const aRad = desc.radius;
         const aSprite = desc.sprite;
         const chatPartner = aSprite?.chatPartner || null;
@@ -7252,7 +7318,7 @@ export class IsometricRenderer {
         let bestDistSq = Infinity;
         for (let j = 0; j < activeCount; j++) {
             const other = agents[j];
-            if (!other || other === desc || other.surfaceTier !== aTier) continue;
+            if (!other || other === desc || !sharesAvoidancePlane(desc, other)) continue;
             if (aSprite && (other.sprite === aSprite || other.sprite === chatPartner)) continue;
             const rx = other.x - ax;
             const ry = other.y - ay;
@@ -7321,7 +7387,6 @@ export class IsometricRenderer {
         const awaySide = dotPerp >= 0 ? -1 : 1;
         const probeDist = 4.5;
         const selfR = desc.radius || ORCA_AGENT_RADIUS;
-        const selfTier = desc.surfaceTier || 0;
 
         for (let pass = 0; pass < 2; pass++) {
             const side = pass === 0 ? awaySide : -awaySide;
@@ -7335,7 +7400,7 @@ export class IsometricRenderer {
             for (let j = 0; j < activeCount; j++) {
                 const cand = agents[j];
                 if (!cand || cand === desc || cand === other) continue;
-                if ((cand.surfaceTier || 0) !== selfTier) continue;
+                if (!sharesAvoidancePlane(desc, cand)) continue;
                 const cdx = cand.x - lx;
                 const cdy = (cand.y - ly) * ORCA_Y_SCALE;
                 const curDx = cand.x - desc.x;
@@ -7842,6 +7907,8 @@ export class IsometricRenderer {
             ? sprite.orcaRadius
             : (Number.isFinite(sprite.radius) && sprite.radius > 0 ? sprite.radius : ORCA_AGENT_RADIUS);
         desc.planted = planted;
+        const support = worldToTile(baseX, baseY);
+        desc.supportH = sprite.getBridgeLift?.(support.tileX, support.tileY) ?? 0;
         desc.surfaceTier = Number.isFinite(sprite.surfaceTier)
             ? sprite.surfaceTier
             : (Number.isFinite(sprite.agent?.surfaceTier) ? sprite.agent.surfaceTier : 0);
@@ -8041,7 +8108,7 @@ export class IsometricRenderer {
                         for (let j = 0; j < activeCount; j++) {
                             if (j === i) continue;
                             const other = agents[j];
-                            if (!other.planted || other.surfaceTier !== desc.surfaceTier) continue;
+                            if (!other.planted || !sharesAvoidancePlane(desc, other)) continue;
                             const dx = sprite.targetX - other.x;
                             const dy = (sprite.targetY - other.y) * ORCA_Y_SCALE;
                             if (dx * dx + dy * dy < obstructRadiusSq) {
@@ -11016,10 +11083,9 @@ export class IsometricRenderer {
             const img = this.propWinter?.image(prop.id) || this.assets?.get?.(prop.id);
             if (!img) continue;
             const [anchorX, anchorY] = this.assets.getAnchor(prop.id);
+            const { x, y } = tileToWorldElevated(prop.tileX, prop.tileY);
             sprites.push({
-                img,
-                x: Math.round((prop.tileX - prop.tileY) * TILE_WIDTH / 2 - anchorX),
-                y: Math.round((prop.tileX + prop.tileY) * TILE_HEIGHT / 2 - anchorY),
+                img, x: Math.round(x - anchorX), y: Math.round(y - anchorY),
             });
         }
         let probed = 0;
@@ -11064,6 +11130,7 @@ export class IsometricRenderer {
         const atmosphere = this._lastAtmosphere ?? this.atmosphereState?.snapshot?.();
         const ground = this._groundState ?? groundStateForAtmosphere(atmosphere);
         return { assetVersion: this.assets?.assetVersion, bounds, dpr, season,
+            elevationRevision: this.surfaceRegistry?.revision,
             sceneryRevision: this._terrainSceneryRevision || 0,
             substrateRevision: this.gpuWorld?.substrateRevision ?? 0,
             snowBucket: snowBucketOf(ground?.snowCover), frost: frostQuarterOf(ground),
@@ -11224,7 +11291,7 @@ export class IsometricRenderer {
                 try {
                     // The reveal has published before this idle readback. Keep
                     // extraction separate from hashing/IDB in the next slice.
-                    write.artifact = captureTerrainArtifact(write.canvas, write.bounds, write.dpr, captureTerrainArtifactFields(write.host));
+                    write.artifact = captureTerrainArtifact(write.canvas, write.bounds, write.dpr, captureTerrainArtifactFields(write.host), terrainArtifactManifest(write.inputs));
                 } finally {
                     if (write.ownsCanvas) releaseCanvasBackingStore(write.canvas);
                     write.canvas = null;
@@ -11419,6 +11486,44 @@ export class IsometricRenderer {
         ctx.fillStyle = pattern;
         ctx.fillRect(points[3].x, topY, points[1].x - points[3].x, bottomY - topY);
         ctx.restore();
+    }
+
+    _buildTerraceProps() {
+        const sprites = [], images = new Map();
+        const add = (name, x, y, w, h, anchor, materialClass = 'stone') => {
+            const id = `prop.${name}`;
+            if (!images.has(id)) {
+                let image = this.assets?.get?.(id);
+                if (!image && !this.assets?.getEntry?.(id) && typeof Image !== 'undefined') {
+                    image = new Image();
+                    image.onload = () => { if (!this._disposed) this._invalidateIdleFrame(); };
+                    image.src = new URL(`../../../assets/sprites/props/${id}.png`, import.meta.url).href;
+                }
+                images.set(id, image);
+            }
+            sprites.push(new TerraceProp(this, id, x, y, images.get(id), w, h, anchor, materialClass));
+        };
+        for (const surface of this.surfaceRegistry.surfaces) {
+            const { tx, ty } = tileCoords(surface.tile);
+            if (surface.kind === 'stair') {
+                const [, a, b] = surface.plane16;
+                const dir = a > 0 ? 'se' : a < 0 ? 'nw' : b > 0 ? 'sw' : 'ne';
+                // The baked tread midpoint lies 4 px above its local base at y=31.
+                add(`terraceStair.${dir}`, tx, ty, 64, 48, 27);
+            } else if (surface.route && surface.id === 2) {
+                const h = planeHeight(surface.plane16);
+                const east = supportHeight(tx + 1, ty, this.surfaceRegistry) >= h, south = supportHeight(tx, ty + 1, this.surfaceRegistry) >= h;
+                const outer = !east && !south;
+                const inner = east && south && supportHeight(tx + 1, ty + 1, this.surfaceRegistry) < h;
+                // Align the 8 px coping to the raised lip (the PNG base is y=20).
+                if (outer || inner) add(`terraceCorner.${outer ? 'outer' : 'inner'}`, tx + 0.375, ty + 0.375, 32, 32, 12);
+            }
+        }
+        for (const spill of this.surfaceRegistry.spills) {
+            const { tx, ty } = tileCoords(spill.lower[0]);
+            add('lagoonSpillway', tx, ty, 64, 96, 82, 'water');
+        }
+        return sprites;
     }
 
     _buildDistrictPropSprites() {
@@ -13062,13 +13167,21 @@ export class IsometricRenderer {
         // D4 — each hearth catches on the round with the lamps.
         const lit = this.lampRoundLit();
         const caught = row => lit(row.tileX, row.tileY);
-        return hearthLightSources({
+        const lights = hearthLightSources({
             lampsLit,
             core: sourceEnergyFor(lighting).core,
             // BR-6 — a bridge's lights catch together (bridgeLightsLit).
             extra: [...extra.filter(caught), ...this._bridgeLightFixtures()],
             fixtures: HEARTH_FIXTURES.filter(caught),
         });
+        for (const light of lights) {
+            const tile = worldToTile(light.ground);
+            const h = supportHeight(tile.tileX, tile.tileY, this.surfaceRegistry);
+            light.y -= h;
+            light.origin.y -= h;
+            light.ground.y -= h;
+        }
+        return lights;
     }
 
     // BR-6 / C2 — the light points a bridge sprite declares in its manifest
@@ -13235,6 +13348,11 @@ export class IsometricRenderer {
             sprite.overlayLightGrade = lightGrade;
             if (hasMotionTime) sprite._motionTimeMs = motionTimeMs;
             const seatId = sprite._seatedSeat?.()?.id || null;
+            if (this._evensongActive && archivePoint && !seatId && !sprite.moving && !sprite.chatting
+                && sprite.animState === 'idle' && !isAgentDeparted(agent) && !sprite.isArrivalPending?.()) {
+                sprite._setFacingGoal?.(dirFromVelocity(archivePoint.x - sprite.x,
+                    archivePoint.y - (sprite._visualAnchorY?.() ?? sprite.y)));
+            }
             if (!this._seatedSeatByAgent.has(agent.id)) {
                 // First sighting baseline: never double-count an already-seated villager on reload.
                 this._seatedSeatByAgent.set(agent.id, seatId);
@@ -14566,16 +14684,14 @@ export class IsometricRenderer {
         ctx.save();
         if (this.sprites) {
             for (const prop of AMBIENT_GROUND_PROPS) {
-                const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
-                const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
+                const { x, y } = tileToWorldElevated(prop.tileX, prop.tileY);
                 const id = `prop.${prop.type}`;
                 this._drawPropContactShadow(ctx, x, y, id, prop.tileX, prop.tileY);
                 this.sprites.drawSprite(ctx, id, x, y, this._winterPropOpts(id));
             }
             for (const prop of DISTRICT_PROPS) {
                 if (prop.layer !== 'cache') continue;
-                const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
-                const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
+                const { x, y } = tileToWorldElevated(prop.tileX, prop.tileY);
                 this._drawPropContactShadow(ctx, x, y, prop.id, prop.tileX, prop.tileY);
                 this.sprites.drawSprite(ctx, prop.id, x, y, this._winterPropOpts(prop.id));
             }
@@ -14583,8 +14699,7 @@ export class IsometricRenderer {
             // cache props so each loiter spot reads as an inhabited place.
             for (const prop of SCENIC_POINT_PROPS) {
                 if (prop.layer !== 'cache') continue;
-                const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
-                const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
+                const { x, y } = tileToWorldElevated(prop.tileX, prop.tileY);
                 this._drawPropContactShadow(ctx, x, y, prop.id, prop.tileX, prop.tileY);
                 this.sprites.drawSprite(ctx, prop.id, x, y, this._winterPropOpts(prop.id));
             }

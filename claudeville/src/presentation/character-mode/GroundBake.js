@@ -107,6 +107,7 @@ import {
     hasTerrainCellLuma, readTerrainCellLuma, specularCorner, stoneAt, stoneFrame, stoneRole,
 } from './TerrainTileset.js';
 import { buildingCenterToWorld, tileToWorld } from './Projection.js';
+import { planeHeight, tileCoords } from './SurfaceProjection.js';
 import { getCoastField } from './CoastBake.js';
 import { frostQuarterOf, frostRisingOf, snowBucketOf } from './GroundState.js';
 import { frostHolds, frostShadeField, frostShadeKey } from './FrostMelt.js';
@@ -1060,7 +1061,7 @@ function plinthWorld(r, b, profile) {
     const base = profile?.plinth || LANDMARK_PLINTH_FALLBACKS[b.type];
     const anchor = base && r.assets?.getAnchor?.(`building.${b.type}`);
     if (!anchor || (!profile?.plinth && !anchor[0] && !anchor[1])) return null;
-    const centre = buildingCenterToWorld(b);
+    const centre = buildingCenterToWorld(b, r.surfaceRegistry ? null : undefined);
     const at = ([px, py]) => ({ x: centre.x + px - anchor[0], y: centre.y + py - anchor[1] });
     return { left: at(base.left), bottom: at(base.bottom), right: at(base.right) };
 }
@@ -1493,6 +1494,56 @@ export function bakeGround(r, withWeather = false, options = {}) {
     let step = bands.next();
     while (!step.done) step = bands.next();
     return step.value;
+}
+
+// A column through an isometric tile spans two straight edges. Copy the
+// original ground and its semantic fields upwards together, back to front.
+// Positive rises let each column read ahead of its writes, without a second bake.
+function* terraceBands(registry, pixels, pass) {
+    const { cols, rows, x0, y0, surfaces, stepBuf, aoBuf, sdBuf, due } = pass;
+    const tops = registry.surfaces.filter(s => s.kind !== 'water' && s.id !== 0)
+        .map(surface => ({ surface, ...tileCoords(surface.tile) }))
+        .sort((a, b) => a.tx + a.ty - b.tx - b.ty);
+    const rgba = new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.length / 4);
+    for (const { surface, tx, ty } of tops) {
+        const { x, y } = tileToWorld(tx, ty);
+        for (let dx = -HALF_W; dx < HALF_W; dx++) {
+            const col = x + dx - x0;
+            const q = (dx + 0.5) / HALF_W;
+            const span = HALF_H * (1 - Math.abs(q));
+            const start = y - y0 - span, end = y - y0 + span;
+            const backH = planeHeight(surface.plane16, Math.max(0, q), Math.max(0, -q));
+            const a = 1 + Math.min(0, q), b = 1 - Math.max(0, q);
+            const frontH = planeHeight(surface.plane16, a, b);
+            const top = start - backH, bottom = end - frontH;
+            const lip = Math.ceil(bottom - 0.5);
+            const edgeRow = Math.ceil(end - 0.5) - 1;
+            if (edgeRow < 0 || edgeRow >= rows) continue;
+            for (let row = Math.max(0, Math.ceil(top - 0.5)); row < lip; row++) {
+                const srcRow = Math.floor(start + (row + 0.5 - top) * (end - start) / (bottom - top));
+                const src = srcRow * cols + col, dest = row * cols + col;
+                if (surfaces[src] === 255) continue;
+                rgba[dest] = rgba[src];
+                surfaces[dest] = surfaces[src]; stepBuf[dest] = stepBuf[src];
+                aoBuf[dest] = aoBuf[src]; sdBuf[dest] = sdBuf[src];
+            }
+            const east = q > 0;
+            const nx = tx + Number(east), ny = ty + Number(!east);
+            const adjacent = nx < MAP_SIZE && ny < MAP_SIZE
+                ? registry.aggregateHeightAt(nx, ny, a - Number(east), b - Number(!east)) : 0;
+            if (adjacent >= frontH || surfaces[edgeRow * cols + col] === 255) continue;
+            const last = Math.min(rows, Math.ceil(end - adjacent - 0.5));
+            for (let row = Math.max(0, lip); row < last; row++) {
+                const course = row - lip;
+                const joint = course % 4 === 3 || (col + (course >> 2) * 5) % 11 === 0;
+                const stop = course === 0 ? 6 : joint ? 3 : east ? 4 : 5;
+                const i = row * cols + col, color = ASHLAR[stop];
+                pixels[4*i] = color[0]; pixels[4*i+1] = color[1]; pixels[4*i+2] = color[2]; pixels[4*i+3] = 255;
+                surfaces[i] = S_FLAG; stepBuf[i] = FOOTING_FLAG; sdBuf[i] = -1; aoBuf[i] = 255;
+            }
+        }
+        if (due()) yield;
+    }
 }
 
 // The same bake as a generator of labelled slices (each `next()` one slice;
@@ -1976,6 +2027,7 @@ function* groundBands(r, withWeather = false, options = {}) {
     pass.edge = null;
 
     pause(); yield 'footings'; resume();
+    if (r.surfaceRegistry) yield* run(terraceBands(r.surfaceRegistry, D, pass), 'terraces');
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
@@ -3085,7 +3137,7 @@ function drawFootings(r, ctx) {
         if (!footing) continue;
         let points;
         const anchor = r.assets?.getAnchor?.(`building.${b.type}`);
-        const centre = buildingCenterToWorld(b);
+        const centre = buildingCenterToWorld(b, r.surfaceRegistry ? null : undefined);
         const spritePx = ([px, py]) => ({ x: centre.x + px - anchor[0], y: centre.y + py - anchor[1] });
         let polyline = null;
         if (footing.kind === 'rock') {
@@ -3620,7 +3672,8 @@ export function installGroundBake(renderer) {
     let winter = null;
     let sheetsReady = false;
     const sheetsKey = () => {
-        if (sheetsReady) return 'sheets';
+        const revision = renderer.surfaceRegistry?.revision || 'flat';
+        if (sheetsReady) return `sheets|${revision}`;
         const assets = renderer.assets;
         let loaded = 0;
         for (const id of SHEET_IDS) if (assets?.get?.(id, { request: false })) loaded++;
@@ -3629,7 +3682,7 @@ export function installGroundBake(renderer) {
         // apart and rebakes once it arrives, never keeping the fallback blob.
         const ashLoaded = Boolean(assets?.get?.(TREE_SPRITES['ash.world'].id, { request: false }));
         sheetsReady = loaded === SHEET_IDS.length && ashLoaded;
-        return sheetsReady ? 'sheets' : `sheets:${loaded}${ashLoaded ? '+ash' : ''}`;
+        return `${sheetsReady ? 'sheets' : `sheets:${loaded}${ashLoaded ? '+ash' : ''}`}|${revision}`;
     };
     // The base bake's key: what `bakeGround` reads.
     const baseKeyOf = (withWeather) => `${getCoastField(renderer).key}|${sheetsKey()}|${renderer._terrainSeason || 'summer'}|${renderer._terrainPhenology?.ground ?? ''}|${renderer._terrainSceneryRevision || 0}${withWeather ? '|weather' : ''}`;

@@ -1319,7 +1319,25 @@ export function createSurfaceRegistry(terrainDef) {
 
             for (let j = 0; j < list.length; j++) {
                 const surf = list[j];
-                const hit = pickSurfaceIntersection(sx, sy, tx, ty, surf.plane16, surf.poly);
+                let hit = pickSurfaceIntersection(sx, sy, tx, ty, surf.plane16, surf.poly);
+                if (options.includeFaces && isFullTilePoly(surf.poly) && surf.kind !== 'water') {
+                    // On a front edge one tile coordinate is fixed. Intersect the
+                    // ray there and clip its height between the two adjoining planes.
+                    const flat = screenRayToTile(sx, sy);
+                    for (const dx of [0, 1]) {
+                        const dy = 1 - dx;
+                        const h = TILE_HALF_WIDTH * (dx ? tx + 0.5 - flat.u : ty + 0.5 - flat.v);
+                        const u = flat.u + h / TILE_HALF_WIDTH, v = flat.v + h / TILE_HALF_WIDTH;
+                        const a = u - tx + 0.5, b = v - ty + 0.5;
+                        if ((dx ? b : a) < 0 || (dx ? b : a) >= 1) continue;
+                        const top = planeHeight(surf.plane16, a, b);
+                        const bottom = surf.underside16 !== null ? surf.underside16 / HEIGHT_SCALE
+                            : tx + dx < MAP_SIZE && ty + dy < MAP_SIZE
+                                ? aggregateHeightAt(tx + dx, ty + dy, a - dx, b - dy) : 0;
+                        if (h < bottom || h >= top || (hit && hit.h >= h)) continue;
+                        hit = { ...projectSurface(u, v, h), u, v, a, b, h, face: dx ? 'se' : 'sw' };
+                    }
+                }
                 if (!hit) continue;
                 const cand = {
                     tile: idx,
@@ -1508,9 +1526,17 @@ export function createSurfaceRegistry(terrainDef) {
         return frozenFootings.filter((f) => f.landmark === landmark);
     }
 
+    let minHeight = 0, maxHeight = 0;
+    for (const s of surfacesByKey.values()) for (const [a, b] of s.poly) {
+        const h = planeHeight(s.plane16, a / POLY_SCALE, b / POLY_SCALE);
+        minHeight = Math.min(minHeight, h);
+        maxHeight = Math.max(maxHeight, h);
+    }
     return Object.freeze({
         version: terrainDef.version,
         revision: terrainDef.revision,
+        surfaces: Object.freeze([...surfacesByKey.values()]),
+        heightRange: Object.freeze([minHeight, maxHeight]),
         pools: Object.freeze(Array.from(poolsById.values())),
         banks: frozenBanks,
         footings: frozenFootings,
@@ -1756,4 +1782,69 @@ export function createE2PilotTerrain() {
             },
         ],
     };
+}
+
+// The shoulders follow the dry shoreline and the public approaches around each
+// landmark. Each row is [first y, last y, first x, last x], inclusive.
+const SITE_ROWS = {
+    commandKeepRise: [[14, 19, 13, 18]],
+    windmillKnoll: [[0, 0, 9, 11], [1, 1, 9, 10]],
+    lighthouseHeadland: [[8, 10, 27, 29], [11, 12, 26, 29], [13, 13, 26, 28]],
+    archiveTerrace: [[15, 19, 3, 9]],
+    westSeaCliffs: [[12, 16, 0, 1], [17, 21, 0, 0]],
+};
+
+// Low approach, ascending unit vector, number of eight-pixel flights.
+const ASCENTS = [
+    [14, 21, 0, -1, 1],
+    [13, 0, -1, 0, 1],
+    [24, 12, 1, 0, 1],
+    [9, 12, 0, 1, 2],
+];
+
+export function createVillageTerrain() {
+    const tiles = new Map();
+    const links = [];
+    function put(x, y, id, kind, plane16, fields) {
+        const tile = tileIndex(x, y);
+        tiles.set(tile, { tile, surfaces: [{ id, kind, plane16, poly: FULL_TILE_POLY, ...fields }] });
+        return [tile, id];
+    }
+    for (const [route, rows] of Object.entries(SITE_ROWS)) {
+        const site = E2_SCULPTED_SITES[route];
+        for (const [y0, y1, x0, x1] of rows) {
+            for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+                put(x, y, 2, 'floor', [site.elevation16, 0, 0], {
+                    route, material: 'ashlar', walk: site.walkable, landmark: site.landmark,
+                });
+            }
+        }
+    }
+    for (const [x, y, dx, dy, flights] of ASCENTS) {
+        const edge = dx > 0 ? 1 : dx < 0 ? 3 : dy > 0 ? 2 : 0;
+        let from = put(x, y, 0, 'floor', [0, 0, 0], { walk: true, material: 'road' });
+        for (let i = 1; i <= flights + 1; i++) {
+            const tx = x + i * dx, ty = y + i * dy;
+            const low = 128 * (i - 1);
+            const to = i > flights ? [tileIndex(tx, ty), 2]
+                : put(tx, ty, 3, 'stair', [low + (dx < 0 || dy < 0 ? 128 : 0), dx * 128, dy * 128],
+                    { walk: true, material: 'ashlar' });
+            links.push({ from, to, fromEdge: edge, toEdge: (edge + 2) % 4, bidirectional: true });
+            from = to;
+        }
+    }
+    // The west Archive bank drains its raised pocket into the main river.
+    const upper = put(1, 22, 1, 'water', [112, 0, 0], { basin: 2, walk: false, material: 'shallowWater' });
+    const lower = put(1, 23, 1, 'water', [-16, 0, 0], { basin: 1, walk: false, material: 'shallowWater' });
+    return { version: 1, revision: 'village-e2-1', tiles: [...tiles.values()], links,
+        pools: [{ id: 2, h16: 112 }, { id: 1, h16: -16 }],
+        spills: [{ id: 'lagoon-canal-spillway', upper, lower, edge: [FULL_TILE_POLY[2], FULL_TILE_POLY[3]], frames: 4 }] };
+}
+
+export const VILLAGE_SURFACES = createSurfaceRegistry(createVillageTerrain());
+
+export function supportHeight(u, v, registry = VILLAGE_SURFACES, surfaceId) {
+    const { tx, ty, tile, a, b } = canonicalTile(u, v);
+    if (tile < 0 || !registry) return 0;
+    return surfaceId == null ? registry.aggregateHeightAt(tx, ty, a, b) : registry.heightAt(tx, ty, surfaceId, a, b);
 }

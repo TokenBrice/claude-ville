@@ -136,6 +136,11 @@ function hashCell(cx, cy) {
     return ((Math.imul(cx, 73856093) ^ Math.imul(cy, 19349663)) >>> 0) & GRID_BUCKET_MASK;
 }
 
+export function sharesAvoidancePlane(a, b) {
+    return (a.surfaceTier ?? 0) === (b.surfaceTier ?? 0)
+        && Math.abs((a.supportH ?? 0) - (b.supportH ?? 0)) < 12;
+}
+
 /**
  * True when an agent is stationary/planted and must not yield or drift.
  * Accepts explicit `planted`, `AgentSprite.moving === false`, or `_stopLookActiveMs > 0`.
@@ -331,7 +336,7 @@ export function computePreferredVelocity(
         for (let i = 0; i < neighborLimit; i++) {
             const b = neighbors[i];
             if (!b || b === agent) continue;
-            if ((b.surfaceTier ?? 0) !== aTier) continue;
+            if (!sharesAvoidancePlane(agent, b)) continue;
             const bRadius = b.radius > 0 ? b.radius : ORCA_AGENT_RADIUS;
             const bPlanted = isAgentPlanted(b);
             const bvx = bPlanted ? 0 : (b.vx || 0);
@@ -932,7 +937,7 @@ export function solveOrcaVelocity(
         for (let i = 0; i < neighborLimit; i++) {
             const b = neighbors[i];
             if (!b || b === agent) continue;
-            if ((b.surfaceTier ?? 0) !== aTier) continue;
+            if (!sharesAvoidancePlane(agent, b)) continue;
 
             const relX = b.x - ax;
             const relY = (b.y - ay) * ORCA_Y_SCALE;
