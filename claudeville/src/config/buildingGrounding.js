@@ -46,25 +46,43 @@ export const BUILDING_GROUNDING_SHADOWS = Object.freeze([
 //            every that many px, one stop darker, the texel right of it one
 //            lighter on the SW face), `relief` (every that many px one stop
 //            darker: a balustrade carved in the riser).
-//   stair    a centred flight cut into the dais at the projection of tile
-//            `at` onto the SW face: `steps` treads (`tread` stop) each over a
-//            riser row (`riser` stop), `width + grow · i` px wide.
+//   stair    a centred flight at the projection of tile `at` onto the SW
+//            face: `steps` treads (`tread` stop, `treadRows` rows, default 1,
+//            each further row one stop darker) each over a riser row
+//            (`riser` stop), `width + grow · i` px wide. With `foot` (two
+//            sprite-px points of base.png on the lowest front edge of the
+//            art's own gate steps) the flight hangs from that edge instead,
+//            centred on it and running parallel to it, so it continues the
+//            painted steps down onto the forecourt rather than hiding under
+//            them.
 //   aoShiftRows  the contact AO's plinth front edges move down this many
 //            rows, so the ground's contact shadow starts at the footing's foot.
 //   rock: `maxRun` (rows from the base edge to the waterline that still
-//            take a headland), `spread` (px past the corners), `tide` (wet
-//            foot rows), `fracture` (px per fracture cell on the SW / SE face).
+//            take a headland), `spread` (px past the corners; a [left, right]
+//            pair for an uneven point), `tide` (wet foot rows), `fracture` (px
+//            per fracture cell on the SW / SE face), `foot` (optional
+//            polyline of base.png px, left → right, one px under the drawn
+//            foot: used instead of the footprint corners when the art stands
+//            well inside its logical footprint; SW face up to its lowest
+//            point, SE after, iso 2:1 lines past its ends). Every soft texel
+//            (grass, sand) between the foot and the face becomes the
+//            headland's stepped rock top, and where the coast paints its own
+//            headland face below the waterline (CoastBake bank zone 6) the
+//            land face leaves the tideline to it.
 export const FOOTING_MAX_ROWS = 10;
 export const BUILDING_FOOTING_KINDS = Object.freeze(['dais', 'terrace', 'rock']);
 
+// W1 council fix — two legible dressed courses on both faces: a lit coping,
+// its dark drip line, an upper course, a dark bed joint, a lower course (the
+// SE face one ashlar stop under the SW all the way down, never one dark band).
 const ASHLAR_DAIS_ROWS = Object.freeze([
-    Object.freeze({ role: 'coping', sw: 7, se: 6 }),
-    Object.freeze({ role: 'course', sw: 5, se: 3, joint: 13 }),
-    Object.freeze({ role: 'course', sw: 5, se: 3, joint: 13 }),
-    Object.freeze({ role: 'course', sw: 5, se: 3, joint: 13 }),
-    Object.freeze({ role: 'bed', sw: 2, se: 2 }),
-    Object.freeze({ role: 'course', sw: 4, se: 2, joint: 17 }),
-    Object.freeze({ role: 'course', sw: 4, se: 2, joint: 17 }),
+    Object.freeze({ role: 'coping', sw: 8, se: 7 }),
+    Object.freeze({ role: 'drip', sw: 3, se: 2 }),
+    Object.freeze({ role: 'course', sw: 6, se: 5, joint: 13 }),
+    Object.freeze({ role: 'course', sw: 6, se: 5, joint: 13 }),
+    Object.freeze({ role: 'bed', sw: 2, se: 1 }),
+    Object.freeze({ role: 'course', sw: 5, se: 4, joint: 17 }),
+    Object.freeze({ role: 'course', sw: 5, se: 4, joint: 17 }),
 ]);
 
 const ASHLAR_TERRACE_ROWS = Object.freeze([
@@ -107,12 +125,21 @@ export const BUILDING_GROUNDING_PROFILES = Object.freeze({
         // EN-3 — the painted plinth's front edges (sprite px of base.png).
         plinth: Object.freeze({ left: Object.freeze([58, 171]), bottom: Object.freeze([213, 238]), right: Object.freeze([343, 174]) }),
         // E1 — a 7-row two-course ashlar dais with a 5-step stair at the gate.
+        // W1 council fix: the art's own two gate steps reach 13–17 px below
+        // the plinth's SW edge (x 96–135), so a flight cut into the dais
+        // there lay wholly under them; three painted steps now hang from
+        // their lowest front edge (`foot`, base.png px) and carry the flight
+        // down onto the forecourt, five steps in all. Two-row treads: a
+        // one-row tread along a 2:1 edge breaks into a 2x1 checker.
         footing: Object.freeze({
             kind: 'dais',
             edges: Object.freeze(['left', 'bottom', 'right']),
             ramp: 'ashlar',
             rows: ASHLAR_DAIS_ROWS,
-            stair: Object.freeze({ at: Object.freeze([15.5, 18.0]), width: 30, steps: 5, grow: 2, tread: 8, riser: 5 }),
+            stair: Object.freeze({
+                at: Object.freeze([15.2, 18.3]), width: 34, steps: 3, grow: 3, tread: 8, treadRows: 2, riser: 3,
+                foot: Object.freeze([Object.freeze([97, 204]), Object.freeze([127, 219])]),
+            }),
             aoShiftRows: 7,
         }),
     }),
@@ -136,6 +163,14 @@ export const BUILDING_GROUNDING_PROFILES = Object.freeze({
         contact: Object.freeze({ offsetX: -8, offsetY: -7, width: 152, depth: 32, opacity: 0.76 }),
         // EN-3 — the painted plinth's front edges (sprite px of base.png).
         plinth: Object.freeze({ left: Object.freeze([24, 166]), bottom: Object.freeze([137, 222]), right: Object.freeze([224, 183]) }),
+        // W1 council fix — the Forge's mossy quay (CoastBake bank zone 4).
+        // The shore runs under the SE wall, so a face hung from the shore
+        // alone lay wholly behind the sprite (bare wall-to-water contact):
+        // the coast face now reaches `drop` px below these plinth edges (the
+        // art's lowest overhang) and shows its full `rows` courses there —
+        // coping, dressed courses, mossy waterline, piers, stair and fender
+        // post — with a dressed ledge between the wall foot and the coping.
+        quay: Object.freeze({ edges: Object.freeze(['left', 'bottom', 'right']), drop: 3, rows: 10 }),
     }),
     mine: Object.freeze({
         mode: 'terrain-apron',
@@ -190,6 +225,12 @@ export const BUILDING_GROUNDING_PROFILES = Object.freeze({
         contact: Object.freeze({ offsetX: 0, offsetY: -4, width: 74, depth: 20, opacity: 0.76, castLength: 86 }),
         // E1 — a cliff-strata headland under the tower's front edges where
         // the shore runs down to the water: the beach there becomes rock.
+        // W1 council fix: the drawn cottage-and-tower foot stands well inside
+        // the 3x5 footprint, whose SE corner lies in the sea (no headland
+        // painted there), so the headland hangs from the art's own foot
+        // (`foot`, base.png px, 9–21 rows above the water), spreads to the
+        // point's seaward tip and continues below the waterline as the
+        // coast's headland face (bank zone 6).
         footing: Object.freeze({
             kind: 'rock',
             edges: Object.freeze(['left', 'bottom', 'right']),
@@ -198,9 +239,11 @@ export const BUILDING_GROUNDING_PROFILES = Object.freeze({
             stair: null,
             aoShiftRows: 0,
             maxRun: 64,
-            spread: 8,
+            spread: Object.freeze([12, 40]),
             tide: 3,
             fracture: Object.freeze([13, 8]),
+            foot: Object.freeze([[74, 340], [92, 348], [100, 344], [116, 348], [126, 344], [140, 337], [156, 328],
+                [172, 328], [180, 326], [188, 324], [196, 320], [206, 311]].map(p => Object.freeze(p))),
         }),
     }),
     // 5.A — the coursed stone quay meets the island shore at its west face;
@@ -223,5 +266,5 @@ export const BUILDING_GROUNDING_PROFILES = Object.freeze({
 export const footingHeight = (footing) => {
     if (!footing) return 0;
     if (footing.kind === 'rock') return FOOTING_MAX_ROWS;
-    return Math.max(footing.rows.length, footing.stair ? footing.stair.steps * 2 : 0);
+    return Math.max(footing.rows.length, footing.stair ? footing.stair.steps * ((footing.stair.treadRows || 1) + 1) : 0);
 };

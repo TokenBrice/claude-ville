@@ -5,18 +5,26 @@ import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../claudeville/src/config/
 import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
 import { BUILDING_GROUNDING_PROFILES } from '../../claudeville/src/config/buildingGrounding.js';
 import { buildingCenterToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
 import {
+    GROUND_PAVING_SURFACES,
     GROUND_WEATHER_COLS,
+    GROUND_WEATHER_COOL_SURFACE,
+    GROUND_WEATHER_MIXED_SURFACE,
     GROUND_WEATHER_NEUTRAL,
     GROUND_WEATHER_ROWS,
     GROUND_WEATHER_X0,
     GROUND_WEATHER_Y0,
+    GROUND_WET_STEPS,
     decodeGroundWeather,
     groundWeatherTexel,
+    groundWetRamp,
     packGroundWeather,
     validGroundWeather,
 } from '../../claudeville/src/presentation/character-mode/GroundWeatherField.js';
-import { bakeGround, bakeWinterGround, installGroundBake, validGroundArtifact } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
+import {
+    GROUND_STOP_FLAGS, bakeGround, bakeWinterGround, installGroundBake, validGroundArtifact,
+} from '../../claudeville/src/presentation/character-mode/GroundBake.js';
 
 // Item 5 — the ground weather field: RGBA8 on the ground bake's grid.
 
@@ -107,10 +115,11 @@ test('persisted summer and winter weather bytes match the non-aliased bake', t =
     const renderer = groundBakeFixture(t);
     // SHA-256 from the ground weather bake over grass, sand, dirt, road, plaza and off-island texels
     // (updated 2026-11-26 for W1-A: the 1x1 colour lattice's right-hand (2c + 1) samples, paving
-    // units and kerbs in the stops, calm meadow sweeps and the land / water pair guard).
+    // units and kerbs in the stops, calm meadow sweeps and the land / water pair guard; again for
+    // the W1 council fixes: cool limestone on surface 9 and the mixed-ramp pair code 15).
     const reference = {
-        summer: '2eca6b3ffe909e8fcc548e43fc48036ac83995c9318b1183f4c2cb573d04aca1',
-        winter: 'b00d7a920eb808e461063bbb72cb2226dcd59098a969e7bbfdf625871b28a87d',
+        summer: '8e8790d11c15b9fd406d35379a12ca1235b36cc05c5079bd4c091d2450516425',
+        winter: 'b9fd2d62d44d8556e3ea39022d26667e720743f159ebfb36bef47225c5bf9dae',
     };
     for (const [season, expected] of Object.entries(reference)) {
         renderer._terrainSeason = season;
@@ -315,4 +324,65 @@ test('EY-5: on Canvas the first frost quarter stages its weather field off the f
     assert.equal(pass.prepare(), null, 'nothing left for the frame to bake');
     pass.draw(ctx);
     assert.ok(validGroundWeather(renderer.groundField.weather), 'the weather field publishes with the stage');
+});
+
+// W1 council fix (GW-1) — the wet step stays on each texel's own ramp: the
+// cinder yard on the cinder ramp, the cool limestone on plazaCool, and a
+// 2x1 cell over two different ramps takes no material step at all.
+test('GW-1: cinder and cool limestone step down their own ramps', () => {
+    const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+    const wet = (surface, stop, from) => hex(from).map((v, i) => Math.round(v * GROUND_WET_STEPS[surface * 5 + stop][i]));
+    assert.equal(groundWetRamp(7), 'cinder');
+    assert.equal(groundWetRamp(GROUND_WEATHER_COOL_SURFACE), 'plazaCool');
+    assert.equal(groundWetRamp(GROUND_WEATHER_MIXED_SURFACE), null);
+    // #544b49 -> #3e3c42 (cinder stop 2 -> 1), never the dirt ramp's brown.
+    assert.deepEqual(wet(7, 2, '#544b49'), hex('#3e3c42'));
+    assert.deepEqual(ART_RAMPS.cinder.slice(1, 3), ['#3e3c42', '#544b49']);
+    for (let stop = 1; stop < 5; stop++) {
+        const ramp = ART_RAMPS.plazaCool;
+        wet(GROUND_WEATHER_COOL_SURFACE, stop, ramp[stop]).forEach((v, i) => assert.ok(Math.abs(v - hex(ramp[stop - 1])[i]) <= 1, `plazaCool stop ${stop}`));
+        const cinder = ART_RAMPS.cinder;
+        wet(7, stop, cinder[stop]).forEach((v, i) => assert.ok(Math.abs(v - hex(cinder[stop - 1])[i]) <= 1, `cinder stop ${stop}`));
+    }
+    assert.deepEqual(GROUND_PAVING_SURFACES, [3, 4, 5, 6, 9]);
+    assert.equal(GROUND_WET_STEPS.length, 10 * 5);
+});
+
+test('GW-1: the bake tags cool limestone surface 9 and marks mixed-ramp pairs 15, never a neighbour\'s ramp', t => {
+    const renderer = groundBakeFixture(t);
+    // A plaza (with its cool-limestone share) running into an avenue and a
+    // dirt lane, inside the lake fixture's land.
+    const tiles = (x0, x1, y0, y1) => { const out = new Set(); for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) out.add(`${x},${y}`); return out; };
+    renderer._coastField = { key: '0:0:0:0:0:0', signedDistance: () => -9 };
+    renderer.townSquareTiles = tiles(14, 18, 14, 18);
+    renderer.mainAvenueTiles = tiles(19, 25, 15, 16);
+    renderer.dirtPathTiles = tiles(14, 18, 19, 19);
+    const base = bakeGround(renderer, true);
+    const { surfaces: fine, stepBuf } = base.color;
+    const data = base.field.weather.data;
+    const S_PLAZA = 4;
+    const S_FLAG = 5;
+    const rampOf = (f) => groundWetRamp((fine[f] === S_PLAZA || fine[f] === S_FLAG) && stepBuf[f] & GROUND_STOP_FLAGS.COOL ? 9 : fine[f]);
+    let cool = 0;
+    let mixed = 0;
+    let same = 0;
+    for (let i = 0; i < base.surfaces.length; i++) {
+        const r = data[i * 4];
+        if (r === 255) continue;
+        const surface = r >> 4;
+        const right = rampOf(2 * i + 1);
+        const left = fine[2 * i] === 255 ? null : rampOf(2 * i);
+        if (left !== null && left !== right) {
+            assert.equal(surface, GROUND_WEATHER_MIXED_SURFACE, `cell ${i}: ${left} | ${right}`);
+            mixed++;
+        } else {
+            assert.notEqual(surface, GROUND_WEATHER_MIXED_SURFACE, `cell ${i}`);
+            assert.equal(groundWetRamp(surface), right, `cell ${i}`);
+            same++;
+            if (surface === GROUND_WEATHER_COOL_SURFACE) cool++;
+        }
+    }
+    assert.ok(cool > 200, `${cool} cool limestone cells`);
+    assert.ok(mixed > 200, `${mixed} mixed cells`);
+    assert.ok(same > 100_000);
 });

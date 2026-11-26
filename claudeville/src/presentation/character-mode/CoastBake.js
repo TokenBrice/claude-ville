@@ -38,6 +38,7 @@ import {
     inWorldTreeIslet,
 } from '../../config/scenery.js';
 import { YARD_MATERIALS } from '../../config/townPlan.js';
+import { BUILDING_GROUNDING_PROFILES } from '../../config/buildingGrounding.js';
 import { HARBOR_PIER_DECKS } from './HarborLayout.js';
 import { offshoreSceneryRecords } from './OffshoreScenery.js';
 import * as CanvasGrade from './CanvasGrade.js';
@@ -503,9 +504,15 @@ function backShoreRock(u, v, guard) {
         && (Math.max(u, v) < BACK_SHORE_CAPE_RADIUS || backShoreCoveAllow(Math.max(0, u), Math.max(0, v), guard) === 0);
 }
 
+// Bank zones per shore tile: 1 earth bank (fresh water), 2 dressed ashlar
+// (paved shore, the river's town reach), 3 timber piles (harbour water),
+// 4 the Forge's mossy quay, 5 back-shore rock (no face), 6 the Watchtower's
+// rock headland (W1 council fix: the point the lighthouse stands on meets
+// the sea in cliff strata over a tideline foot, never a beach).
 function classifyBankTiles(renderer, signed, caps, guard) {
     const zones = new Uint8Array(MAP_SIZE * MAP_SIZE);
     const harbor = [...(renderer.world?.buildings?.values?.() || [])].find(b => b.type === 'harbor');
+    const tower = [...(renderer.world?.buildings?.values?.() || [])].find(b => b.type === 'watchtower');
     for (let v = 0; v < MAP_SIZE; v++) for (let u = 0; u < MAP_SIZE; u++) {
         const tile = v * MAP_SIZE + u;
         const gx = (u + PAD) * SUB, gy = (v + PAD) * SUB;
@@ -526,7 +533,10 @@ function classifyBankTiles(renderer, signed, caps, guard) {
         }
         const inHarbor = harbor?.position && u >= harbor.position.tileX && u < harbor.position.tileX + harbor.width
             && v >= harbor.position.tileY && v < harbor.position.tileY + harbor.height;
+        const headland = tower?.position && u >= tower.position.tileX - 1 && u <= tower.position.tileX + tower.width + 1
+            && v >= tower.position.tileY && v <= tower.position.tileY + tower.height + 2;
         if (u >= 26 && u <= 30 && v >= 25 && v <= 29) zones[tile] = 4;
+        else if (headland) zones[tile] = 6;
         else if (harborWater && !inHarbor) zones[tile] = 3;
         else if (paved || (caps[tile] === RIVER_CAP && u < 23)) zones[tile] = 2;
         else if (caps[tile] <= 3) zones[tile] = 1;
@@ -929,6 +939,31 @@ function coastTileList(renderer) {
     return out;
 }
 
+// W1 council fix — a wet-sand cell whose nearest shore is a bank face (bank
+// zones 1–4 and 6) keeps no strand: the face meets the land directly, never
+// a sand strip on top of it. Walks down the coast field's gradient to the
+// contour and reads the zone of the tiles there (the contour's own tile and
+// the one a third of a tile seaward, which the classifier marks).
+function faceBanked(field, u, v, sd) {
+    const zones = field.bankZone;
+    if (!zones) return false;
+    const e = 0.04;
+    const gx = field.signedDistance(u + e, v) - field.signedDistance(u - e, v);
+    const gy = field.signedDistance(u, v + e) - field.signedDistance(u, v - e);
+    const g = Math.hypot(gx, gy);
+    if (!(g > 1e-6)) return false;
+    const reach = sd < 0 ? -sd : 0;
+    for (let k = 0; k < 2; k++) {
+        const d = reach + k * 0.34;
+        const x = Math.round(u + gx / g * d);
+        const y = Math.round(v + gy / g * d);
+        if (x < 0 || y < 0 || x >= MAP_SIZE || y >= MAP_SIZE) continue;
+        const zone = zones[y * MAP_SIZE + x];
+        if (zone !== 0 && zone !== 5) return true;
+    }
+    return false;
+}
+
 function landPaved(renderer, wx, wy, tx, ty) {
     const ground = renderer.groundField;
     const CLASS = ground?.CLASS;
@@ -1004,7 +1039,7 @@ function classifyCoast(renderer, field) {
                 const cell = r * cols + c;
                 depth[cell] = sd;
                 const cls = waterClass(sd, cap, wx - 1, wy - 1);
-                if (cls === CLASS_WET && landPaved(renderer, wx, wy, tx, ty)) continue;
+                if (cls === CLASS_WET && (landPaved(renderer, wx, wy, tx, ty) || faceBanked(field, u, v, sd))) continue;
                 caps[cell] = cap;
                 classes[cell] = cls;
             }
@@ -1788,7 +1823,57 @@ function recordFoot(coast, x, y) {
 }
 
 const ASHLAR_COURSES = [8, 6, 5, 3, 4];
-const QUAY_COURSES = [8, 6, 5, 5, 3, 4, 4];
+// W1 council fix — the Forge's mossy quay face, top → bottom, as ashlar
+// stops by facing (lit, mid, shade; `joint`: a dressed course, vertical
+// joints): a lit coping over its drip line, an upper course, a bed joint and
+// a lower course (repeated on a taller face), then the moss band and the
+// dark wet waterline (`quayColour`).
+const QUAY_FACE = Object.freeze([
+    Object.freeze({ tones: [8, 7, 6] }),
+    Object.freeze({ tones: [3, 2, 2] }),
+    Object.freeze({ tones: [6, 5, 4], joint: true }),
+    Object.freeze({ tones: [6, 5, 4], joint: true }),
+    Object.freeze({ tones: [3, 2, 1] }),
+    Object.freeze({ tones: [5, 4, 3], joint: true }),
+    Object.freeze({ tones: [5, 4, 3], joint: true }),
+]);
+// The Watchtower headland's face (bank zone 6), top → bottom by facing
+// (lit, mid, shade) on the cliff ramp: a lit lip, strata with a dark
+// bedding joint, fracture lines in cells, and a tideline foot.
+const HEADLAND_STRATA = Object.freeze([
+    Object.freeze([5, 4, 3]), Object.freeze([3, 2, 2]), Object.freeze([4, 3, 2]), Object.freeze([1, 1, 0]),
+    Object.freeze([3, 2, 1]), Object.freeze([4, 3, 2]), Object.freeze([2, 1, 1]), Object.freeze([3, 2, 1]),
+]);
+function headlandColour(x, row, height, facing) {
+    const h = hash2(x, row, 951);
+    if (row === height - 1) return TIDE[h < 0.6 ? 0 : 1];
+    if (row === height - 2) return TIDE[h < 0.4 ? 1 : 2];
+    // Rugged, not dressed: the strata step a row up or down every 8 px, and
+    // a fracture in about half the 11 px cells runs part of the way down.
+    const shift = Math.floor(hash2(x >> 3, 0, 957) * 3) - 1;
+    const fk = Math.floor(x / 11);
+    const crack = fk * 11 + Math.floor(hash2(fk, 0, 953) * 10);
+    const depth = 1 + Math.floor(hash2(fk, 2, 959) * (height - 2));
+    if (row >= 1 && row <= depth && hash2(fk, 1, 955) < 0.55 && (x === crack || x === crack + 1)) return x === crack ? CLIFF[0] : CLIFF[3];
+    return CLIFF[HEADLAND_STRATA[Math.max(0, Math.min(HEADLAND_STRATA.length - 1, row + shift))][facing]];
+}
+
+function quayColour(x, row, height, facing) {
+    const h = hash2(x, row, 911);
+    if (row === height - 1) return TIDE[h < 0.7 ? 0 : 1];
+    if (row === height - 2) return TIDE[h < 0.5 ? 2 : 3];
+    if (row === height - 3 && h < 0.45) return TIDE[h < 0.15 ? 3 : 2];
+    const def = QUAY_FACE[Math.min(row, QUAY_FACE.length - 1)];
+    let tone = def.tones[facing];
+    if (def.joint) {
+        const unitX = x + (row >= 5 ? 7 : 0);
+        const block = Math.floor(unitX / 39);
+        const span = [9, 13, 17][Math.floor(hash2(block, row >= 5, 921) * 3)];
+        const joint = (unitX - block * 39) % span;
+        tone += joint === 0 ? -2 : joint === 1 && facing < 2 ? 1 : 0;
+    }
+    return ASHLAR[Math.max(1, Math.min(ASHLAR.length - 1, tone))];
+}
 function bankColour(zone, x, row, height, facing, snow, grass) {
     const h = hash2(x, row, 911);
     if (zone === 1) {
@@ -1806,10 +1891,11 @@ function bankColour(zone, x, row, height, facing, snow, grass) {
         if (pile === 1) return TIMBER[1];
         return (x & 3) === 3 ? (row === 5 ? TIDE[2] : TIMBER[0]) : TIMBER[row <= 2 ? 2 : 1];
     }
-    const quay = zone === 4;
-    if (row === height - 1) return TIDE[quay ? (h < 0.5 ? 1 : h < 0.9 ? 2 : 3) : h < (facing === 2 ? 0.3 : 0.18) ? 2 : 1];
-    const course = (quay ? QUAY_COURSES : ASHLAR_COURSES)[row];
-    const unitX = x + (row >= (quay ? 5 : 4) ? 7 : 0);
+    if (zone === 4) return quayColour(x, row, height, facing);
+    if (zone === 6) return headlandColour(x, row, height, facing);
+    if (row === height - 1) return TIDE[h < (facing === 2 ? 0.3 : 0.18) ? 2 : 1];
+    const course = ASHLAR_COURSES[row];
+    const unitX = x + (row >= 4 ? 7 : 0);
     const block = Math.floor(unitX / 39);
     const span = [9, 13, 17][Math.floor(hash2(block, row >= 4, 921) * 3)];
     const joint = (unitX - block * 39) % span;
@@ -1817,6 +1903,39 @@ function bankColour(zone, x, row, height, facing, snow, grass) {
     if (row > 0) tone += (joint === 0 ? -1 : joint === 1 && facing < 2 ? 1 : 0)
         - Number(hash2(Math.floor(unitX / span), row >= 4, 923) < 0.025);
     return ASHLAR[tone];
+}
+
+// W1 council fix — a building whose grounding profile carries a `quay`
+// (the Forge): its plinth front edges in world px, so the zone-4 face can
+// reach below the wall's foot. Null without the profile or the anchor.
+function quayFoot(renderer) {
+    for (const b of renderer.world?.buildings?.values?.() || []) {
+        const profile = BUILDING_GROUNDING_PROFILES[b.type];
+        const quay = profile?.quay;
+        const anchor = quay && profile.plinth ? renderer.assets?.getAnchor?.(`building.${b.type}`) : null;
+        if (!anchor) continue;
+        const cx = (b.position.tileX + b.width / 2 - b.position.tileY - b.height / 2) * HALF_W;
+        const cy = (b.position.tileX + b.width / 2 + b.position.tileY + b.height / 2) * HALF_H;
+        const pts = quay.edges.map(e => ({ x: cx + profile.plinth[e][0] - anchor[0], y: cy + profile.plinth[e][1] - anchor[1] }));
+        return {
+            drop: quay.drop,
+            rows: quay.rows,
+            at(x) {
+                for (let k = 0; k < pts.length - 1; k++) {
+                    const a = pts[k], e = pts[k + 1];
+                    if (x >= Math.min(a.x, e.x) && x <= Math.max(a.x, e.x)) return a.y + (e.y - a.y) * (x - a.x) / ((e.x - a.x) || 1);
+                }
+                return null;
+            },
+        };
+    }
+    return null;
+}
+
+// The dressed ledge between a quay building's wall foot and the coping.
+function quayLedge(x, y) {
+    if (((x % 11) + 11) % 11 === 0) return ASHLAR[4];
+    return ASHLAR[hash2(x, y, 941) < 0.3 ? 5 : 6];
 }
 
 function paintBanks(buf, coast, field, renderer) {
@@ -1827,6 +1946,7 @@ function paintBanks(buf, coast, field, renderer) {
     const grass = bankGrass(renderer);
     const guard = backShoreGuard(renderer, buildingFootprintKeys(renderer));
     const snow = snowBucketOf(renderer._groundState?.snowCover) > 0;
+    const quay = quayFoot(renderer);
     const blocked = (x, y) => {
         const u = y / TILE_HEIGHT + x / TILE_WIDTH, v = y / TILE_HEIGHT - x / TILE_WIDTH;
         if (HARBOR_PIER_DECKS.some(deck => u >= deck.x0 && u <= deck.x1 && v >= deck.y0 && v <= deck.y1)) return true;
@@ -1876,16 +1996,27 @@ function paintBanks(buf, coast, field, renderer) {
         const zone = coast.bankZone[ty * MAP_SIZE + tx];
         if (!zone || zone === 5 || blocked(x, y)) continue;
         const maxH = zone === 1 ? 4 + Number(hash2(x >> 4, 0, 911) < 0.5) : zone + 4;
+        // The Forge quay: where the shore runs under the wall, `lead` rows
+        // (hidden behind the sprite, then the dressed ledge) carry the face
+        // down to `drop` px under the plinth edge, where its courses start.
+        let lead = 0;
+        let courses = zone === 4 && quay ? quay.rows : maxH;
+        if (zone === 4 && quay) {
+            const foot = quay.at(x + 0.5);
+            if (foot !== null) lead = Math.max(0, Math.ceil(foot + quay.drop - y));
+        }
         let run = 0;
-        while (run < maxH + 4 && j + run < h && water(role[at + run * w]) && !blocked(x, y + run)) run++;
-        const height = Math.min(maxH, Math.max(0, run - 3));
+        while (run < lead + courses + 4 && j + run < h && water(role[at + run * w]) && !blocked(x, y + run)) run++;
+        const height = Math.min(lead + courses, Math.max(0, run - 3));
         const gx = field.signedDistanceAtWorld(x + 1, y) - field.signedDistanceAtWorld(x - 1, y);
         const gy = field.signedDistanceAtWorld(x, y + 1) - field.signedDistanceAtWorld(x, y - 1);
         const side = 0.3 * Math.hypot(gx, gy);
         const facing = gx < -side ? 0 : gx > side ? 2 : 1;
-        for (let row = 0; row < height; row++) land(x, y + row, bankColour(zone, x, row, height, facing, snow, grass));
+        for (let row = 0; row < height; row++) {
+            land(x, y + row, row < lead ? quayLedge(x, y + row) : bankColour(zone, x, row - lead, height - lead, facing, snow, grass));
+        }
         if (zone === 3 && x % 12 === 0 && !blocked(x, y - 1)) land(x, y - 1, TIMBER[3]);
-        if (zone === 4 && height === maxH) forge.push({ x, y, run });
+        if (zone === 4 && height - lead === courses) forge.push({ x, y: y + lead, run: run - lead, rows: courses });
         faces.push({ x, y, height });
         for (let row = 0; row < Math.min(5, run - height); row++) {
             const t = at + (height + row) * w;
@@ -1898,12 +2029,12 @@ function paintBanks(buf, coast, field, renderer) {
     }
     forge.sort((a, b) => a.x - b.x);
     for (let n = 0; n < forge.length; n++) {
-        const { x, y, run } = forge[n];
+        const { x, y, run, rows: fh } = forge[n];
         const at = share => n - Math.floor(forge.length * share);
         const pier = [at(0.30), at(0.75)].find(k => k >= 0 && k < 6);
         if (pier != null) {
-            for (let row = 0; row < 8; row++) land(x, y + row, ASHLAR[pier === 0 ? 7 : pier === 5 ? 3 : 5]);
-            if (run >= 12) land(x, y + 8, TIDE[1]);
+            for (let row = 0; row < fh; row++) land(x, y + row, ASHLAR[pier === 0 ? 7 : pier === 5 ? 3 : 5]);
+            if (run >= fh + 4) land(x, y + fh, TIDE[1]);
         }
         const stair = at(0.52), post = at(0.85);
         if (stair >= 0 && stair < 12) for (let k = 0; k <= Math.floor(stair / 4); k++) {
@@ -1912,7 +2043,7 @@ function paintBanks(buf, coast, field, renderer) {
         }
         if (stair >= 0 && stair < 12) {
             const foot = 4 + 2 * Math.floor(stair / 4);
-            for (let row = foot; row < 8; row++) {
+            for (let row = foot; row < fh; row++) {
                 const at = bufferIndex(buf, x, y + row);
                 role[at] = CLASS_WATER + 1;
                 putRgb(data, at * 4, COAST_WATER_STOPS[1]);

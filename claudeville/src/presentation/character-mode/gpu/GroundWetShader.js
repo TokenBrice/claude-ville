@@ -19,7 +19,10 @@
 //            joints last, and the edge never moves per frame.
 //   step     a wet texel steps one stop down its own C1 ramp
 //            (GROUND_WET_STEPS, by surface and stop), on palette; gw1 keeps (1 − gw1) of the old uniform darkening on top.
-//   sheen    a wet paving top (surfaces 3–6, stop ≥ 3) takes one course of the
+//   mixed    a field cell whose two fine texels lie on different ramps
+//            (surface 15) takes no step: it keeps the whole uniform
+//            darkening, like a shore pair, never a neighbour's ramp.
+//   sheen    a wet paving top (surfaces 3–6 and 9, stop ≥ 3) takes one course of the
 //            graded sky after the grade (GROUND_WET.sheen × gw1), the sky
 //            capped at GROUND_WET.sheenCap × the wet top's value.
 //   mirror   GW-2: on a puddle texel (full) or, with gw1 on, any wet paving
@@ -92,14 +95,17 @@ bool groundLand(vec4 field) {
 float groundCode(vec4 field) {
     return floor(field.r * 255.0 + 0.5);
 }
+bool groundMixed(vec4 field) {
+    return floor(groundCode(field) / 16.0) > 14.5;
+}
 bool groundPaving(vec4 field) {
     float surface = floor(groundCode(field) / 16.0);
-    return surface > 2.5 && surface < 6.5;
+    return (surface > 2.5 && surface < 6.5) || abs(surface - 9.0) < 0.5;
 }
 bool groundSheenTop(vec4 field) {
     float code = groundCode(field);
     float surface = floor(code / 16.0);
-    return surface > 2.5 && surface < 6.5 && code - surface * 16.0 > 2.5;
+    return groundPaving(field) && code - surface * 16.0 > 2.5;
 }
 bool groundWetAt(vec4 field, ivec2 cell) {
     float level = u_groundWeather.w;
@@ -120,7 +126,7 @@ vec4 applyGroundWet(vec3 color, vec2 world) {
     if (!groundFieldOn() || u_groundWeather.x <= 0.0) return vec4(color, 1.0);
     ivec2 cell = groundFieldCell(world);
     vec4 field = groundFieldTexel(cell);
-    if (!groundLand(field)) return vec4(color, 1.0);
+    if (!groundLand(field) || groundMixed(field)) return vec4(color, 1.0);
     vec3 wet = groundWetAt(field, cell) ? color * groundWetStep(field) : color;
     return vec4(wet, 1.0 - u_groundWeather.x);
 }
@@ -189,14 +195,17 @@ fn groundLand(field: vec4f) -> bool {
 fn groundCode(field: vec4f) -> f32 {
   return floor(field.r * 255.0 + 0.5);
 }
+fn groundMixed(field: vec4f) -> bool {
+  return floor(groundCode(field) / 16.0) > 14.5;
+}
 fn groundPaving(field: vec4f) -> bool {
   let surface = floor(groundCode(field) / 16.0);
-  return surface > 2.5 && surface < 6.5;
+  return (surface > 2.5 && surface < 6.5) || abs(surface - 9.0) < 0.5;
 }
 fn groundSheenTop(field: vec4f) -> bool {
   let code = groundCode(field);
   let surface = floor(code / 16.0);
-  return surface > 2.5 && surface < 6.5 && code - surface * 16.0 > 2.5;
+  return groundPaving(field) && code - surface * 16.0 > 2.5;
 }
 fn groundWetAt(field: vec4f, cell: vec2i) -> bool {
   let level = frame.groundWeather.w;
@@ -216,7 +225,7 @@ fn applyGroundWet(color: vec3f, world: vec2f) -> vec4f {
   if (!groundFieldOn() || frame.groundWeather.x <= 0.0) { return vec4f(color, 1.0); }
   let cell = groundFieldCell(world);
   let field = groundFieldTexel(cell);
-  if (!groundLand(field)) { return vec4f(color, 1.0); }
+  if (!groundLand(field) || groundMixed(field)) { return vec4f(color, 1.0); }
   let wet = select(color, color * groundWetStep(field), groundWetAt(field, cell));
   return vec4f(wet, 1.0 - frame.groundWeather.x);
 }

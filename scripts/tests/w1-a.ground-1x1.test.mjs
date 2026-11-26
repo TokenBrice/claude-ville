@@ -8,7 +8,8 @@ import {
 } from '../../claudeville/src/config/buildingGrounding.js';
 import { buildingCenterToWorld, tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import {
-    AXIS_FRAME, MEDALLION_RINGS, STONE_FACE, STONE_LATTICES, STONE_ROLE, lipOffset, medallionAt, stoneAt, stoneFrame, stoneRole,
+    AXIS_FRAME, MEDALLION_RINGS, STONE_FACE, STONE_LATTICES, STONE_ROLE, lipOffset, medallionAt, medallionSteepSide, stoneAt, stoneFrame,
+    stoneRole,
 } from '../../claudeville/src/presentation/character-mode/TerrainTileset.js';
 import {
     EDGE_BLADES, GROUND_BAKE_BUDGET, GROUND_CHAMFER, GROUND_CLASS, GROUND_COLOR_TEXEL_W, GROUND_FIELD_TEXEL_W, GROUND_STOP_FLAGS,
@@ -173,14 +174,52 @@ test('X-5: sliced into labelled passes within the transient budget; stepping equ
     const hashSliced = createHash('sha256').update(image().data).digest('hex');
     assert.equal(hashSliced, hashOnce, 'slicing never changes a pixel');
     assert.ok(labels.get('base') >= N * TILE_HEIGHT / GROUND_BAKE_BUDGET.bandRows - 1, `base slices ${labels.get('base')}`);
-    for (const pass of ['details', 'crowns', 'chamfer', 'living', 'decals', 'tufts', 'transitions', 'footings', 'fields', 'puddles']) {
+    for (const pass of ['details', 'crowns', 'chamfer', 'living', 'decals', 'tufts', 'transitions', 'footings', 'upload', 'fields', 'puddles']) {
         assert.ok(labels.has(pass), `a slice boundary after ${pass}`);
+    }
+    // The one-off setup steps each end a slice of their own.
+    for (const step of ['coast', 'tiles', 'drift', 'textures', 'occluders', 'routes', 'noise', 'planes']) {
+        assert.ok(labels.has(`setup:${step}`), `a slice boundary after setup ${step}`);
     }
     assert.equal(GROUND_BAKE_BUDGET.bandRows, 64);
     assert.ok(GROUND_BAKE_BUDGET.sliceMs <= 9);
+    assert.equal(GROUND_BAKE_BUDGET.sliceCapMs, 9);
     assert.ok(once.stats.peakBytes <= GROUND_BAKE_BUDGET.peakBytes, `weather bake peak ${once.stats.peakBytes}`);
     assert.ok(bakeGround(renderer).stats.peakBytes <= GROUND_BAKE_BUDGET.peakBytes);
     assert.deepEqual(GROUND_CHAMFER, { A_X: 5, A_Y: 10, B: 11 });
+});
+
+test('X-5: the measured longest slice stays within the 9 ms cap, stepping off the frame', t => {
+    // A heavier island than the other fixtures: a plaza, an avenue, a crowd
+    // of trees (with the World Ash's wide crown) and a landmark, so the crown
+    // field, the occluders and every pass have real work to slice.
+    const trees = [{ species: 'ash', size: 'world', variant: 0, tileX: 8, tileY: 30 }];
+    for (let k = 0; k < 120; k++) trees.push({ species: k % 3 ? 'oak' : 'pine', size: k % 4 ? 'large' : 'tall', variant: 0, tileX: 4 + (k * 7) % 32, tileY: 3 + (k * 11) % 33 });
+    const { renderer } = fixture(t, {
+        townSquareTiles: tiles(18, 20, 19, 21),
+        mainAvenueTiles: tiles(21, 26, 19, 20),
+        world: { buildings: new Map([['archive', { type: 'archive', position: { tileX: 3, tileY: 15 }, width: 5, height: 3 }]]) },
+        scenery: { getTreeProps: () => trees },
+    });
+    // The wall-clock length of each `next()` (what an idle slot pays),
+    // not just the bake's own accounting; the best of three runs, so a
+    // stray collector pause on a busy host does not count as a slice.
+    let best = Infinity;
+    let accounted = Infinity;
+    for (let run = 0; run < 3 && best > GROUND_BAKE_BUDGET.sliceCapMs; run++) {
+        const gen = groundBakeSlices(renderer, true);
+        let worst = 0;
+        let step;
+        do {
+            const started = performance.now();
+            step = gen.next();
+            worst = Math.max(worst, performance.now() - started);
+        } while (!step.done);
+        best = Math.min(best, worst);
+        accounted = Math.min(accounted, step.value.stats.maxSliceMs);
+    }
+    assert.ok(best <= GROUND_BAKE_BUDGET.sliceCapMs, `longest measured slice ${best.toFixed(2)} ms`);
+    assert.ok(accounted <= GROUND_BAKE_BUDGET.sliceCapMs, `longest accounted slice ${accounted.toFixed(2)} ms`);
 });
 
 test('2.2: the stone lattice, its roles and its key-light faces', () => {
@@ -234,6 +273,50 @@ test('2.3: the octagonal fountain compass medallion', () => {
     let rings = 0;
     for (let r = 0.9; r < 1.88; r += 0.01) if (medallionAt(r, 0) === 0) rings++;
     assert.ok(rings >= 4, 'one-row mortar seams between the courses');
+    // W1 council fix — carved flat, never a picket fence. The two sides that
+    // stand vertical on screen (du · dv < 0, the diagonal term ruling) take
+    // no lit or shaded lip and only soft (stop 1) seams; the outer band beds
+    // in soft mortar; band B drops its radial joints steeper than 2:1.
+    assert.equal(medallionSteepSide(0.7, -0.7), true);
+    assert.equal(medallionSteepSide(-0.7, 0.7), true);
+    assert.equal(medallionSteepSide(0.7, 0.7), false, 'the screen-horizontal sides');
+    assert.equal(medallionSteepSide(1.2, 0.1), false, 'the 2:1 sides');
+    const along = (r) => [r * Math.SQRT1_2, -r * Math.SQRT1_2];
+    const steep = new Map();
+    for (let r = 0.9; r < 1.88; r += 0.002) {
+        const v = medallionAt(...along(r));
+        steep.set(v, (steep.get(v) || 0) + 1);
+    }
+    assert.ok(!steep.has(0), 'no stop-0 seam on a steep side');
+    assert.ok(!steep.has(4) && !steep.has((1 << 4) | 3) && !steep.has((1 << 4) | 1), 'no lip on a steep side');
+    assert.equal(medallionAt(...along(1.03)), 3, 'the kerb keeps its body tone on a steep side');
+    assert.equal(medallionAt(-1.03, 0), 4, 'the 2:1 sides keep their lips');
+    // The outer band's course mortar and the border's outer seam are stop 1.
+    assert.equal(medallionAt(1.41, 0), 1);
+    assert.equal(medallionAt(1.87, 0), 1);
+    // Band B: no radial joint where du · dv > 0 (screen-steep), soft ones elsewhere.
+    let steepJoints = 0;
+    let softJoints = 0;
+    let joints = 0;
+    for (const ring of [1.5, 1.7]) {
+        for (let a = 0; a < Math.PI * 2; a += Math.PI / 720) {
+            // On the octagon ring (both courses of band B).
+            const c = Math.cos(a);
+            const sn = Math.sin(a);
+            const norm = Math.max(Math.abs(c), Math.abs(sn), (Math.abs(c) + Math.abs(sn)) * Math.SQRT1_2);
+            const du = ring * c / norm;
+            const dv = ring * sn / norm;
+            const v = medallionAt(du, dv);
+            if (v === 0) {
+                if (du * dv > 0) steepJoints++;
+                else softJoints++;
+            }
+            if (v === 1 && du * dv < 0 && !medallionSteepSide(du, dv)) joints++;
+        }
+    }
+    assert.ok(joints > 0, 'the shallow radial joints stay, softened to stop 1');
+    assert.equal(steepJoints, 0, 'band B keeps no steep radial joint');
+    assert.equal(softJoints, 0, 'band B joints are soft');
 });
 
 test('2.2–2.4: plaza and avenue stones read as units with NW / SE lips, setts end at a 3 px jointed kerb', t => {
@@ -396,6 +479,36 @@ test('E0: a coast bank zone takes no beach and paints the earth bank lip', t => 
     assert.ok(edges > 100 && lips / edges > 0.9, `${lips}/${edges} bank lips`);
 });
 
+test('E0: the strand reads its nearest shore: no sand on a bank face half a tile inland, beaches elsewhere', t => {
+    // A diagonal shore whose bank zone marks only the tiles the contour
+    // crosses (as CoastBake's classifier does: x + y of 66 and 67), banked on
+    // the west half: a strand texel half a tile inland rounds to an unmarked
+    // tile, so the bank must be read at its nearest shore contact.
+    const sd = (x, y) => (x + y - 66.2) / Math.SQRT2;
+    const bankZone = new Uint8Array(N * N);
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+        if (Math.abs(sd(x, y)) < Math.SQRT1_2 && x - y < 0) bankZone[y * N + x] = 2;
+    }
+    const { renderer } = fixture(t, { _coastField: { key: '0:0:0:0:0:0', signedDistance: sd, bankZone } });
+    const base = bakeGround(renderer);
+    const { cols, surfaces } = base.color;
+    let bankedSand = 0;
+    let beach = 0;
+    for (let i = 0; i < surfaces.length; i++) {
+        if (surfaces[i] !== S.SAND) continue;
+        const sx = X0 + (i % cols) + 0.5;
+        const sy = Y0 + Math.floor(i / cols) + 0.5;
+        const tx = sx / TILE_WIDTH + sy / TILE_HEIGHT;
+        const ty = sy / TILE_HEIGHT - sx / TILE_WIDTH;
+        if (sd(tx, ty) < -2) continue; // the far edges' back-shore strand, not this shore
+        if (tx < 1 || ty < 1 || tx > N - 2 || ty > N - 2) continue; // where the shore runs off the map
+        if (tx - ty < -1.5) bankedSand++;
+        else if (tx - ty > 1.5) beach++;
+    }
+    assert.equal(bankedSand, 0, 'no sand on the banked stretch');
+    assert.ok(beach > 1000, `the open beach keeps its strand (${beach})`);
+});
+
 test('E1: footing profiles stay within 10 rows, run along front edges and are bake-owned', () => {
     const withFooting = Object.entries(BUILDING_GROUNDING_PROFILES).filter(([, p]) => p.footing);
     assert.deepEqual(withFooting.map(([k, p]) => [k, p.footing.kind]), [['command', 'dais'], ['archive', 'terrace'], ['watchtower', 'rock']]);
@@ -407,15 +520,33 @@ test('E1: footing profiles stay within 10 rows, run along front edges and are ba
     }
     const dais = BUILDING_GROUNDING_PROFILES.command.footing;
     assert.equal(dais.rows.length, 7);
-    assert.deepEqual([dais.stair.at, dais.stair.width, dais.stair.steps, dais.stair.grow], [[15.5, 18.0], 30, 5, 2]);
+    // W1 council fix — three painted steps (two-row treads) hung from the
+    // art's own two gate steps: a five-step flight, nine rows painted.
+    assert.deepEqual([dais.stair.at, dais.stair.width, dais.stair.steps, dais.stair.grow, dais.stair.treadRows], [[15.2, 18.3], 34, 3, 3, 2]);
+    assert.equal(dais.stair.foot.length, 2);
+    assert.equal(footingHeight(dais), 9);
     assert.equal(dais.aoShiftRows, 7);
+    // Two legible courses on both faces: a dark drip under the coping and a
+    // dark bed joint between the courses, the SE face never one dark band.
+    for (const face of ['sw', 'se']) {
+        const tones = dais.rows.map(r => r[face]);
+        assert.ok(tones[1] < tones[0] - 2 && tones[1] < tones[2] - 1, `${face} drip ${tones}`);
+        assert.ok(tones[4] < tones[3] - 1 && tones[4] < tones[5] - 1, `${face} bed ${tones}`);
+        assert.ok(new Set(tones).size >= 4, `${face} tones ${tones}`);
+    }
     assert.equal(BUILDING_GROUNDING_PROFILES.archive.footing.rows.length, 4);
     assert.ok(BUILDING_GROUNDING_PROFILES.archive.footing.rows.some(r => r.relief), 'a relief balustrade');
-    assert.equal(BUILDING_GROUNDING_PROFILES.watchtower.footing.tide, 3);
+    const rock = BUILDING_GROUNDING_PROFILES.watchtower.footing;
+    assert.equal(rock.tide, 3);
+    assert.ok(rock.foot.length >= 3 && rock.foot.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)), 'the drawn foot polyline');
+    assert.ok(rock.foot.every((p, k) => k === 0 || p[0] > rock.foot[k - 1][0]), 'left to right');
+    // The Forge's coast quay reaches under its plinth edges.
+    const quay = BUILDING_GROUNDING_PROFILES.forge.quay;
+    assert.ok(quay && quay.rows >= 8 && quay.drop >= 0 && quay.edges.includes('bottom'));
 });
 
 test('E1: footings paint in front of their edges, carry the AO shift and never take snow', t => {
-    const anchors = { command: [199, 164], archive: [167, 182] };
+    const anchors = { command: [199, 164], archive: [167, 182], watchtower: [144, 320] };
     const buildings = new Map([
         ['command', { type: 'command', position: { tileX: 13, tileY: 14 }, width: 5, height: 4 }],
         ['archive', { type: 'archive', position: { tileX: 3, tileY: 15 }, width: 5, height: 3 }],
@@ -436,8 +567,22 @@ test('E1: footings paint in front of their edges, carry the AO shift and never t
         assert.ok(st.maxRows <= FOOTING_MAX_ROWS, `${type} ${st.maxRows} rows`);
         assert.ok(st.minDy >= 0, `${type} paints only on or below its front edge (${st.minDy})`);
     }
-    assert.equal(footings.command.maxRows, 10, 'the 5-step stair');
+    assert.equal(footings.command.maxRows, 9, 'the three painted steps under the art\'s two');
     assert.equal(footings.archive.maxRows, 4);
+    // The flight hangs from the art's own gate steps: centred on their front
+    // edge (base.png px through the anchor), below it.
+    const cmd = buildings.get('command');
+    const cmdCentre = buildingCenterToWorld(cmd);
+    const [fa, fb] = BUILDING_GROUNDING_PROFILES.command.footing.stair.foot;
+    assert.ok(Math.abs(footings.command.stair.x - (cmdCentre.x + (fa[0] + fb[0]) / 2 - anchors.command[0])) < 1e-6);
+    // The headland hangs from the drawn foot polyline, not the footprint's
+    // seaward corners: every painted column lies within it plus its spread.
+    const tower = buildingCenterToWorld(buildings.get('watchtower'));
+    const foot = BUILDING_GROUNDING_PROFILES.watchtower.footing.foot;
+    const [spreadL, spreadR] = BUILDING_GROUNDING_PROFILES.watchtower.footing.spread;
+    const xLo = tower.x + foot[0][0] - anchors.watchtower[0] - spreadL;
+    const xHi = tower.x + foot[foot.length - 1][0] - anchors.watchtower[0] + spreadR;
+    assert.ok(footings.watchtower.columns > 0 && footings.watchtower.columns <= xHi - xLo + 1, `${footings.watchtower.columns} columns`);
     // The Command's contact collar starts at the dais foot.
     const centre = buildingCenterToWorld(buildings.get('command'));
     const [ax, ay] = anchors.command;

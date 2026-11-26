@@ -19,7 +19,9 @@
 //                    0.03, the plaza 0.02) runs true. Avenues carry no earth
 //                    shoulder: they end at a kerb. Sand and the waterline
 //                    come from Water's coast field (CoastBake.js); a coast
-//                    `bankZone` (E0) suppresses sand where a bank face stands.
+//                    `bankZone` (E0) suppresses sand wherever the nearest
+//                    shore is a bank face (read at the shore contact, so no
+//                    strand sits on top of a quay, bank or headland).
 //   2. paving units  laid stone is individual stones on one 2:1 lattice
 //                    (TerrainTileset `stoneAt`): each stone has its body stop,
 //                    a lit NW lip, a shaded SE lip, 1 px mortar joints, its
@@ -66,7 +68,9 @@
 //                    bank reeds, pebbles.
 //   9. footings (E1) each landmark's `footing` profile (buildingGrounding.js)
 //                    paints its dais, terrace riser or rock headland under the
-//                    sprite's front edges, at most 10 rows tall.
+//                    sprite's front edges (or the drawn foot it authors), at
+//                    most 10 rows tall; a dais stair may hang from the art's
+//                    own gate steps.
 //
 // Registered as terrain bake pass 'ground-splat' (stage 'ground'). The result
 // is cached here per season/ground stage/scenery/coast revision, so a terrain-cache rebake
@@ -93,7 +97,7 @@ import { TOWN_ROAD_ROUTES, YARD_MATERIALS } from '../../config/townPlan.js';
 import { BUILDING_GROUNDING_PROFILES, FOOTING_MAX_ROWS } from '../../config/buildingGrounding.js';
 import {
     AXIS_FRAME, MEDALLION_RAMP, STONE_LATTICES, STONE_ROLE, latticeHash, lipOffset, medallionAt,
-    readTerrainCellLuma, specularCorner, stoneAt, stoneFrame, stoneRole,
+    hasTerrainCellLuma, readTerrainCellLuma, specularCorner, stoneAt, stoneFrame, stoneRole,
 } from './TerrainTileset.js';
 import { buildingCenterToWorld, tileToWorld } from './Projection.js';
 import { getCoastField } from './CoastBake.js';
@@ -103,7 +107,8 @@ import { TREE_SPRITES, treeSpriteKey } from './FoliageRenderer.js';
 import { releaseCanvasBackingStore } from './CanvasBudget.js';
 import { lookStrength } from './LookStrengths.js';
 import {
-    BARE_CROWN_COVER, EAVE_REACH, GROUND_WEATHER_TEXEL_W, GROUND_WEATHER_X0, GROUND_WEATHER_Y0, packGroundWeather, validGroundWeather,
+    BARE_CROWN_COVER, EAVE_REACH, GROUND_WEATHER_COOL_SURFACE, GROUND_WEATHER_MIXED_SURFACE, GROUND_WEATHER_TEXEL_W, GROUND_WEATHER_X0,
+    GROUND_WEATHER_Y0, groundWetRamp, packGroundWeather, validGroundWeather,
 } from './GroundWeatherField.js';
 
 export const GROUND_CLASS = Object.freeze({
@@ -129,11 +134,17 @@ const HALF_H = TILE_HEIGHT / 2;
 
 // Slicing: a yield at least every GROUND_BAND_ROWS rows and as soon as a
 // slice has worked GROUND_SLICE_MS (the diamond's middle rows are the widest).
+// Every pass checks the clock per row (or per tree, per decal batch), and the
+// one-off setup steps (input grids, textures, occluders, the large planes,
+// the crown field, the canvas upload) each end their own slice, so the
+// longest measured slice stays within GROUND_SLICE_CAP_MS (`stats.maxSliceMs`)
+// with a row's worth of headroom over the soft target.
 const GROUND_BAND_ROWS = 64;
-const GROUND_SLICE_MS = 8;
+const GROUND_SLICE_MS = 6;
+const GROUND_SLICE_CAP_MS = 9;
 // The transient working-set ceiling of one base bake (the large typed
 // planes it holds at once, accounted in `stats.peakBytes`).
-export const GROUND_BAKE_BUDGET = Object.freeze({ bandRows: GROUND_BAND_ROWS, sliceMs: GROUND_SLICE_MS, peakBytes: 56 * 1024 * 1024 });
+export const GROUND_BAKE_BUDGET = Object.freeze({ bandRows: GROUND_BAND_ROWS, sliceMs: GROUND_SLICE_MS, sliceCapMs: GROUND_SLICE_CAP_MS, peakBytes: 56 * 1024 * 1024 });
 
 // The coast's signed distance per texel, quantized to 1/256 tile (Int16);
 // > 0 exactly where the distance is > 0 (written inline by the main loop).
@@ -162,7 +173,11 @@ const STOP_MASK = 7;
 const KERB_SHIFT = 3;
 const KERB_MASK = 3 << KERB_SHIFT;
 const FOOTING_FLAG = 64;
-export const GROUND_STOP_FLAGS = Object.freeze({ STOP_MASK, KERB_SHIFT, KERB_MASK, FOOTING: FOOTING_FLAG });
+// GW-1 — the texel was laid on the cool limestone ramp (`plazaCool`: the
+// plaza's cool stones, the medallion's rays, the cool flag yards); the
+// weather field gives it surface 9 so a wet step stays on its own ramp.
+const COOL_FLAG = 128;
+export const GROUND_STOP_FLAGS = Object.freeze({ STOP_MASK, KERB_SHIFT, KERB_MASK, FOOTING: FOOTING_FLAG, COOL: COOL_FLAG });
 
 // ---- surfaces -------------------------------------------------------------
 
@@ -577,14 +592,18 @@ function bilin(grid, tx, ty) {
         + (grid[y1 * N + x0] * (1 - fx) + grid[y1 * N + x1] * fx) * fy;
 }
 
-function readTextures(r) {
+// A generator: a cold cell read (the sheet's first decode and readback) runs
+// in a slice of its own.
+function* readTextures(r, due = () => false) {
     const out = {};
     const assets = r.assets;
     for (const [name, sources] of Object.entries(TEXTURE_SOURCES)) {
         const list = [];
         for (const [id, cell, ...transforms] of sources) {
             const image = assets?.get?.(id, { request: false }) ?? null;
+            if (image && !hasTerrainCellLuma(image, cell)) yield;
             let luma = image ? readTerrainCellLuma(image, cell) : null;
+            if (due()) yield;
             if (!luma) continue;
             for (const transform of transforms) luma = TEXTURE_TRANSFORMS[transform](luma);
             list.push(clipTexture(luma));
@@ -760,6 +779,24 @@ function getWorldAshRootField(r, tree) {
         const dist = new Float32Array(w * ASH_ROOT_ROWS).fill(12);
         const bay = new Uint8Array(w * ASH_ROOT_ROWS);
         const maxR = 10;
+        // Separable: each row's nearest opaque column within maxR (`near`,
+        // 255 none), then the 2D minimum over the (2·maxR + 1)² window as the
+        // minimum over its rows of near² + dy² — the same window, the same
+        // exact distances, in a fraction of the work.
+        const near = new Uint8Array(w * ASH_ROOT_ROWS).fill(255);
+        for (let y = 0; y < ASH_ROOT_ROWS; y++) {
+            const row = y * w;
+            let last = -1e9;
+            for (let x = 0; x < w; x++) {
+                if (opaque[row + x]) last = x;
+                if (x - last <= maxR) near[row + x] = x - last;
+            }
+            last = 1e9;
+            for (let x = w - 1; x >= 0; x--) {
+                if (opaque[row + x]) last = x;
+                if (last - x <= maxR && last - x < near[row + x]) near[row + x] = last - x;
+            }
+        }
         for (let y = 0; y < ASH_ROOT_ROWS; y++) {
             for (let x = 0; x < w; x++) {
                 const idx = y * w + x;
@@ -768,12 +805,10 @@ function getWorldAshRootField(r, tree) {
                 for (let dy = -maxR; dy <= maxR; dy++) {
                     const yy = y + dy;
                     if (yy < 0 || yy >= ASH_ROOT_ROWS) continue;
-                    for (let dx = -maxR; dx <= maxR; dx++) {
-                        const xx = x + dx;
-                        if (xx < 0 || xx >= w || !opaque[yy * w + xx]) continue;
-                        const d2 = dx * dx + dy * dy;
-                        if (d2 < best2) best2 = d2;
-                    }
+                    const dx = near[yy * w + x];
+                    if (dx === 255) continue;
+                    const d2 = dx * dx + dy * dy;
+                    if (d2 < best2) best2 = d2;
                 }
                 dist[idx] = Math.sqrt(best2);
                 // Check if nestled in a root crotch (opaque root within 16 px left & right, or above).
@@ -1272,6 +1307,29 @@ function aoStepRound(aoSteps, dither) {
 
 // ---- bake -----------------------------------------------------------------
 
+// E0 — whether the shore nearest a strand texel (tile coords, `sd` its coast
+// distance, ≤ 0 on land) is a bank: walks down the coast field's gradient to
+// the contour and reads the bank zone of the tiles there (the contour's own
+// tile, and the one a third of a tile seaward, which the classifier marks).
+const SHORE_PROBE = 0.04;
+function shoreBanked(coast, bankZone, tx, ty, sd) {
+    const N = MAP_SIZE;
+    const gx = coast.signedDistance(tx + SHORE_PROBE, ty) - coast.signedDistance(tx - SHORE_PROBE, ty);
+    const gy = coast.signedDistance(tx, ty + SHORE_PROBE) - coast.signedDistance(tx, ty - SHORE_PROBE);
+    const g = Math.hypot(gx, gy);
+    if (!(g > 1e-6)) return false;
+    const ux = gx / g;
+    const uy = gy / g;
+    const reach = sd < 0 ? -sd : 0;
+    for (let k = 0; k < 2; k++) {
+        const d = reach + k * 0.34;
+        const x = Math.round(tx + ux * d);
+        const y = Math.round(ty + uy * d);
+        if (x >= 0 && y >= 0 && x < N && y < N && bankZone[y * N + x] !== 0) return true;
+    }
+    return false;
+}
+
 function groundFieldFrom({ bounds, cols, rows, texelW, classes, weather }) {
     return {
         bounds,
@@ -1346,21 +1404,31 @@ function* groundBands(r, withWeather = false, options = {}) {
     const cols = w / COLOR_TEXEL_W;
     const rows = h;
     const fcols = w / FIELD_TEXEL_W;
+    // Setup: each one-off input step ends its own slice (a cold module or a
+    // cold coast field makes them the bake's longest single steps).
+    const setupDone = function* (label) { pause(); yield `setup:${label}`; resume(); };
     const coast = getCoastField(r);
+    yield* setupDone('coast');
     // E0 — the coast's bank zones (CoastBake, once it publishes them).
     const bankZone = coast.bankZone instanceof Uint8Array && coast.bankZone.length === N * N ? coast.bankZone : null;
     const { code, yardSurface, yardCool } = buildTileGrid(r);
     const mask = new Uint8Array(N * N);
     for (let i = 0; i < mask.length; i++) mask[i] = TILE_MASK[code[i]];
+    yield* setupDone('tiles');
     const drift = buildDriftGrid(r);
-    const textures = readTextures(r);
+    yield* setupDone('drift');
+    const textures = yield* run(readTextures(r, due), 'setup:textures');
+    yield* setupDone('textures');
     const occluders = buildOccluders(r);
+    yield* setupDone('occluders');
     const wear = buildWearSegments(r);
     const yardPlan = buildYardPlan(r);
     const frames = getRoadFrames();
+    yield* setupDone('routes');
     const sweep = sweepGrid();
     const sandGrid = sandWidthGrid();
     const kerbRuns = kerbBlocks();
+    yield* setupDone('noise');
     const season = r._terrainSeason || 'summer';
     const winter = season === 'winter';
     // 1 where the tile's depth cap is a river's or lagoon's (land inherits
@@ -1383,6 +1451,7 @@ function* groundBands(r, withWeather = false, options = {}) {
     const unitMap = options.debug ? new Uint32Array(cols * rows) : null;
     const moss = [];
     const mossScale = winter ? 0.5 : 1;
+    yield* setupDone('planes');
 
     for (let row = 0; row < rows; row++) {
         if (row > 0 && (row % GROUND_BAND_ROWS === 0 || due())) { pause(); yield 'base'; resume(); }
@@ -1435,10 +1504,14 @@ function* groundBands(r, withWeather = false, options = {}) {
             let surface = S_GRASS;
             let lip = 0;
             let tuck = 0;
-            // E0 — no beach where a bank face stands.
+            // E0 — no beach where a bank face stands: the texel's own tile
+            // or the bank zone of its nearest shore contact (W1 council fix:
+            // a strand texel half a tile inland rounds to a tile the contour
+            // never touches, and laid a sand strip on top of the face).
             // Inside the diamond Math.round(tx | ty) is always a tile index.
             const tileI = Math.round(ty) * N + Math.round(tx);
-            const banked = bankZone !== null && bankZone[tileI] !== 0 && sd > -1;
+            const banked = bankZone !== null && sd > -1
+                && (bankZone[tileI] !== 0 || (sd > -0.85 && shoreBanked(coast, bankZone, tx, ty, sd)));
             if (!banked && sd > -0.85) {
                 const sandWidth = 0.18 + 0.5 * subSample(sandGrid, tx, ty);
                 const jitter = (hash2(col, row, 5) - 0.5) * 0.05;
@@ -1721,7 +1794,7 @@ function* groundBands(r, withWeather = false, options = {}) {
             const o = ti * 4;
             D[o] = c[0]; D[o + 1] = c[1]; D[o + 2] = c[2]; D[o + 3] = 255;
             surfaces[ti] = surface;
-            stepBuf[ti] = k | flags;
+            stepBuf[ti] = k | flags | (rampId === R_COOL ? COOL_FLAG : 0);
         }
     }
 
@@ -1736,7 +1809,7 @@ function* groundBands(r, withWeather = false, options = {}) {
     const pass = { cols, rows, x0, y0, surfaces, sdBuf, aoBuf, stepBuf, put, season, due, drift, bankZone, moss };
     yield* run(drawPavingDetails(pass), 'details');
     pause(); yield 'details'; resume();
-    const crowns = buildCrownField(r, { cols, rows, x0, y0 });
+    const crowns = yield* run(crownFieldSlices(r, { cols, rows, x0, y0, due }), 'crowns');
     hold(crowns.dist); hold(crowns.owner);
     pause(); yield 'crowns'; resume();
     let edge = hold(yield* run(chamferToPaths(cols, rows, surfaces, due), 'chamfer'));
@@ -1762,6 +1835,7 @@ function* groundBands(r, withWeather = false, options = {}) {
     canvas.getContext('2d').putImageData(image, 0, 0);
     drop(image.data);
     image = null;
+    pause(); yield 'upload'; resume();
 
     // The published 2×1 fields: each coarse cell takes its right-hand fine
     // sample (2c + 1), the old texel centre's east side.
@@ -1769,6 +1843,7 @@ function* groundBands(r, withWeather = false, options = {}) {
     const classes = hold(new Uint8Array(n));
     const fieldSurfaces = hold(new Uint8Array(n).fill(255));
     const fieldAo = hold(new Uint8Array(n));
+    pause(); yield 'fields'; resume();
     for (let row = 0; row < rows; row += 16) {
         if (row > 0 && due()) { pause(); yield 'fields'; resume(); }
         downsampleFields(row, Math.min(rows, row + 16), cols, surfaces, sdBuf, aoBuf, classes, fieldSurfaces, fieldAo);
@@ -1778,14 +1853,20 @@ function* groundBands(r, withWeather = false, options = {}) {
     pause(); yield 'fields'; resume();
     const puddleMask = hold(yield* run(puddleSiteSlices({ cols: fcols, rows, surfaces: fieldSurfaces, aoBuf: fieldAo, due }), 'puddles'));
     pause(); yield 'puddles'; resume();
-    guardPuddles(puddleMask, surfaces, aoBuf);
+    for (let row = 0; row < rows; row += 64) {
+        if (row > 0 && due()) { pause(); yield 'puddles'; resume(); }
+        guardPuddles(puddleMask, surfaces, aoBuf, row * fcols, Math.min(rows, row + 64) * fcols);
+    }
     pause(); yield 'puddles'; resume();
     let weather;
     if (withWeather) {
         const stops = hold(new Uint8Array(n));
-        fieldStops(stops, stepBuf);
+        for (let row = 0; row < rows; row += 64) {
+            if (row > 0 && due()) { pause(); yield 'weather'; resume(); }
+            fieldStops(stops, stepBuf, row * fcols, Math.min(rows, row + 64) * fcols);
+        }
         pause(); yield 'weather'; resume();
-        weather = yield* run(bakeGroundWeather(r, { cols: fcols, rows, x0, y0, fineCols: cols, fineSurfaces: surfaces, surfaces: fieldSurfaces, stops, crowns, puddleMask, season, phenology: r._terrainPhenology || null, hold, due }), 'weather');
+        weather = yield* run(bakeGroundWeather(r, { cols: fcols, rows, x0, y0, fineCols: cols, fineSurfaces: surfaces, fineSteps: stepBuf, surfaces: fieldSurfaces, stops, crowns, puddleMask, season, phenology: r._terrainPhenology || null, hold, due }), 'weather');
         drop(stops);
     }
     const field = groundFieldFrom({ bounds: { x: x0, y: y0, w, h }, cols: fcols, rows, texelW: FIELD_TEXEL_W, classes, weather });
@@ -1823,16 +1904,16 @@ function downsampleFields(r0, r1, cols, surfaces, sdBuf, aoBuf, classes, fieldSu
 
 // Material guard: a pair whose other (left) fine texel cannot hold a puddle
 // holds none, so a puddle never spills onto a water, sand or turf pixel.
-function guardPuddles(mask, surfaces, aoBuf) {
-    for (let i = 0, f = 0; i < mask.length; i++, f += 2) {
+function guardPuddles(mask, surfaces, aoBuf, i0 = 0, i1 = mask.length) {
+    for (let i = i0, f = 2 * i0; i < i1; i++, f += 2) {
         if (mask[i] === 0) continue;
         const left = surfaces[f];
         if (!PUDDLE_SURFACES.has(left) || aoBuf[f] >= PUDDLE_WALL_AO) mask[i] = 0;
     }
 }
 
-function fieldStops(stops, stepBuf) {
-    for (let i = 0, f = 1; i < stops.length; i++, f += 2) stops[i] = stepBuf[f] & STOP_MASK;
+function fieldStops(stops, stepBuf, i0 = 0, i1 = stops.length) {
+    for (let i = i0, f = 2 * i0 + 1; i < i1; i++, f += 2) stops[i] = stepBuf[f] & STOP_MASK;
 }
 
 // ---- item 5: the ground weather field --------------------------------------
@@ -1865,7 +1946,7 @@ function crownCover(crowns, i, season, phenology) {
     return c * leafy;
 }
 
-function* bakeGroundWeather(r, { cols, rows, x0, y0, fineCols, fineSurfaces, surfaces, stops, crowns, puddleMask, season, phenology, hold = (b) => b, due = () => false }) {
+function* bakeGroundWeather(r, { cols, rows, x0, y0, fineCols, fineSurfaces, fineSteps = null, surfaces, stops, crowns, puddleMask, season, phenology, hold = (b) => b, due = () => false }) {
     const N = MAP_SIZE;
     const sunOccluders = buildSunOccluders(r);
     // The two planes: eave cover becomes shelter, sun shade the drying order.
@@ -1876,7 +1957,7 @@ function* bakeGroundWeather(r, { cols, rows, x0, y0, fineCols, fineSurfaces, sur
     const sunOut = [0, 0];
     const clampI = (v) => (v < 0 ? 0 : v >= N ? N - 1 : v);
     for (let row = 0; row < rows; row++) {
-        if ((row & 7) === 0 && due()) yield 'rows';
+        if (due()) yield 'rows';
         const sy = y0 + row + 0.5;
         for (let col = 0; col < cols; col++) {
             const i = row * cols + col;
@@ -1902,16 +1983,21 @@ function* bakeGroundWeather(r, { cols, rows, x0, y0, fineCols, fineSurfaces, sur
         }
     }
     // Packed in row bands (GroundWeatherField's own packer, per band), with
-    // the material guard: a fine land / water pair reads as no land, so a
-    // consumer never wets the water texel of a shore pair.
+    // the material guards: a fine land / water pair reads as no land, so a
+    // consumer never wets the water texel of a shore pair; a cool limestone
+    // texel reads surface 9 (its own ramp); a pair on two different wet
+    // ramps reads the mixed surface 15, so neither texel takes the other's
+    // ramp step (the consumer falls back to the uniform darkening).
     const data = hold(new Uint8Array(cols * rows * 4));
     yield 'pack';
-    const PACK_ROWS = GROUND_BAND_ROWS / 2;
+    const PACK_ROWS = GROUND_BAND_ROWS / 4;
+    const wetBand = new Uint8Array(PACK_ROWS * cols);
     for (let r0 = 0; r0 < rows; r0 += PACK_ROWS) {
         if (due()) yield 'pack';
         const a = r0 * cols;
         const b = Math.min(rows, r0 + PACK_ROWS) * cols;
-        const band = packGroundWeather({ cols, rows: (b - a) / cols, surfaces: surfaces.subarray(a, b), stops: stops.subarray(a, b),
+        const wet = fineSurfaces ? weatherSurfaces(wetBand, surfaces, fineSurfaces, fineSteps, a, b) : surfaces.subarray(a, b);
+        const band = packGroundWeather({ cols, rows: (b - a) / cols, surfaces: wet, stops: stops.subarray(a, b),
             shelter: shelter.subarray(a, b), order: order.subarray(a, b), puddleMask: puddleMask.subarray(a, b) });
         data.set(band.data, a * 4);
         if (!fineSurfaces) continue;
@@ -1925,6 +2011,28 @@ function* bakeGroundWeather(r, { cols, rows, x0, y0, fineCols, fineSurfaces, sur
     return { data, cols, rows, x0: GROUND_WEATHER_X0, y0: GROUND_WEATHER_Y0, texelW: GROUND_WEATHER_TEXEL_W };
 }
 
+// The weather field's surface ids of cells [a, b) into `out` (GW-1): the
+// right-hand fine texel's surface, 9 where it was laid on the cool limestone
+// ramp, 15 where the left-hand fine texel is land on a different wet ramp.
+const WET_RAMP_OF = (s, step) => ((s === S_PLAZA || s === S_FLAG) && step & COOL_FLAG ? GROUND_WEATHER_COOL_SURFACE : s);
+function weatherSurfaces(out, surfaces, fine, steps, a, b) {
+    const band = out.subarray(0, b - a);
+    for (let i = a; i < b; i++) {
+        const s = surfaces[i];
+        if (s === 255) { band[i - a] = 255; continue; }
+        const f = 2 * i + 1;
+        const right = steps ? WET_RAMP_OF(fine[f], steps[f]) : s;
+        const leftSurface = fine[f - 1];
+        let code = right;
+        if (leftSurface !== 255) {
+            const left = steps ? WET_RAMP_OF(leftSurface, steps[f - 1]) : leftSurface;
+            if (left !== right && groundWetRamp(left) !== groundWetRamp(right)) code = GROUND_WEATHER_MIXED_SURFACE;
+        }
+        band[i - a] = code;
+    }
+    return band;
+}
+
 // ---- W1.1 paving details ----------------------------------------------------
 
 // The joints where the plaza meets other stone (the 1-row ROAD[0] joint
@@ -1933,7 +2041,7 @@ function* bakeGroundWeather(r, { cols, rows, x0, y0, fineCols, fineSurfaces, sur
 function* drawPavingDetails({ cols, rows, surfaces, stepBuf, put, due, moss, season }) {
     const otherPaving = (s) => s !== S_PLAZA && isPavingSurface(s);
     for (let row = 1; row < rows - 1; row++) {
-        if ((row & 7) === 0 && due()) yield;
+        if (due()) yield;
         const span = diamondSpan(row, cols);
         const cEnd = Math.min(cols - 2, span[1]);
         for (let col = Math.max(1, span[0]); col <= cEnd; col++) {
@@ -1984,13 +2092,17 @@ export const GROUND_CHAMFER = Object.freeze({ A_X: CHAMFER_A_X, A_Y: CHAMFER_A_Y
 function* chamferToPaths(cols, rows, surfaces, due) {
     const far = 255;
     const d = new Uint8Array(cols * rows);
-    for (let i = 0; i < d.length; i++) {
-        const s = surfaces[i];
-        d[i] = s === S_GRASS || s === S_SAND || s === 255 ? far : 0;
+    yield;
+    for (let row = 0; row < rows; row++) {
+        if (due()) yield;
+        for (let i = row * cols, end = i + cols; i < end; i++) {
+            const s = surfaces[i];
+            d[i] = s === S_GRASS || s === S_SAND || s === 255 ? far : 0;
+        }
     }
     yield;
     for (let row = 0; row < rows; row++) {
-        if ((row & 7) === 0 && due()) yield;
+        if (due()) yield;
         const base = row * cols;
         const span = diamondSpan(row, cols);
         const cEnd = span[1];
@@ -2008,7 +2120,7 @@ function* chamferToPaths(cols, rows, surfaces, due) {
         }
     }
     for (let row = rows - 1; row >= 0; row--) {
-        if ((row & 7) === 0 && due()) yield;
+        if (due()) yield;
         const base = row * cols;
         const span = diamondSpan(row, cols);
         const cStart = span[0];
@@ -2050,11 +2162,22 @@ const CROWN_REACH = 1.5;
 // Per texel: distance to the nearest crown's drop zone in crown radii
 // (`dist` byte = round(64 · radii), 255 when none within CROWN_REACH) and
 // that tree's index (`owner`; 255 / −1 none).
-function buildCrownField(r, { cols, rows, x0, y0, texelW = COLOR_TEXEL_W }) {
+function buildCrownField(r, opts) {
+    const gen = crownFieldSlices(r, opts);
+    let step = gen.next();
+    while (!step.done) step = gen.next();
+    return step.value;
+}
+
+// The same field in slices: a yield after the planes and between rows of a
+// crown once `due()` (the World Ash's crown alone spans ~360 rows).
+function* crownFieldSlices(r, { cols, rows, x0, y0, texelW = COLOR_TEXEL_W, due = () => false }) {
     const trees = r.scenery?.getTreeProps?.() || [];
     const dist = new Uint8Array(cols * rows).fill(255);
     const owner = trees.length < 255 ? new Uint8Array(cols * rows).fill(255) : new Int16Array(cols * rows).fill(-1);
-    trees.forEach((tree, index) => {
+    yield;
+    for (let index = 0; index < trees.length; index++) {
+        const tree = trees[index];
         const rv = CROWN_RADIUS[treeSpriteKey(tree)] / 2;
         const rh = rv * 2 / texelW;
         const cc = ((tree.tileX - tree.tileY) * HALF_W - x0) / texelW + DROP_DRIFT * rh;
@@ -2064,6 +2187,7 @@ function buildCrownField(r, { cols, rows, x0, y0, texelW = COLOR_TEXEL_W }) {
         const r0 = Math.max(0, Math.floor(rc - rv * CROWN_REACH));
         const r1 = Math.min(rows - 1, Math.ceil(rc + rv * CROWN_REACH));
         for (let row = r0; row <= r1; row++) {
+            if (due()) yield;
             const dy = (row + 0.5 - rc) / rv;
             for (let col = c0; col <= c1; col++) {
                 const d = Math.hypot((col + 0.5 - cc) / rh, dy);
@@ -2074,7 +2198,7 @@ function buildCrownField(r, { cols, rows, x0, y0, texelW = COLOR_TEXEL_W }) {
                 if (b < dist[i]) { dist[i] = b; owner[i] = index; }
             }
         }
-    });
+    }
     return { trees, dist, owner };
 }
 
@@ -2192,7 +2316,7 @@ function* drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, pu
     };
 
     for (let row = 4; row < rows - 1; row++) {
-        if ((row & 7) === 0 && due()) yield;
+        if (due()) yield;
         const sy = y0 + row + 0.5;
         const span = diamondSpan(row, cols);
         const cEnd = Math.min(cols - 2, span[1]);
@@ -2532,7 +2656,7 @@ function* drawDecals(r, ctx) {
     // Road-shoulder pebbles: only where a low-frequency mask allows, so they
     // gather in a few stretches rather than peppering every verge.
     for (let row = 4; row < rows - 1; row += 3) {
-        if ((row & 63) === 1 && due()) yield;
+        if (due()) yield;
         const span = diamondSpan(row, cols);
         const cEnd = Math.min(cols - 2, span[1]);
         for (let col = Math.max(1, span[0]); col <= cEnd; col++) {
@@ -2551,7 +2675,7 @@ function* drawDecals(r, ctx) {
     // Back-shore shingle/pebble pockets along NW/NE beaches: C1 stone[1..4]
     // clusters gathered in low-frequency coastal pockets, never an even pepper.
     for (let row = 4; row < rows - 1; row += 2) {
-        if ((row & 31) === 4 && due()) yield;
+        if (due()) yield;
         const span = diamondSpan(row, cols);
         const cEnd = Math.min(cols - 2, span[1]);
         for (let col = Math.max(1, span[0]); col <= cEnd; col++) {
@@ -2590,7 +2714,7 @@ function* drawDecals(r, ctx) {
     list.sort((a, b) => a.row - b.row);
     yield;
     for (let k = 0; k < list.length; k++) {
-        if ((k & 255) === 255 && due()) yield;
+        if ((k & 15) === 15 && due()) yield;
         list[k].draw(list[k]);
     }
 }
@@ -2655,7 +2779,7 @@ function* drawTransitions(r, ctx) {
     const kerb = (j) => (stepBuf[j] & KERB_MASK) !== 0;
     const pathRamp = (s) => (s === S_CINDER ? CINDER : s === S_GRAVEL || s === S_ROAD ? ROAD : s === S_PLAZA ? PLAZA : s === S_FLAG ? PLAZA_COOL : DIRT);
     for (let row = 6; row < rows - 3; row++) {
-        if ((row & 7) === 0 && due()) yield;
+        if (due()) yield;
         const sy = y0 + row + 0.5;
         const span = diamondSpan(row, cols);
         const cEnd = Math.min(cols - 11, span[1]);
@@ -2745,19 +2869,29 @@ function* drawTransitions(r, ctx) {
 // below the edge down, at most FOOTING_MAX_ROWS rows, onto land only; marks
 // the texels as footing faces. Returns per-landmark stats.
 function drawFootings(r, ctx) {
-    const { cols, rows, x0, y0, surfaces, stepBuf, sdBuf, put } = ctx;
+    const { cols, rows, x0, y0, surfaces, stepBuf, sdBuf, put, bankZone } = ctx;
     const stats = {};
     for (const b of r.world?.buildings?.values?.() || []) {
         const profile = BUILDING_GROUNDING_PROFILES[b.type];
         const footing = profile?.footing;
         if (!footing) continue;
         let points;
+        const anchor = r.assets?.getAnchor?.(`building.${b.type}`);
+        const centre = buildingCenterToWorld(b);
+        const spritePx = ([px, py]) => ({ x: centre.x + px - anchor[0], y: centre.y + py - anchor[1] });
+        let polyline = null;
         if (footing.kind === 'rock') {
-            const p = b.position;
-            const left = tileToWorld(p.tileX, p.tileY + b.height);
-            const bottom = tileToWorld(p.tileX + b.width, p.tileY + b.height);
-            const right = tileToWorld(p.tileX + b.width, p.tileY);
-            points = { left, bottom, right };
+            if (footing.foot && anchor) {
+                // The drawn foot's lower envelope (base.png px).
+                polyline = footing.foot.map(spritePx);
+                points = {};
+            } else {
+                const p = b.position;
+                const left = tileToWorld(p.tileX, p.tileY + b.height);
+                const bottom = tileToWorld(p.tileX + b.width, p.tileY + b.height);
+                const right = tileToWorld(p.tileX + b.width, p.tileY);
+                points = { left, bottom, right };
+            }
         } else {
             points = plinthWorld(r, b, profile);
         }
@@ -2776,8 +2910,15 @@ function drawFootings(r, ctx) {
             return true;
         };
         const segs = [];
-        for (let k = 0; k < footing.edges.length - 1; k++) {
-            segs.push({ a: points[footing.edges[k]], e: points[footing.edges[k + 1]], face: footing.edges[k] === 'left' ? 'sw' : 'se' });
+        if (polyline) {
+            // SW face up to the foot's lowest point, SE after it.
+            let low = 0;
+            polyline.forEach((p, k) => { if (p.y >= polyline[low].y) low = k; });
+            for (let k = 0; k < polyline.length - 1; k++) segs.push({ a: polyline[k], e: polyline[k + 1], face: k < low ? 'sw' : 'se' });
+        } else {
+            for (let k = 0; k < footing.edges.length - 1; k++) {
+                segs.push({ a: points[footing.edges[k]], e: points[footing.edges[k + 1]], face: footing.edges[k] === 'left' ? 'sw' : 'se' });
+            }
         }
         const edgeAt = (x) => {
             for (const s of segs) {
@@ -2785,13 +2926,20 @@ function drawFootings(r, ctx) {
                 const hi = Math.max(s.a.x, s.e.x);
                 if (x >= lo && x <= hi) return { y: s.a.y + (s.e.y - s.a.y) * ((x - s.a.x) / ((s.e.x - s.a.x) || 1)), face: s.face, start: s.a.x };
             }
-            // Past the corners (rock spread): the end segment's line.
-            const s = x < segs[0].a.x ? segs[0] : segs[segs.length - 1];
+            // Past the corners (rock spread): the end segment's line, or
+            // for a drawn-foot polyline the iso 2:1 face lines.
+            const first = x < segs[0].a.x;
+            const s = first ? segs[0] : segs[segs.length - 1];
+            if (polyline) {
+                const p = first ? s.a : s.e;
+                return { y: p.y + (first ? 0.5 : -0.5) * (x - p.x), face: s.face, start: s.a.x };
+            }
             return { y: s.a.y + (s.e.y - s.a.y) * ((x - s.a.x) / ((s.e.x - s.a.x) || 1)), face: s.face, start: s.a.x };
         };
-        const spread = footing.kind === 'rock' ? footing.spread || 0 : 0;
-        const xLo = Math.ceil(segs[0].a.x - spread);
-        const xHi = Math.floor(segs[segs.length - 1].e.x + spread);
+        const spreadOf = footing.kind === 'rock' ? footing.spread || 0 : 0;
+        const [spreadL, spreadR] = Array.isArray(spreadOf) ? spreadOf : [spreadOf, spreadOf];
+        const xLo = Math.ceil(segs[0].a.x - spreadL);
+        const xHi = Math.floor(segs[segs.length - 1].e.x + spreadR);
         for (let x = xLo; x <= xHi; x++) {
             const col = Math.floor(x - x0);
             if (col < 0 || col >= cols) continue;
@@ -2811,27 +2959,45 @@ function drawFootings(r, ctx) {
                 if (run < 1) continue;
                 const H = Math.min(run, FOOTING_MAX_ROWS);
                 const faceTop = run - H;
+                // Where the coast paints its own face below this waterline
+                // (a bank zone), the tideline is that face's foot, not this.
+                const wy = y0 + row0 + run + 0.5;
+                const wx = x + 0.5;
+                const shoreX = Math.round(wx / TILE_WIDTH + wy / TILE_HEIGHT);
+                const shoreY = Math.round(wy / TILE_HEIGHT - wx / TILE_WIDTH);
+                const banked = bankZone && shoreX >= 0 && shoreY >= 0 && shoreX < MAP_SIZE && shoreY < MAP_SIZE
+                    && bankZone[shoreY * MAP_SIZE + shoreX] !== 0;
+                const tide = banked ? 0 : footing.tide ?? 3;
                 const cell = footing.fracture?.[sw ? 0 : 1] || 13;
                 const fk = Math.floor(x / cell);
                 const fracAt = hash2(fk, b.position.tileX, 409) < 0.45 ? fk * cell + Math.floor(hash2(fk, 0, 401) * (cell - 1)) : null;
+                // Stepped strata: a row up or down every 8 px.
+                const shift = Math.floor(hash2(x >> 3, b.position.tileY, 437) * 3) - 1;
                 for (let k = faceTop; k < run; k++) {
                     const rel = k - faceTop;
                     const fromBottom = run - 1 - k;
                     let c;
-                    if (fromBottom < (footing.tide || 3)) c = TIDELINE[sw ? 1 : 0];
+                    if (fromBottom < tide) c = TIDELINE[sw ? 1 : 0];
                     else if (fracAt !== null && rel >= 1 && (x === fracAt || x === fracAt + 1)) c = x === fracAt ? CLIFF[0] : CLIFF[3];
                     else {
-                        const role = footing.rows[Math.min(rel, footing.rows.length - 1)];
+                        const role = footing.rows[Math.max(0, Math.min(rel + (rel > 0 ? shift : 0), footing.rows.length - 1))];
                         c = CLIFF[sw ? role.sw : role.se];
                     }
                     if (mark(col, row0 + k, c, edge.y)) painted = Math.max(painted, rel + 1);
                 }
-                // The headland's top: the beach between the tower and the
-                // face is rock.
+                // The headland's top: the soft ground (beach and turf)
+                // between the tower and the face is rock, stepped once where
+                // it is deep enough (a lit ledge lip over a shaded riser),
+                // its edge lit above the face.
+                const ledge = faceTop >= 6 ? (faceTop >> 1) + shift : -1;
                 for (let k = 0; k < faceTop; k++) {
                     const i = (row0 + k) * cols + col;
-                    if (surfaces[i] !== S_SAND) continue;
-                    put(col, row0 + k, k === faceTop - 1 ? CLIFF[5] : hash2(x, row0 + k, 431) < 0.3 ? CLIFF[3] : CLIFF[4]);
+                    if (surfaces[i] !== S_SAND && surfaces[i] !== S_GRASS) continue;
+                    const m = vnoise(x / 4, (row0 + k) / 2, 433);
+                    const c = k === faceTop - 1 || k === ledge - 1 ? CLIFF[5] : k === ledge ? CLIFF[2]
+                        : m < 0.34 ? CLIFF[3] : m > 0.72 ? CLIFF[5] : CLIFF[4];
+                    // Level ground, not a face: no footing flag (it takes snow).
+                    put(col, row0 + k, c);
                 }
             } else {
                 footing.rows.forEach((def, k) => {
@@ -2855,21 +3021,37 @@ function drawFootings(r, ctx) {
         const stair = footing.stair;
         if (stair && segs[0]) {
             const s = segs[0];
-            const p = tileToWorld(stair.at[0], stair.at[1]);
-            const ex = s.e.x - s.a.x;
-            const ey = s.e.y - s.a.y;
-            const t = Math.max(0.1, Math.min(0.9, ((p.x - s.a.x) * ex + (p.y - s.a.y) * ey) / (ex * ex + ey * ey || 1)));
-            const xc = s.a.x + ex * t;
+            let xc;
+            let lineAt;
+            if (stair.foot && anchor) {
+                // Hung from the art's own lowest step: centred on its front
+                // edge, each tread and riser row parallel to it, the first
+                // tread on the row just below it.
+                const fa = spritePx(stair.foot[0]);
+                const fb = spritePx(stair.foot[1]);
+                const slope = (fb.y - fa.y) / ((fb.x - fa.x) || 1);
+                xc = (fa.x + fb.x) / 2;
+                lineAt = (x) => fa.y + 1 + slope * (x - fa.x);
+            } else {
+                const p = tileToWorld(stair.at[0], stair.at[1]);
+                const ex = s.e.x - s.a.x;
+                const ey = s.e.y - s.a.y;
+                const t = Math.max(0.1, Math.min(0.9, ((p.x - s.a.x) * ex + (p.y - s.a.y) * ey) / (ex * ex + ey * ey || 1)));
+                xc = s.a.x + ex * t;
+                lineAt = (x) => edgeAt(x).y;
+            }
             st.stair = { x: xc, steps: stair.steps };
+            const treadRows = stair.treadRows || 1;
+            const pitch = treadRows + 1;
             for (let i = 0; i < stair.steps; i++) {
                 const half = (stair.width + stair.grow * i) / 2;
                 for (let x = Math.ceil(xc - half); x < xc + half; x++) {
                     const col = Math.floor(x - x0);
-                    const edge = edgeAt(x + 0.5);
-                    const row0 = Math.ceil(edge.y - y0 - 0.5);
-                    mark(col, row0 + 2 * i, ASHLAR[stair.tread], edge.y);
-                    mark(col, row0 + 2 * i + 1, ASHLAR[stair.riser], edge.y);
-                    st.maxRows = Math.max(st.maxRows, 2 * i + 2);
+                    const top = lineAt(x + 0.5);
+                    const row0 = Math.ceil(top - y0 - 0.5) + pitch * i;
+                    for (let t = 0; t < treadRows; t++) mark(col, row0 + t, ASHLAR[Math.max(0, stair.tread - t)], top);
+                    mark(col, row0 + treadRows, ASHLAR[stair.riser], top);
+                    st.maxRows = Math.max(st.maxRows, pitch * (i + 1));
                 }
             }
         }

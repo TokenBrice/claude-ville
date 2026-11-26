@@ -19,9 +19,14 @@
 // CHANNELS (bytes 0–255):
 //   R  surface · 16 + ramp stop. Surface id = R >> 4 (GroundBake's surfaces:
 //      0 grass, 1 sand, 2 dirt, 3 road, 4 plaza, 5 flagstone, 6 gravel,
-//      7 cinder, 8 earth), ramp stop = R & 15 (0–4, the C1 ground ramp stop
-//      the bake chose: 0 the darkest joint or crease, 4 the lit top). 255 =
-//      no land here (water, off-map). Paving is surfaces 3–6.
+//      7 cinder, 8 earth, and 9 cool limestone: a plaza or flag stone the
+//      bake laid on the `plazaCool` ramp), ramp stop = R & 15 (0–4, the C1
+//      ground ramp stop the bake chose: 0 the darkest joint or crease, 4 the
+//      lit top). 255 = no land here (water, off-map). Paving is surfaces 3–6
+//      and 9. Surface 15 (GROUND_WEATHER_MIXED_SURFACE) marks a mixed cell:
+//      its two fine texels lie on different wet ramps (plaza beside road,
+//      grass beside sand, …), so no one material step fits both and the
+//      consumer keeps the uniform wet darkening instead, as on a shore pair.
 //   G  shelter: how much of the rain this texel is spared, 0 = open sky, 255
 //      = fully under cover. Eaves (a band hugging every building footprint,
 //      `EAVE_REACH` tiles wide, full at the wall) and tree crowns (full under
@@ -74,9 +79,13 @@ export const BARE_CROWN_COVER = 0.35;
 // Multiplying a baked ramp colour by it lands exactly on the next darker stop
 // (the terrain cache's haze multiply commutes), so wet ground stays on the
 // palette.
-const SURFACE_RAMPS = Object.freeze(['grass', 'sand', 'dirt', 'road', 'plaza', 'plaza', 'road', 'dirt', 'dirt']);
+const SURFACE_RAMPS = Object.freeze(['grass', 'sand', 'dirt', 'road', 'plaza', 'plaza', 'road', 'cinder', 'dirt', 'plazaCool']);
 export const GROUND_WET_SURFACES = SURFACE_RAMPS.length;
-export const GROUND_PAVING_SURFACES = Object.freeze([3, 4, 5, 6]);
+export const GROUND_PAVING_SURFACES = Object.freeze([3, 4, 5, 6, 9]);
+export const GROUND_WEATHER_COOL_SURFACE = 9;
+export const GROUND_WEATHER_MIXED_SURFACE = 15;
+/** The C1 ramp a field surface id steps down when wet (null: no step). */
+export const groundWetRamp = (surface) => SURFACE_RAMPS[surface] ?? null;
 const hex = (h) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
 export const GROUND_WET_STEPS = Object.freeze(SURFACE_RAMPS.flatMap((key) => {
     const ramp = ART_RAMPS[key].map(hex);

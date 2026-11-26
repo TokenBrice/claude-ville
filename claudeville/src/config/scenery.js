@@ -590,12 +590,19 @@ export const DISTRICT_PROPS = [
     // water spans tileX ~15.9-17.1 north of the command-pond plank row, so the
     // pads keep to tileX 16.1-17.0, tileY <= 21.05. The empty-plaza fixture
     // rule was relaxed (2026-11-23, operator decision) to place one walk-blocked
-    // focal fountain at (16, 20.5) with flanking garden props, keeping
-    // COMMAND_QUEUE (west forecourt) and the central bridge north landing
-    // (18, 22) clear.
-    { tileX: 16.2, tileY: 20.0, id: 'prop.plazaFountain', layer: 'cache', district: 'civic', walkBlock: true },
+    // focal fountain with flanking garden props, keeping COMMAND_QUEUE (west
+    // forecourt) and the central bridge north landing (18, 22) clear.
+    // W1 council fix: the 80x88 fountain is a sorted prop (walkers and the
+    // Command's gate steps and braziers sort against it; GroundBake centres
+    // the octagonal medallion on it) on the one whole plaza tile that clears
+    // everything around it: the column (screen x ±13 px) stands 60 px west
+    // of Command's west gate brazier, the basin (±28 px, ground radius ~0.6
+    // tile) keeps 0.6+ tile off the lily pond's west shore (coast sd -0.68),
+    // its single blocked node (15, 21) is no visit, queue or scenic place,
+    // and the gate stair, both braziers and the lily pads stay uncovered.
+    { tileX: 15.0, tileY: 21.0, id: 'prop.plazaFountain', layer: 'sorted', district: 'civic', walkBlock: true },
     { tileX: 17.5, tileY: 20.1, id: 'veg.planter', layer: 'cache', district: 'civic' },
-    { tileX: 15.2, tileY: 21.1, id: 'veg.flower.a', layer: 'cache', district: 'civic' },
+    { tileX: 16.1, tileY: 20.35, id: 'veg.flower.a', layer: 'cache', district: 'civic' },
     { tileX: 19.0, tileY: 20.0, id: 'veg.planter', layer: 'cache', district: 'civic' },
     { tileX: 16.15, tileY: 20.95, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
     { tileX: 16.6, tileY: 20.8, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
@@ -778,10 +785,14 @@ export const AMBIENT_GROUND_PROPS = [
     { tileX: 17.8, tileY: 17.4, type: 'signpost' },
 
     // A reading lamp beside the Archive alcove's scroll crates, and the
-    // Tavern's garden lamp on the yard's east edge, between the tables and
-    // the harbour quay.
+    // Tavern's garden lamp at the west end of the wall table. (W1 council
+    // fix: at 24.75,19.5 the 32x44 lantern stood on the table's east end, and
+    // no nudge there clears it: the fixture boxes of the harbor-ledger and
+    // harbor-rail loiter points and the pier slot 26,21 pin that corner. Here
+    // it stands 2+ px clear of both tables and of every standing place, and
+    // the harbour night lamp at 25,21 lights the garden's east end.)
     { tileX: 11.2, tileY: 17.3, type: 'lantern' },
-    { tileX: 24.75, tileY: 19.5, type: 'lantern' },
+    { tileX: 22.5, tileY: 19.75, type: 'lantern' },
 ];
 
 export const AMBIENT_SCENIC_POINTS = Object.freeze([

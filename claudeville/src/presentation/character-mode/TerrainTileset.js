@@ -18,6 +18,11 @@ const TILESET_CELL = 32;
 
 const cache = new WeakMap();
 
+// True once `readTerrainCellLuma(image, cell)` is cached (a free call).
+export function hasTerrainCellLuma(image, cell) {
+    return cache.get(image)?.has(cell) === true;
+}
+
 // Luminance of one cell as z-scores (mean 0, unit deviation), row-major
 // 32×32. Colour is discarded: the bake re-tones the drawing onto the C1
 // ground ramps. Cached per image.
@@ -192,6 +197,14 @@ export function specularCorner(lu, lv, L, frame) {
 // Ring radii in rows of the regular octagon norm r = max(|du|, |dv|,
 // (|du| + |dv|) / √2) on the ground plane. One-row seams fall on exact
 // texels: no dither, no noise.
+//
+// Carved flat, never a fence: in 2:1 iso the octagon's two sides normal to
+// (1, −1) stand vertical on screen (the diagonal term rules and du · dv < 0),
+// and a radial joint whose run has du · dv > 0 is steeper than the 2:1
+// diagonal. On those, lit and shaded lip rows and dark seams would stack into
+// upright 1 px bars, so the steep sides take no lips and soften their seams
+// to plaza stop 1, the outer band (B and the border) beds in stop-1 mortar,
+// and band B's sixteen radial joints keep only their shallow half, softened.
 export const MEDALLION_RINGS = Object.freeze({
     fountain: 28.8, // r 0.90: under the fountain sprite, flat plaza[2]
     kerb: 33.6,     // r 1.05: the basin kerb course
@@ -218,10 +231,17 @@ function sectorAt(theta, n, offset, re) {
     return sectorOut;
 }
 
+/** True where the octagon's ring edges run steeper than 2:1 on screen. */
+export function medallionSteepSide(du, dv) {
+    const adu = du < 0 ? -du : du;
+    const adv = dv < 0 ? -dv : dv;
+    return (adu + adv) * Math.SQRT1_2 > Math.max(adu, adv) && du * dv < 0;
+}
+
 /**
  * The medallion texel at tile offset (du, dv) from its centre: the packed
  * `(ramp << 4) | stop` (MEDALLION_RAMP, ramp stop 0..4), or −1 outside it.
- * Mortar is plaza stop 0.
+ * Mortar is plaza stop 0 (stop 1 on the steep sides and in the outer band).
  */
 export function medallionAt(du, dv) {
     const adu = du < 0 ? -du : du;
@@ -230,13 +250,17 @@ export function medallionAt(du, dv) {
     const R = MEDALLION_RINGS;
     if (rr >= R.border) return -1;
     if (rr < R.fountain) return 2;
-    const MORTAR = 0;
+    const steep = medallionSteepSide(du, dv);
+    const MORTAR = steep ? 1 : 0;
+    const SOFT_MORTAR = 1;
     const nwHalf = du + dv < 0;
     const re = 32 * Math.hypot(du, dv);
     const theta = Math.atan2(dv, du);
     // A course's lips by the radial direction: a stone on the SE half shows
-    // its inner edge to the key, one on the NW half its outer edge.
+    // its inner edge to the key, one on the NW half its outer edge. None on
+    // a steep side.
     const lip = (cin, cout) => {
+        if (steep) return 0;
         if (rr < cin + 1) return nwHalf ? -1 : 1;
         if (rr >= cout - 1) return nwHalf ? 1 : -1;
         return 0;
@@ -244,7 +268,7 @@ export function medallionAt(du, dv) {
     if (rr < R.kerb) {
         if (rr < R.fountain + 1) return MORTAR;
         if (sectorAt(theta, 16, 0, re).arc < 0.5) return MORTAR;
-        if (rr >= R.kerb - 1) return nwHalf ? 4 : 1;
+        if (rr >= R.kerb - 1) return steep ? 3 : nwHalf ? 4 : 1;
         return 3;
     }
     if (rr < R.bandA) {
@@ -262,11 +286,13 @@ export function medallionAt(du, dv) {
         const second = rr >= R.bandBSplit;
         const cin = second ? R.bandBSplit : R.bandA;
         const cout = second ? R.bandB : R.bandBSplit;
-        if (rr < cin + 1) return MORTAR;
+        if (rr < cin + 1) return SOFT_MORTAR;
         const s = sectorAt(theta, 16, second ? Math.PI / 16 : 0, re);
-        if (s.arc < 0.5) return MORTAR;
+        // A radial joint running steeper than 2:1 (du · dv > 0) is dropped,
+        // the shallow ones bed in soft mortar.
+        if (s.arc < 0.5 && du * dv <= 0) return SOFT_MORTAR;
         const body = latticeHash(s.k, second ? 1 : 0, 2711) < 0.55 ? 2 : 3;
         return body + lip(cin + 1, cout);
     }
-    return rr < R.border - 1 ? 1 : MORTAR;
+    return rr < R.border - 1 ? 1 : SOFT_MORTAR;
 }

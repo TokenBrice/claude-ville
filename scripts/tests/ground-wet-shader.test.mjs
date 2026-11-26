@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
 import { paintCoastWaterMaterial } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
-import { GROUND_WET_STEPS, GROUND_WET_SURFACES } from '../../claudeville/src/presentation/character-mode/GroundWeatherField.js';
+import {
+    GROUND_PAVING_SURFACES, GROUND_WEATHER_MIXED_SURFACE, GROUND_WET_STEPS, GROUND_WET_SURFACES,
+} from '../../claudeville/src/presentation/character-mode/GroundWeatherField.js';
 import {
     GROUND_WET,
     GROUND_WET_GLSL,
@@ -75,7 +77,7 @@ test('the GLSL and WGSL twins carry the same functions and the same numbers', ()
     const wgslFns = functions(GROUND_WET_WGSL, /^fn\s+(\w+)\(/gm);
     assert.deepEqual(glslFns, wgslFns);
     assert.deepEqual(glslFns, ['applyGroundMirror', 'applyGroundWet', 'applyWetSheen', 'groundCode', 'groundFieldCell',
-        'groundFieldOn', 'groundFieldTexel', 'groundLand', 'groundMirrorAt', 'groundMirrorColumn', 'groundPaving',
+        'groundFieldOn', 'groundFieldTexel', 'groundLand', 'groundMirrorAt', 'groundMirrorColumn', 'groundMixed', 'groundPaving',
         'groundSheenTop', 'groundWetAt', 'groundWetStep', 'puddleByte']);
     assert.equal(numbers(GLSL), numbers(GROUND_WET_WGSL), 'every constant in the same order');
     for (const value of Object.values(GROUND_WET)) assert.ok(numbers(GLSL).includes(value.toFixed(4)), `GROUND_WET ${value}`);
@@ -96,7 +98,7 @@ test('both scene shaders wire the field the same way', () => {
 
 test('a wet step lands exactly on a darker stop of the texel\'s own ramp', () => {
     const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
-    const keys = ['grass', 'sand', 'dirt', 'road', 'plaza', 'plaza', 'road', 'dirt', 'dirt'];
+    const keys = ['grass', 'sand', 'dirt', 'road', 'plaza', 'plaza', 'road', 'cinder', 'dirt', 'plazaCool'];
     assert.equal(GROUND_WET_STEPS.length, GROUND_WET_SURFACES * 5);
     keys.forEach((key, surface) => {
         const ramp = ART_RAMPS[key].map(hex);
@@ -226,4 +228,21 @@ test('GW-1: the wet level and the puddle level ease over a minute at each bucket
     // Pure: the same instant gives the same answer.
     const t = new Date(2026, 4, 12, 12, 10, 30).getTime();
     assert.deepEqual(at(t), at(t));
+});
+
+// W1 council fix — the cool limestone (surface 9) is paving on both
+// backends, and a mixed-ramp cell (surface 15) takes no material step: it
+// keeps the whole uniform darkening, like a shore pair.
+test('both twins read surface 9 as paving and keep the uniform darkening on a mixed cell', () => {
+    assert.ok(GROUND_PAVING_SURFACES.includes(9));
+    assert.equal(GROUND_WEATHER_MIXED_SURFACE, 15);
+    assert.ok(GROUND_WEATHER_MIXED_SURFACE * 5 >= GROUND_WET_STEPS.length, 'no wet step indexes a mixed cell');
+    const paving = '(surface > 2.5 && surface < 6.5) || abs(surface - 9.0) < 0.5';
+    const mixed = 'floor(groundCode(field) / 16.0) > 14.5';
+    for (const source of [GROUND_WET_GLSL, GROUND_WET_WGSL]) {
+        assert.ok(source.includes(paving), 'the paving set');
+        assert.ok(source.includes(mixed), 'the mixed code');
+        assert.ok(source.includes('groundPaving(field) && code - surface * 16.0 > 2.5'), 'the sheen top reads the paving set');
+        assert.ok(source.includes('!groundLand(field) || groundMixed(field)'), 'a mixed cell keeps the uniform darkening');
+    }
 });
