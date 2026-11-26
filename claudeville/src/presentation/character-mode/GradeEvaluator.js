@@ -23,6 +23,8 @@
 // Local light pools and authored emission are added after the grade, so lit
 // pixels keep their real colour at night (the emissive exemption).
 
+import { RECEIVER_LUMA_CEILING } from '../../config/artPalette.js';
+
 const DAY_MINUTES = 24 * 60;
 
 // Exposure never falls below this: the darkest storm night keeps readable
@@ -176,9 +178,9 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // the authored `rake`.
     Object.freeze({
         name: 'sunrise', minute: 6 * 60, side: 'dawn',
-        exposure: 0.84, saturation: 0.82,
+        exposure: 0.84, saturation: 0.90,
         gain: [1.03, 0.96, 0.97], lift: [0.030, 0.027, 0.040], gamma: 0.97,
-        shadowTint: [0.88, 0.92, 1.12], highlightTint: [1.16, 0.99, 0.98],
+        shadowTint: [0.88, 0.90, 1.14], highlightTint: [1.20, 0.98, 0.95],
         purkinje: 0.1, sunBand: 0.8, daylight: 0.55, night: 0.1, rake: 0.875,
         vignetteEdge: [0.80, 0.74, 0.80], vignetteAlpha: 0.34,
         skyTop: '#2e4a7a', skyHorizon: '#e2a98a', voidColor: '#141c26', horizonHaze: '#a88478',
@@ -231,12 +233,12 @@ export const GRADE_KEYFRAMES = Object.freeze([
     // colour than the night key does; golden-hours gates dusk > night.
     Object.freeze({
         name: 'blue-hour', minute: 19 * 60 + 45, side: 'dusk',
-        exposure: moonlit(0.86, 0.89), saturation: moonlit(0.62, 0.64),
+        exposure: moonlit(0.74, 0.77), saturation: moonlit(0.70, 0.72),
         gain: [0.80, 0.90, 1.10], lift: moonlit3([0.016, 0.020, 0.034], [0.022, 0.026, 0.044]), gamma: 1.01,
-        shadowTint: [0.83, 0.89, 1.15], highlightTint: [1.04, 0.98, 1.02],
+        shadowTint: [0.82, 0.88, 1.18], highlightTint: [1.04, 0.98, 1.02],
         purkinje: 0.3, sunBand: 0.2, daylight: 0.1, night: 0.5, rake: 0.375,
         vignetteEdge: [0.74, 0.74, 0.84], vignetteAlpha: 0.40,
-        skyTop: '#18274a', skyHorizon: '#5e597c', voidColor: '#0e151d', horizonHaze: '#343c5a',
+        skyTop: '#13234d', skyHorizon: '#785c84', voidColor: '#0e151d', horizonHaze: '#3a3a5e',
     }),
     // NE P2.1 — Night is moonlit indigo, not dimmed day: the operator chose the
     // darker Opus P night on 2026-11-24 (22:00 net exposure ~0.62 with the
@@ -256,18 +258,59 @@ export const GRADE_KEYFRAMES = Object.freeze([
     }),
 ]);
 
+// OA-L1 — face-keyed split tone per key: faceMix blends the luma key toward
+// the face key; k = [up (sun), SW wall, SE wall, roof]; shade = up in cast shade.
+export const GRADE_FACE_KEYS = Object.freeze({
+    'deep-night':  Object.freeze({ faceMix: 0,    k: [0, 0, 0, 0],               shade: 0 }),
+    'pre-dawn':    Object.freeze({ faceMix: 0,    k: [0, 0, 0, 0],               shade: 0 }),
+    sunrise:       Object.freeze({ faceMix: 0.55, k: [0.30, 0.70, -0.55, 0.30],  shade: -0.55 }),
+    morning:       Object.freeze({ faceMix: 0,    k: [0, 0, 0, 0],               shade: 0 }),
+    noon:          Object.freeze({ faceMix: 0,    k: [0, 0, 0, 0],               shade: 0 }),
+    'golden-hour': Object.freeze({ faceMix: 0.85, k: [0.40, 0.85, -0.75, 0.35],  shade: -0.70 }),
+    'blue-hour':   Object.freeze({ faceMix: 0,    k: [0, 0, 0, 0],               shade: 0 }),
+    night:         Object.freeze({ faceMix: 0,    k: [0, 0, 0, 0],               shade: 0 }),
+});
+
+export const AFTERGLOW = Object.freeze({
+    startAfterGolden: 20,   // min: the golden key sits 20 min before the real sunset (LA-2)
+    span: 20, rampIn: 5, rampOut: 7, blueGuard: 6, quant: 16,
+    saturation: 0.92,
+    gainHue: [0.94, 0.90, 1.12],          // luma-normalized, applied at gain's own luma
+    shadowTint: [0.86, 0.80, 1.26],
+    highlightTint: [1.06, 0.94, 1.04],
+    faceMix: 0.60, k: [-0.15, 0.10, -0.60, -0.10], shade: -0.60,
+    skyTop: '#373763', skyHorizon: '#c08ea0', horizonHaze: '#896d86',
+    alpenglowTint: [1.30, 1.00, 0.86], alpenglowGain: 1.10, alpenglowShare: 0.90,
+});
+
+export function afterglowWeight(minuteOfDay, shift) {
+    const G = gradeKeyMinute('golden-hour', shift);
+    const B = gradeKeyMinute('blue-hour', shift);
+    const S = G + AFTERGLOW.startAfterGolden;                    // real sunset
+    const end = Math.min(S + AFTERGLOW.span, B - AFTERGLOW.blueGuard);
+    if (end - S < 6) return 0;
+    const m = minuteOfDay < G - 60 ? minuteOfDay + DAY_MINUTES : minuteOfDay;
+    const w = smoothstep((m - S) / AFTERGLOW.rampIn) * (1 - smoothstep((m - (end - AFTERGLOW.rampOut)) / AFTERGLOW.rampOut));
+    return Math.round(w * AFTERGLOW.quant) / AFTERGLOW.quant;
+}
+
+export const SEA_FRESNEL_Y = Object.freeze([96, 352, 640]);              // world y course boundaries
+export const SEA_FRESNEL_WEIGHT = Object.freeze([0.62, 0.46, 0.30, 0.0]); // course 0 (far) .. 3 (near)
+export const SEA_FRESNEL_FAR = Object.freeze([1.0, 0.75, 0.40, 0.0]);     // share of skyHorizon in the sky colour
+export const SEA_FRESNEL_BANDS = Object.freeze([4, 5, 6]);                // seamTable bands bending each boundary
+// gate: 1 by day, fades out between night 0.5 and 0.85 (night key night = 1 -> 0)
+export const seaFresnelGate = (night) => Math.max(0, Math.min(1, (0.85 - night) / 0.35));
+
 // Weather rows, applied after the time key. Tints are the plan's cool
 // multiplies (rain #b2c4d6, storm #8e9fb4). Once the sky dims the multiply
 // keeps its hue but spends less value (the night key already owns the
 // darkness); storm keeps a little extra night darkness (`nightCourse`).
 export const GRADE_WEATHER_ROWS = Object.freeze({
-    rain: Object.freeze({ saturation: 0.74, tint: '#b2c4d6', flatten: 0.7, nightCourse: 1 }),
-    storm: Object.freeze({ saturation: 0.62, tint: '#8e9fb4', flatten: 0.85, nightCourse: 0.94 }),
-    overcast: Object.freeze({ saturation: 0.82, tint: '#c4ccd4', flatten: 0.55, nightCourse: 1 }),
-    // EY-4 — falling snow: a pearl sky, lighter and softer than overcast
-    // (the rain weight blends toward it while settling snow falls).
-    snow: Object.freeze({ saturation: 0.84, tint: '#d6dde6', flatten: 0.45, nightCourse: 1 }),
-    fog: Object.freeze({ saturation: 0.80, tint: '#dfe3e6', flatten: 0.45, nightCourse: 1 }),
+    rain:     Object.freeze({ saturation: 0.74, tint: '#b2c4d6', nightCourse: 1,    flatten: 0.70, keyFlatten: 0.85, fillFlatten: 0.35, gammaTarget: 1.04, rakeKill: 0.90 }),
+    storm:    Object.freeze({ saturation: 0.62, tint: '#8e9fb4', nightCourse: 0.94, flatten: 0.85, keyFlatten: 0.95, fillFlatten: 0.45, gammaTarget: 1.06, rakeKill: 1.00 }),
+    overcast: Object.freeze({ saturation: 0.90, tint: '#c4ccd4', nightCourse: 1,    flatten: 0.55, keyFlatten: 0.80, fillFlatten: 0.30, gammaTarget: 1.04, rakeKill: 0.90 }),
+    snow:     Object.freeze({ saturation: 0.84, tint: '#d6dde6', nightCourse: 1,    flatten: 0.45, keyFlatten: 0.70, fillFlatten: 0.30, gammaTarget: 1.00, rakeKill: 0.80 }),
+    fog:      Object.freeze({ saturation: 0.80, tint: '#dfe3e6', nightCourse: 1,    flatten: 0.45, keyFlatten: 0.70, fillFlatten: 0.55, gammaTarget: 0.96, rakeKill: 0.80 }),
 });
 const WEATHER_GREY = Object.freeze({
     rain: Object.freeze({ sky: '#5b6674', haze: '#6e7a88', void: '#121a21' }),
@@ -361,7 +404,9 @@ export function evaluateGrade({
     goldenShift = sunsetShift,
     snowfall = 0,
 } = {}) {
-    const { from, to, t } = gradeKeysAt(minuteOfDay, { sunriseShift, sunsetShift, goldenShift });
+    const shift = { sunriseShift, sunsetShift, goldenShift };
+    const minute = ((finite(minuteOfDay) % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
+    const { from, to, t } = gradeKeysAt(minute, shift);
     let exposure = lerp(from.exposure, to.exposure, t);
     let saturation = lerp(from.saturation, to.saturation, t);
     let gain = lerp3(from.gain, to.gain, t);
@@ -380,6 +425,27 @@ export function evaluateGrade({
     let skyHorizon = lerp3(hexToRgb01(from.skyHorizon), hexToRgb01(to.skyHorizon), t);
     let voidColor = lerp3(hexToRgb01(from.voidColor), hexToRgb01(to.voidColor), t);
     let horizonHaze = lerp3(hexToRgb01(from.horizonHaze), hexToRgb01(to.horizonHaze), t);
+
+    const a = GRADE_FACE_KEYS[from.name];
+    const b = GRADE_FACE_KEYS[to.name];
+    let faceMix = lerp(a.faceMix, b.faceMix, t);
+    let faceShade = lerp(a.shade, b.shade, t);
+    const faceKey = a.k.map((k, i) => lerp(k, b.k[i], t));
+    const afterglow = afterglowWeight(minute, shift);
+    if (afterglow > 0) {
+        const w = afterglow;
+        const gainY = luma(gain);
+        gain = lerp3(gain, lumaNormalized(AFTERGLOW.gainHue).map(c => c * gainY), w);
+        saturation = lerp(saturation, AFTERGLOW.saturation, w);
+        shadowTint = lerp3(shadowTint, AFTERGLOW.shadowTint, w);
+        highlightTint = lerp3(highlightTint, AFTERGLOW.highlightTint, w);
+        faceMix = lerp(faceMix, AFTERGLOW.faceMix, w);
+        faceShade = lerp(faceShade, AFTERGLOW.shade, w);
+        for (let i = 0; i < faceKey.length; i++) faceKey[i] = lerp(faceKey[i], AFTERGLOW.k[i], w);
+        skyTop = lerp3(skyTop, hexToRgb01(AFTERGLOW.skyTop), w);
+        skyHorizon = lerp3(skyHorizon, hexToRgb01(AFTERGLOW.skyHorizon), w);
+        horizonHaze = lerp3(horizonHaze, hexToRgb01(AFTERGLOW.horizonHaze), w);
+    }
 
     // Moon: a continuous night term (the three reviewed courses had the same
     // endpoints). A bright moon lifts the ambient and gives back a little
@@ -400,7 +466,8 @@ export function evaluateGrade({
         if (weight <= 0) continue;
         const row = GRADE_WEATHER_ROWS[kind];
         // NE v0.67.1 R — ease weather desaturation to 45 % at night so rainy nights keep hue.
-        saturation *= lerp(1, row.saturation, weight * lerp(1, 0.45, night));
+        const sat = kind === 'overcast' ? lerp(row.saturation, 0.82, night) : row.saturation;
+        saturation *= lerp(1, sat, weight * lerp(1, 0.45, night));
         const tint = hexToRgb01(row.tint);
         // L1-1 — the weather charges its darkness once. By day the cool
         // multiply spends 70 % of its value (a storm noon was darker than a
@@ -416,13 +483,15 @@ export function evaluateGrade({
         // sun band; at night half of the moonlit split tone survives, so
         // silhouettes keep their cool rim under cloud.
         const flatten = row.flatten * weight * lerp(1, 0.5, night);
-        if (exposure > 1) exposure = lerp(exposure, 1, flatten);
-        shadowTint = towardOne3(shadowTint, flatten);
-        highlightTint = towardOne3(highlightTint, flatten);
-        // NE P2.1 — halve gamma flattening at night so a storm never flattens
-        // above gamma 1.10 into brighter midtones than a clear night.
-        gamma = lerp(gamma, 1, flatten * lerp(1, 0.5, night));
-        rake *= 1 - row.flatten * weight;
+        const hi = night === 1 ? flatten : lerp(row.keyFlatten * weight, flatten, night);
+        const sh = night === 1 ? flatten : lerp(row.fillFlatten * weight, flatten, night);
+        if (exposure > 1) exposure = lerp(exposure, 1, hi);
+        shadowTint = towardOne3(shadowTint, sh);
+        highlightTint = towardOne3(highlightTint, hi);
+        const legacyGamma = lerp(gamma, 1, flatten * lerp(1, 0.5, night));
+        const target = row.gammaTarget < 1 ? row.gammaTarget : Math.max(gamma, row.gammaTarget);
+        gamma = night === 1 ? legacyGamma : lerp(lerp(gamma, target, weight), legacyGamma, night);
+        rake *= 1 - lerp(row.rakeKill, row.flatten, night) * weight;
         vignetteAlpha = Math.min(0.52, vignetteAlpha + 0.06 * weight);
         const grey = WEATHER_GREY[kind];
         const skyWeight = weight * lerp(0.75, 0.35, night);
@@ -434,11 +503,12 @@ export function evaluateGrade({
     // Overcast and fog: a covered or fogged sky leaves no sunny cloud shadows.
     const flat = Math.max(w.flat, w.rain + w.snow, w.storm);
     sunBand *= 1 - flat;
+    faceMix *= 1 - flat;
     const cloudShadow = daylight * clamp((0.85 - w.cloudCover) / 0.15) * (1 - clamp(w.fog * 1.5));
     daylight *= 1 - flat * 0.7;
     if (w.flat > 0) {
         if (exposure > 1) exposure = lerp(exposure, 1, w.flat);
-        shadowTint = towardOne3(shadowTint, w.flat * 0.5);
+        shadowTint = towardOne3(shadowTint, w.flat * lerp(0.2, 0.5, night));
         highlightTint = towardOne3(highlightTint, w.flat * 0.5);
         rake *= 1 - w.flat * 0.5;
     }
@@ -449,7 +519,17 @@ export function evaluateGrade({
     purkinjeWeight = clamp(purkinjeWeight);
     const purkinje = lerp3(NEUTRAL, PURKINJE_BLUE, purkinjeWeight);
 
-    return {
+    const golden = gradeKeyMinute('golden-hour', shift);
+    const glintEnd = Math.min(golden + 45, lampSettlingWindows(shift).duskStart);
+    const windowGlint = Math.round(8 * smoothstep((minute - golden + 45) / 20)
+        * smoothstep((glintEnd - minute) / 15)) / 8;
+    const goldenMix = from.name === 'golden-hour' || to.name === 'golden-hour' ? faceMix : 0;
+    const rimStrength = goldenMix * clamp((rake - 0.70) / 0.30) * clamp(daylight / 0.9) * (1 - afterglow);
+    const seaFar = rgb01ToHex(skyHorizon);
+    const fresnel = seaFresnelGate(night);
+    const alpenglow = [...AFTERGLOW.alpenglowTint, AFTERGLOW.alpenglowGain];
+    const grade = {
+        faceMix, faceKey, faceShade, rimStrength, afterglow, alpenglow, windowGlint, seaFar, seaFresnelGate: fresnel,
         key: `${from.name}>${to.name}`,
         lift,
         gamma: [gamma, gamma, gamma],
@@ -486,10 +566,12 @@ export function evaluateGrade({
         vignetteAlpha: clamp(vignetteAlpha),
         fogColor: horizonHaze.map(channel => clamp(channel)),
         skyTop: rgb01ToHex(skyTop),
-        skyHorizon: rgb01ToHex(skyHorizon),
+        skyHorizon: seaFar,
         voidColor: rgb01ToHex(voidColor),
         horizonHaze: rgb01ToHex(horizonHaze),
     };
+    grade.cacheKey = Object.values(grade).join('|');
+    return grade;
 }
 
 /**
@@ -498,8 +580,22 @@ export function evaluateGrade({
  * Canvas fallback and cached-sprite consumers match it.
  */
 export function applyGradeToRgb(rgb, grade) {
+    return applyGradeToRgbFaced(rgb, grade, 9);
+}
+
+export function faceGuard(rgb, reference) {
+    const [r, g, b] = rgb;
+    const warm = r >= g && g >= b && g - b >= 0.25 * (r - b) && r > b;
+    const c = capSaturation(rgb, warm && luma(rgb) > 0.50 ? 0.50 : 0.56);
+    const cap = Math.min(luma(reference) * 1.12, RECEIVER_LUMA_CEILING);
+    const y = luma(c);
+    return y > cap ? c.map(channel => channel * cap / y) : c;
+}
+
+export function applyGradeToRgbFaced(rgb, grade, k) {
     const lin = luma(rgb);
     const out = [0, 0, 0];
+    const faced = k <= 1.5 && grade.faceMix > 0 ? [] : null;
     const sh = 1 - smoothstep((lin - 0.06) / 0.36);
     const hi = smoothstep((lin - 0.38) / 0.44);
     for (let i = 0; i < 3; i++) {
@@ -507,11 +603,18 @@ export function applyGradeToRgb(rgb, grade) {
         c *= grade.gain[i] * grade.exposure;
         c = grade.lift[i] + Math.max(0, c) * (1 - grade.lift[i]);
         c = Math.pow(c, grade.gamma[i]);
-        c *= lerp(lerp(1, grade.shadowTint[i], sh), grade.highlightTint[i], hi);
-        out[i] = c;
+        const tint = lerp(lerp(1, grade.shadowTint[i], sh), grade.highlightTint[i], hi);
+        out[i] = c * tint;
+        if (faced) {
+            const keyTint = lerp(1, k >= 0 ? grade.highlightTint[i] : grade.shadowTint[i], Math.abs(k));
+            faced[i] = c * lerp(tint, keyTint, grade.faceMix);
+        }
     }
     const peak = Math.max(1, out[0], out[1], out[2]);
-    return [out[0] / peak, out[1] / peak, out[2] / peak];
+    const reference = [out[0] / peak, out[1] / peak, out[2] / peak];
+    if (!faced) return reference;
+    const facePeak = Math.max(1, ...faced);
+    return faceGuard(faced.map(c => c / facePeak), reference);
 }
 
 // V6 / NE v0.67.1 S — outside the sun and moon path the sea stays cool and

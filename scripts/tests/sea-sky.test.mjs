@@ -89,7 +89,9 @@ test('at looks la3 and la5 0, golden hour warms the sea and an overcast lifts it
         // Greyer at its own value (HSV saturation): the sky also lifts it, so
         // raw chroma can grow while the hue still greys.
         const saturation = c => (Math.max(...c) - Math.min(...c)) / Math.max(...c);
-        assert.ok(saturation(greyOn) < saturation(greyOff), 'and greyer');
+        assert.ok(Math.abs(saturation(greyOn) - WATER_DAY_MAX_SATURATION) < 1e-12, 'deep overcast water reaches the day cap');
+        const greyShallow = sky => graded(shallow, 12.5 * 60, WEATHERS.overcast, sky);
+        assert.ok(saturation(greyShallow(true)) < saturation(greyShallow(false)), 'uncapped overcast shallows grow greyer');
         // Daytime sky weight raised to 0.24 (relaxed 2026-11-23, operator decision).
         const q = v => Math.round(Math.max(0, Math.min(1, v)) * 32) / 32;
         for (const weather of Object.values(WEATHERS)) {
@@ -125,10 +127,13 @@ test('LA-3: the golden sea takes the land\'s shadow violet — lighter, cooler, 
                 assert.ok(hsv(after) <= waterMaxSaturation(goldenMood) + 1e-6, `${label}: inside dynamic V6 cap`);
             }
         }
-        // No golden hour, no golden sea: sunrise, noon, the blue hour, overcast.
-        for (const [minute, weather] of [[6 * 60, WEATHERS.clear], [12.5 * 60, WEATHERS.clear], [19.75 * 60, WEATHERS.clear], [18 * 60, WEATHERS.overcast]]) {
+        // No golden hour, no golden sea: sunrise, noon, the blue hour.
+        for (const [minute, weather] of [[6 * 60, WEATHERS.clear], [12.5 * 60, WEATHERS.clear], [19.75 * 60, WEATHERS.clear]]) {
             assert.equal(goldenSeaShare(evaluateGrade({ minuteOfDay: minute, weather, moonFill: 0.5 })), 0, `${minute / 60}h ${weather.type}`);
         }
+        // The day weather row preserves the violet fill under cloud.
+        const covered = goldenSeaShare(evaluateGrade({ minuteOfDay: 1080, weather: WEATHERS.overcast }));
+        assert.ok(covered > 0.32 && covered < 0.34);
         const golden = evaluateGrade({ minuteOfDay: 18 * 60, weather: WEATHERS.clear, moonFill: 0.5 });
         assert.equal(goldenSeaShare(golden, 1), 1);
         assert.equal(goldenSeaShare(golden, 0.5), 0.5);

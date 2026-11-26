@@ -18,7 +18,7 @@
 //
 // Everything here is cached by the caller; nothing runs a smooth gradient.
 
-import { applyGradeToRgb, capSaturation, WATER_MAX_SATURATION, waterMaxSaturation } from './GradeEvaluator.js';
+import { AFTERGLOW, SEA_FRESNEL_Y, SEA_FRESNEL_BANDS, SEA_FRESNEL_FAR, SEA_FRESNEL_WEIGHT, applyGradeToRgb, faceGuard, capSaturation, WATER_MAX_SATURATION, waterMaxSaturation } from './GradeEvaluator.js';
 import { GRADE_CONSTANTS, LAND_FULL_STRENGTH } from './gpu/GpuWorldPolicy.js';
 import { ART_RAMPS, RECEIVER_LUMA_CEILING } from '../../config/artPalette.js';
 
@@ -283,6 +283,38 @@ export function applyWaterSky(rgb, mood) {
     return [0, 1, 2].map(i => Math.max(0, Math.min(1, rgb[i] + (sky[i] * k - rgb[i]) * w)));
 }
 
+/** World-pixel course for a Canvas sea bake. Pass CoastBake's seaBandBend. */
+export function seaFresnelCourse(x, y, seaBandBend) {
+    x = Math.floor(x);
+    y = Math.floor(y);
+    const order = BAYER4[(y & 3) * 4 + (x & 3)] / 16;
+    for (let i = 0; i < SEA_FRESNEL_Y.length; i++) {
+        const distance = y - SEA_FRESNEL_Y[i];
+        if (distance < -16) return i;
+        if (distance < 16 && (distance - seaBandBend(x, SEA_FRESNEL_BANDS[i]) + 2) / 4 <= order) return i;
+    }
+    return 3;
+}
+
+/** OA-W4 open-water landing on an already graded bed, before horizon haze. */
+export function applySeaFresnel(rgb, mood, grade, course) {
+    const gate = grade.seaFresnelGate;
+    const limit = waterMaxSaturation(mood);
+    if (!(gate > 0) || course === 3) return capSaturation(applyWaterSky(rgb, mood), limit);
+    rgb = capSaturation(rgb, limit);
+    const far = hexToRgb01(grade.seaFar);
+    const sky = mood.sky.map((v, i) => v + (far[i] - v) * SEA_FRESNEL_FAR[course]);
+    const weight = Math.round(Math.max(mood.skyWeight, SEA_FRESNEL_WEIGHT[course] * gate) * 256);
+    const target = applyWaterSky(rgb, { sky, skyWeight: 1 });
+    const linear16 = v => Math.round((v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4) * 65535);
+    const mixed = rgb.map((v, i) => {
+        const lin = Math.floor(((256 - weight) * linear16(v) + weight * linear16(target[i]) + 128) / 256) / 65535;
+        return lin <= 0.0031308 ? 12.92 * lin : 1.055 * lin ** (1 / 2.4) - 0.055;
+    });
+    const y = mixed.reduce((value, c, i) => value + c * LUMA[i], 0);
+    return capSaturation(mixed.map(c => c * Math.min(1, RECEIVER_LUMA_CEILING / Math.max(1e-4, y))), limit);
+}
+
 /**
  * 3.12 — the frame grade off the resident path (the hybrid PostFx pass with
  * `postFx`, else the Canvas fills) of one ungraded colour, and its inverse:
@@ -374,6 +406,76 @@ export function canvasGradeKey(grade, { postFx = false } = {}) {
         ...grade.shadowTint, ...grade.highlightTint, ...grade.purkinje,
     ];
     return `${postFx ? 'p' : 'c'}${terms.map(value => Math.round(value * 128)).join(',')}`;
+}
+
+/**
+ * Post-grade RGBA stamp, drawn before emitter cuts. The sprite supplies full-size
+ * albedo and optional surface-code geometry (RGBA8), a sprite-local alpenglowRow,
+ * and an optional unlitEmitter mask (one byte per pixel, already room-gated).
+ * Keep the sprite descriptor stable between draws and bump revision on mask edits.
+ */
+export function buildCanvasOverlayStamp(sprite, grade) {
+    const rim = Math.round(16 * (grade.rimStrength || 0)) / 16;
+    const glow = Math.round(16 * (grade.afterglow || 0)) / 16;
+    const glint = Math.round(8 * (grade.windowGlint || 0)) / 8;
+    const { width, height, albedo, geometry, alpenglowRow = 0, unlitEmitter } = sprite;
+    if (!(rim && geometry || glow && alpenglowRow || glint && geometry && unlitEmitter)) return null;
+    const normalized = rgb => {
+        const y = rgb.reduce((value, c, i) => value + c * LUMA[i], 0);
+        return rgb.map(c => c / y);
+    };
+    const high = normalized(grade.highlightTint);
+    const alpine = normalized(AFTERGLOW.alpenglowTint);
+    const horizon = hexToRgb01(grade.skyHorizon);
+    const terms = canvasGradeTerms(grade);
+    const rows = geometry && (rim || glint && unlitEmitter) ? height : Math.min(height, alpenglowRow);
+    const data = new Uint8ClampedArray(width * rows * 4);
+    for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < width; x++) {
+            const pixel = y * width + x;
+            const i = pixel * 4;
+            if (!albedo[i + 3]) continue;
+            const face = geometry?.[i + 3] ? geometry[i + 2] >> 6 : -1;
+            const edge = rim && (face === 1 || face === 3) && albedo[i + 3] >= 128
+                && (x === 0 || y === 0 || albedo[i - 1] < 128 || albedo[i - 4 * width + 3] < 128);
+            const top = glow && y < alpenglowRow && face !== 2;
+            const pane = glint && face === 1 && unlitEmitter?.[pixel];
+            if (!edge && !top && !pane) continue;
+            const rgb = [albedo[i] / 255, albedo[i + 1] / 255, albedo[i + 2] / 255];
+            const ref = applyGradeToRgb(rgb, grade);
+            let c = canvasGradeRgb(rgb, grade, terms);
+            if (edge) c = faceGuard(c.map((v, j) => v * (1 + 0.30 * rim) * (1 + (high[j] - 1) * 0.5 * rim)), ref);
+            if (top) c = faceGuard(c.map((v, j) => v * (1 + (alpine[j] * AFTERGLOW.alpenglowGain - 1) * glow * AFTERGLOW.alpenglowShare)), ref);
+            if (pane) c = faceGuard(c.map((v, j) => v + (horizon[j] - v) * 0.42 * glint), ref);
+            for (let j = 0; j < 3; j++) data[i + j] = c[j] * 255;
+            data[i + 3] = albedo[i + 3];
+        }
+    }
+    return { width, height: rows, data };
+}
+
+export class CanvasOverlayStampCache {
+    constructor() { this.sprites = new WeakMap(); }
+
+    get(sprite, grade) {
+        if (!grade.rimStrength && !grade.afterglow && !grade.windowGlint) return null;
+        const key = [canvasGradeKey(grade), grade.skyHorizon, Math.round(grade.rimStrength * 16),
+            Math.round(grade.afterglow * 16), Math.round(grade.windowGlint * 8),
+            sprite.alpenglowRow, sprite.revision].join('|');
+        const cached = this.sprites.get(sprite);
+        if (cached?.key === key) return cached.canvas;
+        const stamp = buildCanvasOverlayStamp(sprite, grade);
+        let canvas = null;
+        if (stamp) {
+            canvas = cached?.canvas || document.createElement('canvas');
+            canvas.width = stamp.width;
+            canvas.height = stamp.height;
+            const ctx = canvas.getContext('2d');
+            ctx.putImageData(new ImageData(stamp.data, stamp.width, stamp.height), 0, 0);
+        }
+        this.sprites.set(sprite, { key, canvas });
+        return canvas;
+    }
 }
 
 // 4x4 Bayer in [0, 1).

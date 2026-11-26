@@ -37,6 +37,7 @@ import {
     resolveCamera,
     resolveFatPixels,
     resolveFrameGrade,
+    resolveDiurnalFrame,
     resolveLights,
     resolveMist,
     resolveMistBurn,
@@ -76,6 +77,7 @@ import { COMPOSITE_ROLES_BINDING } from './wgsl/composite.js';
 import { HDR_HIGHLIGHT_MODES, HDR_HIGHLIGHTS_DEFAULT, hdrLampsLit, resolveDisplayColor } from '../DisplayColor.js';
 import { adapterInfo, probeWebGpu, requestWebGpuDevice } from './wgpu/GpuDeviceManager.js';
 import {
+    BLEND_NORMAL,
     BLOOM_FORMAT,
     LIGHT_RECORD_BUFFER_BYTES,
     SCENE_COLOR_FORMAT,
@@ -341,6 +343,7 @@ export class GpuWorldRendererWebGPU {
         this._displayWant = resolveDisplayColor({ backend: 'webgpu', hdrMode: this.hdrMode });
         this._display = null;
         this._displayRequest = 0;
+        this._emitterVariants = new WeakMap();
         this.displayError = null;
         // The host's display-status callback (IsometricRenderer), or null.
         this.onDisplayChange = null;
@@ -514,7 +517,26 @@ export class GpuWorldRendererWebGPU {
             return;
         }
         const device = this.device;
-        this.pipelines.displayVariant(want).then((variant) => {
+        const pipelines = this.pipelines;
+        pipelines.displayVariant(want).then(async variant => {
+            let pending = this._emitterVariants.get(variant);
+            if (!pending) {
+                const module = pipelines.modules.scene;
+                pending = Promise.all([false, true].map(depthWriteEnabled => device.createRenderPipelineAsync({
+                    label: 'world-emitter-roles',
+                    layout: pipelines.layouts.scenePipeline,
+                    vertex: { module, entryPoint: 'sceneVs' },
+                    primitive: { topology: 'triangle-strip' },
+                    depthStencil: { format: SCENE_DEPTH_FORMAT, depthWriteEnabled, depthCompare: 'always' },
+                    fragment: { module, entryPoint: 'emitterRoleFs', targets: [
+                        { format: SCENE_COLOR_FORMAT, blend: BLEND_NORMAL }, { format: variant.emissionFormat },
+                    ] },
+                })));
+                this._emitterVariants.set(variant, pending);
+                pending.catch(() => this._emitterVariants.delete(variant));
+            }
+            return { ...variant, emitterRoles: await pending };
+        }).then((variant) => {
             if (token !== this._displayRequest || device !== this.device || this.disposed) return;
             this.displayError = null;
             this._applyDisplay(variant);
@@ -1213,6 +1235,7 @@ export class GpuWorldRendererWebGPU {
         s.cameraScale = view.scale;
         s.resolution = [this.width, this.height];
         s.packedGeometry = !this._occluderChannelSkipped;
+        Object.assign(s, resolveDiurnalFrame(feed, grade));
         s.gradeExposure = grade.exposure;
         s.gradeSaturation = grade.saturation;
         s.gradeGain = grade.gain;
@@ -1791,9 +1814,8 @@ export class GpuWorldRendererWebGPU {
                 : -1;
             const encoder = device.createCommandEncoder({ label: 'world-frame' });
             // 10.2 / 10.3 — on an HDR or P3 screen the emission attachment is
-            // always written and its alpha carries each batch's role (the
-            // blend constant: 1 for a building/prop emitter batch — an
-            // authored emissive sidecar, never a character — else 0).
+            // always written. Mixed emitter batches write the per-texel role
+            // so a glazed pane or a sunlit roof stays an ordinary receiver.
             // [scene] — MRT colour + emission, painter depth, then particles.
             mark = performance.now();
             const target = this.sceneTarget;
@@ -1817,7 +1839,9 @@ export class GpuWorldRendererWebGPU {
                 const batch = batches[index];
                 if (!batch.albedoTexture) continue;
                 const cue = Boolean(batch.cueRuns);
-                const pipeline = this.pipelines.scene(batch.blend === 'add', batch.writesDepth === true, writeEmission, cue, roles, writeEmission);
+                const emitterRoles = roles && batch.emissiveTexture && batch.blend !== 'add' && !cue;
+                const pipeline = emitterRoles ? display.emitterRoles[Number(batch.writesDepth === true)]
+                    : this.pipelines.scene(batch.blend === 'add', batch.writesDepth === true, writeEmission, cue, roles, writeEmission);
                 if (pipeline !== bound) {
                     scene.setPipeline(pipeline);
                     bound = pipeline;

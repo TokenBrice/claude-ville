@@ -34,7 +34,7 @@ import {
     MAX_LIGHT_RECORDS,
     sortedCloudField,
 } from './GpuWorldPolicy.js';
-import { NEUTRAL_GRADE } from '../GradeEvaluator.js';
+import { gradeKeyMinute, NEUTRAL_GRADE } from '../GradeEvaluator.js';
 import { ART_RAMPS } from '../../../config/artPalette.js';
 import { POST_FX_LEVELS } from '../postfx/PostFxLadder.js';
 import { localDateKey, sourceEnergyFor } from '../AtmosphereState.js';
@@ -114,6 +114,24 @@ export function resolveFrameGrade(feed = {}) {
     return feed.atmosphere?.lightGrade || feed.lightGrade || NEUTRAL_GRADE;
 }
 
+/** Shared scene and open-sea uniforms. Older fixture grades disable the extra courses. */
+export function resolveDiurnalFrame(feed, grade = resolveFrameGrade(feed)) {
+    const minute = feed.atmosphere?.clock?.minuteOfDay;
+    const sunrise = gradeKeyMinute('sunrise', feed.atmosphere?.solar || undefined);
+    // The first blue exposure step is >= 0.06048 even at full night.
+    // The next step peaks at 0.054432 even in daylight.
+    const crestFlash = !feed.reducedMotion && finite(feed.motionScale, 1) > 0 && feed.atmosphere?.motion?.particleEnabled !== false
+        && feed.flash?.[2] >= 0.057 ? 1 : 0;
+    return {
+        dawnShare: Number.isFinite(minute) ? clamp(1 - Math.abs(minute - sunrise) / 60, 0, 1) : 0,
+        crestFlash,
+        skyFar: [...hexRgb01(grade.seaFar ?? grade.skyHorizon, [0, 0, 0]), grade.seaFresnelGate ?? 0],
+        skyNear: [...hexRgb01(grade.skyTop, [0, 0, 0]), grade.windowGlint ?? 0],
+        faceKey: grade.faceKey ?? [0, 0, 0, 0],
+        faceExtra: [grade.faceShade ?? 0, grade.faceMix ?? 0, grade.rimStrength ?? 0, grade.afterglow ?? 0],
+    };
+}
+
 /**
  * `u_weather`: (rain, fog, storm, intensity), rain the liquid share (EN-4:
  * winter precipitation falls as snow, so 0), sheared by the ladder's
@@ -153,7 +171,7 @@ export function resolveOccluderChannel(feed = {}) {
         // MS-1 — the low mist reads the surface-coded height too (dawn mist).
         || (finite(feed.mistDensity, 0) > 0 && lookStrength('ms1') > 0)
         // SD-2 — the sun's shade reads each texel's face by day (`feed.sunShade`).
-        || Boolean(feed.sunShade);
+        || Boolean(feed.sunShade) || resolveFrameGrade(feed).faceMix > 0;
 }
 
 // MS-1 (look `ms1`) — low mist with a top. Its top over a ground point is

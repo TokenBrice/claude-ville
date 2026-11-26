@@ -96,7 +96,7 @@ struct VsOut {
   @location(6) @interpolate(flat) uvClamp: vec4f,
   @location(7) @interpolate(flat) receiver: vec3f,
   @location(8) @interpolate(flat) layer: f32,
-  @location(9) @interpolate(flat) identity: vec2u,
+  @location(9) @interpolate(flat) identity: vec3u,
   @location(10) @interpolate(flat) flags: u32,
   @location(11) @interpolate(flat) texelRect: vec4i,
   // 3.8 / 3.11 — a reflect record's mirror axis and rect height.
@@ -155,7 +155,7 @@ fn sceneVertex(vi: u32, ii: u32, glRows: bool) -> VsOut {
   out.texel = vec2f(select(texRect.x, texRect.z, right), select(texRect.y, texRect.w, bottom)) - texOrigin;
   out.texelRect = vec4i(vec2i(texOrigin), vec2i(max(abs(texRect.zw - texRect.xy) - 1.0, vec2f(0.0))));
   out.receiver = receiver.yzw - RECEIVER_BIAS;
-  out.identity = recordLoc5(r);
+  out.identity = vec3u(recordLoc5(r), recordLoc6(r).y);
   out.flags = flags;
   out.layer = response.x;
   return out;
@@ -185,7 +185,7 @@ var<private> v_ramp: f32;
 var<private> v_originFrac: vec2f;
 var<private> v_uvClamp: vec4f;
 var<private> v_receiver: vec3f;
-var<private> v_identity: vec2u;
+var<private> v_identity: vec3u;
 var<private> v_flags: u32;
 var<private> v_reflect: vec2f;
 var<private> v_texel: vec2f;
@@ -567,6 +567,7 @@ struct SurfaceSample {
   elevation: f32,
   color: vec3f,
   waterMaterial: bool,
+  skyCourse: i32,
   poolAlbedo: vec3f,
   emitterWeight: f32,
   nightCarry: f32,
@@ -655,10 +656,12 @@ fn sceneSurface() -> SurfaceSample {
   var material = select(v_material, materialId, sidecar.a > 0.0 && !(packedMap && materialId > 254.5));
   var emissive = v_emissive;
   var emissionColor = albedoRgba.rgb;
+  var unlitPane = false;
   if (batch.hasEmissiveMap != 0u) {
     let authoredEmission = sampleEmission(uv, albedoRgba.a);
     // The emissive channel owns both hue (RGB) and contribution (A).
     emissionColor = authoredEmission.rgb;
+    unlitPane = authoredEmission.a > 0.0 && v_gate == 0.0 && v_emissive == 0.0;
     emissive = authoredEmission.a * 2.0 * clamp(v_gate, 0.0, 1.0);
   } else if (batch.hasMaterialMap != 0u) {
     // A material map without an authored emissive channel is non-emissive.
@@ -705,9 +708,11 @@ fn sceneSurface() -> SurfaceSample {
   // SD-2 — a receiver steps down under the sun's shade, before the grade; a
   // sun trail the field already covers is not drawn.
   var sunBase = color;
+  var shadeStep = 1.0;
   if (frame.shadeRect.w > 0.0 && batch.additive == 0u) {
     if (sunTrailHidden()) { discard; }
-    color *= sunShadeStep(geometry, surfaceCoded, select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u));
+    shadeStep = sunShadeStep(geometry, surfaceCoded, select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u));
+    color *= shadeStep;
     // SD-3 — then the sun lifts what it reaches (frame.shade.y 0 = off;
     // water is SEA-1's).
     sunBase = color;
@@ -723,9 +728,42 @@ fn sceneSurface() -> SurfaceSample {
   if (batch.terrainBatch != 0u && !waterMaterial && frame.waterMood.x > 0.0 && isDrySand(color, material, v_world)) {
     color *= mix(1.0, ${DRY_SAND_NIGHT_SCALE.toFixed(2)}, frame.waterMood.x);
   }
-  color = applyTimeGrade(color, batch.additive == 0u);
+  let face = i32(floor(geometry.b * 255.0 / 64.0));
+  let faced = surfaceCoded && (v_flags & RECORD_FLAG_FACE_GRADE) != 0u && !reflectRecord;
+  var k = NO_FACE;
+  if (faced) { k = frame.faceKey[face]; }
+  else if (batch.terrainBatch != 0u && !waterMaterial && frame.shadeRect.w > 0.0) {
+    k = select(frame.faceKey.x, frame.faceExtra.x, shadeStep < 0.995);
+  }
+  var refN: vec3f;
+  color = applyTimeGradeFaced(color, batch.additive == 0u, k, &refN);
   if (sunLifted) { color = sunLiftGraded(color, applyTimeGrade(sunBase, true)); }
+  if (faced && (v_flags & RECORD_FLAG_GOLDEN_RIM) != 0u && frame.faceExtra.z > 0.0 && (face == 1 || face == 3) && albedoRgba.a >= 0.5) {
+    let delta = 1.0 / vec2f(albedoSize());
+    let left = clamp(uv - vec2f(delta.x, 0.0), v_uvClamp.xy, v_uvClamp.zw);
+    let top = clamp(uv - vec2f(0.0, delta.y), v_uvClamp.xy, v_uvClamp.zw);
+    if (albedoTexture(left).a < 0.5 || albedoTexture(top).a < 0.5) {
+      let r = frame.faceExtra.z;
+      let hue = frame.gradeHighlight / dot(frame.gradeHighlight, GRADE_LUMA);
+      color = faceGuard(color * (1.0 + 0.30 * r) * mix(vec3f(1.0), hue, 0.5 * r), refN);
+    }
+  }
+  if (!recolorRecord && !reflectRecord && v_identity.z > 0u && frame.faceExtra.w > 0.0
+      && floor(v_texel.y) < f32(v_identity.z) && (!surfaceCoded || face != 2)) {
+    let hue = ALPENGLOW_TINT / dot(ALPENGLOW_TINT, GRADE_LUMA);
+    color = faceGuard(color * mix(vec3f(1.0), hue * ALPENGLOW_GAIN, frame.faceExtra.w * ALPENGLOW_SHARE), refN);
+  }
+  if (faced && face == 1 && unlitPane && frame.skyNear.w > 0.0) {
+    color = faceGuard(mix(color, frame.skyFar.rgb, 0.42 * frame.skyNear.w), refN);
+  }
   // V6 — graded water stays quiet; the 3.2 path is held at HSL L <= 0.70.
+  var skyCourse = 3;
+  var sd: f32;
+  var flags: u32;
+  if (waterMaterial && frame.skyFar.w > 0.0 && batch.terrainBatch != 0u && coastFieldAt(v_world, &sd, &flags)
+      && (flags & ${COAST_FIELD_FLAGS.sea}u) != 0u) {
+    skyCourse = fresnelCourse(floor(v_world));
+  }
   if (waterHue) {
     if (seaPath) {
       // NE P3.3b — lift lit moon-path stops out of the night grade like emitters:
@@ -735,9 +773,9 @@ fn sceneSurface() -> SurfaceSample {
       }
       color = seaPathCap(color);
     } else {
-      color = capSaturation(applyWaterSky(color), waterMaxSat());
+      color = capSaturation(applyWaterSky(color, skyCourse), waterMaxSat());
       // SEA-2 / SEA-3 — open water's share of the cool sky (applyWaterState).
-      if (seaSkyTake > 0.0) { color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), waterMaxSat()); }
+      if (skyCourse == 3 && seaSkyTake > 0.0) { color = capSaturation(seaSkyHue(color, frame.waterSky.rgb, seaSkyTake), waterMaxSat()); }
     }
   }
   // BI-8 — the summer surf glow over the graded crest (albedo only).
@@ -767,6 +805,7 @@ fn sceneSurface() -> SurfaceSample {
   s.elevation = elevation;
   s.color = color;
   s.waterMaterial = waterMaterial;
+  s.skyCourse = skyCourse;
   s.poolAlbedo = poolAlbedo;
   s.emitterWeight = emitterWeight;
   s.nightCarry = nightCarry;
@@ -1363,11 +1402,12 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
       if (coastFieldAt(recvGround, &mistSd, &mistFlags)) { mistNear = clamp((mistSd + 2.0) * 0.5, 0.0, 1.0); }
       let mistH = select((*surf).elevation * 128.0, recvH, v_receiver.x > -0.5);
       var mist = mistCourse(recvGround, mistH, mistNear, mistH > 0.5, bayer4(floor(artCell * 0.5)));
-      if (recvClass == 2) { mist = min(mist, 1.0); }
       // NE v0.67.1 M — silver-indigo tint on clear-night water mist; fog keeps frame.fogColor.
       let nightWaterMist = smoothstep(0.5, 1.0, frame.waterMood.x) * smoothstep(0.45, 0.65, mistNear) * (1.0 - clamp(frame.weather.y / 0.30, 0.0, 1.0));
       let mistColor = mix(frame.fogColor, vec3f(0.20, 0.28, 0.42), nightWaterMist);
-      color = applyMist(color, mist, mistColor, batch.additive != 0u);
+      let crestTint = select(mistColor, mix(mistColor, frame.skyFar.rgb, 0.22 * frame.dawnShare), mist == 1.0);
+      if (recvClass == 2) { mist = min(mist, 1.0); }
+      color = applyMist(color, mist, crestTint, batch.additive != 0u);
     }
   } else {
     let fog = clamp(frame.weather.y, 0.0, 1.0);
@@ -1435,16 +1475,23 @@ fn setSceneInputs(in: VsOut) {
 }
 
 @diagnostic(off, derivative_uniformity)
-@fragment fn sceneFs(in: VsOut) -> SceneOut {
+fn renderScene(in: VsOut, emitterRoles: bool) -> SceneOut {
   setSceneInputs(in);
   var surf = sceneSurface();
   // SD-3 — the finished lifted texel stays under the waiting candle.
-  let color = sunLiftFinal(sceneLight(&surf));
+  var color = sunLiftFinal(sceneLight(&surf));
+  if (surf.skyCourse < 3) { color = seaReceiver(color); }
   var out: SceneOut;
   out.color = vec4f(max(color, vec3f(0.0)) * surf.alpha, surf.alpha);
   out.emission = sceneEmission(surf);
+  if (emitterRoles) {
+    out.emission.a = select(0.0, 1.0, v_identity.x == 0u && !surf.reflectRecord && surf.emissive > 0.0);
+  }
   return out;
 }
+
+@fragment fn sceneFs(in: VsOut) -> SceneOut { return renderScene(in, false); }
+@fragment fn emitterRoleFs(in: VsOut) -> SceneOut { return renderScene(in, true); }
 ${capture ? `
 var<private> captureWord: u32;
 var<private> captureCastOnWater: bool;

@@ -24,6 +24,8 @@ const MOON_PATH_UNGRADE_MIX: f32 = ${MOON_PATH_UNGRADE_MIX.toFixed(2)};
 const MOON_PATH_SILVER_TINT: vec3f = vec3f(${MOON_PATH_SILVER_TINT.map(v => v.toFixed(2)).join(', ')});
 fn shadeOpenSea(cell: vec2f) -> vec3f {
     let order = waterBayer4(cell);
+    var skyCourse = 3;
+    if (frame.skyFar.w > 0.0) { skyCourse = fresnelCourse(cell); }
     let texelPx = (cell + 0.5 + frame.cameraXy) * frame.cameraScale;
     let t = cell.y - OPEN_SEA_HORIZON_Y;
     let excess = islandExcess(cell + 0.5);
@@ -85,13 +87,13 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
         if (starlightAt(cell, cap, frame.starlight, tick)) { albedo = WATER_FOAM_CREST; }
         // SEA-1 — the sun band's dim fades out with the look.
         c = applyWaterMood(albedo) * WATER_CAST * mix(1.0, 0.86, frame.seaSunBand * (1.0 - frame.cloud.w));
-        c = capSaturation(applyWaterSky(applyTimeGrade(c, true)), waterMaxSat());
+        c = capSaturation(applyWaterSky(applyTimeGrade(c, true), skyCourse), waterMaxSat());
         // SEA-2 / SEA-3 — lit slopes, static caps and calm lanes take the
         // sky's hue: the warm horizon inside the sun's road, cool outside.
         var take = 0.0;
         if (!whitecap && (litSlope || cap > 0.0)) { take = frame.seaState.x; }
         if (calm && seaCalmLane(cell)) { take = max(take, ${SEA_STATE.laneWeight.toFixed(2)}); }
-        if (take > 0.0) {
+        if (take > 0.0 && skyCourse == 3) {
             var sky = frame.waterSky.rgb;
             if (inSunRoad(texelPx, frame.glint, frame.cameraScale)) { sky = frame.seaSky; }
             c = capSaturation(seaSkyHue(c, sky, take), waterMaxSat());
@@ -136,7 +138,9 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
             // NE v0.67.1 M — silver-indigo tint on clear-night water mist; fog keeps frame.fogColor.
             let nightWaterMist = smoothstep(0.5, 1.0, frame.waterMood.x) * smoothstep(0.45, 0.65, seaMistNear) * (1.0 - clamp(frame.weather.y / 0.30, 0.0, 1.0));
             let mistColor = mix(frame.fogColor, vec3f(0.20, 0.28, 0.42), nightWaterMist);
-            c = applyMist(c, mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5))), mistColor, false);
+            let course = mistCourse(cell + 0.5, crestH, seaMistNear, false, waterBayer4(floor(cell * 0.5)));
+            let crestTint = select(mistColor, mix(mistColor, frame.skyFar.rgb, 0.22 * frame.dawnShare), course == 1.0);
+            c = applyMist(c, course, crestTint, false);
         }
     } else {
         let groundFog = clamp(frame.weather.y, 0.0, 1.0) * smoothstep(0.18, 0.98, 1.0 - texelPx.y / max(1.0, frame.resolution.y));
@@ -154,6 +158,8 @@ fn shadeOpenSea(cell: vec2f) -> vec3f {
     let cloudDark = shade * frame.cloud.z;
     shade = max(shade, squallShade(cell, n, order));
     if (shade > 0.0) { c *= vec3f(1.0) - max(cloudDark, shade * 0.085) * vec3f(1.0, 0.96, 0.84); }
-    return applyAerialHaze(c, order, (cell.y + 0.5 + seaContourRows(cell) + frame.cameraXy.y) * frame.cameraScale, false);
+    c = applyAerialHaze(c, order, (cell.y + 0.5 + seaContourRows(cell) + frame.cameraXy.y) * frame.cameraScale, false);
+    if (skyCourse < 3) { return seaReceiver(c); }
+    return c;
 }
 `;

@@ -15,15 +15,21 @@ export function gradeWgsl(constants = GRADE_CONSTANTS) {
     return /* wgsl */ `
 const GRADE_LUMA: vec3f = vec3f(0.2126, 0.7152, 0.0722);
 
-fn applyTimeGrade(albedo: vec3f, lift: bool) -> vec3f {
+fn timeGradeBase(albedo: vec3f, lift: bool) -> vec3f {
     let lin = dot(albedo, GRADE_LUMA);
     var c = mix(vec3f(lin) * frame.gradePurkinje, albedo, frame.gradeSaturation);
     c = max(c, vec3f(0.0)) * frame.gradeGain * frame.gradeExposure;
     if (lift) { c = frame.gradeLift + c * (1.0 - frame.gradeLift); }
     c = pow(max(c, vec3f(0.0)), frame.gradeGamma);
+    return c;
+}
+fn lumaTint(lin: f32) -> vec3f {
     let sh = 1.0 - smoothstep(0.06, 0.42, lin);
     let hi = smoothstep(0.38, 0.82, lin);
-    c *= mix(mix(vec3f(1.0), frame.gradeShadow, sh), frame.gradeHighlight, hi);
+    return mix(mix(vec3f(1.0), frame.gradeShadow, sh), frame.gradeHighlight, hi);
+}
+fn applyTimeGrade(albedo: vec3f, lift: bool) -> vec3f {
+    let c = timeGradeBase(albedo, lift) * lumaTint(dot(albedo, GRADE_LUMA));
     return c / max(1.0, max(c.r, max(c.g, c.b)));
 }
 
@@ -107,6 +113,29 @@ fn onStop(stop: vec3f, y: f32) -> vec3f {
 
 const RECEIVER_LUMA_CEILING: f32 = ${k('RECEIVER_LUMA_CEILING')};
 const RECEIVER_HEADROOM: f32 = ${k('RECEIVER_HEADROOM')};
+const NO_FACE: f32 = 9.0;
+fn faceTint(k: f32) -> vec3f {
+    return select(mix(vec3f(1.0), frame.gradeShadow, -k), mix(vec3f(1.0), frame.gradeHighlight, k), k >= 0.0);
+}
+fn warmBand(c: vec3f) -> bool {
+    return c.r >= c.g && c.g >= c.b && c.g - c.b >= 0.25 * (c.r - c.b) && c.r > c.b;
+}
+fn faceGuard(f: vec3f, refN: vec3f) -> vec3f {
+    let c = capSaturation(f, select(0.56, 0.50, warmBand(f) && dot(f, GRADE_LUMA) > 0.50));
+    let cap = min(dot(refN, GRADE_LUMA) * 1.12, RECEIVER_LUMA_CEILING);
+    let y = dot(c, GRADE_LUMA);
+    if (y > cap) { return c * (cap / y); }
+    return c;
+}
+fn applyTimeGradeFaced(albedo: vec3f, lift: bool, k: f32, refN: ptr<function, vec3f>) -> vec3f {
+    let base = timeGradeBase(albedo, lift);
+    let tint = lumaTint(dot(albedo, GRADE_LUMA));
+    let r = base * tint;
+    *refN = r / max(1.0, max(r.r, max(r.g, r.b)));
+    if (k > 1.5 || frame.faceExtra.y <= 0.0) { return *refN; }
+    let c = base * mix(tint, faceTint(k), frame.faceExtra.y);
+    return faceGuard(c / max(1.0, max(c.r, max(c.g, c.b))), *refN);
+}
 fn kneeValue(lit: vec3f, y: f32, ceilY: f32) -> vec3f {
     let kneed = ceilY + RECEIVER_HEADROOM * (1.0 - exp(-(y - ceilY) * 0.25 / RECEIVER_HEADROOM));
     let chroma = lit - y;

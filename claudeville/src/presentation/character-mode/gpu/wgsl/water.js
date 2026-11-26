@@ -106,7 +106,7 @@ function wgslRgbArray(name, list) {
 }
 
 const WATER_MOOD_WGSL = /* wgsl */ `
-fn applyWaterSky(color: vec3f) -> vec3f {
+fn applyFlatWaterSky(color: vec3f) -> vec3f {
     if (frame.waterSky.w <= 0.0) { return color; }
     let l = dot(color, vec3f(0.2126, 0.7152, 0.0722));
     let ls = max(1e-4, dot(frame.waterSky.rgb, vec3f(0.2126, 0.7152, 0.0722)));
@@ -242,7 +242,7 @@ fn swellCrest(p: vec2f, s: f32) -> f32 {
 }
 fn swellCap(p: vec2f, s: f32, near: f32, paw: f32) -> f32 {
     let crest = swellCrest(p, s);
-    if (crest > 0.5) { return crest; }
+    if (crest > 0.5) { return crest + frame.crestFlash; }
     let row = floor(p.y / ${SWELL_CAP_CELL[1].toFixed(1)});
     let x = p.x + glslMod(row, 2.0) * ${(SWELL_CAP_CELL[0] * 0.5).toFixed(1)};
     let k = vec2f(floor(x / ${SWELL_CAP_CELL[0].toFixed(1)}), row);
@@ -287,7 +287,43 @@ fn swellForm(rowsIn: f32, period: f32, crestRows: f32, lit: f32, trough: f32, or
 fn seaBodyBend(x: f32, band: f32) -> f32 {
     let wide = (0.7 * seaSeamOctave(x, 320.0, 2.0 * band) + 0.3 * seaSeamOctave(x, 128.0, 2.0 * band + 1.0) - 0.5) * 28.0;
     let fine = abs(glslMod(x + 19.0 * band, 128.0) - 64.0) / 16.0 - 2.0;
+    if (band < 7.0) { return clamp(floor(wide + 0.5), -14.0, 14.0); }
     return clamp(floor(wide + fine + 0.5), -14.0, 14.0);
+}
+fn seaReceiver(color: vec3f) -> vec3f {
+    let limit = waterMaxSat();
+    let c = capSaturation(color, limit);
+    let cap = min(1.0, RECEIVER_LUMA_CEILING / max(dot(c, GRADE_LUMA), 1e-4));
+    let bytes = floor(clamp(c * cap, vec3f(0.0), vec3f(1.0)) * 255.0);
+    // Floor at landing to preserve the value ceiling, then fit the largest channel.
+    let lo = min(bytes.r, min(bytes.g, bytes.b));
+    return min(bytes, vec3f(floor(lo / (1.0 - limit) + 1e-5))) / 255.0;
+}
+fn fresnelCourse(cell: vec2f) -> i32 {
+    for (var i = 0; i < 3; i++) {
+        let distanceY = cell.y - SEA_FRESNEL_Y[i];
+        if (distanceY < -16.0) { return i; }
+        if (distanceY < 16.0) {
+            let bend = seaBodyBend(cell.x, SEA_FRESNEL_BANDS[i]);
+            if ((distanceY - bend + 2.0) * 0.25 <= waterBayer4(cell)) { return i; }
+        }
+    }
+    return 3;
+}
+fn applyWaterSky(baseColor: vec3f, course: i32) -> vec3f {
+    if (course == 3) { return applyFlatWaterSky(baseColor); }
+    let color = capSaturation(baseColor, waterMaxSat());
+    let weight = max(frame.waterSky.w, SEA_FRESNEL_WEIGHT[course] * frame.skyFar.w);
+    let sky = mix(frame.waterSky.rgb, frame.skyFar.rgb, SEA_FRESNEL_FAR[course]);
+    let y = dot(color, GRADE_LUMA);
+    let skyY = max(1e-4, dot(sky, GRADE_LUMA));
+    let targetSky = clamp(sky * (min(max(skyY, y), y * ${WATER_SKY_LIFT.toFixed(2)}) / skyY), vec3f(0.0), vec3f(1.0));
+    let bed = vec3u(floor(decodeSrgb(color) * 65535.0 + 0.5));
+    let ray = vec3u(floor(decodeSrgb(targetSky) * 65535.0 + 0.5));
+    let f = u32(floor(weight * 256.0 + 0.5));
+    let landed = ((256u - f) * bed + f * ray + vec3u(128u)) / vec3u(256u);
+    let c = encodeSrgb(vec3f(landed) / 65535.0);
+    return c * min(1.0, RECEIVER_LUMA_CEILING / max(dot(c, GRADE_LUMA), 1e-4));
 }
 fn seaBodyStop(p: vec2f, s: f32, stop: f32, excess: f32, order: f32) -> f32 {
     let start = ${SEA_BODY_ROWS[0].toFixed(1)} - seaBodyBend(p.x, 7.0);

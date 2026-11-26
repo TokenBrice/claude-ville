@@ -3,7 +3,7 @@ import {
     materialClassId as registryMaterialClassId,
 } from '../MaterialRegistry.js';
 import { RECEIVER_LUMA_CEILING } from '../../../config/artPalette.js';
-import { WATER_DAY_MAX_SATURATION, WATER_MAX_SATURATION, WATER_NIGHT_MAX_SATURATION } from '../GradeEvaluator.js';
+import { AFTERGLOW, SEA_FRESNEL_Y, SEA_FRESNEL_BANDS, SEA_FRESNEL_WEIGHT, SEA_FRESNEL_FAR, WATER_DAY_MAX_SATURATION, WATER_MAX_SATURATION, WATER_NIGHT_MAX_SATURATION } from '../GradeEvaluator.js';
 import { footprintFieldRect } from '../FootprintField.js';
 
 const FOOTPRINT_FIELD_RECT = footprintFieldRect();
@@ -620,6 +620,20 @@ export function shedEffectsForLevel(level) {
     return shed;
 }
 
+export function diurnalConstants(wgsl) {
+    const fields = {
+        ALPENGLOW_TINT: AFTERGLOW.alpenglowTint, ALPENGLOW_GAIN: AFTERGLOW.alpenglowGain,
+        ALPENGLOW_SHARE: AFTERGLOW.alpenglowShare, SEA_FRESNEL_Y, SEA_FRESNEL_BANDS,
+        SEA_FRESNEL_WEIGHT, SEA_FRESNEL_FAR,
+    };
+    return Object.entries(fields).map(([name, value]) => {
+        const vector = Array.isArray(value);
+        const type = vector ? `vec${value.length}${wgsl ? 'f' : ''}` : (wgsl ? 'f32' : 'float');
+        const init = vector ? `${type}(${value.map(v => v.toFixed(2)).join(', ')})` : value.toFixed(2);
+        return wgsl ? `const ${name}: ${type} = ${init};` : `const ${type} ${name} = ${init};`;
+    }).join('\n');
+}
+
 // C2 — the grade is no longer six constant phase rows. `GradeEvaluator`
 // interpolates eight authored daily keys plus weather and moon rows on the
 // CPU; every backend runs this one GLSL block on the unpremultiplied albedo
@@ -678,6 +692,8 @@ uniform vec3 u_gradeGamma;
 uniform vec3 u_gradePurkinje;
 uniform vec3 u_gradeShadow;
 uniform vec3 u_gradeHighlight;
+uniform vec4 u_faceExtra;
+uniform vec4 u_faceKey;
 uniform vec3 u_gradeEdge;
 uniform float u_edgeAlpha;
 // 1.2 — pool multiply strength from the grade (falls as the ambient rises).
@@ -689,17 +705,21 @@ const vec3 GRADE_LUMA = vec3(0.2126, 0.7152, 0.0722);
 // set the ambient, the lift keeps a floor, and a luminance-keyed split tone
 // gives golden hour warm highlights over violet shadows. \`lift\` is false for
 // additive batches so a full-viewport additive field never lifts the void.
-vec3 applyTimeGrade(vec3 albedo, bool lift) {
+vec3 timeGradeBase(vec3 albedo, bool lift) {
     float lin = dot(albedo, GRADE_LUMA);
     vec3 c = mix(vec3(lin) * u_gradePurkinje, albedo, u_gradeSaturation);
     c = max(c, vec3(0.0)) * u_gradeGain * u_gradeExposure;
     if (lift) c = u_gradeLift + c * (1.0 - u_gradeLift);
     c = pow(max(c, vec3(0.0)), u_gradeGamma);
+    return c;
+}
+vec3 lumaTint(float lin) {
     float sh = 1.0 - smoothstep(0.06, 0.42, lin);
     float hi = smoothstep(0.38, 0.82, lin);
-    c *= mix(mix(vec3(1.0), u_gradeShadow, sh), u_gradeHighlight, hi);
-    // Highlight protection: a channel pushed past 1 scales the pixel down
-    // instead of clipping to a flat hue.
+    return mix(mix(vec3(1.0), u_gradeShadow, sh), u_gradeHighlight, hi);
+}
+vec3 applyTimeGrade(vec3 albedo, bool lift) {
+    vec3 c = timeGradeBase(albedo, lift) * lumaTint(dot(albedo, GRADE_LUMA));
     return c / max(1.0, max(c.r, max(c.g, c.b)));
 }
 
@@ -824,6 +844,29 @@ vec3 onStop(vec3 stop, float y) {
 // colour by y2/y cost the plaza pools a third of their R−B.
 const float RECEIVER_LUMA_CEILING = ${k('RECEIVER_LUMA_CEILING')};
 const float RECEIVER_HEADROOM = ${k('RECEIVER_HEADROOM')};
+const float NO_FACE = 9.0;
+vec3 faceTint(float k) {
+    return k >= 0.0 ? mix(vec3(1.0), u_gradeHighlight, k) : mix(vec3(1.0), u_gradeShadow, -k);
+}
+bool warmBand(vec3 c) {
+    return c.r >= c.g && c.g >= c.b && c.g - c.b >= 0.25 * (c.r - c.b) && c.r > c.b;
+}
+vec3 faceGuard(vec3 f, vec3 refN) {
+    vec3 c = capSaturation(f, warmBand(f) && dot(f, GRADE_LUMA) > 0.50 ? 0.50 : 0.56);
+    float cap = min(dot(refN, GRADE_LUMA) * 1.12, RECEIVER_LUMA_CEILING);
+    float y = dot(c, GRADE_LUMA);
+    if (y > cap) return c * (cap / y);
+    return c;
+}
+vec3 applyTimeGradeFaced(vec3 albedo, bool lift, float k, out vec3 refN) {
+    vec3 base = timeGradeBase(albedo, lift);
+    vec3 tint = lumaTint(dot(albedo, GRADE_LUMA));
+    vec3 r = base * tint;
+    refN = r / max(1.0, max(r.r, max(r.g, r.b)));
+    if (k > 1.5 || u_faceExtra.y <= 0.0) return refN;
+    vec3 c = base * mix(tint, faceTint(k), u_faceExtra.y);
+    return faceGuard(c / max(1.0, max(c.r, max(c.g, c.b))), refN);
+}
 vec3 kneeValue(vec3 lit, float y, float ceilY) {
     float kneed = ceilY + RECEIVER_HEADROOM * (1.0 - exp(-(y - ceilY) * 0.25 / RECEIVER_HEADROOM));
     vec3 chroma = lit - y;
@@ -1624,7 +1667,7 @@ export function materialClassId(value) {
 // V9 — the GPU record contract (docs/material-channel-contract.md, "V9 GPU
 // record layout"). Flag bits ride instance loc3.w. Bits 4 and 5 are reserved
 // by name so 2.3's surface code and B.2's packed geometry cannot collide.
-export const GPU_RECORD_FLAGS = Object.freeze({
+export const GPU_RECORD_FLAGS = Object.freeze(Object.defineProperty({
     writesDepth: 1,
     reflect: 2,
     fatOptOut: 4,
@@ -1662,14 +1705,14 @@ export const GPU_RECORD_FLAGS = Object.freeze({
     // floor candle. Attention loses nothing in shade.
     shadeExempt: 8192,
     recolorIndex: 16384,
-    faceKeyed: 32768,
+    faceGrade: 32768,
     goldenRim: 65536,
     reliefMaterial: 131072,
     surfacePage: 262144,
     mirrorSource: 524288,
     shaftReceiver: 1048576,
     surfaceRelative: 2097152,
-});
+}, 'faceKeyed', { get() { return this.faceGrade; } })); // Earlier record producers use this spelling.
 
 // V9 / 0.6 — painter's depth. A record's or particle's painter `sortY` is
 // clamped to [GPU_DEPTH_SORT_Y_MIN, GPU_DEPTH_SORT_Y_MIN + 65535/8] world px
@@ -1743,7 +1786,7 @@ export function assignGpuRecordV9Fields(target, record, alpha, blend) {
         | (record.shadeExempt === true ? GPU_RECORD_FLAGS.shadeExempt : 0)
         | ((record.flags || 0) & 0x3fc000)
         | (record.recolorIndex === true ? GPU_RECORD_FLAGS.recolorIndex : 0)
-        | (record.faceKeyed === true ? GPU_RECORD_FLAGS.faceKeyed : 0)
+        | ((record.faceKeyed === true || record.faceGrade === true) ? GPU_RECORD_FLAGS.faceKeyed : 0)
         | (record.goldenRim === true ? GPU_RECORD_FLAGS.goldenRim : 0)
         | (record.reliefMaterial === true ? GPU_RECORD_FLAGS.reliefMaterial : 0)
         | (record.surfacePage === true ? GPU_RECORD_FLAGS.surfacePage : 0)

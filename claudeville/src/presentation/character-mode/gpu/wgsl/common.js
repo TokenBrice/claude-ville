@@ -10,13 +10,14 @@
 // frame.gradeGain), except the few the WebGPU twins spell by meaning
 // (cameraXy/cameraScale for u_camera, timeMs for u_time, radianceTex for
 // u_radiance). GLSL bools are u32 (0/1): `u_seaOn` reads `frame.seaOn != 0u`.
-import { GPU_RECORD_FLAGS } from '../GpuWorldPolicy.js';
+import { diurnalConstants, GPU_RECORD_FLAGS } from '../GpuWorldPolicy.js';
 import { RECORD_LAYOUT, RECORD_INSTANCE_BYTES, RECEIVER_BIAS } from '../GpuRecordLayout.js';
 
 // GLSL builtins WGSL spells differently. `fract` stays the builtin (ANGLE and
 // Tint both lower it to Metal's fract, so the two agree bit for bit); `mod` is
 // GLSL's x - y * floor(x / y), never WGSL's truncating `%`.
 export const WGSL_COMMON = /* wgsl */ `
+${diurnalConstants(true)}
 fn glslMod(x: f32, y: f32) -> f32 { return x - y * floor(x / y); }
 fn glslMod2(x: vec2f, y: vec2f) -> vec2f { return x - y * floor(x / y); }
 fn glslMod3(x: vec3f, y: vec3f) -> vec3f { return x - y * floor(x / y); }
@@ -197,6 +198,8 @@ export const FRAME_UNIFORM_LAYOUT = uniformLayout('FrameUniforms', [
     // 1.6 — screen-Y aerial haze vertical reach (0.30 clear -> 0.55 fog),
     // fitting into mirrorBreak's existing 16-byte tail row.
     ['hazeStart', 'f32'],
+    ['dawnShare', 'f32'], ['crestFlash', 'f32'],
+    ['skyFar', 'vec4f'], ['skyNear', 'vec4f'], ['faceKey', 'vec4f'], ['faceExtra', 'vec4f'],
 ]);
 
 // §2.6 — the per-batch block, one 256-byte slot per batch in a frame ring

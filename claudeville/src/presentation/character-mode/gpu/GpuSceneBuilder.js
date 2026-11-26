@@ -671,6 +671,7 @@ function recordForBuilding(renderer, drawable, sequence) {
     const sidecarKey = useAtlas
         ? `${atlasFrame.atlas}:channels`
         : `${id}:material`;
+    const surfaceCode = (assets.getEntry?.(id) || drawable.entry)?.surfaceCode === true;
     const spriteLeft = Math.round(drawable.wx - ax);
     const recordId = col ? `${id}:column:${col.index}` : `${id}:${drawable.kind}`;
     const record = {
@@ -717,7 +718,10 @@ function recordForBuilding(renderer, drawable, sequence) {
         footY: footprint ? Math.round(footprint.front.y) : undefined,
         frontCornerX: footprint ? Math.round(footprint.front.x) : undefined,
         frontCornerY: footprint ? Math.round(footprint.front.y) : undefined,
-        surfaceCode: (drawable.entry || assets.getEntry?.(id))?.surfaceCode === true,
+        surfaceCode,
+        faceGrade: surfaceCode,
+        goldenRim: surfaceCode,
+        alpenglowRow: Math.max(0, (assets.getEntry?.(id)?.alpenglowRow || 0) - (front ? horizon : 0)),
         landmarkId: GPU_LANDMARK_IDS[buildingType] || 0,
         textureRevision: assets.assetVersion || null,
         sidecarRevision: useAtlas && atlasFrame?.atlas
@@ -844,6 +848,7 @@ function forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, horizo
         emissiveSource: null,
         occluderSource: null,
         surfaceCode: false,
+        faceGrade: false, goldenRim: false, alpenglowRow: 0,
         sourceWidth: layer.w,
         sourceHeight: layer.h,
         sx: cx0,
@@ -866,6 +871,36 @@ function forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, horizo
 // each dark room's own unlit albedo drawn on the same texels right after the
 // landmark, with no emissive channel, so an unoccupied room — and every pane
 // by day (M15) — shows unlit slate glass instead of the lit sidecar.
+const glassGlintMasks = new WeakMap();
+
+function unlitPaneMask(buildings, type, patch) {
+    const map = buildings.roomGlass?.map?.(type);
+    if (!map?.emissive) return null;
+    // A room gate can cross zero within the same quarter-step of painted glass.
+    const unlit = Array.from({ length: map.rooms + 1 }, (_, group) =>
+        Number(group === 0 || buildings.roomGlassGate(type, group - 1) === 0));
+    const key = unlit.join('');
+    const cached = glassGlintMasks.get(patch);
+    if (cached?.key === key) return cached;
+    const canvas = cached?.canvas || document.createElement('canvas');
+    canvas.width = map.w;
+    canvas.height = map.h;
+    const ctx = canvas.getContext('2d');
+    const image = ctx.createImageData(map.w, map.h);
+    for (let y = 0; y < map.h; y++) {
+        for (let x = 0; x < map.w; x++) {
+            const pixel = y * map.w + x;
+            if (unlit[map.group[pixel]]) {
+                image.data[pixel * 4 + 3] = map.emissive[((y + map.top) * map.spriteWidth + map.left + x) * 4 + 3];
+            }
+        }
+    }
+    ctx.putImageData(image, 0, 0);
+    const mask = { key, canvas };
+    glassGlintMasks.set(patch, mask);
+    return mask;
+}
+
 function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, front) {
     const patch = renderer?.buildingRenderer?.glassPatchFor?.(drawable.building);
     if (!patch) return null;
@@ -889,15 +924,20 @@ function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, 
     const spriteTop = record.y - (horizon != null && front ? horizon : 0);
     const id = drawable.entry.id;
     const version = renderer.assets?.assetVersion || '';
+    const glintMask = record.surfaceCode && renderer.buildingRenderer.atmosphereState?.lightGrade?.windowGlint > 0
+        ? unlitPaneMask(renderer.buildingRenderer, drawable.building.type, patch) : null;
     return {
         ...record,
         id: `${record.id}:glass`,
         stableKey: `${record.stableKey}:glass`,
         textureKey: `${id}:glass`,
-        sidecarKey: `${id}:glass`,
+        sidecarKey: `${id}:glass${glintMask ? ':glint' : ''}`,
+        goldenRim: false,
+        alpenglowRow: Math.max(0, record.alpenglowRow - Math.max(0, patch.top - (front ? horizon : 0))),
         source: patch.canvas,
         materialSource: patch.channels?.material || null,
-        emissiveSource: null,
+        emissiveSource: glintMask?.canvas || null,
+        emissiveGate: 0,
         occluderSource: patch.channels?.occluder || null,
         sourceWidth: patch.w,
         sourceHeight: patch.h,
@@ -911,7 +951,7 @@ function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, 
         height: sh,
         emissive: 0,
         textureRevision: `${version}:${patch.revision}`,
-        sidecarRevision: `${version}:glass`,
+        sidecarRevision: glintMask ? `${version}:glass:${glintMask.key}` : `${version}:glass`,
         sourceKind: 'individual',
     };
 }
@@ -955,6 +995,8 @@ function roofWeatherRecords(renderer, drawable, record, spriteLeft, col, horizon
         }
         out.push({
             ...record,
+            alpenglowRow: Math.max(0, record.alpenglowRow - Math.max(0, source.top - (front ? horizon : 0))),
+            goldenRim: false,
             id: `${record.id}:${suffix}`,
             stableKey: `${record.stableKey}:${suffix}`,
             textureKey: `${id}:${suffix}`,
@@ -1099,6 +1141,17 @@ function recordForProp(renderer, drawable, sequence) {
     const ownOccluder = useAtlas ? null : cached.occluder || null;
     const ownEmissive = useAtlas || emissiveSource ? null : cached.emissive || null;
     const ownChannels = Boolean(ownOccluder || ownEmissive || ownMaterial);
+    const row = assets?.getEntry?.(propId)?.alpenglowRow || 0;
+    // The windmill's cache pads the top of the PNG. Keep its record-local y
+    // in sprite pixels so loc6.y holds the manifest row verbatim.
+    if (row && !useAtlas) {
+        const spriteTop = Math.round(sprite.y) - assets.getAnchor(propId)[1];
+        const pad = Math.max(0, Math.min(sh - 1, spriteTop - destY));
+        sy += pad;
+        sh -= pad;
+        destY += pad;
+        destH -= pad;
+    }
     const record = {
         id: `prop:${propId || `${sprite.tileX},${sprite.tileY}`}:${part}${column ? `:${column.index}` : ''}`,
         stableKey: drawable.stableKey || propId || `${sprite.tileX},${sprite.tileY}`,
@@ -1111,6 +1164,7 @@ function recordForProp(renderer, drawable, sequence) {
         emissiveSource: emissiveSource || ownEmissive,
         occluderSource: ownOccluder,
         surfaceCode: Boolean(ownOccluder),
+        alpenglowRow: row,
         sourceWidth,
         sourceHeight,
         sx,

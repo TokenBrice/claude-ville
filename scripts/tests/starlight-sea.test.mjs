@@ -91,7 +91,7 @@ test('the appended WebGPU scalar stages without shifting the existing frame fiel
     // BI-8's surf glow, MS-1's mist and SEA-1's lift are appended after it,
     // so starlight keeps its slot.
     const names = FRAME_UNIFORM_LAYOUT.fields.map(f => f.name);
-    assert.deepEqual(names.slice(names.indexOf('starlight')), ['starlight', 'waterSky', 'swellDrift', 'stillWater', 'surfGlow', 'mist', 'seaLift', 'firelight', 'seaState', 'groundWeather', 'mistBurn', 'shadeRect', 'shade', 'mirrorRect', 'mirrorBreak', 'hazeStart']);
+    assert.deepEqual(names.slice(names.indexOf('starlight')), ['starlight', 'waterSky', 'swellDrift', 'stillWater', 'surfGlow', 'mist', 'seaLift', 'firelight', 'seaState', 'groundWeather', 'mistBurn', 'shadeRect', 'shade', 'mirrorRect', 'mirrorBreak', 'hazeStart', 'dawnShare', 'crestFlash', 'skyFar', 'skyNear', 'faceKey', 'faceExtra']);
     const sky = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'waterSky');
     const drift = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'swellDrift');
     const still = FRAME_UNIFORM_LAYOUT.fields.find(f => f.name === 'stillWater');
@@ -260,8 +260,8 @@ test('NE v0.67.1 F: night dims shoreline foam (k=0.22) and unlit dry sand (s=0.8
     assert.ok(SCENE_WGSL.includes('if (hasCoast && (sd > 0.0 || sd < -0.75)) { return false; }'), 'WGSL isDrySand stays in shore band');
     // Dry sand dim runs AFTER poolAlbedo = sunBase and BEFORE applyTimeGrade, gated on terrainBatch and night > 0.
     for (const [src, poolLine, dimLine, gradeLine] of [
-        [glsl, 'vec3 poolAlbedo = sunBase;', 'color *= mix(1.0, ${DRY_SAND_NIGHT_SCALE.toFixed(2)}, u_waterMood.x);', 'color = applyTimeGrade(color, !u_additive);'],
-        [SCENE_WGSL, 'let poolAlbedo = sunBase;', `color *= mix(1.0, ${DRY_SAND_NIGHT_SCALE.toFixed(2)}, frame.waterMood.x);`, 'color = applyTimeGrade(color, batch.additive == 0u);'],
+        [glsl, 'vec3 poolAlbedo = sunBase;', 'color *= mix(1.0, ${DRY_SAND_NIGHT_SCALE.toFixed(2)}, u_waterMood.x);', 'color = applyTimeGradeFaced(color, !u_additive, k, refN);'],
+        [SCENE_WGSL, 'let poolAlbedo = sunBase;', `color *= mix(1.0, ${DRY_SAND_NIGHT_SCALE.toFixed(2)}, frame.waterMood.x);`, 'color = applyTimeGradeFaced(color, batch.additive == 0u, k, &refN);'],
     ]) {
         const iPool = src.indexOf(poolLine);
         const iDim = src.indexOf(dimLine);

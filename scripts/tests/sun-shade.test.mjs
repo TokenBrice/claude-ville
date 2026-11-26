@@ -261,11 +261,11 @@ test('both scene shaders wire the step the same way: after the sun band, before 
     assert.ok(wgsl.includes('${SUN_SHADE_WGSL}\nfn applyAuthoredSunBand('));
     for (const [source, band, guard, call, grade] of [
         [glsl, 'color = applyAuthoredSunBand(color, material);', 'if (u_shadeRect.w > 0.0 && !u_additive) {',
-            'color *= sunShadeStep(geometry, surfaceCoded, u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0);', 'color = applyTimeGrade('],
+            'shadeStep = sunShadeStep(geometry, surfaceCoded, u_hasEmissiveMap ? clamp(emissive, 0.0, 1.0) : 0.0);', 'color = applyTimeGradeFaced('],
         [wgsl, 'color = applyAuthoredSunBand(color, material);', 'if (frame.shadeRect.w > 0.0 && batch.additive == 0u) {',
-            'color *= sunShadeStep(geometry, surfaceCoded, select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u));', 'color = applyTimeGrade('],
+            'shadeStep = sunShadeStep(geometry, surfaceCoded, select(0.0, clamp(emissive, 0.0, 1.0), batch.hasEmissiveMap != 0u));', 'color = applyTimeGradeFaced('],
     ]) {
-        const at = [band, guard, 'sunTrailHidden()', call, grade].map(text => source.indexOf(text, source.indexOf(band)));
+        const at = [band, guard, 'sunTrailHidden()', call, 'color *= shadeStep;', grade].map(text => source.indexOf(text, source.indexOf(band)));
         assert.ok(at.every(index => index >= 0), 'every line is there');
         assert.deepEqual(at, at.slice().sort((a, b) => a - b), 'in this order');
         assert.equal(source.split('sunShadeStep(geometry').length, 2, 'one call site');
@@ -430,10 +430,10 @@ test('sd3 at 0 lifts nothing; above 0 the lift follows the sun\'s height and the
 test('both scene shaders lift after the step and before the grade, off at 0, never water', () => {
     const read = path => readFileSync(new URL(`../../claudeville/src/presentation/character-mode/${path}`, import.meta.url), 'utf8');
     for (const [source, step, call, grade] of [
-        [read('gpu/GpuWorldRenderer.js'), 'color *= sunShadeStep(geometry',
-            'if (u_shade.y > 0.0 && !waterMaterial) color = sunLift(color, u_terrainBatch && v_receiver.x < -0.5, u_shade.y,', 'color = applyTimeGrade('],
-        [read('gpu/wgsl/scene.js'), 'color *= sunShadeStep(geometry',
-            'if (frame.shade.y > 0.0 && !waterMaterial) { color = sunLift(color, batch.terrainBatch != 0u && v_receiver.x < -0.5, frame.shade.y,', 'color = applyTimeGrade('],
+        [read('gpu/GpuWorldRenderer.js'), 'shadeStep = sunShadeStep(geometry',
+            'if (u_shade.y > 0.0 && !waterMaterial) color = sunLift(color, u_terrainBatch && v_receiver.x < -0.5, u_shade.y,', 'color = applyTimeGradeFaced('],
+        [read('gpu/wgsl/scene.js'), 'shadeStep = sunShadeStep(geometry',
+            'if (frame.shade.y > 0.0 && !waterMaterial) { color = sunLift(color, batch.terrainBatch != 0u && v_receiver.x < -0.5, frame.shade.y,', 'color = applyTimeGradeFaced('],
     ]) {
         const at = [step, call, grade].map(text => source.indexOf(text));
         assert.ok(at.every(index => index >= 0), 'every line is there');
@@ -577,8 +577,8 @@ test('the lit mask is the sea fret\'s land: an unclassified cell off the map gri
 test('both scene shaders hold a lifted texel after the grade, and a bright one keeps its unlifted value', () => {
     const read = path => readFileSync(new URL(`../../claudeville/src/presentation/character-mode/${path}`, import.meta.url), 'utf8');
     for (const [source, grade, hold] of [
-        [read('gpu/GpuWorldRenderer.js'), 'color = applyTimeGrade(color, !u_additive);', 'if (sunLifted) color = sunLiftGraded(color, applyTimeGrade(sunBase, true));'],
-        [read('gpu/wgsl/scene.js'), 'color = applyTimeGrade(color, batch.additive == 0u);', 'if (sunLifted) { color = sunLiftGraded(color, applyTimeGrade(sunBase, true)); }'],
+        [read('gpu/GpuWorldRenderer.js'), 'color = applyTimeGradeFaced(color, !u_additive, k, refN);', 'if (sunLifted) color = sunLiftGraded(color, applyTimeGrade(sunBase, true));'],
+        [read('gpu/wgsl/scene.js'), 'color = applyTimeGradeFaced(color, batch.additive == 0u, k, &refN);', 'if (sunLifted) { color = sunLiftGraded(color, applyTimeGrade(sunBase, true)); }'],
     ]) {
         const at = source.indexOf(grade);
         assert.ok(at > 0 && source.indexOf(hold) > at && source.indexOf(hold) - at < 200, 'right after the grade');
