@@ -32,6 +32,13 @@
 // (PHENOLOGY_STAGES), read by FoliageRenderer (turned and shed crowns) and
 // GroundBake (leaf litter, spring petals).
 
+//
+// W2.4 (four seasons) — spring petals whose fall ends on the river float
+// downstream like the autumn leaves (half pink `blossom[2]`, half ivory
+// `blossomIvory[2]`), and `drawDawnDew` lays the dawn dew glints on the
+// sunlit grass tufts (spec 02 §4.10).
+
+import { ART_RAMPS } from '../../config/artPalette.js';
 import { windAt } from './Wind.js';
 import { PRECIPITATING, precipitationIsFrozen } from './GroundState.js';
 
@@ -60,6 +67,74 @@ const RIVER_LEAF_FLOAT_FRAMES = [240, 360];
 // `windAt`'s reused result: scratch, not drift state (module scope keeps the
 // ambience's own fields what they were).
 const _spawnWind = { x: 0, gust: 0 };
+// W2.4 — a floating spring petal's colour: pink or ivory, 50/50.
+export const RIVER_PETAL_COLORS = Object.freeze([ART_RAMPS.blossom[2], ART_RAMPS.blossomIvory[2]]);
+
+// W2.4 (spec 02 §4.10) — the dawn dew: the glint colour (Tier B ivory top),
+// its share of the sunlit tuft texels per slot, the slot (500 ms: a 2 Hz
+// twinkle), the sun's height window (degrees) and the mist that brings it
+// outside spring and autumn.
+export const DEW_GLINT_COLOR = ART_RAMPS.blossomIvory[3];
+export const DEW_DENSITY = 0.0035;
+export const DEW_SLOT_MS = 500;
+export const DEW_SUN_ELEVATION = Object.freeze([0, 12]);
+export const DEW_FOG_MIN = 0.25;
+const DEW_SEASONS = new Set(['spring', 'autumn']);
+const _dewScratch = [];
+
+function dewHash(x, y, slot) {
+    let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul((slot | 0) + 0x3c6ef372, 0x9e3779b1);
+    h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+    h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/**
+ * W2.4 — whether the dawn dew shows for an atmosphere snapshot: the real
+ * sun (`solar.elevationDeg`, else the drawn disc's) within DEW_SUN_ELEVATION
+ * before solar noon, and mist (`weather.fog` >= DEW_FOG_MIN) or a spring or
+ * autumn date. Weather and calendar only (V3).
+ */
+export function dawnDewActive(atmosphere) {
+    if (!atmosphere) return false;
+    const elevation = Number(atmosphere.solar?.elevationDeg ?? atmosphere.sky?.sun?.elevationDeg);
+    if (!Number.isFinite(elevation) || elevation < DEW_SUN_ELEVATION[0] || elevation > DEW_SUN_ELEVATION[1]) return false;
+    const minute = Number(atmosphere.clock?.minuteOfDay);
+    const noon = Number(atmosphere.solar?.solarNoonMinute);
+    if (Number.isFinite(minute) && Number.isFinite(noon) && minute >= noon) return false;
+    const fog = Number(atmosphere.weather?.fog) || 0;
+    return fog >= DEW_FOG_MIN || DEW_SEASONS.has(seasonForMonth(calendarDayOf(atmosphere)?.month)?.token);
+}
+
+/**
+ * W2.4 — this slot's dew glints as a flat [x, y, x, y, …] list of world px
+ * (written into `out`, which is returned): `sites` is GroundBake's
+ * `groundField.dewSites` ({ points: Int16Array of world px pairs, share: the
+ * kept share of all sunlit tuft tip / lit texels }) or a bare points array
+ * (share 1). A site glints when its hash for the slot (`timeMs` /
+ * DEW_SLOT_MS, slot 0 under reduced motion) is under DEW_DENSITY / share, so
+ * 0.35 % of the tuft texels glint at once. `view` ({ x, y, width, height },
+ * world px) culls the list. Empty when `dawnDewActive` is false.
+ */
+export function dawnDewGlints(atmosphere, sites, timeMs = 0, reducedMotion = false, view = null, out = []) {
+    out.length = 0;
+    const points = sites?.points ?? sites;
+    if (!points?.length || !dawnDewActive(atmosphere)) return out;
+    const share = Number(sites?.share) > 0 ? Math.min(1, Number(sites.share)) : 1;
+    const odds = Math.min(1, DEW_DENSITY / share);
+    const slot = reducedMotion ? 0 : Math.floor(Math.max(0, Number(timeMs) || 0) / DEW_SLOT_MS);
+    const vx0 = view ? view.x : -Infinity;
+    const vy0 = view ? view.y : -Infinity;
+    const vx1 = view ? view.x + view.width : Infinity;
+    const vy1 = view ? view.y + view.height : Infinity;
+    for (let k = 0; k + 1 < points.length; k += 2) {
+        const x = points[k];
+        const y = points[k + 1];
+        if (x < vx0 || y < vy0 || x >= vx1 || y >= vy1) continue;
+        if (dewHash(x, y, slot) < odds) out.push(x, y);
+    }
+    return out;
+}
 
 const SEASONS = {
     winter: { type: 'snow', token: 'winter' },
@@ -281,7 +356,10 @@ export class SeasonalAmbience {
         // gusts included; butterflies fly their own way.
         const windX = season.type === 'butterfly' ? 0
             : windAt(x, y, this.motionTimeGetter(), this.atmosphereStateGetter()?.weather, _spawnWind).x * DRIFT_WIND_SCALE;
-        if (season.type === 'leaf' && anchor?.lift > 0 && this._spawnRiverLeaf(x, y, anchor.lift, windX)) return;
+        // W2.4 — a petal (only while the blossom is out: `_driftSeason`)
+        // takes the river leaf's path and share too, in pink or ivory.
+        const floats = season.type === 'leaf' || season.type === 'petal';
+        if (floats && anchor?.lift > 0 && this._spawnRiverLeaf(x, y, anchor.lift, windX, season.type)) return;
         this.particleSystem.spawn(season.type, x, y, 1, {
             tag: SEASONAL_TAG,
             spread: 2,
@@ -293,15 +371,17 @@ export class SeasonalAmbience {
     // line, drifting `windX` a frame: when its fall would end on the river's
     // current it falls the whole way (straight, no jitter, so the landing is
     // known at spawn), then floats downstream held flat, fading only on the
-    // water. True when it spawned one.
-    _spawnRiverLeaf(x, y, lift, windX) {
+    // water. True when it spawned one. W2.4 — `type` 'petal' floats a spring
+    // petal the same way, half of them pink (`blossom[2]`), half ivory
+    // (`blossomIvory[2]`).
+    _spawnRiverLeaf(x, y, lift, windX, type = 'leaf') {
         if (!this.riverCurrentAt) return false;
         const fall = lift / RIVER_LEAF_FALL;
         const landY = y + lift;
         const current = this.riverCurrentAt(x + windX * fall, landY);
         if (!current) return false;
         const float = RIVER_LEAF_FLOAT_FRAMES[0] + Math.random() * (RIVER_LEAF_FLOAT_FRAMES[1] - RIVER_LEAF_FLOAT_FRAMES[0]);
-        this.particleSystem.spawn('leaf', x, y, 1, {
+        const options = {
             tag: SEASONAL_TAG,
             spread: 0,
             speed: 0,
@@ -313,8 +393,30 @@ export class SeasonalAmbience {
             afloat: { x: current.x * RIVER_LEAF_FLOAT, y: current.y * RIVER_LEAF_FLOAT },
             fadeLife: float,
             sortY: landY,
-        });
+        };
+        if (type === 'petal') options.colors = [RIVER_PETAL_COLORS[Math.random() < 0.5 ? 0 : 1]];
+        this.particleSystem.spawn(type === 'petal' ? 'petal' : 'leaf', x, y, 1, options);
         return true;
+    }
+
+    /**
+     * W2.4 (spec 02 §4.10) — dawn dew: 1-art-px `blossomIvory[3]` glints on
+     * the sunlit grass tufts' tip and lit texels (GroundBake's `dewSites`,
+     * world px pairs) while the sun stands 0–12° up and there is mist
+     * (`fog` >= 0.25) or it is spring or autumn. Each site glints in a
+     * 500 ms slot by its hash (0.35 % of the tuft texels at once: the 2 Hz
+     * twinkle); reduced motion holds slot 0's set. Draws onto `ctx` in world
+     * px under its current transform (the caller's camera), only inside
+     * `view` ({ x, y, width, height } in world px) when given. Returns the
+     * glints drawn. See `dawnDewGlints` for the set alone.
+     */
+    drawDawnDew(ctx, atmosphere = this.atmosphereStateGetter(), sites = null, timeMs = this.motionTimeGetter(), reducedMotion = !(Number(this.motionScaleGetter()) > 0), view = null) {
+        if (!ctx) return 0;
+        const glints = dawnDewGlints(atmosphere, sites, timeMs, reducedMotion, view, _dewScratch);
+        if (!glints.length) return 0;
+        ctx.fillStyle = DEW_GLINT_COLOR;
+        for (let k = 0; k < glints.length; k += 2) ctx.fillRect(glints[k], glints[k + 1], 1, 1);
+        return glints.length / 2;
     }
 
     // Pick a screen-space anchor for types that read as coming from the

@@ -66,6 +66,13 @@
 //                    winter leaf mould.
 //   8. decals        sparse clusters: meadow flower pockets, tufts, shrubs,
 //                    bank reeds, pebbles.
+//      W2.4 (four seasons): the turf ramp follows the season
+//                    (`groundTurfFor`: dormant straw in winter, spring green
+//                    once the blossom is out, half the meadow before it),
+//                    autumn dry patches cover a third of the open meadow,
+//                    autumn reeds go willow gold, spring brambles flower
+//                    ivory, and the sunlit tuft tips publish the dawn dew's
+//                    sites (`groundField.dewSites`).
 //   9. footings (E1) each landmark's `footing` profile (buildingGrounding.js)
 //                    paints its dais, terrace riser or rock headland under the
 //                    sprite's front edges (or the drawn foot it authors), at
@@ -173,11 +180,14 @@ const STOP_MASK = 7;
 const KERB_SHIFT = 3;
 const KERB_MASK = 3 << KERB_SHIFT;
 const FOOTING_FLAG = 64;
+// W2.4 — the texel lies on an avenue's worn centre band (|t| <= WORN_HALF_ROWS
+// rows, setts and plaza alike): the winter re-tone tramples its snow.
+const WORN_FLAG = 32;
 // GW-1 — the texel was laid on the cool limestone ramp (`plazaCool`: the
 // plaza's cool stones, the medallion's rays, the cool flag yards); the
 // weather field gives it surface 9 so a wet step stays on its own ramp.
 const COOL_FLAG = 128;
-export const GROUND_STOP_FLAGS = Object.freeze({ STOP_MASK, KERB_SHIFT, KERB_MASK, FOOTING: FOOTING_FLAG, COOL: COOL_FLAG });
+export const GROUND_STOP_FLAGS = Object.freeze({ STOP_MASK, KERB_SHIFT, KERB_MASK, FOOTING: FOOTING_FLAG, COOL: COOL_FLAG, WORN: WORN_FLAG });
 
 // ---- surfaces -------------------------------------------------------------
 
@@ -223,10 +233,68 @@ const BLOSSOM = ramp('blossom');
 const ASHLAR = ramp('ashlar');
 const CLIFF = ramp('cliff');
 const TIDELINE = ramp('tideline');
+const SUN = ramp('foliageSun');
+const WILLOW_GOLD = ramp('willowGold');
+const BLOSSOM_IVORY = ramp('blossomIvory');
 // Grass drift ramps derived from C1 (same value ladder, shifted hue): dry
-// grass leans toward the earth ramp, lush grass toward the sage foliage.
-const GRASS_DRY = GRASS.map((c, i) => mixRgb(c, DIRT[Math.max(0, i - 1)], 0.18));
-const GRASS_LUSH = GRASS.map((c, i) => mixRgb(c, FOLIAGE[Math.min(4, i + 1)], 0.18));
+// grass leans toward the earth ramp, lush grass toward the sage foliage,
+// spring's fresh flush one step toward the sunlit foliage's yellow-green.
+// W2.4 (spec 02 §2.6.5) — one such turf set per season ramp on the shared
+// grass value ladder: summer and autumn keep `grass`, winter lies on the
+// dormant straw `grassDormant`, spring on `grassSpring` once the blossom is
+// out (before it, half the meadow in patches: `groundTurfFor`).
+function turfSet(base) {
+    const derive = (fn) => Object.freeze(base.map(fn));
+    return Object.freeze({
+        grass: Object.freeze(base),
+        dry: derive((c, i) => mixRgb(c, DIRT[Math.max(0, i - 1)], 0.18)),
+        lush: derive((c, i) => mixRgb(c, FOLIAGE[Math.min(4, i + 1)], 0.18)),
+        fresh: derive((c, i) => mixRgb(c, SUN[Math.min(SUN.length - 1, i + 3)], 0.3)),
+    });
+}
+export const GROUND_TURF = Object.freeze({
+    summer: turfSet(GRASS),
+    dormant: turfSet(ramp('grassDormant')),
+    spring: turfSet(ramp('grassSpring')),
+});
+// The world-anchored patch field (3–4 tile patches) of the meadow already on
+// spring turf before the blossom, its threshold (0.54: half the island's
+// area, measured over the map) and the seam's dither reach.
+const TURF_BUD_ON = 0.54;
+const TURF_BUD_SEAM = 0.06;
+const budGrid = () => subGrid('bud', (tx, ty) => vnoise(tx / 3.4, ty / 3.4, 1331));
+
+/**
+ * W2.4 — the turf a base bake lays (spec 02 §2.6.5): `{ primary, alt, bud }`
+ * of GROUND_TURF sets. Winter is dormant, spring with the blossom out (or no
+ * stage) spring, summer and autumn summer; a spring before the blossom lays
+ * summer turf with `alt` spring on the patches `turfAt` picks (half the
+ * meadow, step-snapped: every texel on one of the two ramps).
+ */
+export function groundTurfFor(season, phenology = null) {
+    if (season === 'winter') return Object.freeze({ primary: GROUND_TURF.dormant, alt: null, bud: null });
+    if (season === 'spring' && !(phenology?.blossom ?? true)) {
+        return Object.freeze({ primary: GROUND_TURF.summer, alt: GROUND_TURF.spring, bud: budGrid() });
+    }
+    return Object.freeze({ primary: season === 'spring' ? GROUND_TURF.spring : GROUND_TURF.summer, alt: null, bud: null });
+}
+
+// The turf set at tile (tx, ty), texel (col, row): `primary`, or `alt` on
+// the bud patches (a 2x2 Bayer seam within TURF_BUD_SEAM of their edge).
+function turfAt(turf, tx, ty, col, row) {
+    if (!turf.alt) return turf.primary;
+    const n = subSample(turf.bud, tx, ty);
+    const d = n - TURF_BUD_ON;
+    const seam = d < TURF_BUD_SEAM && d > -TURF_BUD_SEAM ? BAYER[(row & 1) * 2 + (col & 1)] * 0.16 : 0;
+    return d + seam < 0 ? turf.alt : turf.primary;
+}
+// The turf at the texel (col, row) of a bake whose lattice starts at (x0, y0).
+function turfAtTexel(turf, x0, y0, col, row) {
+    if (!turf.alt) return turf.primary;
+    const sx = x0 + col + 0.5;
+    const sy = y0 + row + 0.5;
+    return turfAt(turf, sx / TILE_WIDTH + sy / TILE_HEIGHT, sy / TILE_HEIGHT - sx / TILE_WIDTH, col, row);
+}
 // The terrain cache's far-row haze (IsometricRenderer
 // `_bakeAtmosphericPerspective`): six flat courses, far apex first, each
 // multiplied over the baked ground (half-strength cool tint toward white),
@@ -245,9 +313,13 @@ export const TERRAIN_HAZE_COURSES = Object.freeze(Array.from({ length: 6 }, (_, 
 // ramp's stop 3 (the verge stems and the meadow's upper course) to its stop
 // 4, under each haze course (the canvas multiply rounds a·h/255). The GPU
 // scene and the Canvas overlay match `from` exactly on the terrain cache and
-// write `to`, so a lifted texel keeps its row's haze.
+// write `to`, so a lifted texel keeps its row's haze. W2.4 (R10) — every
+// season's turf ramps (summer, dormant, spring × grass, dry, lush), summer's
+// first so its pairs keep their indices.
 const hazed = (rgb, h) => Object.freeze(rgb.map((c, i) => Math.round(c * h[i] / 255)));
-export const GRASS_GUST_STOPS = Object.freeze([GRASS, GRASS_DRY, GRASS_LUSH].flatMap((r) => TERRAIN_HAZE_COURSES
+export const GRASS_GUST_RAMPS = Object.freeze([GROUND_TURF.summer, GROUND_TURF.dormant, GROUND_TURF.spring]
+    .flatMap((t) => [t.grass, t.dry, t.lush]));
+export const GRASS_GUST_STOPS = Object.freeze(GRASS_GUST_RAMPS.flatMap((r) => TERRAIN_HAZE_COURSES
     .map((h) => Object.freeze([hazed(r[3], h), hazed(r[4], h)])))
     .filter((pair, i, all) => all.findIndex(other => other[0].join() === pair[0].join()) === i));
 
@@ -261,7 +333,14 @@ const R_ROAD = 5;
 const R_PLAZA = 6;
 const R_COOL = 7;
 const R_CINDER = 8;
-const RAMP_TABLE = [GRASS, GRASS_DRY, GRASS_LUSH, SAND, DIRT, ROAD, PLAZA, PLAZA_COOL, CINDER];
+// W2.4 — the second turf set's grass ramps (a spring before the blossom).
+const R_ALT_TURF = 9;
+// Every colour a base bake's texel can take: the stone and soil ramps plus
+// its turf (`groundTurfFor`).
+function rampTableFor(turf) {
+    const alt = turf.alt || turf.primary;
+    return [turf.primary.grass, turf.primary.dry, turf.primary.lush, SAND, DIRT, ROAD, PLAZA, PLAZA_COOL, CINDER, alt.grass, alt.dry, alt.lush];
+}
 
 // Per surface: ramp, texture set (soft grounds only), ramp offset (steps),
 // texture contrast, published class. W1.1 — grass no longer reads a drawing
@@ -735,6 +814,23 @@ function segDistance(s, x, y) {
     let t = px * s.du + py * s.dv;
     t = t < 0 ? 0 : t > s.len ? s.len : t;
     return Math.hypot(px - s.du * t, py - s.dv * t);
+}
+
+// W2.4 — whether tile point (tx, ty) of tile index `tileI` lies on the worn
+// centre band of its nearest avenue segment (the setts' own rule, §2.4).
+function wornCentreAt(frames, tileI, tx, ty) {
+    const cb = tileI * 3;
+    let seg = null;
+    let best = ROAD_FRAME_REACH;
+    for (let c = 0; c < 3; c++) {
+        const si = frames.cand[cb + c];
+        if (si < 0) break;
+        const d = segDistance(frames.segs[si], tx, ty);
+        if (d < best) { best = d; seg = frames.segs[si]; }
+    }
+    if (!seg?.avenue) return false;
+    const t = ((ty - seg.ay) * seg.du - (tx - seg.ax) * seg.dv) * 32;
+    return (t < 0 ? -t : t) <= WORN_HALF_ROWS;
 }
 
 // The Command Plaza's medallion centre: the civic fountain (scenery.js).
@@ -1330,7 +1426,7 @@ function shoreBanked(coast, bankZone, tx, ty, sd) {
     return false;
 }
 
-function groundFieldFrom({ bounds, cols, rows, texelW, classes, weather }) {
+function groundFieldFrom({ bounds, cols, rows, texelW, classes, weather, dewSites }) {
     return {
         bounds,
         cols,
@@ -1339,6 +1435,9 @@ function groundFieldFrom({ bounds, cols, rows, texelW, classes, weather }) {
         classes,
         // GroundWeatherField.js: the RGBA8 weather field on this grid.
         weather,
+        // W2.4 — the dawn dew's sites (`dewSitesFrom`; SeasonalAmbience
+        // `drawDawnDew`), or undefined on a bake from before them.
+        dewSites,
         CLASS: GROUND_CLASS,
         classAt(worldX, worldY) {
             const col = Math.floor((worldX - bounds.x) / texelW);
@@ -1347,6 +1446,42 @@ function groundFieldFrom({ bounds, cols, rows, texelW, classes, weather }) {
             return classes[row * cols + col];
         },
     };
+}
+
+/**
+ * W2.4 — the dawn dew's sites from the tuft pass's candidate texel indices
+ * (`cols` wide, the lattice at world (x0, y0)): deduplicated, kept by a fixed
+ * hash at DEW_SITE_SHARE, evenly thinned to DEW_SITE_CAP, as
+ * `{ points: Int16Array [x, y, …] world px, share }` where `share` is the
+ * kept share of every candidate (SeasonalAmbience scales its odds by it).
+ * Null when there are none.
+ */
+export function dewSitesFrom(candidates, cols, x0, y0) {
+    if (!candidates?.length) return null;
+    const kept = [];
+    for (const i of candidates) {
+        const col = i % cols;
+        const row = (i - col) / cols;
+        if (hash2(col, row, 2401) < DEW_SITE_SHARE) kept.push(i);
+    }
+    if (!kept.length) return null;
+    const unique = Int32Array.from(kept).sort();
+    let n = 0;
+    for (let k = 0; k < unique.length; k++) if (k === 0 || unique[k] !== unique[k - 1]) unique[n++] = unique[k];
+    const count = Math.min(n, DEW_SITE_CAP);
+    const points = new Int16Array(count * 2);
+    for (let k = 0; k < count; k++) {
+        const i = unique[count < n ? Math.floor(k * n / count) : k];
+        const col = i % cols;
+        points[k * 2] = x0 + col;
+        points[k * 2 + 1] = y0 + (i - col) / cols;
+    }
+    return { points, share: DEW_SITE_SHARE * count / n };
+}
+
+function validDewSites(sites) {
+    return sites?.points instanceof Int16Array && sites.points.length % 2 === 0 && sites.points.length <= DEW_SITE_CAP * 2
+        && Number.isFinite(sites.share) && sites.share > 0 && sites.share <= 1;
 }
 
 // `withWeather`: build the ground weather field (GroundWeatherField.js) in
@@ -1431,6 +1566,9 @@ function* groundBands(r, withWeather = false, options = {}) {
     yield* setupDone('noise');
     const season = r._terrainSeason || 'summer';
     const winter = season === 'winter';
+    // W2.4 — the season's turf and the colours it gives the grass ramps.
+    const turf = groundTurfFor(season, r._terrainPhenology || null);
+    const rampTable = rampTableFor(turf);
     // 1 where the tile's depth cap is a river's or lagoon's (land inherits
     // the cap of water within a tile), sampled bilinearly for the marsh bank.
     const freshwater = new Float32Array(N * N);
@@ -1597,6 +1735,7 @@ function* groundBands(r, withWeather = false, options = {}) {
             let rampId;
             let k;
             let flags = 0;
+            let wornBand = false;
 
             if (surface === S_GRASS) {
                 // 2.6 — calm macro sweeps: one step either side of the mean,
@@ -1614,6 +1753,7 @@ function* groundBands(r, withWeather = false, options = {}) {
                 const wRaw = drift.warm[i00] * w00 + drift.warm[i10] * w10 + drift.warm[i01] * w01 + drift.warm[i11] * w11;
                 const warmth = wRaw + (Math.abs(Math.abs(wRaw) - 0.42) < 0.05 ? dither * 0.14 : 0);
                 rampId = warmth > 0.42 ? R_GRASS_DRY : warmth < -0.42 ? R_GRASS_LUSH : R_GRASS;
+                if (turf.alt && turfAt(turf, tx, ty, col, row) === turf.alt) rampId += R_ALT_TURF;
             } else if (surface === S_ROAD || surface === S_PLAZA || surface === S_FLAG) {
                 const U = sx / 2 + sy;
                 const V = sy - sx / 2;
@@ -1621,6 +1761,9 @@ function* groundBands(r, withWeather = false, options = {}) {
                 let mossShare = 1;
                 let medallion = -1;
                 if (surface === S_PLAZA) {
+                    // W2.4 — an avenue's worn centre band crossing the plaza
+                    // (for the winter re-tone only; the stones stay laid).
+                    wornBand = wornCentreAt(frames, tileI, tx, ty);
                     if (yardPlan.medallion) medallion = medallionAt(tx - yardPlan.medallion.x, ty - yardPlan.medallion.y);
                     if (medallion >= 0) {
                         PAVE.ramp = (medallion >> 4) === MEDALLION_RAMP.COOL ? R_COOL : R_PLAZA;
@@ -1659,6 +1802,7 @@ function* groundBands(r, withWeather = false, options = {}) {
                         const s = (seg.s0 + px * seg.du + py * seg.dv) * 32;
                         let t = (py * seg.du - px * seg.dv) * 32;
                         worn = seg.avenue && (t < 0 ? -t : t) <= WORN_HALF_ROWS;
+                        wornBand = worn;
                         if (seg.fan) {
                             const m = ((s % 48) + 48) % 48 - 24;
                             t -= 0.08 * m * m / 24;
@@ -1790,11 +1934,11 @@ function* groundBands(r, withWeather = false, options = {}) {
                 rampId = surface === S_SAND ? R_SAND : R_DIRT;
             }
 
-            const c = RAMP_TABLE[rampId][k];
+            const c = rampTable[rampId][k];
             const o = ti * 4;
             D[o] = c[0]; D[o + 1] = c[1]; D[o + 2] = c[2]; D[o + 3] = 255;
             surfaces[ti] = surface;
-            stepBuf[ti] = k | flags | (rampId === R_COOL ? COOL_FLAG : 0);
+            stepBuf[ti] = k | flags | (rampId === R_COOL ? COOL_FLAG : 0) | (wornBand && !flags ? WORN_FLAG : 0);
         }
     }
 
@@ -1806,7 +1950,7 @@ function* groundBands(r, withWeather = false, options = {}) {
     };
 
     pause(); yield 'base'; resume();
-    const pass = { cols, rows, x0, y0, surfaces, sdBuf, aoBuf, stepBuf, put, season, due, drift, bankZone, moss };
+    const pass = { cols, rows, x0, y0, surfaces, sdBuf, aoBuf, stepBuf, put, season, due, drift, bankZone, moss, turf, phenology: r._terrainPhenology || null };
     yield* run(drawPavingDetails(pass), 'details');
     pause(); yield 'details'; resume();
     const crowns = yield* run(crownFieldSlices(r, { cols, rows, x0, y0, due }), 'crowns');
@@ -1820,7 +1964,10 @@ function* groundBands(r, withWeather = false, options = {}) {
     pause(); yield 'living'; resume();
     yield* run(drawDecals(r, pass), 'decals');
     pause(); yield 'decals'; resume();
+    pass.dewSites = [];
     yield* run(drawTufts(r, pass), 'tufts');
+    const dewSites = dewSitesFrom(pass.dewSites, cols, x0, y0);
+    pass.dewSites = null;
     pause(); yield 'tufts'; resume();
     yield* run(drawTransitions(r, pass), 'transitions');
     pause(); yield 'transitions'; resume();
@@ -1869,7 +2016,7 @@ function* groundBands(r, withWeather = false, options = {}) {
         weather = yield* run(bakeGroundWeather(r, { cols: fcols, rows, x0, y0, fineCols: cols, fineSurfaces: surfaces, fineSteps: stepBuf, surfaces: fieldSurfaces, stops, crowns, puddleMask, season, phenology: r._terrainPhenology || null, hold, due }), 'weather');
         drop(stops);
     }
-    const field = groundFieldFrom({ bounds: { x: x0, y: y0, w, h }, cols: fcols, rows, texelW: FIELD_TEXEL_W, classes, weather });
+    const field = groundFieldFrom({ bounds: { x: x0, y: y0, w, h }, cols: fcols, rows, texelW: FIELD_TEXEL_W, classes, weather, dewSites });
     const ms = busy + performance.now() - started;
     const tail = performance.now() - clock.start;
     if (tail > clock.maxMs) clock.maxMs = tail;
@@ -1877,7 +2024,7 @@ function* groundBands(r, withWeather = false, options = {}) {
         canvas, field, ms, x0, y0, cols: fcols, rows, texelW: FIELD_TEXEL_W,
         surfaces: fieldSurfaces, aoBuf: fieldAo, puddleMask, weather,
         // The 1×1 colour lattice's planes, for the winter re-tone.
-        color: { cols, rows, texelW: COLOR_TEXEL_W, surfaces, aoBuf, stepBuf },
+        color: { cols, rows, texelW: COLOR_TEXEL_W, surfaces, aoBuf, stepBuf, turf },
         stats: { slices: clock.slices, maxSliceMs: clock.maxMs, peakBytes: mem.peak, footings, unitMap },
     };
 }
@@ -2202,6 +2349,10 @@ function* crownFieldSlices(r, { cols, rows, x0, y0, texelW = COLOR_TEXEL_W, due 
     return { trees, dist, owner };
 }
 
+// W2.4 (spec 02 §4.13) — the autumn dry-patch threshold outside the crowns:
+// about 32 % of the open meadow lies on the dry turf.
+export const AUTUMN_DRY_PATCH_ON = 0.58;
+
 // Litter colours (leafAutumn stops) by the crown above: russet oaks and
 // scarlet maples drop russet, ochre oaks gold, turning oaks a mix, willows,
 // birches and poplars straw gold.
@@ -2222,19 +2373,16 @@ const MEADOW_OPEN = 12 * CHAMFER_A_Y;
 // W1.1 — the verge's blade share: the mown tufts (drawTufts) now share the
 // verge, and a 1×1 blade is one px wide.
 const VERGE_SHARE = 0.55;
-// Spring's fresh flush: new growth one C1 grass step toward the sunlit
-// foliage ramp's yellow-green (the same drift recipe as GRASS_DRY).
-const SUN = ramp('foliageSun');
-const GRASS_FRESH = GRASS.map((c, i) => mixRgb(c, SUN[Math.min(SUN.length - 1, i + 3)], 0.3));
-
-// Verge colours per season: blade stem and tip, and the seed tufts' heads
-// [lower, upper] (none in spring; brown dead heads, rarer, in winter).
-const VERGE_STYLE = Object.freeze({
-    spring: { stem: GRASS[3], tip: GRASS_FRESH[4], head: null, seeds: 0 },
-    summer: { stem: GRASS[3], tip: GRASS[4], head: [SAND[1], SAND[3]], seeds: 0.6 },
-    autumn: { stem: GRASS_DRY[2], tip: GRASS_DRY[4], head: [DIRT[2], DIRT[4]], seeds: 0.6 },
-    winter: { stem: GRASS_DRY[1], tip: GRASS_DRY[3], head: [DIRT[1], DIRT[3]], seeds: 0.3 },
-});
+// Verge colours per season on a turf set `T` (spring's tips on its fresh
+// flush, `T.fresh`): blade stem and tip, and the
+// seed tufts' heads [lower, upper] (none in spring; brown dead heads, rarer,
+// in winter).
+function vergeStyle(season, T) {
+    if (season === 'spring') return { stem: T.grass[3], tip: T.fresh[4], head: null, seeds: 0 };
+    if (season === 'autumn') return { stem: T.dry[2], tip: T.dry[4], head: [DIRT[2], DIRT[4]], seeds: 0.6 };
+    if (season === 'winter') return { stem: T.dry[1], tip: T.dry[3], head: [DIRT[1], DIRT[3]], seeds: 0.3 };
+    return { stem: T.grass[3], tip: T.grass[4], head: [SAND[1], SAND[3]], seeds: 0.6 };
+}
 // Seed tufts as [column offset, blade height, head texels] from the root
 // texel: two or three blades from one root; the tallest carries a two-texel
 // head and one neighbour a single head touching it, so seeds read as one
@@ -2281,24 +2429,29 @@ const CLUMPS = Object.freeze([
     [[-1, 0], [0, 0], [0, -1], [1, 0]],
 ]);
 
-function* drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put, season, crowns, edge, due }) {
+function* drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, put, season, crowns, edge, due, turf = groundTurfFor(season) }) {
     const winter = season === 'winter';
     const autumn = season === 'autumn';
     const spring = season === 'spring';
-    const style = VERGE_STYLE[season] || VERGE_STYLE.summer;
+    // W2.4 — the verge style of each turf set this bake lays.
+    const styles = new Map([[turf.primary, vergeStyle(season, turf.primary)]]);
+    if (turf.alt) styles.set(turf.alt, vergeStyle(season, turf.alt));
     // BI-2 — the woods' weekly stage: the litter's shed shares, and whether
     // the spring blossom is out.
     const phenology = r._terrainPhenology || null;
     const blossom = phenology?.blossom ?? true;
     const patchGrid = season !== 'summer' ? seasonPatchGrid(spring ? 1310 : 1311) : null;
-    const patchOn = autumn ? 0.7 : spring ? 0.66 : 0.8;
-    const patchRamp = spring ? GRASS_FRESH : GRASS_DRY;
+    // W2.4 — autumn's dry patches reach about a third of the open meadow
+    // (AUTUMN_DRY_PATCH_ON, was 0.70).
+    const patchOn = autumn ? AUTUMN_DRY_PATCH_ON : spring ? 0.66 : 0.8;
+    let T = turf.primary;
+    let style = styles.get(T);
 
     // A blade rising `tall` texels (base included); a tall blade throws its
     // root shadow one texel down-light (screen right).
     const blade = (col, row, tall, stem, tip) => {
-        put(col, row, GRASS[0]);
-        if (tall > 2) put(col + 1, row, GRASS[0]);
+        put(col, row, T.grass[0]);
+        if (tall > 2) put(col + 1, row, T.grass[0]);
         for (let k = 1; k < tall; k++) put(col, row - k, k === tall - 1 ? tip : stem);
     };
     // A seed tuft rooted at (col, row): its blades and their heads.
@@ -2328,13 +2481,17 @@ function* drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, pu
             const cd = crowns.dist[i] / CROWN_DIST_SCALE;
             const tree = cd < CROWN_REACH ? crowns.trees[crowns.owner[i]] : null;
             const ao = aoBuf[i];
+            if (turf.alt) {
+                T = turfAt(turf, sx / TILE_WIDTH + sy / TILE_HEIGHT, sy / TILE_HEIGHT - sx / TILE_WIDTH, col, row);
+                style = styles.get(T);
+            }
 
             // Seasonal patches away from the crowns: autumn dry grass, a
             // sparser dormant set in winter, spring's fresh flush.
             if (patchGrid && cd > 1.2) {
                 const n = subSample(patchGrid, sx / TILE_WIDTH + sy / TILE_HEIGHT, sy / TILE_HEIGHT - sx / TILE_WIDTH)
                     + BAYER[(row & 1) * 2 + (col & 1)] * 0.3;
-                if (n > patchOn) put(col, row, patchRamp[stepBuf[i] & STOP_MASK]);
+                if (n > patchOn) put(col, row, (spring ? T.fresh : T.dry)[stepBuf[i] & STOP_MASK]);
             }
 
             // The unmown verge along every path: blades densest at the path's
@@ -2361,7 +2518,7 @@ function* drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, pu
                     const band = vnoise(sx / 60, sy / 30, 1206);
                     if (h < (ridge ? 0.35 : (0.12 + band * 0.18) * (1 - inward * 0.5)) * VERGE_SHARE) {
                         const tall = 2 + Math.floor(hash2(col, row, 1202) * 3);
-                        if (shaded) blade(col, row, tall, GRASS[2], GRASS[3]);
+                        if (shaded) blade(col, row, tall, T.grass[2], T.grass[3]);
                         else blade(col, row, tall, style.stem, style.tip);
                         continue;
                     }
@@ -2436,12 +2593,12 @@ function* drawLivingGround(r, { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, pu
                 const open = spring ? 0.58 : 0.66;
                 if (pocket > open && h < (pocket - open) * 0.2) {
                     const pick = hash2(col, row, 1202);
-                    put(col, row, GRASS[1]);
+                    put(col, row, T.grass[1]);
                     put(col, row - 1, autumn ? DIRT[4] : pick > 0.85 ? OCHRE[1] : SAND[4]);
                 } else if (pocket < 0.22 && h < 0.012) {
-                    put(col, row, GRASS[2]);
-                    put(col + 1, row, GRASS[3]);
-                    put(col, row - 1, GRASS[3]);
+                    put(col, row, T.grass[2]);
+                    put(col + 1, row, T.grass[3]);
+                    put(col, row - 1, T.grass[3]);
                 }
             }
         }
@@ -2495,8 +2652,9 @@ const BLADES_MID = [EDGE_BLADES.G3, EDGE_BLADES.G7];
 const BLADES_LARGE = [EDGE_BLADES.G4, EDGE_BLADES.G5, EDGE_BLADES.G8, EDGE_BLADES.G9];
 
 // Paints a tuft stamp with its bottom-left texel at (col, row) onto grass
-// (and the strand, for a dune tuft).
-function stampTuft(ctx, stamp, col, row, R, k, mirror, onSand = false) {
+// (and the strand, for a dune tuft). `sites` (W2.4 dew): an array that
+// collects the texel index of every tip (`t`) and lit (`l`) texel written.
+function stampTuft(ctx, stamp, col, row, R, k, mirror, onSand = false, sites = null) {
     const { cols, rows, surfaces, put } = ctx;
     const H = stamp.length;
     const W = stamp[0].length;
@@ -2514,17 +2672,39 @@ function stampTuft(ctx, stamp, col, row, R, k, mirror, onSand = false) {
             if (under !== S_GRASS && !(onSand && under === S_SAND)) continue;
             const s = ch === 'r' ? Math.max(0, k - 2) : ch === 'm' ? k : ch === 't' ? Math.min(4, k + 1) : Math.min(4, k + 2);
             put(cc, rr, R[s]);
+            if (sites && (ch === 't' || ch === 'l')) sites.push(rr * cols + cc);
         }
     }
 }
 
-function grassRampAt(drift, tx, ty) {
+// The grass ramp a stamp at tile (tx, ty) takes: its turf set's dry, lush or
+// plain ramp by the district warmth drift.
+function grassRampAt(drift, tx, ty, T = GROUND_TURF.summer) {
     const warm = bilin(drift.warm, tx, ty);
-    return warm > 0.42 ? GRASS_DRY : warm < -0.42 ? GRASS_LUSH : GRASS;
+    return warm > 0.42 ? T.dry : warm < -0.42 ? T.lush : T.grass;
 }
+
+// W2.4 (spec 02 §4.13) — spring's hedgerow blossom on the bramble shrubs:
+// while the blossom is out, this share of a bramble's lit leaf texels (`4`)
+// flower `blossomIvory[3]` and this share of its mid leaves (`3`)
+// `blossomIvory[2]`, in hashed specks.
+const HEDGE_IVORY_LIT = 0.45;
+const HEDGE_IVORY_MID = 0.18;
+// W2.4 — autumn bank reeds: a willow-gold stalk over a dark foliage base, a
+// timber-brown cattail head.
+const REED_AUTUMN = Object.freeze({ base: FOLIAGE[1], mid: WILLOW_GOLD[3], tip: WILLOW_GOLD[5], head: TIMBER[1] });
+
+// W2.4 (spec 02 §4.10) — the dawn dew's sites: the sunlit tufts' tip (`t`)
+// and lit (`l`) texels, kept at DEW_SITE_SHARE by a fixed hash and capped at
+// DEW_SITE_CAP, as world px pairs (`groundField.dewSites`).
+export const DEW_SITE_SHARE = 0.125;
+export const DEW_SITE_CAP = 8192;
 
 function* drawDecals(r, ctx) {
     const { cols, rows, x0, y0, surfaces, sdBuf, aoBuf, put, season, due } = ctx;
+    const turf = ctx.turf || groundTurfFor(season);
+    const turfOf = (i) => turfAtTexel(turf, x0, y0, i % cols, Math.floor(i / cols));
+    const hedgeBlossom = season === 'spring' && (ctx.phenology?.blossom ?? true);
     const texelAt = (tx, ty) => {
         const sx = (tx - ty) * HALF_W;
         const sy = (tx + ty) * HALF_H;
@@ -2562,10 +2742,11 @@ function* drawDecals(r, ctx) {
             if (!onGrass(d.i)) return;
             const col = d.i % cols;
             const color = blooms[Math.floor(d.group * blooms.length)];
-            put(col, d.row, GRASS[0]);
+            const root = turfOf(d.i).grass[0];
+            put(col, d.row, root);
             put(col, d.row - 1, color);
             if (d.pick > 0.35) {
-                put(col + 1, d.row, GRASS[0]);
+                put(col + 1, d.row, root);
                 put(col + 1, d.row - 1, color);
             }
             if (d.pick > 0.65) put(col, d.row - 2, color);
@@ -2582,7 +2763,7 @@ function* drawDecals(r, ctx) {
         const k = ctx.stepBuf[d.i] & STOP_MASK;
         const sx = x0 + col + 0.5;
         const sy = y0 + d.row + 0.5;
-        const R = grassRampAt(ctx.drift, sx / TILE_WIDTH + sy / TILE_HEIGHT, sy / TILE_HEIGHT - sx / TILE_WIDTH);
+        const R = grassRampAt(ctx.drift, sx / TILE_WIDTH + sy / TILE_HEIGHT, sy / TILE_HEIGHT - sx / TILE_WIDTH, turfOf(d.i));
         stampTuft(ctx, d.pick < 0.5 ? TUFTS.T5a : TUFTS.T6a, col - 2, d.row, R, k, d.pick > 0.7);
     };
     for (const key of r.grassTuftTiles?.keys?.() || []) {
@@ -2602,6 +2783,9 @@ function* drawDecals(r, ctx) {
         const boosted = blooms.length && (flowerKeys.has(d.key) || flowerKeys.has(`${tx + 1},${ty}`) || flowerKeys.has(`${tx - 1},${ty}`)
             || flowerKeys.has(`${tx},${ty + 1}`) || flowerKeys.has(`${tx},${ty - 1}`));
         const bloom = boosted ? blooms[Math.floor(d.group * blooms.length)] : FOLIAGE[3];
+        const contact = turfOf(d.i).grass[0];
+        // W2.4 — a bramble flowers ivory while the spring blossom is out.
+        const ivory = hedgeBlossom && stamp === SHRUBS.bramble;
         const H = stamp.length;
         const W = stamp[0].length;
         const left = col - (W >> 1);
@@ -2613,7 +2797,13 @@ function* drawDecals(r, ctx) {
                 const cc = left + x;
                 const rr = top + y;
                 if (cc < 0 || rr < 0 || cc >= cols || rr >= rows || surfaces[rr * cols + cc] === 255) continue;
-                put(cc, rr, ch === 's' ? GRASS[0] : ch === 'f' ? bloom : FOLIAGE[ch.charCodeAt(0) - 48]);
+                let c = ch === 's' ? contact : ch === 'f' ? bloom : FOLIAGE[ch.charCodeAt(0) - 48];
+                if (ivory && (ch === '4' || ch === '3')) {
+                    const h = hash2(cc, rr, 2311);
+                    if (ch === '4' && h < HEDGE_IVORY_LIT) c = BLOSSOM_IVORY[3];
+                    else if (ch === '3' && h < HEDGE_IVORY_MID) c = BLOSSOM_IVORY[2];
+                }
+                put(cc, rr, c);
             }
         }
     };
@@ -2627,6 +2817,16 @@ function* drawDecals(r, ctx) {
         if (!(sd > -0.55 && sd < -0.24) || surfaces[d.i] === 255) return;
         const col = d.i % cols;
         const height = 3 + Math.floor(d.pick * 3);
+        if (season === 'autumn') {
+            // W2.4 — autumn reeds: willow-gold stalks, a 2-px cattail head.
+            put(col, d.row, REED_AUTUMN.base);
+            for (let k = 1; k < height; k++) put(col, d.row - k, k === height - 1 ? REED_AUTUMN.tip : REED_AUTUMN.mid);
+            if (d.pick > 0.6) {
+                put(col, d.row - height, REED_AUTUMN.head);
+                put(col, d.row - height - 1, REED_AUTUMN.head);
+            }
+            return;
+        }
         put(col, d.row, FOLIAGE[1]);
         for (let k = 1; k < height; k++) put(col, d.row - k, k === height - 1 ? FOLIAGE[3] : FOLIAGE[2]);
         if (d.pick > 0.6 && season !== 'winter') put(col, d.row - height, OCHRE[0]);
@@ -2732,6 +2932,11 @@ const MOWN_ROWS = 6 * CHAMFER_A_Y;
 
 function* drawTufts(r, ctx) {
     const { cols, rows, x0, y0, surfaces, aoBuf, stepBuf, edge, drift, due } = ctx;
+    const turf = ctx.turf || groundTurfFor(ctx.season);
+    // W2.4 — the dew's candidate texels: the tips and lit crescents of the
+    // tufts that stand in the sun (no contact shade, outside every crown).
+    const sites = ctx.dewSites || null;
+    const crowns = ctx.crowns || null;
     for (const Z of TUFT_ZONES) {
         for (let cy = 0; cy * Z.ch < rows; cy++) {
             if (due()) yield;
@@ -2751,8 +2956,10 @@ function* drawTufts(r, ctx) {
                 if (zone !== Z.zone) continue;
                 const pick = hash2(cx, cy, Z.salt + 3);
                 const stamp = Z.stamps[Math.floor(pick * Z.stamps.length)];
-                const R = forest ? GRASS_LUSH : grassRampAt(drift, tx, ty);
-                stampTuft(ctx, stamp, col, row, R, stepBuf[i] & STOP_MASK, hash2(cx, cy, Z.salt + 4) < 0.3);
+                const T = turfAt(turf, tx, ty, col, row);
+                const R = forest ? T.lush : grassRampAt(drift, tx, ty, T);
+                const sunlit = sites && !forest && aoBuf[i] === 0 && !(crowns && crowns.dist[i] / CROWN_DIST_SCALE < CROWN_REACH);
+                stampTuft(ctx, stamp, col, row, R, stepBuf[i] & STOP_MASK, hash2(cx, cy, Z.salt + 4) < 0.3, false, sunlit ? sites : null);
             }
         }
     }
@@ -2765,14 +2972,14 @@ function* drawTufts(r, ctx) {
 // grass lip over an E0 face.
 function* drawTransitions(r, ctx) {
     const { cols, rows, x0, y0, surfaces, stepBuf, sdBuf, edge, put, season, due, drift, bankZone } = ctx;
-    const winter = season === 'winter';
+    const turf = ctx.turf || groundTurfFor(season);
     const breaks = creaseBreaks();
     const anchors = bladeAnchors();
     const dunes = duneAnchors();
     const pebbles = pebbleRuns();
     const wrack = wrackDashes();
-    const breakLow = winter ? GRASS_DRY[2] : GRASS[2];
-    const breakHigh = winter ? GRASS_DRY[3] : GRASS[3];
+    // The kerb crease breaks on the season's turf (§2.4: winter on
+    // `grassDormant[2]` / `[3]`).
     const N = MAP_SIZE;
     const WRACK_LO = -0.1 * SD_SCALE;
     const WRACK_HI = -0.05 * SD_SCALE;
@@ -2800,13 +3007,14 @@ function* drawTransitions(r, ctx) {
                 continue;
             }
             if (s !== S_GRASS) continue;
+            const T = turfAtTexel(turf, x0, y0, col, row);
             if (bankZone && surfaces[i + cols] === 255 && sdBuf[i + cols] > 0) {
                 // E0 — the earth bank's grass lip: the last land row above
                 // the face is its row −1.
                 const sx = x0 + col + 0.5;
                 const ty = Math.max(0, Math.min(N - 1, Math.round(sy / TILE_HEIGHT - sx / TILE_WIDTH)));
                 const tx = Math.max(0, Math.min(N - 1, Math.round(sx / TILE_WIDTH + sy / TILE_HEIGHT)));
-                if (bankZone[ty * N + tx] === 1) put(col, row, GRASS[4]);
+                if (bankZone[ty * N + tx] === 1) put(col, row, T.grass[4]);
             }
             const up = surfaces[i - cols];
             if (up === S_SAND) {
@@ -2814,7 +3022,7 @@ function* drawTransitions(r, ctx) {
                 // is not a chamfer source, so this edge is found here).
                 if (dunes[col] & 1 && hash2(col, row, 2211) < 0.35) {
                     stampTuft(ctx, hash2(col, row, 2213) < 0.5 ? TUFTS.T5a : TUFTS.T6a,
-                        col, row, GRASS_DRY, Math.min(3, stepBuf[i] & STOP_MASK), hash2(col, row, 2215) < 0.3, true);
+                        col, row, T.dry, Math.min(3, stepBuf[i] & STOP_MASK), hash2(col, row, 2215) < 0.3, true);
                 }
                 continue;
             }
@@ -2824,10 +3032,10 @@ function* drawTransitions(r, ctx) {
             if (kerbUp || kerb(i - 1) || kerb(i + 1) || kerb(i + cols)) {
                 // The kerb's crease, broken every 5–9 px by a blade over it.
                 if (breaks[col] & 1) {
-                    put(col, row, breakLow);
-                    if (kerbUp) put(col, row - 1, breakHigh);
+                    put(col, row, T.grass[2]);
+                    if (kerbUp) put(col, row - 1, T.grass[3]);
                 } else {
-                    put(col, row, GRASS[0]);
+                    put(col, row, T.grass[0]);
                 }
             }
             if (isPath(up) && anchors[col] & 1 && hash2(col, row, 2201) < (kerbUp ? 0.27 : 0.55)) {
@@ -2839,7 +3047,7 @@ function* drawTransitions(r, ctx) {
                 const deep = edge[i + 2 * cols] >= 2 * CHAMFER_A_Y;
                 const set = kerbUp || verge < 0.55 ? BLADES_SMALL : deep && hash2(col, row, 2203) < 0.5 ? BLADES_LARGE : BLADES_MID;
                 const heights = set[Math.floor(hash2(col, row, 2205) * set.length)];
-                const R = grassRampAt(drift, sx / TILE_WIDTH + sy / TILE_HEIGHT, sy / TILE_HEIGHT - sx / TILE_WIDTH);
+                const R = grassRampAt(drift, sx / TILE_WIDTH + sy / TILE_HEIGHT, sy / TILE_HEIGHT - sx / TILE_WIDTH, T);
                 for (let x = 0; x < heights.length; x++) {
                     const hgt = heights[x];
                     for (let k = 1; k <= hgt; k++) {
@@ -3122,7 +3330,9 @@ function* puddleSiteSlices({ cols, rows, surfaces, aoBuf, due = () => false }) {
 // rank, so the ground's texture reads through the snow. Grass and sand take
 // full courses; trodden earth turns to slush (grey snow over the dark ruts);
 // paving is swept (whole drifts only where the snow lies deepest, elsewhere a
-// dark seam in the deepest joints); cover thins under tree crowns and
+// dark seam in the deepest joints; W2.4: on an avenue's worn crown the drift
+// is packed two stops down and half trodden to slush over the stone, and the
+// kerbs hold the swept snow a stop up); cover thins under tree crowns and
 // at the eaves (contact AO). Bake-owned footing faces (E1) are vertical
 // stone and take none. Doors, banners and status marks are sprites and
 // overlays drawn over the terrain, so snow never covers them. A clear night
@@ -3132,6 +3342,21 @@ function* puddleSiteSlices({ cols, rows, surfaces, aoBuf, due = () => false }) {
 const SNOW = ramp('snow');
 const lumaOf = (c) => c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
 const SNOW_RANK_LUMAS = SURFACES.map(s => s.ramp.map(lumaOf));
+// W2.4 (R10) — the grass ranks follow the bake's turf (dormant in winter);
+// the shared value ladder keeps every season's stops on their own rank.
+export function snowRankLumas(turf = null) {
+    if (!turf || turf.primary.grass === GRASS) return SNOW_RANK_LUMAS;
+    const lumas = SNOW_RANK_LUMAS.slice();
+    lumas[S_GRASS] = turf.primary.grass.map(lumaOf);
+    return lumas;
+}
+// W2.4 (spec 02 §4.13) — trampled avenue crowns: on the worn centre band a
+// lying snow packs down SNOW_TRAMPLE_STEPS stops, and TRAMPLE_BARE_SHARE of
+// those texels (a fixed hash) show the bare stone mixed half with `snow[0]`
+// (slush); kerb texels hold the snow swept off the crown one stop up.
+const SNOW_TRAMPLE_STEPS = 2;
+const TRAMPLE_BARE_SHARE = 0.5;
+const SNOW_KERB_PILE = 1;
 const SNOW_GRASS = new Set([S_GRASS, S_SAND]);
 const SNOW_SLUSH = new Set([S_DIRT, S_CINDER, S_EARTH]);
 // Five ground ranks map onto four snow stops ([1, 2, 3, 3, 4]) so hollows and
@@ -3227,6 +3452,9 @@ function* winterGroundBands(r, base, snowBucket, frost, frostPatches = 0, rising
     const grid = base.color || { cols: base.cols, texelW: base.texelW || FIELD_TEXEL_W, surfaces: base.surfaces, aoBuf: base.aoBuf, stepBuf: null };
     const { cols, texelW, surfaces, aoBuf, stepBuf } = grid;
     const patches = weather ? frostPatches : 0;
+    // W2.4 — the base's turf: its grass ranks and the rime's wet edge.
+    const rankLumas = snowRankLumas(grid.turf || null);
+    const turfRoot = (grid.turf?.primary.grass || GRASS)[0];
     const w = cols * texelW;
     const image = base.canvas.getContext('2d').getImageData(0, 0, w, rows);
     const D = image.data;
@@ -3256,7 +3484,7 @@ function* winterGroundBands(r, base, snowBucket, frost, frostPatches = 0, rising
             if (s === 255) continue;
             if (stepBuf && stepBuf[i] & FOOTING_FLAG) continue;
             const o = (row * w + col * texelW) * 4;
-            const rank = rankOf(lumaOf([D[o], D[o + 1], D[o + 2]]), SNOW_RANK_LUMAS[s]);
+            const rank = rankOf(lumaOf([D[o], D[o + 1], D[o + 2]]), rankLumas[s]);
             const sx = col * texelW;
             const noise = snowNoise(sx) + BAYER[(row & 1) * 2 + (col & 1)] * 0.1;
             let snowy = false;
@@ -3282,11 +3510,23 @@ function* winterGroundBands(r, base, snowBucket, frost, frostPatches = 0, rising
                         // the dark ruts themselves stay open.
                         if (rank >= 2) write(o, SNOW[rank >= 4 ? 1 : 0]);
                     }
+                } else if (stepBuf && (s === S_ROAD || s === S_PLAZA) && stepBuf[i] & KERB_MASK && noise < threshold * 0.85) {
+                    // W2.4 — the kerb: the snow swept off the avenue piles
+                    // on it, one stop over the rank's own tone.
+                    snowy = true;
+                    write(o, SNOW[Math.min(SNOW.length - 1, SNOW_TONE_BY_RANK[rank] + SNOW_KERB_PILE)]);
                 } else if (noise < threshold * 0.4) {
                     // Paving: a drift lies whole over the stones where the
                     // snow is deepest, one stop under a grass snowfield.
                     snowy = true;
-                    write(o, SNOW[Math.max(0, SNOW_TONE_BY_RANK[rank] - 1)]);
+                    if (stepBuf && stepBuf[i] & WORN_FLAG) {
+                        // W2.4 — the trampled crown: packed snow two stops
+                        // down, half of it trodden to slush over the stone.
+                        if (hash2(col, row, 1417) < TRAMPLE_BARE_SHARE) write(o, mixRgb([D[o], D[o + 1], D[o + 2]], SNOW[0], 0.5));
+                        else write(o, SNOW[Math.max(0, SNOW_TONE_BY_RANK[rank] - SNOW_TRAMPLE_STEPS)]);
+                    } else {
+                        write(o, SNOW[Math.max(0, SNOW_TONE_BY_RANK[rank] - 1)]);
+                    }
                 } else if (rank === 0 && noise < threshold * 0.8) {
                     // The swept rest keeps snow only in its deepest joints,
                     // in the darkest snow stop, so the joints read as a cool
@@ -3307,7 +3547,7 @@ function* winterGroundBands(r, base, snowBucket, frost, frostPatches = 0, rising
                     if (patch === 2 && BAYER[(row & 1) * 2 + (col & 1)] > 0) continue;
                     write(o, SNOW[rank >= 4 ? 1 : 0]);
                 } else {
-                    write(o, patch === 2 ? GRASS[0] : SNOW[rank >= 3 ? 1 : 0]);
+                    write(o, patch === 2 ? turfRoot : SNOW[rank >= 3 ? 1 : 0]);
                 }
                 continue;
             }
@@ -3516,7 +3756,9 @@ export function captureGroundArtifact(renderer) {
     return {
         field: { bounds: { ...field.bounds }, cols: field.cols, rows: field.rows, texelW: field.texelW, classes: field.classes,
             // Saved only when baked (a look reads it; never at looks 0).
-            ...(field.weather ? { weather: field.weather } : {}) },
+            ...(field.weather ? { weather: field.weather } : {}),
+            // W2.4 — the dawn dew's sites (at most 32 KB).
+            ...(field.dewSites ? { dewSites: field.dewSites } : {}) },
         puddleMask: { ...renderer.groundPuddleMask },
         groundBakeMs: renderer.groundBakeMs,
         groundWinterBakeMs: renderer.groundWinterBakeMs,
@@ -3536,6 +3778,7 @@ export function validGroundArtifact(ground) {
         && field.bounds.w === w && field.bounds.h === h
         && field.classes instanceof Uint8Array && field.classes.length === cols * h
         && (field.weather === undefined || validGroundWeather(field.weather))
+        && (field.dewSites === undefined || field.dewSites === null || validDewSites(field.dewSites))
         && mask?.cols === cols && mask.rows === h && mask.texelW === FIELD_TEXEL_W
         && mask.x0 === field.bounds.x && mask.y0 === field.bounds.y
         && mask.data instanceof Uint8Array && mask.data.length === cols * h

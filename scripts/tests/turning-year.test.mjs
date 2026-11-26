@@ -5,8 +5,9 @@ import { PNG } from 'pngjs';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../claudeville/src/config/constants.js';
 import { PHENOLOGY_STAGES, SeasonalAmbience, phenologyAt, phenologyForAtmosphere }
     from '../../claudeville/src/presentation/character-mode/SeasonalAmbience.js';
-import { TREE_SPRITES, canopyPlan, isCanopyPixel, recolorCanopy, shedCanopy, treeStateKey }
+import { MARCESCENT_FROM, MARCESCENT_RADIAL, TREE_SPRITES, canopyClumps, canopyPlan, canopyRadial, isCanopyPixel, recolorCanopy, shedCanopy, treeStateKey }
     from '../../claudeville/src/presentation/character-mode/FoliageRenderer.js';
+import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
 import { COAST_FIELD_FLAGS, riverCurrentAt } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import { ParticleSystem } from '../../claudeville/src/presentation/character-mode/ParticleSystem.js';
 import { windAt } from '../../claudeville/src/presentation/character-mode/Wind.js';
@@ -151,6 +152,74 @@ test('a fallen clump never returns: shedCanopy nests on the authored sheets', ()
     assert.equal(treeStateKey('birch.large', 'autumn', 0, 0.7), 'birch.large');
     assert.equal(treeStateKey('birch.large', 'winter', 0), 'birch.large.bare');
     assert.equal(treeStateKey('pine.large', 'autumn', 0, 1), 'pine.large');
+});
+
+// W2.4 (spec 02 §4.13, §5.2) — the species-aware shed: outer clumps first,
+// an oak's late remnant marcescent bronze, a maple's never an outer puff;
+// the stages still nest at every share from 0.50 to 0.95.
+test('W2.4: a species-aware shed nests for oaks and maples from 0.50 to 0.95', () => {
+    const hexKey = (h) => parseInt(h.slice(1), 16);
+    const bronze = new Set(ART_RAMPS.leafMarcescent.map(hexKey));
+    const same = (a, b, i) => a[i] === b[i] && a[i + 1] === b[i + 1] && a[i + 2] === b[i + 2] && a[i + 3] === b[i + 3];
+    const key24 = (d, i) => d[i] << 16 | d[i + 1] << 8 | d[i + 2];
+    for (const key of ['oak.large', 'oak.small', 'oak.tall', 'maple.large', 'maple.tall']) {
+        const species = key.slice(0, key.indexOf('.'));
+        const sprite = TREE_SPRITES[key];
+        const leafy = sheet(sprite.id, sprite.height);
+        const bare = sheet(TREE_SPRITES[sprite.bare].id, sprite.height);
+        const { width, height } = leafy;
+        const indices = [];
+        for (let i = 0; i < leafy.data.length; i += 4) if (isCanopyPixel(leafy.data, i, Math.floor(i / 4 / width), height)) indices.push(i);
+        const { label, clumps } = canopyClumps(leafy.data, width, height, indices);
+        const radial = canopyRadial(indices, width);
+        for (const salt of [11, 18, 25]) {
+            const recoloured = Uint8ClampedArray.from(leafy.data);
+            recolorCanopy(recoloured, width, height, canopyPlan(species, 0, 'autumn'));
+            const palette = new Set(indices.map((i) => key24(recoloured, i)));
+            let fallen = null;
+            for (const share of [0.5, 0.6, 0.69, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]) {
+                const out = Uint8ClampedArray.from(recoloured);
+                shedCanopy(out, leafy.data, bare.data, width, height, share, salt, { species });
+                const now = new Set();
+                for (let i = 0; i < out.length; i += 4) {
+                    if (same(out, recoloured, i)) continue;
+                    if (same(out, bare.data, i)) { now.add(i); continue; }
+                    const k = key24(out, i);
+                    const late = species === 'oak' && share >= MARCESCENT_FROM;
+                    assert.ok(palette.has(k) || (late && bronze.has(k)), `${key}/${salt} ${share}: off-ramp texel at ${i}`);
+                }
+                if (fallen) for (const i of fallen) assert.ok(now.has(i), `${key}/${salt}: texel ${i} came back at ${share}`);
+                fallen = now;
+                if (share < MARCESCENT_FROM) continue;
+                for (const i of indices) {
+                    if (now.has(i) || same(out, bare.data, i)) continue;
+                    if (species === 'oak') assert.ok(bronze.has(key24(out, i)), `${key}/${salt} ${share}: a kept oak texel is marcescent bronze`);
+                    else assert.ok(radial(clumps[label.get(i >> 2)]) <= MARCESCENT_RADIAL, `${key}/${salt} ${share}: a floating outer clump`);
+                }
+            }
+            // An oak's last clump holds until the share reaches 1 (December's
+            // marcescent young oaks); a maple may empty sooner, its last
+            // clump an outer one the radial rule drops.
+            if (species === 'oak') {
+                const late = Uint8ClampedArray.from(recoloured);
+                shedCanopy(late, leafy.data, bare.data, width, height, 0.95, salt, { species });
+                assert.ok(indices.some((i) => !same(late, bare.data, i)), `${key}/${salt}: a remnant at 0.95`);
+            }
+        }
+    }
+    // Without a species the shed is BI-2's, texel for texel; in spring's
+    // leaf-out an oak's new leaves stay green.
+    const sprite = TREE_SPRITES['oak.large'];
+    const leafy = sheet(sprite.id, sprite.height);
+    const bare = sheet(TREE_SPRITES[sprite.bare].id, sprite.height);
+    const legacy = Uint8ClampedArray.from(leafy.data);
+    const legacyOpts = Uint8ClampedArray.from(leafy.data);
+    shedCanopy(legacy, leafy.data, bare.data, leafy.width, leafy.height, 0.8, 18);
+    shedCanopy(legacyOpts, leafy.data, bare.data, leafy.width, leafy.height, 0.8, 18, { species: null });
+    assert.deepEqual(legacyOpts, legacy);
+    const spring = Uint8ClampedArray.from(leafy.data);
+    shedCanopy(spring, leafy.data, bare.data, leafy.width, leafy.height, 0.8, 18, { species: 'oak', leafOut: true });
+    for (let i = 0; i < spring.length; i += 4) assert.ok(!bronze.has(key24(spring, i)), 'no bronze leaf-out');
 });
 
 // A coast lattice with one river current cell (and one swell cell, one

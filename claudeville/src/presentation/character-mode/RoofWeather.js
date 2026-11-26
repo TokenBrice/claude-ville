@@ -73,6 +73,20 @@
 // shaded pitch never glint, and a roof whose sunward edge is shorter than
 // ROOF_GLINT_MIN texels takes none. Static: no pulse, no motion band.
 //
+// Eave icicles (W2.4, spec 02 §4.13). From snow bucket 2 with no liquid
+// precipitation, every 3rd eave column over a shady SE wall (the face-2
+// texel under the eave) and every 5th elsewhere hangs a 1-px icicle 3-6 px
+// long: `snow[2]` at the root, `snow[3]` down the body, `snow[4]` at the tip
+// (M9), a 1-px `slate[0]` shadow at (x + 1, y + 1) beside every row but the
+// tip. Each wetness quantum melts one pixel off; a thawing snow drips from
+// the eave points on the 6.6 cycle. They are painted into the roof patch
+// (its box grown over the eave rows, with the wall's own channel crops), so
+// every backend draws the same pixels.
+//
+// Lightning sheen (§4.11). During the lightning flash's peak step a wet
+// roof's course steps one `wetSlate` stop lighter (capped at the top), off
+// under reduced motion (`roofLightningSheen`).
+//
 // Both backends draw the same canvases: the Canvas building pass blits them
 // after the landmark, the resident scene pass draws them as records right
 // after the landmark record (GpuSceneBuilder `roofPatchRecord` /
@@ -166,6 +180,15 @@ const DRIP_FALL = Object.freeze([
 ]);
 const DRIP_REACH = 8;
 const DRIP_MIN_PITCH = 8;
+// W2.4 — eave icicles (see the header): the snow bucket they hang from, the
+// eave column spacing over a shady wall and elsewhere, their length range.
+export const ICICLE_BUCKET = 2;
+export const ICICLE_EVERY = Object.freeze({ shady: 3, other: 5 });
+export const ICICLE_LENGTH = Object.freeze([3, 6]);
+// §4.11 — the lightning sheen: during the flash peak (the first 83 ms step,
+// never under reduced motion) a wet roof's course steps one stop lighter,
+// capped at the top `wetSlate` stop.
+const WET_TOP = ROOF_WET_QUANTA - 1;
 // A full bead and a falling drop catch the sky: the `snow` ramp's lit stop,
 // the swelling bead climbs the `wetSlate` stops to it.
 const DRIP_BEAD = hexRgb(ART_RAMPS.snow[3]);
@@ -665,7 +688,106 @@ export function roofWeatherMap({ width, height, albedo, occluder = null, region 
         drips.push({ x: pick.x, y: pick.y, phase: hash2(pick.x, pick.y) % ROOF_DRIP_FRAMES });
     }
     if (x1 < 0) return null;
-    return { width, height, left: x0, top: y0, w: x1 - x0 + 1, h: y1 - y0 + 1, pitch: columns, cls, rank, plane, planeTop, row, run, fromTop, cap, edge, thin, trimmed, drips };
+    const map = { width, height, left: x0, top: y0, w: x1 - x0 + 1, h: y1 - y0 + 1, pitch: columns, cls, rank, plane, planeTop, row, run, fromTop, cap, edge, thin, trimmed, drips };
+    // W2.4 — the eave icicle sites and the box that holds the roof and them.
+    map.icicles = icicleSites(eaves, width, height, occluder);
+    map.iceBox = icicleBox(map);
+    return map;
+}
+
+// W2.4 — a texel's 2.3 face class (occluder B >> 6), -1 off the channel.
+function faceAt(occluder, p) {
+    return occluder && occluder[p * 4 + 3] > 0 ? occluder[p * 4 + 2] >> 6 : -1;
+}
+
+/**
+ * W2.4 — the eave icicle sites (pure): `eaves` in column order, grouped into
+ * runs of neighbouring columns (|dy| <= 2) with the same shade; over a shady
+ * SE wall (the texel under the eave is face 2) every ICICLE_EVERY.shady-th
+ * column of a run hangs one, elsewhere every ICICLE_EVERY.other-th, from a
+ * hashed phase per run. Each `{ x, y, length, shady }` (y = the eave texel;
+ * the icicle hangs from y + 1), 3–6 px by its hash, clipped to the sprite.
+ */
+export function icicleSites(eaves, width, height, occluder = null) {
+    const sites = [];
+    const shady = eaves.map((e) => faceAt(occluder, (e.y + 1) * width + e.x) === 2);
+    const span = ICICLE_LENGTH[1] - ICICLE_LENGTH[0] + 1;
+    let runStart = 0;
+    for (let k = 1; k <= eaves.length; k++) {
+        const e = eaves[k];
+        const prev = eaves[k - 1];
+        if (e && e.x === prev.x + 1 && Math.abs(e.y - prev.y) <= 2 && shady[k] === shady[k - 1]) continue;
+        // The run [runStart, k) ends here.
+        const head = eaves[runStart];
+        const every = shady[runStart] ? ICICLE_EVERY.shady : ICICLE_EVERY.other;
+        const phase = hash2(head.x + 409, head.y) % every;
+        for (let j = runStart; j < k; j++) {
+            if ((j - runStart + phase) % every !== 0) continue;
+            const { x, y } = eaves[j];
+            const length = Math.min(ICICLE_LENGTH[0] + (hash2(x + 811, y + 3) % span), height - 1 - y);
+            if (length > 0 && x + 1 < width) sites.push({ x, y, length, shady: shady[j] });
+        }
+        runStart = k;
+    }
+    return sites;
+}
+
+// The bounding box (sprite texels) of the roof map and every icicle with
+// its shadow column, or the map's own box when it has none.
+function icicleBox(map) {
+    let x0 = map.left;
+    let y0 = map.top;
+    let x1 = map.left + map.w - 1;
+    let y1 = map.top + map.h - 1;
+    for (const s of map.icicles) {
+        x0 = Math.min(x0, s.x);
+        x1 = Math.max(x1, s.x + 1);
+        y1 = Math.max(y1, Math.min(map.height - 1, s.y + s.length));
+    }
+    return { left: x0, top: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
+/** W2.4 — an icicle's length after `wetQ` quanta of thaw (0: melted). */
+export function icicleLength(site, wetQ = 0) {
+    return Math.max(0, site.length - Math.max(0, wetQ | 0));
+}
+
+/**
+ * Pure: paints the eave icicles of `map` into `out`, an RGBA byte array of
+ * `box` (default `map.iceBox`), at snow bucket `bucket` and thaw `wetQ`;
+ * none below ICICLE_BUCKET or while liquid precipitation falls (`liquid`).
+ * Icicle texels overwrite; a shadow texel lands only where `out` is still
+ * transparent (never over an icicle or the roof's snow). Returns the texels
+ * written.
+ */
+export function paintRoofIcicles(map, out, { bucket = 0, wetQ = 0, liquid = false, box = map?.iceBox } = {}) {
+    if (!map?.icicles?.length || !box || liquid || !((bucket | 0) >= ICICLE_BUCKET)) return 0;
+    let written = 0;
+    const at = (x, y) => (x < box.left || y < box.top || x >= box.left + box.w || y >= box.top + box.h
+        ? -1 : ((y - box.top) * box.w + (x - box.left)) * 4);
+    const put = (o, c) => {
+        if (!out[o + 3]) written++;
+        out[o] = c[0];
+        out[o + 1] = c[1];
+        out[o + 2] = c[2];
+        out[o + 3] = 255;
+    };
+    for (const site of map.icicles) {
+        const length = icicleLength(site, wetQ);
+        for (let r = 0; r < length; r++) {
+            const o = at(site.x, site.y + 1 + r);
+            if (o >= 0) put(o, r === 0 ? SNOW[2] : r === length - 1 ? SNOW[4] : SNOW[3]);
+        }
+    }
+    // Shadows after every icicle, so a neighbour's body is never darkened.
+    for (const site of map.icicles) {
+        const length = icicleLength(site, wetQ);
+        for (let r = 0; r < length - 1; r++) {
+            const o = at(site.x + 1, site.y + 2 + r);
+            if (o >= 0 && !out[o + 3]) put(o, DRIP_SHADE);
+        }
+    }
+    return written;
 }
 
 /**
@@ -846,6 +968,16 @@ function glintStep(rgb) {
     return rampLum(pick) >= rampLum(rgb) ? pick : rgb;
 }
 
+/**
+ * §4.11 — the lightning sheen scalar for `RoofWeather.sync` from this
+ * frame's `stormStrikeAt` result: 1 during the flash's peak step (the first
+ * 83 ms, FLASH_STEPS[0]), else 0; always 0 with motion off (reduced motion
+ * never strikes).
+ */
+export function roofLightningSheen(strike, motionScale = 1) {
+    return strike?.active === true && strike.step === 0 && Number(motionScale) > 0 ? 1 : 0;
+}
+
 /** Wetness → wet-course quantum 0 (dry) … ROOF_WET_QUANTA. */
 export function roofWetQuantum(wetness) {
     const wet = Number(wetness) || 0;
@@ -863,14 +995,17 @@ function planeStop(plane, top, x, y) {
 
 /**
  * Pure: paints the weather of `map` at (`bucket`, `wetQ`) into `out`, an
- * RGBA byte array of the map's bounding box (map.w × map.h), transparent
- * where nothing lies. Returns the texels written.
+ * RGBA byte array of the map's bounding box (map.w × map.h), or of `box`
+ * when given, transparent where nothing lies. `lightning` > 0 (the
+ * lightning flash peak, §4.11) steps the wet course one `wetSlate` stop up,
+ * capped at the top stop. Returns the texels written.
  */
-export function paintRoofWeather(map, albedo, out, { bucket = 0, wetQ = 0, glint = '', lit = null, litKey = '', box = null } = {}) {
+export function paintRoofWeather(map, albedo, out, { bucket = 0, wetQ = 0, glint = '', lit = null, litKey = '', box = null, lightning = 0 } = {}) {
     const depth = COURSE_DEPTH[Math.max(0, Math.min(4, bucket | 0))];
     const capDepth = CAP_DEPTH[Math.max(0, Math.min(4, bucket | 0))];
     const q = Math.max(0, Math.min(ROOF_WET_QUANTA, wetQ | 0));
-    const wet = q > 0 ? WET[q - 1] : null;
+    // §4.11 — the lightning flash's sheen steps the wet course one stop up.
+    const wet = q > 0 ? WET[Math.min(WET_TOP, q - 1 + (lightning > 0 ? 1 : 0))] : null;
     const sheen = WET_SHEEN[q];
     const { width, cls, rank, plane, planeTop, row, run, fromTop, cap, edge, thin, trimmed } = map;
     const share = Math.max(0, Math.min(4, bucket | 0)) / 4;
@@ -878,8 +1013,13 @@ export function paintRoofWeather(map, albedo, out, { bucket = 0, wetQ = 0, glint
     // cornice, a gold ring) is still roof, so the snow runs down to it.
     const offRoof = (y, p) => y >= map.height || (cls[p] === NONE && !trimmed[p]);
     let written = 0;
+    // `out` addresses `box` when given (a glint-only run box, or the roof
+    // and icicle box of a winter patch), else the map's own box.
+    const ox = box ? box.left : map.left;
+    const oy = box ? box.top : map.top;
+    const ow = box ? box.w : map.w;
     const put = (x, y, c) => {
-        const o = ((y - map.top) * map.w + (x - map.left)) * 4;
+        const o = ((y - oy) * ow + (x - ox)) * 4;
         out[o] = c[0];
         out[o + 1] = c[1];
         out[o + 2] = c[2];
@@ -952,9 +1092,6 @@ export function paintRoofWeather(map, albedo, out, { bucket = 0, wetQ = 0, glint
     // `box` (a glint-only patch) addresses `out` as that box instead of
     // the map's, so a dry roof's patch is the run's few texels only.
     if (glint && !(bucket > 0)) {
-        const ox = box ? box.left : map.left;
-        const oy = box ? box.top : map.top;
-        const ow = box ? box.w : map.w;
         for (const p of roofGlintRun(map, glint, lit, litKey)) {
             const x = p % width;
             const y = (p - x) / width;
@@ -1131,6 +1268,12 @@ export class RoofWeather {
         this.wetQ = 0;
         this.glint = '';
         this.raining = false;
+        // W2.4 — eave icicles hang (snow bucket >= ICICLE_BUCKET, no liquid
+        // precipitation); the eaves drip while it rains or a lying snow
+        // thaws (`dripping`); §4.11 the lightning flash's wet sheen.
+        this.icicles = false;
+        this.dripping = false;
+        this.sheen = 0;
         this.dripFrame = 0;
         this._maps = new Map();
         this._patches = new Map();
@@ -1139,14 +1282,17 @@ export class RoofWeather {
     }
 
     get key() {
-        return `${this.bucket}|${this.wetQ}|${this.glint}`;
+        return `${this.bucket}|${this.wetQ}|${this.glint}${this.icicles ? '|ice' : ''}${this.sheen ? '|sheen' : ''}`;
     }
 
     /**
      * `atmosphere` (its `effectiveDate` and `weather.precipitation`), the
      * C-W2 `ground` state, the renderer's motion scale and MotionClock time.
+     * `lightningSheen` (§4.11): > 0 during the lightning flash's peak step
+     * (`roofLightningSheen`); it lifts the wet course one stop, never under
+     * reduced motion.
      */
-    sync(atmosphere, ground, motionScale = 1, motionTimeMs = 0) {
+    sync(atmosphere, ground, motionScale = 1, motionTimeMs = 0, lightningSheen = 0) {
         const precipitation = atmosphere?.weather?.precipitation == null ? 0 : liquidPrecipitation(atmosphere);
         const raining = precipitation > PRECIPITATING;
         // Live rain wets the slate at once; the ground state keeps it wet
@@ -1156,6 +1302,10 @@ export class RoofWeather {
         this.wetQ = roofWetQuantum(wetness);
         this.glint = roofGlintSide(atmosphere, this.bucket);
         this.raining = raining && motionScale > 0;
+        this.icicles = this.bucket >= ICICLE_BUCKET && !raining;
+        // A lying snow that thaws (wet with no rain) drips from the eaves.
+        this.dripping = this.raining || (this.icicles && this.wetQ > 0 && motionScale > 0);
+        this.sheen = this.wetQ > 0 && motionScale > 0 && Number(lightningSheen) > 0 ? 1 : 0;
         this.dripFrame = Math.floor(Math.max(0, Number(motionTimeMs) || 0) / ROOF_DRIP_STEP_MS) % ROOF_DRIP_FRAMES;
     }
 
@@ -1206,13 +1356,20 @@ export class RoofWeather {
                 map.albedo = pixels;
                 // A split landmark's horizon: the glint run keeps to one half.
                 map.horizonY = entry?.splitForOcclusion && Number.isFinite(Number(entry.horizonY)) ? Number(entry.horizonY) : null;
-                const crop = (image) => {
+                const crop = (image, area = map) => {
                     if (!sized(image)) return null;
-                    const canvas = canvasOf(map.w, map.h);
-                    canvas.getContext('2d', { willReadFrequently: true }).drawImage(image, map.left, map.top, map.w, map.h, 0, 0, map.w, map.h);
+                    const canvas = canvasOf(area.w, area.h);
+                    canvas.getContext('2d', { willReadFrequently: true }).drawImage(image, area.left, area.top, area.w, area.h, 0, 0, area.w, area.h);
                     return canvas;
                 };
                 map.channels = { material: crop(materialImage), occluder: crop(occluder) };
+                // W2.4 — the winter patch's crops: the roof and the eave
+                // rows its icicles hang in (the wall's own material and
+                // surface code under them, so every backend shades them as
+                // the texels they cover); null when it has none.
+                map.iceChannels = map.icicles?.length
+                    ? { material: crop(materialImage, map.iceBox), occluder: crop(occluder, map.iceBox) }
+                    : null;
             }
             this._maps.set(type, map);
         });
@@ -1256,7 +1413,10 @@ export class RoofWeather {
             }
             return null;
         }
-        const area = box || { left: map.left, top: map.top, w: map.w, h: map.h };
+        // W2.4 — a winter patch with icicles covers the roof and the eave
+        // rows they hang in (`map.iceBox`), with its own channel crops.
+        const ice = !box && this.icicles && map.icicles?.length > 0 && map.iceChannels !== undefined;
+        const area = box || (ice ? map.iceBox : { left: map.left, top: map.top, w: map.w, h: map.h });
         if (!entry || entry.left !== area.left || entry.top !== area.top || entry.w !== area.w || entry.h !== area.h) {
             if (entry) releaseCanvasBackingStore(entry.canvas);
             entry = {
@@ -1264,14 +1424,18 @@ export class RoofWeather {
                 ...area,
                 key: '',
                 revision: entry ? entry.revision : 0,
-                channels: box ? cropChannels(map.channels, area.left - map.left, area.top - map.top, area.w, area.h) : map.channels,
+                channels: box ? cropChannels(map.channels, area.left - map.left, area.top - map.top, area.w, area.h)
+                    : ice ? map.iceChannels : map.channels,
                 empty: false,
             };
             this._patches.set(type, entry);
         }
         const ctx = entry.canvas.getContext('2d', { willReadFrequently: true });
         const image = ctx.createImageData(area.w, area.h);
-        const written = paintRoofWeather(map, map.albedo, image.data, { bucket: this.bucket, wetQ: this.wetQ, glint: this.glint, lit, litKey, box });
+        let written = paintRoofWeather(map, map.albedo, image.data, {
+            bucket: this.bucket, wetQ: this.wetQ, glint: this.glint, lit, litKey, box: box || area, lightning: this.sheen,
+        });
+        if (ice) written += paintRoofIcicles(map, image.data, { bucket: this.bucket, wetQ: this.wetQ, box: area });
         ctx.putImageData(image, 0, 0);
         entry.key = key;
         entry.empty = written === 0;
@@ -1284,7 +1448,7 @@ export class RoofWeather {
      * `{ canvas, left, top, w, h, sx, frames }` (the frame at `sx`), or null.
      */
     drip(type) {
-        if (!this.raining) return null;
+        if (!this.dripping) return null;
         const map = this.map(type);
         if (!map?.drips?.length) return null;
         let entry = this._drips.get(type);

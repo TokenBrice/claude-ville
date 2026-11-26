@@ -23,6 +23,12 @@
 // recoloured copy of the baked water (the mood, then V6's water saturation
 // cap in front of their frame grade; rebuilt per mood bucket and grade
 // key), and the cached outer ocean bakes both into its palette.
+//
+// W2.4 (four seasons) — from snow bucket 2 a calm lagoon or pond (depth cap
+// 3, never a river or the sea) freezes along its rim (`ICE_BAND`): 2–4 px of
+// `snow` ice that is land to the bake (no mirror, swash or foam; the foam
+// lace moves to the ice edge). W2 OA-W4 — the Canvas water mood bakes the
+// sky into the sea's world-anchored Fresnel courses (`SEA_FRESNEL_*`).
 
 import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 import { ART_RAMPS } from '../../config/artPalette.js';
@@ -161,6 +167,27 @@ const OVERCAST_SEA_COVER = Object.freeze([0.6, 0.85]);
 export { WATER_SKY_LIFT } from './CanvasGrade.js';
 // Canvas rebake buckets: the weight in 1/32, the sky in 1/32 a channel.
 const WATER_SKY_STEPS = 32;
+
+// W2 OA-W4 (spec 02 §4.9) — the sky in the sea, on world-anchored courses
+// (never the river or a lagoon): course boundaries at world y, each bent
+// +-14 rows by its seam band (`seaBandBend`) and crossed on a +-2-row 4x4
+// Bayer order; per course (0 far .. 3 near) the sky weight floor and the
+// share of the far sky (`grade.seaFar`, else `skyHorizon`) in the sky colour.
+// Course 3 is today's water exactly, and the gate (1 by day, 0 from night
+// 0.85) keeps the night bit-exact.
+export const SEA_FRESNEL_Y = Object.freeze([96, 352, 640]);
+export const SEA_FRESNEL_WEIGHT = Object.freeze([0.62, 0.46, 0.30, 0.0]);
+export const SEA_FRESNEL_FAR = Object.freeze([1.0, 0.75, 0.40, 0.0]);
+export const SEA_FRESNEL_BANDS = Object.freeze([4, 5, 6]);
+export const SEA_FRESNEL_NEAR = SEA_FRESNEL_Y.length;
+export const seaFresnelGate = (night) => Math.max(0, Math.min(1, (0.85 - (Number(night) || 0)) / 0.35));
+
+// W2.4 (spec 02 §4.13) — calm-lagoon rim ice by snow bucket (tiles of signed
+// distance into the water, jittered x0.75–1.25 per texel pair), its inner
+// half `snow[1]` and outer half `snow[0]` across a 1-texel Bayer seam.
+export const ICE_BAND = Object.freeze([0, 0, 0.07, 0.10, 0.13]);
+const ICE_SEAM = 0.03;
+const LAGOON_CAP = 3;
 
 // Cliff (3.5) face height in world px (varied +-CLIFF_FACE_WOBBLE).
 const CLIFF_FACE = 34;
@@ -1243,14 +1270,38 @@ export function bathyOffset(u, v) {
     return offset;
 }
 
+// W2.4 — the rim ice of a lagoon texel at signed distance `sd` (tiles) with
+// band `band`: `snow[1]` on the inner (shore) half, `snow[0]` on the outer,
+// a 1-texel 4x4 Bayer seam between.
+function rimIceRgb(sd, band, x, y) {
+    const d = sd - band / 2;
+    const inner = d < -ICE_SEAM / 2 || (d < ICE_SEAM / 2 && bayer(x, y) < 0.5);
+    return SNOW[inner ? 1 : 0];
+}
+
+/** W2.4 — the rim ice band (tiles) of a lagoon at snow bucket `bucket` (0 none). */
+export function rimIceBand(bucket) {
+    return ICE_BAND[Math.max(0, Math.min(4, Math.round(Number(bucket) || 0)))];
+}
+
+/** W2.4 — the jittered rim ice reach (tiles) at world texel (x, y) for `band`. */
+export function rimIceReach(band, x, y) {
+    return band * (0.75 + 0.5 * hash2(x >> 1, y, 977));
+}
+
 function paintCoastTexels(buf, coast, snowCover = 0) {
     const { data, w, role } = buf;
     const { cols, rows, caps, outer } = coast;
+    // W2.4 — the calm lagoons' rim ice (the snow bucket is snowCover x 4).
+    const iceBand = rimIceBand(snowCover * 4);
+    coast.iceBand = iceBand;
+    coast.ice = iceBand > 0 ? new Uint8Array(cols * rows) : null;
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
             const cell = r * cols + c;
             const cap = caps[cell];
             if (!cap) continue;
+            const frozen = iceBand > 0 && cap === LAGOON_CAP && !outer[cell];
             for (let oy = 0; oy < 2; oy++) {
                 const y = coast.y + r * 2 + oy;
                 for (let ox = 0; ox < 2; ox++) {
@@ -1258,7 +1309,21 @@ function paintCoastTexels(buf, coast, snowCover = 0) {
                     const sd = texelSd(coast, c, r, ox, oy);
                     const u = (y + 0.5) / TILE_HEIGHT + (x + 0.5) / TILE_WIDTH;
                     const v = (y + 0.5) / TILE_HEIGHT - (x + 0.5) / TILE_WIDTH;
-                    let cls = waterClass(sd, cap, x, y, sd > 0 ? bathyOffset(u, v) : 0);
+                    let sdClass = sd;
+                    if (frozen && sd > 0) {
+                        // Ice is land to the bake: no mirror, swash or foam;
+                        // the foam lace starts at the ice's edge instead.
+                        const reach = rimIceReach(iceBand, x, y);
+                        const at = (r * 2 + oy) * w + c * 2 + ox;
+                        if (sd < reach) {
+                            role[at] = TEXEL_LAND;
+                            putRgb(data, at * 4, rimIceRgb(sd, iceBand, x, y));
+                            coast.ice[cell] = 1;
+                            continue;
+                        }
+                        if (sd - reach < FOAM_SPARSE_BAND) sdClass = sd - reach;
+                    }
+                    let cls = waterClass(sdClass, cap, x, y, sd > 0 ? bathyOffset(u, v) : 0);
                     const at = (r * 2 + oy) * w + c * 2 + ox;
                     if (outer[cell] && cls >= CLASS_WATER) {
                         const kept = outerClass(cls, x, y);
@@ -3484,8 +3549,12 @@ function bakeWaterFields(renderer, coast, field) {
             const tile = ty * MAP_SIZE + tx;
             // Breaker-eligible: sea, harbor and lagoon shores (a river keeps
             // its current, never surf; caps: river 2, lagoon 3, sea 4).
+            // W2.4 — a frozen lagoon rim never laps: no swash on its ice or
+            // on the shore behind it (`coast.ice`, the band's widest reach).
+            const iced = coast.iceBand > 0 && field.caps[tile] === LAGOON_CAP
+                && (coast.ice?.[cell] === 1 || sd < coast.iceBand * 1.25);
             if (inMap && sd > SWASH_LAND_SD && sd < SWASH_WATER_SD && !tileBlocked[tile]
-                && field.caps[tile] > 2
+                && field.caps[tile] > 2 && !iced
                 && (sd > 0 || !landPaved(renderer, wx, wy, tx, ty))) {
                 flags |= COAST_FIELD_FLAGS.swash;
             }
@@ -3652,6 +3721,53 @@ export function overcastSeaShare(weather, look = lookStrength('la5')) {
     return pearl * t * t * (3 - 2 * t);
 }
 
+// W2 OA-W4 — a mood-layer memo key's course unit (above the colour's 24 RGB
+// and 3 flag bits).
+const FRESNEL_KEY_UNIT = 1 << 27;
+
+/**
+ * W2 OA-W4 — the Fresnel course (0 far .. 2, SEA_FRESNEL_NEAR = none) of a
+ * sea texel at world (x, y): course boundary b lies at SEA_FRESNEL_Y[b] bent
+ * by `seaBandBend(x, SEA_FRESNEL_BANDS[b])` (+-14 rows), crossed within +-2
+ * rows on the 4x4 Bayer order. Pure, world-anchored (pans never swim).
+ */
+export function seaFresnelCourseAt(x, y) {
+    const yb = y + (bayer(x, y) - 0.5) * 4;
+    for (let b = 0; b < SEA_FRESNEL_Y.length; b++) {
+        if (yb < SEA_FRESNEL_Y[b] + seaBandBend(x, SEA_FRESNEL_BANDS[b])) return b;
+    }
+    return SEA_FRESNEL_NEAR;
+}
+
+/**
+ * W2 OA-W4 — the water mood of each Fresnel course 0..2 (null when the
+ * courses are off: no sky colour, or the gate shut at night): the sky weight
+ * `max(mood.skyWeight, SEA_FRESNEL_WEIGHT[c] x gate)` and the sky
+ * `mix(mood.sky, seaFar, SEA_FRESNEL_FAR[c])`, both on the 1/32 buckets,
+ * with `seaFar` = `grade.seaFar` (else `skyHorizon`) and the gate
+ * `grade.seaFresnelGate` (else `seaFresnelGate(grade.night)`). `key` names
+ * the inputs for the Canvas rebake key.
+ */
+export function seaFresnelMoods(mood, grade) {
+    if (!grade) return null;
+    const q = value => Math.round(Math.max(0, Math.min(1, value)) * WATER_SKY_STEPS) / WATER_SKY_STEPS;
+    const rawGate = Number(grade.seaFresnelGate ?? seaFresnelGate(grade.night ?? 0));
+    const gate = q(Number.isFinite(rawGate) ? rawGate : 0);
+    const far = colourTo01(grade.seaFar || grade.skyHorizon);
+    if (!(gate > 0) || !far) return null;
+    const seaFar = far.map(q);
+    const sky = Array.isArray(mood?.sky) ? mood.sky : [0, 0, 0];
+    const moods = [];
+    for (let c = 0; c < SEA_FRESNEL_NEAR; c++) {
+        moods.push({
+            ...mood,
+            sky: sky.map((channel, i) => q(channel + (seaFar[i] - channel) * SEA_FRESNEL_FAR[c])),
+            skyWeight: q(Math.max(Number(mood?.skyWeight) || 0, SEA_FRESNEL_WEIGHT[c] * gate)),
+        });
+    }
+    return { moods, gate, seaFar, key: `f${gate}:${seaFar.join(',')}` };
+}
+
 /** The Canvas rebake key of a `waterMoodFor` result. */
 export function waterMoodKey(mood) {
     return `${mood?.night || 0}:${mood?.storm || 0}:${mood?.skyWeight || 0}:${(mood?.sky || []).join(',')}`;
@@ -3771,6 +3887,9 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
         const mirrorStops = [];
         const orders = [];
         const mirrorSea = [];
+        // W2 OA-W4 — each sea water texel's Fresnel course (SEA_FRESNEL_NEAR:
+        // none, today's water).
+        const courses = [];
         const coastField = renderer._coastBake?.waterFields?.coastField || null;
         // Mirror texels carry MIRROR_UNCAPPED: moody, never capped.
         const reflect = coast.reflect || null;
@@ -3786,9 +3905,8 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
                 const foamCell = cls >= CLASS_FOAM;
                 const mirror = water && reflect?.[cell] > 0;
                 const stormable = mirror && !coast.covered?.[cell];
-                const isSeaShelf = coastField
-                    ? ((coastField[cell * 2 + 1] & COAST_FIELD_FLAGS.sea) !== 0 && (coastField[cell * 2] - 128) / 64 > 0.8)
-                    : false;
+                const seaCell = coastField ? (coastField[cell * 2 + 1] & COAST_FIELD_FLAGS.sea) !== 0 : false;
+                const isSeaShelf = seaCell && (coastField[cell * 2] - 128) / 64 > 0.8;
                 for (let oy = 0; oy < 2; oy++) {
                     for (let ox = 0; ox < 2; ox++) {
                         const at = (r * 2 + oy) * w + c * 2 + ox;
@@ -3810,6 +3928,8 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
                         mirrorStops.push(base - 1);
                         orders.push(Math.round(bayer(coast.x + c * 2 + ox, coast.y + r * 2 + oy) * 16));
                         mirrorSea.push(isSeaShelf ? 1 : 0);
+                        courses.push(seaCell && watery && !isFoam
+                            ? seaFresnelCourseAt(coast.x + c * 2 + ox, coast.y + r * 2 + oy) : SEA_FRESNEL_NEAR);
                     }
                 }
             }
@@ -3826,6 +3946,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
             mirrorStops: Int8Array.from(mirrorStops),
             orders: Uint8Array.from(orders),
             mirrorSea: Uint8Array.from(mirrorSea),
+            courses: Uint8Array.from(courses),
             moodKey: '',
             x: coast.x,
             y: coast.y,
@@ -3835,7 +3956,9 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
     }
     const drop = mirrorStormDrop(atmosphere?.weather, atmosphere);
     const seaLift = seaSunLift(lookStrength('sea1'), grade, atmosphere?.weather, atmosphere?.sky?.sun?.elevationDeg);
-    const moodKey = `${waterMoodKey(mood)}:${sunBand}:${drop}:${seaLift}`;
+    // W2 OA-W4 — the sea's Fresnel courses (none at night: bit-exact).
+    const fresnel = seaFresnelMoods(mood, grade);
+    const moodKey = `${waterMoodKey(mood)}:${sunBand}:${drop}:${seaLift}${fresnel ? `:${fresnel.key}` : ''}`;
     const now = performance.now();
     const due = layer.moodKey !== moodKey || !(now - layer.bakedAt < OCEAN_REBAKE_MIN_MS);
     if (due && (layer.moodKey !== moodKey || layer.gradeKey !== gradeKey)) {
@@ -3873,10 +3996,20 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
         };
         const fScale = foamNightScale(mood);
         const sScale = 1 + (DRY_SAND_NIGHT_SCALE - 1) * (mood?.night || 0);
+        const preimage = (rgb, mood) => CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx, sky: mood });
+        // A texel's memo key: its colour (with the flag bits), plus its
+        // Fresnel course above them while the courses are on.
+        const keyAt = fresnel
+            ? (k) => {
+                const course = layer.courses[k];
+                return colourAt(k) + (course < SEA_FRESNEL_NEAR ? (course + 1) * FRESNEL_KEY_UNIT : 0);
+            }
+            : colourAt;
         for (let k = 0; k < layer.colours.length; k++) {
-            const colour = colourAt(k);
+            const key = keyAt(k);
+            const colour = key % FRESNEL_KEY_UNIT;
             if (colour !== layer.colours[k]) changed = true;
-            if (memo.has(colour)) continue;
+            if (memo.has(key)) continue;
             const rawRgb = [((colour >> 16) & 255) / 255, ((colour >> 8) & 255) / 255, (colour & 255) / 255];
             let rgb;
             if (colour & SAND_UNCAPPED) {
@@ -3884,10 +4017,13 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
             } else {
                 const baseRgb = (colour & FOAM_MARK) ? rawRgb.map(v => v * fScale) : rawRgb;
                 rgb = waterSurfaceRgb(baseRgb, mood, sunBand);
-                if (!(colour & MIRROR_UNCAPPED)) rgb = CanvasGrade.canvasWaterPreimage(rgb, grade, { postFx, sky: mood });
+                // W2 OA-W4 — a far-sea course's water mood (the same night and
+                // storm, its own sky and weight), else the layer's own.
+                const course = Math.floor(key / FRESNEL_KEY_UNIT) - 1;
+                if (!(colour & MIRROR_UNCAPPED)) rgb = preimage(rgb, course >= 0 ? fresnel.moods[course] : mood);
             }
             const out = (Math.round(rgb[0] * 255) << 16) | (Math.round(rgb[1] * 255) << 8) | Math.round(rgb[2] * 255);
-            memo.set(colour, out);
+            memo.set(key, out);
             if (out !== (colour & 0xffffff)) changed = true;
         }
         layer.identity = !changed;
@@ -3895,7 +4031,7 @@ function drawCanvasMoodLayer(ctx, renderer, atmosphere) {
             const image = new ImageData(layer.w, layer.h);
             const data = image.data;
             for (let k = 0; k < layer.pixels.length; k++) {
-                const out = memo.get(colourAt(k));
+                const out = memo.get(keyAt(k));
                 const p = layer.pixels[k];
                 data[p] = out >> 16;
                 data[p + 1] = (out >> 8) & 255;

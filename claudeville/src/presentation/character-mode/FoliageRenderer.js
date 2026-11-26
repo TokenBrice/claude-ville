@@ -37,17 +37,26 @@ import { snowBucketOf } from './GroundState.js';
 // to its authored bare sheet by a fixed clump hash (`shedCanopy`: birches and
 // poplars first, oaks last), so the stages nest and the crown outline around a
 // fallen clump goes with it; a crown fully shed draws its bare sheet. Young
-// oaks keep a few russet clumps through December. Spring runs the shed back
-// as leaf-out, then the blossom. A stage change drops the images once, like
-// a season; the stage keys every image and texture.
+// oaks keep a few clumps through December. Spring runs the shed back as
+// leaf-out, then the blossom. A stage change drops the images once, like a
+// season; the stage keys every image and texture.
+//
+// W2.4 (four seasons) — the shed is species-aware: outer clumps fall first
+// (the clump key leans on its radial distance from the crown centre); from
+// a 0.70 share an oak's kept clumps hold as branch-hugging marcescent bronze
+// (`leafMarcescent`, a ragged 1-px edge) and every other species drops its
+// outer clumps, so no coloured puff floats off a bare crown. Sunlit birches
+// blossom in hawthorn ivory (`blossomIvory`) in spring, and the world ash
+// turns only its crown top burnished amber in autumn.
 //
 // The world ash (user item 5): one authored record (`species: 'ash'`,
 // scenery.js WORLD_TREE) draws the colossal `ash.world` sheet, about 2.4× a
 // tall oak, on the northern lagoon islet. It is evergreen: its canopy plan
-// follows the season (`WORLD_ASH_PLANS`) instead of a variant, it never goes
-// bare, and it carries the village's snow like a pine (snow quarters dust its
-// leafy crown from its laden sheet `ash.world.snow`, a full cover draws that
-// sheet, whose leaves are the winter plan's).
+// follows the season (`WORLD_ASH_PLANS`, an amber crown top in autumn)
+// instead of a variant, it never goes bare, and it carries the village's
+// snow like a pine (snow quarters dust its leafy crown from its laden sheet
+// `ash.world.snow`, a full cover draws that sheet, whose leaves are the
+// winter plan's).
 //
 // Lean frames (plan 0.7): per canopy image, frames by whole-texel row shear
 // with the trunk planted (`lean` = A texels at the crown top, `planted` = the
@@ -200,6 +209,9 @@ const PLAN_SUN = plan({ ramp: 'foliageSun' });
 // green, never straw-tipped.
 const PLAN_PINE_SUN = plan({ ramp: 'foliageSun', stops: 6 });
 const PLAN_SUN_BLOSSOM = plan({ ramp: 'foliageSun', blossom: true });
+// W2.4 — the sunlit birch's spring blossom in hawthorn ivory (`blossomIvory`,
+// Tier B top) instead of the oaks' pink.
+const PLAN_SUN_BLOSSOM_IVORY = plan({ ramp: 'foliageSun', blossom: 'ivory' });
 const PLAN_RUSSET = plan({ ramp: 'canopyRusset' });
 const PLAN_OCHRE = plan({ ramp: 'canopyOchre' });
 const PLAN_TURNING = plan({ turning: 'canopyOchre' });
@@ -210,9 +222,21 @@ const PLAN_SCARLET = plan({ ramp: 'canopyScarlet' });
 const PLAN_SCARLET_LIT = plan({ ramp: 'canopyScarlet', shift: 1 });
 const PLAN_SCARLET_TURNING = plan({ turning: 'canopyScarlet' });
 // The evergreen world ash by season: a fresh, lighter crown in spring, its
-// authored crown through summer and autumn (it stays green while the woods
-// turn), a cool deep crown in winter (the leaves under its snow sheet).
-const WORLD_ASH_PLANS = Object.freeze({ spring: PLAN_SUN, summer: null, autumn: null, winter: PLAN_DEEP });
+// authored crown through summer, a cool deep crown in winter (the leaves
+// under its snow sheet). W2.4 — in autumn only its crown top turns
+// burnished amber (`canopyOchre`) in whole clumps while the rest stays the
+// authored evergreen. `turnedClump`'s `line` is the share measured from the
+// crown's top row down (a clump turns while its centre sits above line plus
+// up to 0.3 of hash jitter, so the literal 0.22 turns 35 % of the ash's
+// canopy), and WORLD_ASH_AUTUMN_LINE 0.14 turns 22 % of its canopy texels,
+// nine in ten of them in the crown's top third (measured on `ash.world`).
+export const WORLD_ASH_AUTUMN_LINE = 0.14;
+const WORLD_ASH_PLANS = Object.freeze({
+    spring: PLAN_SUN,
+    summer: null,
+    autumn: plan({ turning: 'canopyOchre', line: WORLD_ASH_AUTUMN_LINE }),
+    winter: PLAN_DEEP,
+});
 
 // How a canopy is recoloured; null keeps the authored pixels. Autumn oaks turn
 // russet (deep), ochre (sunlit) or only at the crown (authored); willows and
@@ -237,7 +261,10 @@ export function canopyPlan(species, variant, season, turn = 1) {
         return turn === 1 ? peak : turningPlan(peak, canopyPlan(species, variant, 'summer'), turn);
     }
     if (variant === 1) return PLAN_DEEP;
-    if (variant === 2) return species === 'oak' && season === 'spring' ? PLAN_SUN_BLOSSOM : PLAN_SUN;
+    if (variant === 2) {
+        if (season !== 'spring') return PLAN_SUN;
+        return species === 'oak' ? PLAN_SUN_BLOSSOM : species === 'birch' ? PLAN_SUN_BLOSSOM_IVORY : PLAN_SUN;
+    }
     return null;
 }
 
@@ -392,6 +419,11 @@ const BLOSSOM_CLUMPS = 0.55;
 // Blossom cells are bricked (odd cell rows shift a pixel) so clusters never
 // line up into a grid.
 const blossomCell = (x, y) => pixelHash((x + ((y >> 1) & 1)) >> 1, y >> 1, 7);
+// The ramp a plan's blossom speckle reads: `blossom: 'ivory'` (the sunlit
+// birch, W2.4) takes `blossomIvory`, any other blossom the pink `blossom`.
+export function blossomRampKey(canopy) {
+    return canopy?.blossom === 'ivory' ? 'blossomIvory' : 'blossom';
+}
 const ISLET_PX = 24;
 
 // Per-pixel turning mask (1 turned, 0 kept, 255 not canopy) from the clump
@@ -453,7 +485,7 @@ export function recolorCanopy(data, width, height, canopy) {
     const span = hi - lo || 1;
     const ramp = canopy.ramp ? canopyRamp(canopy.ramp, canopy.stops) : null;
     const turning = canopy.turning ? canopyRamp(canopy.turning) : null;
-    const blossom = canopy.blossom ? canopyRamp('blossom') : null;
+    const blossom = canopy.blossom ? canopyRamp(blossomRampKey(canopy)) : null;
     const clumps = turning || blossom ? canopyClumps(data, width, height, indices) : null;
     const turned = turning ? turningMask(width, height, indices, clumps.label, clumps.clumps.map((c) => turnedClump(c, top, bottom, canopy.line))) : null;
     const flowering = blossom ? clumps.clumps.map((c) => (pixelHash(Math.round(c.x), Math.round(c.y), 8) < BLOSSOM_CLUMPS ? BLOSSOM_FULL : BLOSSOM_OPEN)) : null;
@@ -509,27 +541,122 @@ export function dustSnowCanopy(data, laden, width, height, depth) {
 const SHED_SALT = 11;
 const MARCESCENT_SPRITE = 'oak.small';
 const MARCESCENT_SHED = 0.85;
+// W2.4 — late autumn (a species-aware shed past MARCESCENT_FROM): an oak's
+// kept clumps hold as marcescent bronze (`leafMarcescent`) along the
+// branches, its silhouette eroded once into a ragged 1-px edge; every other
+// species drops its outer clumps (radial past MARCESCENT_RADIAL), so no
+// coloured puff floats off the bare crown.
+export const MARCESCENT_FROM = 0.7;
+export const MARCESCENT_RADIAL = 0.45;
+// The species-aware clump key's two shares: its fixed hash and its nearness
+// to the crown centre (outer clumps fall first).
+const SHED_KEY_HASH = 0.55;
+const SHED_KEY_CORE = 0.45;
+
+/**
+ * W2.4 — a clump's radial distance from the canopy's centroid, over the
+ * canopy's half bounding box per axis, capped at 1 (0 the centre, 1 the
+ * crown's rim and beyond). `indices` are the canopy's RGBA byte offsets.
+ */
+export function canopyRadial(indices, width) {
+    let sx = 0;
+    let sy = 0;
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (const i of indices) {
+        const p = i >> 2;
+        const x = p % width;
+        const y = (p - x) / width;
+        sx += x;
+        sy += y;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+    }
+    const count = Math.max(1, indices.length);
+    const cx = sx / count;
+    const cy = sy / count;
+    const rx = Math.max(1, (x1 - x0) / 2);
+    const ry = Math.max(1, (y1 - y0) / 2);
+    return (c) => Math.min(1, Math.hypot((c.x - cx) / rx, (c.y - cy) / ry));
+}
+
+// The fixed per-clump shed key of a species-aware shed (see shedCanopy):
+// SHED_KEY_HASH x the clump's hash + SHED_KEY_CORE x its nearness to the
+// crown centre, rank-normalized over the crown's clumps ((rank + 1) /
+// count). The order is the raw key's (outer clumps first); the rank keeps
+// the BI-2 meaning of `share` (the share of clumps fallen) and holds the
+// crown's last clump until the share reaches 1 (the bare sheet), so a crown
+// is never bare before its stage says so and December's young oaks keep a
+// marcescent clump (the raw key tops out near 0.8 on a small crown).
+export function shedKeys(clumps, radial, salt) {
+    const raw = clumps.map((c) => SHED_KEY_HASH * pixelHash(Math.round(c.x), Math.round(c.y), salt) + SHED_KEY_CORE * (1 - radial(c)));
+    const order = raw.map((_, k) => k).sort((a, b) => raw[a] - raw[b] || a - b);
+    const keys = new Array(clumps.length);
+    order.forEach((k, rank) => { keys[k] = (rank + 1) / clumps.length; });
+    return keys;
+}
+
+// Remaps the kept canopy texels (`canopy` 1) of `data` onto `leafMarcescent`
+// by their luminance rank among the kept texels. Returns the texels changed.
+function marcescentRemap(data, indices, canopy) {
+    const ramp = canopyRamp('leafMarcescent');
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const i of indices) {
+        if (canopy[i >> 2] !== 1) continue;
+        const l = lumOf(data[i], data[i + 1], data[i + 2]);
+        if (l < lo) lo = l;
+        if (l > hi) hi = l;
+    }
+    const span = hi - lo || 1;
+    let changed = 0;
+    for (const i of indices) {
+        if (canopy[i >> 2] !== 1) continue;
+        const rgb = ramp.rgb[rankStop(ramp, (lumOf(data[i], data[i + 1], data[i + 2]) - lo) / span)];
+        if (data[i] !== rgb[0] || data[i + 1] !== rgb[1] || data[i + 2] !== rgb[2]) changed++;
+        data[i] = rgb[0]; data[i + 1] = rgb[1]; data[i + 2] = rgb[2];
+    }
+    return changed;
+}
 
 /**
  * BI-2 — sheds `share` (0..1) of a leafy crown to its authored bare sheet in
  * place (pure; Node-safe). Whole leaf clumps of the authored `leafy` sheet
- * (`canopyClumps`) fall when their fixed hash (`salt`) is under `share`, so a
- * larger share sheds a superset: the stages nest, a fallen clump never
- * returns while the share grows, and spring's falling share brings them back
- * in reverse. A fallen clump takes the bare sheet's pixels (its branches, or
+ * (`canopyClumps`) fall when their fixed key is under `share`, so a larger
+ * share sheds a superset: the stages nest, a fallen clump never returns
+ * while the share grows, and spring's falling share brings them back in
+ * reverse. A fallen clump takes the bare sheet's pixels (its branches, or
  * open air); so does any other texel the two sheets differ on (the crown's
  * outline and shade, a twig past the leaf mass) whose nearest canopy texel,
  * through such texels, has fallen. A kept texel that now faces open air
  * takes its clump's darkest colour, so a kept clump keeps an edge and every
  * kept pixel stays on its canopy ramp. Returns the number of texels changed.
+ *
+ * Without `options.species` the key is the clump's hash (`salt`) alone, the
+ * BI-2 behaviour. W2.4 — with a species, the key is fixed per clump as
+ * SHED_KEY_HASH x its hash + SHED_KEY_CORE x (1 − its radial distance from
+ * the canopy centroid over the half bounding box), rank-normalized
+ * (`shedKeys`), so outer clumps fall first; from MARCESCENT_FROM an oak's
+ * kept clumps remap by luminance rank
+ * onto `leafMarcescent` and its kept texels with two or more shed
+ * 4-neighbours go bare (one erosion pass), while any other species also
+ * drops every clump past MARCESCENT_RADIAL. Both rules are monotone in the
+ * share, so the stages still nest. `options.leafOut` (spring, the shed
+ * running back as leaf-out) keeps the new leaves green: every species takes
+ * the radial rule, no oak turns bronze.
  */
-export function shedCanopy(data, leafy, bare, width, height, share, salt) {
+export function shedCanopy(data, leafy, bare, width, height, share, salt, options = {}) {
     const n = width * height;
     if (!(share > 0)) return 0;
     if (share >= 1) {
         data.set(bare.subarray(0, n * 4));
         return n;
     }
+    const species = options?.species ?? null;
     const indices = [];
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
@@ -538,7 +665,19 @@ export function shedCanopy(data, leafy, bare, width, height, share, salt) {
         }
     }
     const { label, clumps } = canopyClumps(leafy, width, height, indices);
-    const gone = clumps.map((c) => pixelHash(Math.round(c.x), Math.round(c.y), salt) < share);
+    let gone;
+    let marcescent = false;
+    if (species == null) {
+        gone = clumps.map((c) => pixelHash(Math.round(c.x), Math.round(c.y), salt) < share);
+    } else {
+        const radial = canopyRadial(indices, width);
+        const keys = shedKeys(clumps, radial, salt);
+        gone = keys.map((key) => key < share);
+        if (share >= MARCESCENT_FROM) {
+            if (species === 'oak' && !options.leafOut) marcescent = true;
+            else gone = gone.map((g, k) => g || radial(clumps[k]) > MARCESCENT_RADIAL);
+        }
+    }
     // 1 = a kept canopy texel, 2 = a fallen one; `shed` marks texels now bare.
     const canopy = new Uint8Array(n);
     for (const i of indices) canopy[i >> 2] = gone[label.get(i >> 2)] ? 2 : 1;
@@ -575,18 +714,37 @@ export function shedCanopy(data, leafy, bare, width, height, share, salt) {
         }
     }
     for (let p = 0; p < n; p++) if (!canopy[p] && fate[p] === 2) toBare(p);
+    if (marcescent) {
+        // W2.4 — the oak's kept clumps turn marcescent bronze by their own
+        // luminance rank (every written texel a `leafMarcescent` stop), then
+        // one erosion pass: a kept texel with two or more shed 4-neighbours
+        // goes bare, so the remnant's silhouette is ragged, never a pom-pom.
+        changed += marcescentRemap(data, indices, canopy);
+        const eroded = [];
+        for (const i of indices) {
+            const p = i >> 2;
+            if (canopy[p] !== 1) continue;
+            const x = p % width;
+            let open = 0;
+            for (const q of [x > 0 ? p - 1 : -1, x < width - 1 ? p + 1 : -1, p - width, p + width]) {
+                if (q >= 0 && q < n && shed[q]) open++;
+            }
+            if (open >= 2) eroded.push(p);
+        }
+        for (const p of eroded) toBare(p);
+    }
     // Each kept clump's darkest colour (luminance), before any edge is set.
     const dark = new Array(clumps.length).fill(-1);
     for (const i of indices) {
         const id = label.get(i >> 2);
-        if (gone[id]) continue;
+        if (gone[id] || shed[i >> 2]) continue;
         const d = dark[id];
         if (d < 0 || lumOf(data[i], data[i + 1], data[i + 2]) < lumOf(data[d], data[d + 1], data[d + 2])) dark[id] = i;
     }
     const edges = [];
     for (const i of indices) {
         const p = i >> 2;
-        if (canopy[p] !== 1) continue;
+        if (canopy[p] !== 1 || shed[p]) continue;
         const x = p % width;
         for (const q of [x > 0 ? p - 1 : -1, x < width - 1 ? p + 1 : -1, p - width, p + width]) {
             if (q < 0 || q >= n || !shed[q] || data[q * 4 + 3] !== 0) continue;
@@ -924,7 +1082,13 @@ export class FoliageRenderer {
         const leafy = bare ? image.data.slice() : null;
         recolorCanopy(image.data, sprite.width, sprite.height, plan);
         if (laden) dustSnowCanopy(image.data, laden.data, sprite.width, sprite.height, dust);
-        if (bare) shedCanopy(image.data, leafy, bare.data, sprite.width, sprite.height, shed, SHED_SALT + variant * 7);
+        // W2.4 — the shed is species-aware (outer clumps fall first, an oak
+        // holds marcescent bronze late in the year, the rest leave no outer
+        // remnant); spring runs it back as leaf-out, green.
+        if (bare) {
+            shedCanopy(image.data, leafy, bare.data, sprite.width, sprite.height, shed, SHED_SALT + variant * 7,
+                { species, leafOut: this.season === 'spring' });
+        }
         this._canopies.set(canopyKey, image);
         return image;
     }
