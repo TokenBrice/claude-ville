@@ -50,12 +50,17 @@ const EVENSONG_VOICING_BAND = 2;
 // engine counts itself finished.
 export const EVENSONG_TAIL_SEC = 2;
 
+// The comp's held release tone sits under its figure.
+export const EVENSONG_RELEASE_HARMONY_VEL = 0.7;
+
 /**
  * The score as one timed event list, `{ events: [{ seat, t, dur, semi, vel }],
- * totalSec }`, seconds from the first beat: the lead and bass lines, and the
+ * totalSec }`, seconds from the first beat: the lead and bass lines, the
  * comp voiced by nearest inversion on every chord span (the Sequencer's own
- * `nearestVoicing` and `engineFigure`), the close's two bars at the score's
- * ritard. The harness compiles the same list for its pre-gate. Pure.
+ * `nearestVoicing` and `engineFigure`) plus each release bar's held
+ * `releaseHarmony` tone, the close's two bars at the score's ritard. The
+ * listening harness imports this very function for its pre-gate, so what
+ * it measures is what plays. Pure.
  */
 export function compileEvensongEvents(score) {
     if (!score) return { events: [], totalSec: 0 };
@@ -98,6 +103,18 @@ export function compileEvensongEvents(score) {
             const t = beatToSec(ev.beat);
             events.push({ seat: 'engine', t, dur: beatToSec(ev.beat + ev.beats) - t, semi: ev.semi, vel: ev.vel ?? 0.85 });
         }
+    }
+    // A release bar's held fifth: the comp also holds `releaseHarmony` (the
+    // 1 or 5 the lead is not on) for the whole bar, so the bar sounds both
+    // degrees whichever one the lead takes.
+    let harmonyBeat = 0;
+    for (const entry of Array.isArray(score.releaseHarmony) ? score.releaseHarmony : []) {
+        const [semi, beats] = entry;
+        if (semi != null && beats > 0) {
+            const t = beatToSec(harmonyBeat);
+            events.push({ seat: 'engine', t, dur: beatToSec(harmonyBeat + beats) - t, semi, vel: EVENSONG_RELEASE_HARMONY_VEL });
+        }
+        harmonyBeat += Number(beats) || 0;
     }
     events.sort((a, b) => (a.t - b.t) || (EVENSONG_VOICES.indexOf(a.seat) - EVENSONG_VOICES.indexOf(b.seat)));
     return { events, totalSec: beatToSec(totalBeats) };

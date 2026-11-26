@@ -88,6 +88,20 @@ Model identity, pricing, context window, and mood live in `../../config/models.j
 2. Activity panel label/color.
 3. World mode sprite selection and palette/accessory composition.
 
+## The Loom of Days and Evensong (Wave 6)
+
+**The Loom of Days (`ChronicleLoom.js`).** A pure, deterministic weaver and zero-text pixel renderer for the Chronicle. It runs the same in the browser and in Node (RGBA buffers, lossless PNG via `encodeLoomPng`), so byte identity is tested without a browser. `weaveDay(events, coverage, sky)` builds 24 hourly panels of 96 × 72 px (selvedges, a sky border, a 3 × 2 field of event cells, repo pennants). Cells are weighted by kind: release 6, push 5, mended 4, an error still open 4, commit 3, a wait of 5 min or more 3, compacted 2, rate-limited 2, completed 1. A resolved error drops to 2, and arrivals and departures are selvedge ticks only. An open error closes on the same agent's `mended`, `resolved`, `completed` or `departed`. `renderLoomPanel`, `renderLoomFrieze`, `renderLoomTapestryGrid` (the Tapestry band, 1152 × 216), `selectArchiveLoomPanel` and `drawLoomToCanvas` feed the Chronicle modal, the Tapestry and the Archive.
+
+**Evensong (`audio/bgm/Evensong.js`, `audio/bgm/BandEngine.js`).** At the soft 21:00 chime, once a local day, while the Town band plays and the day holds verified work, `BgmDirector` composes `composeEvensong(dayEvents, phaseKey)`: 16 bars of 4/4 at 72 bpm.
+
+- **Bars 1–14** trace the day's verified commits, pushes and releases over 112 eighth-note slots: at most 4 notes a bar, pentatonic, leaps of at most 2 scale steps, no quick same-pitch pair. A push is V → I (the natural minor v at night, with no melody note a semitone off it). A release is a held fifth: the lead on 1 or 5, the comp holding the other (`releaseHarmony`).
+- **Bars 15–16** close on the songbook's plagal tag, or on a held degree-2 suspension when an error is still open at 21:00. `openErrorsAt` follows the Loom's four closing kinds. In minor that degree 2 is the one intentional non-pentatonic note. The step from bar 14 into the close is at most 5 semitones.
+- **Validation.** `validateEvensongGrammar` checks every invariant.
+- **Playback.** `BandEngine` plays lead, bass and comp only, 3 dB under the band, with no percussion, in the breath after the current visit. A breath more than 4 minutes after the chime cancels the day. `audio:evensong` marks the start and the end.
+- **Day events** come from `setDayEventsProvider` (the Chronicle) or, without it, from the director's own ledger. The ledger keeps anonymous slots only: repos are numbered by first activity, the Chronicle's order; agents are hashed; an agent leaving records `departed` or `completed`.
+
+**The 10-day listening harness (`scripts/audio/evensong-harness.mjs`).** Run by hand, not in CI: `node scripts/audio/evensong-harness.mjs --synthetic --days 10 --out-dir <dir>`, or `--input-dir` for exported Chronicle CSVs. For each day it fails fast on the grammar, renders the live engine's own `compileEvensongEvents` offline (Chromium on a virtual clock, or `--node-synth`), and gates BS.1770 integrated loudness at −34 ± 1 LUFS-I (the Town band's −31 less 3 dB). It writes a WAV, a piano-roll PNG and `scorecard.md`. Repo, agent and subject strings become anonymous slots at parse time and never reach any output.
+
 ## Validation
 
 After shared component changes, run `npm run verify:render` for screenshot and console evidence, then judge both modes on the operator-maintained server because these components sit across mode boundaries:

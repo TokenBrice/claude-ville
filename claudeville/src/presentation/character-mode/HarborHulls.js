@@ -416,6 +416,15 @@ export function hullRise(pose) {
     return (pose.bob | 0) + (pose.tide | 0);
 }
 
+// The world row a moored hull meets the water on: its waterline anchor,
+// lifted by the tide (−L in screen y) exactly as the hull is, so the
+// planar mirror's contact foot (`mirrorFootY`), the Canvas reflection and
+// the lamp shimmer stay locked to the hull at every level. The heave is a
+// ripple on that water and leaves it where it is. L = 0: the anchor row.
+export function hullWaterlineY(pose) {
+    return Math.round(pose.y) - (pose.tide | 0);
+}
+
 export function hullGeometry(pose) {
     const { strip } = pose;
     const x0 = Math.round(pose.x) - strip.anchorX;
@@ -489,6 +498,10 @@ export function hullRecords(pose, out = []) {
         occluder: 0.4,
         writesDepth: pose.alpha >= 1,
         footY: Math.round(pose.y),
+        // W6.3 — the tide lifts the water with the hull: the planar mirror
+        // reflects it about its lifted waterline (WebGPU reads `mirrorFootY`
+        // before `footY`), never the level anchor. Absent at L = 0.
+        ...((pose.tide | 0) ? { mirrorFootY: hullWaterlineY(pose) } : null),
         frontCornerX: Math.round(pose.x),
         frontCornerY: -1,
         receiverAxis: true,

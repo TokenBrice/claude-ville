@@ -1,19 +1,23 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
+import { readFileSync } from 'node:fs';
 
 import {
     ALLOWED_KEYS,
     EVENSONG_BARS,
     EVENSONG_BEATS_PER_BAR,
     EVENSONG_BPM,
+    EVENSONG_CLOSE_LEAP_SEMIS,
     EVENSONG_DAY_BARS,
+    EVENSONG_ERROR_CLOSING_KINDS,
     EVENSONG_GAIN_DB,
     EVENSONG_MAX_LEAP_STEPS,
     EVENSONG_MAX_NOTES_PER_BAR,
     EVENSONG_VOICES,
     composeEvensong,
     composeEvensongMotto,
+    openErrorsAt,
     pentatonicScaleInRange,
     validateEvensongGrammar,
 } from '../../claudeville/src/presentation/shared/audio/bgm/Evensong.js';
@@ -24,6 +28,7 @@ import {
     tonicChord,
 } from '../../claudeville/src/presentation/shared/audio/bgm/ScoreKit.js';
 import { phaseKey } from '../../claudeville/src/presentation/shared/audio/MusicalScale.js';
+import { EVENSONG_RELEASE_HARMONY_VEL, compileEvensongEvents } from '../../claudeville/src/presentation/shared/audio/bgm/BandEngine.js';
 import { quickPairs, range, timeline, totalBeats } from '../audio/score-analyzer.mjs';
 import {
     buildScorecardMarkdown,
@@ -163,13 +168,14 @@ describe('Evensong pure score composer', () => {
     });
 
     it('writes a V-I cadence in bass/chords and lands melody on 1 or 5 for a push', () => {
+        // Minor keys push on the natural minor v (no raised leading tone).
         const cases = [
             { key: { tonic: 'A', mode: 'major' }, V: 'E', I: 'A' },
             { key: { tonic: 'D', mode: 'major' }, V: 'A', I: 'D' },
             { key: { tonic: 'E', mode: 'major' }, V: 'B', I: 'E' },
-            { key: { tonic: 'A', mode: 'minor' }, V: 'E', I: 'Am' },
-            { key: { tonic: 'D', mode: 'minor' }, V: 'A', I: 'Dm' },
-            { key: { tonic: 'E', mode: 'minor' }, V: 'B', I: 'Em' },
+            { key: { tonic: 'A', mode: 'minor' }, V: 'Em', I: 'Am' },
+            { key: { tonic: 'D', mode: 'minor' }, V: 'Am', I: 'Dm' },
+            { key: { tonic: 'E', mode: 'minor' }, V: 'Bm', I: 'Em' },
         ];
         for (const { key, V, I } of cases) {
             const events = [
@@ -557,5 +563,163 @@ describe('Evensong listening harness CSV privacy & artifacts', () => {
             assert.ok(score, `${day.id} must compose`);
             assert.deepEqual(validateEvensongGrammar(score), { ok: true, errors: [] }, `${day.id} grammar`);
         }
+    });
+});
+
+describe('Evensong council fixes (W6 lane C)', () => {
+    const timelineOf = notes => {
+        const out = [];
+        let at = 0;
+        for (const [pitch, beats] of notes) {
+            if (pitch != null) out.push({ start: at, dur: beats, pitch });
+            at += beats;
+        }
+        return out;
+    };
+
+    it('closes an open error on mended, resolved, completed and departed, as the Chronicle Loom does', () => {
+        assert.deepEqual([...EVENSONG_ERROR_CLOSING_KINDS], ['mended', 'resolved', 'completed', 'departed']);
+        const loom = readFileSync(new URL('../../claudeville/src/presentation/shared/ChronicleLoom.js', import.meta.url), 'utf8');
+        const block = /const ERROR_RESOLVING_KINDS = new Set\(\[([\s\S]*?)\]\)/.exec(loom)?.[1] || '';
+        const loomKinds = [...block.matchAll(/LOOM_EVENT_KIND\.([A-Z]+)/g)].map(m => m[1].toLowerCase());
+        assert.deepEqual(loomKinds.sort(), [...EVENSONG_ERROR_CLOSING_KINDS].sort(), 'the same four kinds as the Loom');
+
+        const errored = { ts: makeDayTs(14, 0), kind: 'errored', agentId: 'a1', repo: 'r' };
+        assert.equal(openErrorsAt([errored]).length, 1, 'an errored row opens');
+        for (const kind of EVENSONG_ERROR_CLOSING_KINDS) {
+            assert.deepEqual(openErrorsAt([errored, { ts: makeDayTs(15, 0), kind, agentId: 'a1' }]), [], `${kind} closes`);
+            assert.equal(openErrorsAt([errored, { ts: makeDayTs(15, 0), kind, agentId: 'a2' }]).length, 1, `another agent's ${kind} does not`);
+            assert.equal(openErrorsAt([errored, { ts: makeDayTs(15, 0), kind, agentId: 'a1' }], makeDayTs(14, 30)).length, 1, `${kind} after endTs is ignored`);
+        }
+        assert.deepEqual(openErrorsAt([{ ...errored, resolved: true }]), [], 'a row stamped resolved never opens');
+        assert.deepEqual(openErrorsAt([{ ...errored, open: false }]), []);
+        assert.deepEqual(openErrorsAt([errored, { ts: makeDayTs(13, 0), kind: 'departed', agentId: 'a1' }]).length, 1, 'order is chronological');
+        assert.ok(Object.isFrozen(openErrorsAt([errored])), 'frozen');
+        assert.ok(!JSON.stringify(openErrorsAt([errored])).includes('a1'), 'anonymous slots only');
+
+        // The composer reads the same contract: a departure before 21:00
+        // mends the day (plagal), a departure after it does not.
+        const work = [{ ts: makeDayTs(10, 0), kind: 'commit', repo: 'r', agentId: 'a1' }, errored];
+        assert.equal(composeEvensong([...work, { ts: makeDayTs(18, 0), kind: 'departed', agentId: 'a1' }], { tonic: 'A', mode: 'minor' }).close.kind, 'plagal');
+        assert.equal(composeEvensong([...work, { ts: makeDayTs(18, 0), kind: 'completed', agentId: 'a1' }], { tonic: 'A', mode: 'minor' }).close.kind, 'plagal');
+        assert.equal(composeEvensong([...work, { ts: makeDayTs(22, 0), kind: 'departed', agentId: 'a1' }], { tonic: 'A', mode: 'minor' }).close.kind, 'suspension');
+    });
+
+    it('sounds the held fifth on every release bar: the comp holds releaseHarmony under the lead', () => {
+        for (const key of [{ tonic: 'A', mode: 'major' }, { tonic: 'A', mode: 'minor' }, { tonic: 'E', mode: 'minor' }]) {
+            const score = composeEvensong([
+                { ts: makeDayTs(9, 0), kind: 'commit', repoSlot: 0 },
+                { ts: makeDayTs(12, 0), kind: 'release', repoSlot: 1 },
+                { ts: makeDayTs(13, 0), kind: 'release', repoSlot: 2 },
+                { ts: makeDayTs(19, 0), kind: 'commit', repoSlot: 2 },
+            ], key);
+            assert.ok(score.meta.releaseBars.length >= 1);
+            const { events } = compileEvensongEvents(score);
+            const beatSec = 60 / score.bpm;
+            const { tonicPc } = musicKey(key);
+            const fifth = new Set([tonicPc, mod12(tonicPc + 7)]);
+            for (const bar of score.meta.releaseBars) {
+                const t0 = bar * 4 * beatSec;
+                const held = events.filter(ev => ev.seat === 'engine' && Math.abs(ev.t - t0) < 1e-6 && Math.abs(ev.dur - 4 * beatSec) < 1e-6);
+                assert.equal(held.length, 1, `${key.tonic} ${key.mode} bar ${bar + 1}: one held comp tone`);
+                assert.equal(held[0].vel, EVENSONG_RELEASE_HARMONY_VEL);
+                const lead = events.find(ev => ev.seat === 'lead' && Math.abs(ev.t - t0) < 1e-6);
+                const pcs = new Set([pcOfSemi(lead.semi), pcOfSemi(held[0].semi)]);
+                assert.deepEqual(pcs, fifth, 'lead and comp sound degrees 1 and 5 together');
+            }
+        }
+        // No release, no held tone.
+        const plain = composeEvensong([{ ts: makeDayTs(9, 0), kind: 'commit', repoSlot: 0 }], { tonic: 'A', mode: 'minor' });
+        const comp = compileEvensongEvents(plain).events.filter(ev => ev.vel === EVENSONG_RELEASE_HARMONY_VEL && ev.seat === 'engine');
+        assert.equal(comp.length, 0);
+    });
+
+    it('pushes on the natural minor v with no melody semitone against it, and keeps the bar 14 → 15 leap in reach', () => {
+        const allKeys = [...ALLOWED_KEYS.day, ...ALLOWED_KEYS.night];
+        let pushBars = 0;
+        let approaches = 0;
+        for (let seed = 1; seed <= 400; seed++) {
+            const rand = makeSeededRng(seed * 104729 + 3);
+            const key = allKeys[seed % allKeys.length];
+            const events = [];
+            const count = 2 + Math.floor(rand() * 56);
+            for (let i = 0; i < count; i++) {
+                const r = rand();
+                events.push({
+                    minuteOfDay: 8 * 60 + Math.floor(rand() * 13 * 60),
+                    kind: r < 0.62 ? 'commit' : r < 0.86 ? 'push' : r < 0.92 ? 'release' : r < 0.96 ? 'errored' : 'mended',
+                    repoSlot: Math.floor(rand() * 10),
+                    agentSlot: Math.floor(rand() * 3),
+                });
+            }
+            events.push({ minuteOfDay: 20 * 60 + 50, kind: seed % 2 ? 'push' : 'commit', repoSlot: seed % 10, agentSlot: 0 });
+            const score = composeEvensong(events, key);
+            const v = validateEvensongGrammar(score);
+            assert.deepEqual(v, { ok: true, errors: [] }, `seed ${seed} (${key.tonic} ${key.mode}): ${v.errors.join('; ')}`);
+            const lead = timelineOf(score.melody);
+            const day = lead.filter(n => n.start < 56);
+            const last = day[day.length - 1];
+            if (last && Math.floor(last.start / 4) === 13) {
+                approaches++;
+                assert.ok(Math.abs(lead[day.length].pitch - last.pitch) <= EVENSONG_CLOSE_LEAP_SEMIS, `seed ${seed}: leap into the close`);
+            }
+            if (key.mode !== 'minor') continue;
+            const { tonicPc } = musicKey(key);
+            const v5 = mod12(tonicPc + 7);
+            for (const bar of score.meta.pushBars) {
+                pushBars++;
+                const [vName, iName] = score.chords[bar];
+                assert.equal(vName, `${['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'Bb', 'B'][v5]}m`, 'the natural minor v');
+                assert.equal(iName, tonicChord(key));
+                const vTones = [v5, mod12(v5 + 3), mod12(v5 + 7)];
+                for (const n of lead.filter(n => n.start >= bar * 4 - 1e-9 && n.start < bar * 4 + 2 - 1e-9)) {
+                    const pc = pcOfSemi(n.pitch);
+                    assert.ok(!vTones.some(t => mod12(pc - t) === 1 || mod12(pc - t) === 11),
+                        `seed ${seed} bar ${bar + 1}: ${pc} clashes with v`);
+                }
+            }
+        }
+        assert.ok(pushBars > 100, `${pushBars} minor push bars checked`);
+        assert.ok(approaches > 100, `${approaches} bar-14 approaches checked`);
+    });
+
+    it('validateEvensongGrammar checks the step from bar 14 into the close', () => {
+        const score = composeEvensong([
+            { minuteOfDay: 9 * 60, kind: 'commit', repoSlot: 0 },
+            { minuteOfDay: 20 * 60 + 50, kind: 'commit', repoSlot: 1 },
+        ], { tonic: 'A', mode: 'minor' });
+        assert.deepEqual(validateEvensongGrammar(score), { ok: true, errors: [] });
+        const melody = score.melody.map(n => [...n]);
+        // Bars 1–14 occupy beats 0..56; put a far note at the very end of bar 14.
+        let at = 0;
+        let lastIndex = -1;
+        for (let i = 0; i < melody.length; i++) {
+            if (at >= 52 && at < 56 && melody[i][0] != null) lastIndex = i;
+            at += melody[i][1];
+        }
+        assert.ok(lastIndex >= 0, 'bar 14 holds a note');
+        const closeFirst = timelineOf(score.melody).find(n => n.start >= 56).pitch;
+        melody[lastIndex][0] = pentatonicScaleInRange(score.key).find(s => Math.abs(s - closeFirst) > EVENSONG_CLOSE_LEAP_SEMIS);
+        const broken = validateEvensongGrammar({ ...score, melody });
+        assert.equal(broken.ok, false);
+        assert.ok(broken.errors.some(e => /from bar 14 into the close/.test(e)), broken.errors.join('; '));
+    });
+
+    it('the listening harness renders the live engine compiler, not a copy', () => {
+        const harness = readFileSync(new URL('../audio/evensong-harness.mjs', import.meta.url), 'utf8');
+        assert.doesNotMatch(harness, /function compileEvensongEvents/);
+        assert.match(harness, /import \{ compileEvensongEvents \} from '..\/..\/claudeville\/src\/presentation\/shared\/audio\/bgm\/BandEngine\.js'/);
+    });
+
+    it('holds the minor suspension on degree 2 as its one non-pentatonic note', () => {
+        const score = composeEvensong([
+            { minuteOfDay: 9 * 60, kind: 'commit', repoSlot: 0 },
+            { minuteOfDay: 17 * 60, kind: 'errored', agentSlot: 1 },
+        ], { tonic: 'A', mode: 'minor' });
+        assert.equal(score.close.kind, 'suspension');
+        const close = timelineOf(score.melody).find(n => n.start >= 56);
+        assert.equal(pcOfSemi(close.pitch), 11, 'B in A minor');
+        assert.ok(!pentatonicScaleInRange(score.key).includes(close.pitch), 'outside the minor pentatonic by design');
+        assert.deepEqual(validateEvensongGrammar(score), { ok: true, errors: [] });
     });
 });

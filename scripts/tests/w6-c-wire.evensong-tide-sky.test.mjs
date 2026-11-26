@@ -22,8 +22,10 @@ import { MAP_SIZE, TILE_HEIGHT, TILE_WIDTH } from '../../claudeville/src/config/
 import {
     ECLIPSE_SKY_KEYS,
     LANTERN_NIGHT_WINDOW_DAYS,
+    PARTIAL_SOLAR_CAP,
     SYNODIC_MONTH_DAYS,
     eclipseSkyKeyAt,
+    eclipseVisibilityCap,
     isLanternNight,
     moonAgeDaysAt,
     solsticeAlignmentAt,
@@ -62,17 +64,24 @@ import {
     lunarTideOverrideState,
 } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
 import {
+    TIDE_COURSE_STRIDE,
     TIDE_WET_COURSE_ZONES,
     WORLD_ASH_SANDBAR,
     captureCoastArtifact,
+    getCoastField,
+    quayDryStoneRgb,
     quayWaterlineFeet,
     quayWetCourseTexels,
+    sampleTideCourse,
     tideOverlayLayers,
     tideOverlayTexels,
     tideWetCourseRows,
+    validCoastArtifact,
     worldAshSandbarTexels,
 } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
-import { hullGeometry, hullRecords, tideOverlayRecord } from '../../claudeville/src/presentation/character-mode/HarborHulls.js';
+import { hullGeometry, hullRecords, hullWaterlineY, tideOverlayRecord } from '../../claudeville/src/presentation/character-mode/HarborHulls.js';
+import { DISTRICT_PROPS, WORLD_TREE } from '../../claudeville/src/config/scenery.js';
+import { keyedSkyPalette } from '../../claudeville/src/presentation/character-mode/WorldFrameRenderer.js';
 import { HARBOR_HULL_SCENE_CATEGORY, HarborTraffic, TIDE_OVERLAY_SORT_Y } from '../../claudeville/src/presentation/character-mode/HarborTraffic.js';
 import {
     BLOOD_MOON_HEX,
@@ -256,6 +265,56 @@ test('the director ledger reduces repos and agents to slots the moment it hears 
         }
     } finally {
         director.destroy();
+    }
+});
+
+test('without the Chronicle the ledger numbers repos by first activity, the Chronicle order', () => {
+    const director = new BgmDirector({ engine: makeEngine().engine });
+    try {
+        // Heard out of order: gamma's commit arrives first but happened last.
+        const heard = [WORK_DAY[3], WORK_DAY[1], WORK_DAY[0], WORK_DAY[2]];
+        for (const outcome of heard) eventBus.emit('outcome:verified', outcome);
+        const events = director._dayLedger.events(DAY);
+        assert.deepEqual(events.map(e => e.minuteOfDay), [550, 700, 845, 1050], 'time order');
+        // alpha (09:10) → 0, beta (11:40) → 1, alpha's push → 0, gamma (17:30) → 2.
+        assert.deepEqual(events.map(e => e.repoSlot), [0, 1, 0, 2]);
+        // Exactly what composeEvensong would number from the Chronicle's rows.
+        const chronicleRows = WORK_DAY.map(o => ({ kind: o.kind, repo: o.project, agentId: o.agentId, ts: o.at }));
+        assert.deepEqual(
+            composeEvensong(events, { tonic: 'A', mode: 'minor' }).melody,
+            composeEvensong(chronicleRows, { tonic: 'A', mode: 'minor' }).melody,
+            'the fallback and the Chronicle sing the same day',
+        );
+        // A repo key never collides with an explicit slot.
+        const ledger = createEvensongDayLedger();
+        ledger.record({ kind: 'commit', repoSlot: 0 }, at(8));
+        ledger.record({ kind: 'commit', repoKey: 912345 }, at(9));
+        assert.deepEqual(ledger.events(DAY).map(e => e.repoSlot), [0, 1]);
+    } finally {
+        director.destroy();
+    }
+});
+
+test('an agent that leaves closes its open error in the ledger, as in the Chronicle', () => {
+    const realNow = Date.now;
+    Date.now = () => at(18);
+    const director = new BgmDirector({ engine: makeEngine().engine });
+    try {
+        eventBus.emit('outcome:verified', WORK_DAY[0]);
+        eventBus.emit('distress:watchtower', { kind: 'errored', agentId: 'agent-1', at: at(16) });
+        let events = director._dayLedger.events(DAY);
+        assert.equal(composeEvensong(events, { tonic: 'A', mode: 'minor' }).close.kind, 'suspension');
+        eventBus.emit('agent:removed', { id: 'agent-1' });
+        events = director._dayLedger.events(DAY);
+        assert.equal(events.at(-1).kind, 'departed');
+        assert.ok(!JSON.stringify(events).includes('agent-'), 'no agent string kept');
+        assert.equal(composeEvensong(events, { tonic: 'A', mode: 'minor' }).close.kind, 'plagal');
+        // A session that ended completes.
+        eventBus.emit('agent:removed', { id: 'agent-2', sessionEndedAt: at(18, 30) });
+        assert.equal(director._dayLedger.events(DAY).at(-1).kind, 'completed');
+    } finally {
+        director.destroy();
+        Date.now = realNow;
     }
 });
 
@@ -626,6 +685,36 @@ test('a moored hull rides −L texels in screen y, its reflection and collar wit
     assert.deepEqual(hullRecords({ ...base, tide: 0 }), hullRecords(base));
 });
 
+test('a moored hull and its mirror contact foot ride the same −L: zero separation at L = −2, 0, +2', () => {
+    const base = { id: 'ship-2', strip: fakeStrip(), frame: 1, x: 640, y: 412, bob: 0, sink: 0, alpha: 1, wake: null };
+    // The planar mirror reflects a record about its foot (mirrorFootY before
+    // footY; GpuWorldRendererWebGPU): a hull row at screen y lands at 2·foot − y.
+    const mirrorFoot = record => record.mirrorFootY ?? record.footY;
+    const hullOf = records => records.find(r => r.id === 'harbor:hull:ship-2');
+    const level = hullOf(hullRecords({ ...base, tide: 0 }));
+    assert.equal('mirrorFootY' in level, false, 'L = 0: the record is the baseline record');
+    assert.deepEqual(hullRecords({ ...base, tide: 0 }), hullRecords(base));
+    const levelGap = level.y + level.height - mirrorFoot(level);
+    for (const L of [-2, 0, 2]) {
+        const records = hullRecords({ ...base, tide: L });
+        const hull = hullOf(records);
+        const reflection = records.find(r => r.reflect === true);
+        assert.equal(hull.y, level.y - L, `hull y at L = ${L}`);
+        assert.equal(mirrorFoot(hull), Math.round(base.y) - L, `mirror contact foot at L = ${L}`);
+        assert.equal(mirrorFoot(hull), hullWaterlineY({ ...base, tide: L }));
+        // The waterline row and the mirror foot keep their L = 0 offset: the
+        // reflection never parts from (or overlaps) the hull.
+        assert.equal(hull.y + hull.height - mirrorFoot(hull), levelGap, `zero separation at L = ${L}`);
+        for (const row of [hull.y, hull.y + hull.height - 1]) {
+            assert.equal(2 * mirrorFoot(hull) - row, (2 * mirrorFoot(level) - (row + L)) - L, `mirrored row at L = ${L}`);
+        }
+        // The Canvas/WebGL2 reflection twin rides the same lift.
+        assert.equal(reflection.y, hullGeometry({ ...base, tide: 0 }).reflectY - L);
+        // Painter order is untouched: footY stays the waterline anchor.
+        assert.equal(hull.footY, Math.round(base.y));
+    }
+});
+
 test('only moored ships take the tide lift, and it holds under reduced motion', () => {
     const harbor = new HarborTraffic({});
     try {
@@ -676,7 +765,14 @@ test('the quay wet course is clamp(1 − L, 0, 3), drawn only above the baked co
 
     const wetStone = new Set(ART_RAMPS.tideline.slice(0, 2));
     const hex = rgb => `#${rgb.map(c => c.toString(16).padStart(2, '0')).join('')}`;
-    for (const L of [0, 1, 2]) assert.deepEqual(quayWetCourseTexels(feet, L), [], `nothing added at L = ${L}`);
+    assert.deepEqual(quayWetCourseTexels(feet, 0), [], 'nothing at L = 0');
+    // High water: the baked course (foot.y − 1) alone, repainted dry.
+    for (const L of [1, 2]) {
+        const dry = quayWetCourseTexels(feet, L);
+        assert.deepEqual(dry.map(t => [t.x, t.y]), feet.map(f => [f.x, f.y - 1]), `L = ${L}`);
+        assert.ok(dry.every(t => t.dry === true && !wetStone.has(hex(t.rgb))), `no wet stone at L = ${L}`);
+        assert.deepEqual(dry.map(t => t.rgb), feet.map(f => quayDryStoneRgb(f)), 'the face texel above the course');
+    }
     const low = quayWetCourseTexels([{ x: 102, y: 204 }], -1);
     assert.deepEqual(low.map(t => [t.x, t.y]), [[102, 202]]);
     const lowest = quayWetCourseTexels([{ x: 102, y: 204 }], -2);
@@ -809,6 +905,131 @@ test('the World Ash sandbar opens only at h ≤ −0.92, opaque, on the sand and
     });
 });
 
+test('high water repaints the baked wet course with the baked dry stone above it, and spares a covered course', () => {
+    // Two feet; the bake sampled each one's foot.y − 2 (dry) and foot.y − 1
+    // (wet) colours. The second foot's course is covered by a structure
+    // (its "wet" sample is timber, off the tideline ramp).
+    const feet = [{ x: 610, y: 330, zone: 2 }, { x: 611, y: 330, zone: 2 }];
+    const tide = ART_RAMPS.tideline.map(h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)));
+    const ashlarDry = [118, 104, 112];
+    const timber = [64, 42, 47];
+    const pixels = new Map([
+        ['610,328', ashlarDry], ['610,329', tide[1]],
+        ['611,328', timber], ['611,329', timber],
+    ]);
+    const course = sampleTideCourse(feet, (x, y) => pixels.get(`${x},${y}`));
+    assert.equal(course.length, feet.length * TIDE_COURSE_STRIDE);
+    assert.deepEqual([...course.slice(0, 6)], [...ashlarDry, ...tide[1]]);
+
+    // L = 0: nothing at all, not even a read.
+    assert.deepEqual(quayWetCourseTexels(feet, 0, { course }), []);
+    // L = +1, +2: zero wet rows. The intact course takes the dry stone baked
+    // directly above it; the covered one is left as the bake drew it.
+    for (const L of [1, 2]) {
+        assert.equal(tideWetCourseRows(L), 0);
+        const texels = quayWetCourseTexels(feet, L, { course });
+        assert.deepEqual(texels, [{ x: 610, y: 329, rgb: ashlarDry, dry: true }], `L = ${L}`);
+    }
+    // L = −1, −2: one and two wet rows added above the intact course only.
+    assert.deepEqual(quayWetCourseTexels(feet, -1, { course }).map(t => [t.x, t.y]), [[610, 328]]);
+    assert.deepEqual(quayWetCourseTexels(feet, -2, { course }).map(t => [t.x, t.y]), [[610, 328], [610, 327]]);
+    // A sample that does not match the feet is ignored (recomputed course).
+    assert.equal(quayWetCourseTexels(feet, 2, { course: new Uint8Array(6) }).length, 2);
+
+    // Through the renderer: the bake's own sample drives the overlay.
+    const renderer = fakeCoastRenderer();
+    const allFeet = quayWaterlineFeet(renderer._coastBake.waterFields, renderer._coastField.bankZone, { caps: renderer._coastField.caps });
+    renderer._coastBake.tideCourse = sampleTideCourse(allFeet, (x, y) => (y === allFeet[0].y - 1 ? tide[0] : ashlarDry));
+    const high = tideOverlayTexels(renderer, { level: 2 });
+    assert.equal(high.wet.length, allFeet.length, 'one dry texel per foot');
+    assert.ok(high.wet.every((t, i) => t.y === allFeet[i].y - 1 && t.rgb.join() === ashlarDry.join()));
+    assert.deepEqual(high.sandbar, []);
+
+    // The sample persists with the coast artifact: optional, whole records.
+    const source = { world: { buildings: new Map() }, waterTiles: new Set(['0,0']), waterMeta: new Map([['0,0', { region: 'sea' }]]) };
+    const field = getCoastField(source);
+    source._coastBake = { key: field.key, fieldMs: field.buildMs, bakeMs: 1, coast: null, waterFields: null };
+    const snapshot = captureCoastArtifact(source);
+    assert.equal(validCoastArtifact(snapshot), true, 'an older bake without a sample');
+    assert.equal(validCoastArtifact({ ...snapshot, bake: { ...snapshot.bake, tideCourse: new Uint8Array(12) } }), true);
+    assert.equal(validCoastArtifact({ ...snapshot, bake: { ...snapshot.bake, tideCourse: new Uint8Array(5) } }), false, 'a torn record');
+    assert.equal(validCoastArtifact({ ...snapshot, bake: { ...snapshot.bake, tideCourse: [1, 2, 3, 4, 5, 6] } }), false, 'not bytes');
+});
+
+test('the World Ash sandbar is a legible spit in open water, clear of the mossy shore boulder', () => {
+    // The gate: only h ≤ −0.92 exposes it.
+    assert.equal(LUNAR_TIDE_SANDBAR_H, -0.92);
+    assert.equal(lunarTideOverrideState({ h: -0.91 }).sandbarExposed, false);
+    assert.equal(lunarTideOverrideState({ h: -0.92 }).sandbarExposed, true);
+    for (const L of [-2, -1, 1, 2]) assert.equal(lunarTideOverrideState(L).sandbarExposed, false, `a forced L = ${L} keeps it shut`);
+    const renderer = fakeCoastRenderer();
+    assert.deepEqual(tideOverlayTexels(renderer, lunarTideOverrideState({ h: -0.91 })).sandbar, []);
+    const open = tideOverlayTexels(renderer, lunarTideOverrideState({ h: -0.92 })).sandbar;
+
+    // The mossy boulder's footprint: its DISTRICT_PROPS tile and its 64 px
+    // manifest sprite anchored at [32, 40] (claudeville/assets/sprites/manifest.yaml).
+    const manifest = readFileSync(new URL('../../claudeville/assets/sprites/manifest.yaml', import.meta.url), 'utf8');
+    const entry = /- id: veg\.boulder\.mossy\.large\n(?:\s{4}.*\n)*?\s{4}size: (\d+)\n\s{4}anchor: \[(\d+), (\d+)\]/.exec(manifest);
+    assert.ok(entry, 'the boulder sprite has a size and an anchor');
+    const [size, ax, ay] = entry.slice(1).map(Number);
+    const boulders = DISTRICT_PROPS.filter(p => p.id === 'veg.boulder.mossy.large' && Math.hypot(p.tileX - WORLD_TREE.tileX, p.tileY - WORLD_TREE.tileY) < 4);
+    assert.equal(boulders.length, 1, 'one mossy boulder on the World Ash shore');
+    const [boulder] = boulders;
+    const bx = (boulder.tileX - boulder.tileY) * TILE_WIDTH / 2 - ax;
+    const by = (boulder.tileX + boulder.tileY) * TILE_HEIGHT / 2 - ay;
+    const onBoulder = t => t.x >= bx && t.x < bx + size && t.y >= by && t.y < by + size;
+    assert.equal(open.filter(onBoulder).length, 0, 'no sandbar texel inside the boulder sprite');
+    assert.ok(WORLD_ASH_SANDBAR.keepClear.some(box => box.x0 <= bx && box.y0 <= by && box.x1 >= bx + size && box.y1 >= by + size),
+        'the spit keeps the whole sprite box clear');
+    // Even an all-water coast field never puts a texel on the rock.
+    assert.equal(worldAshSandbarTexels(() => true).filter(onBoulder).length, 0);
+
+    // Substantial and legible: well over a hundred texels in the open channel
+    // between the islet's south sand (y ≈ 476 at x 420–445 on the live coast
+    // field) and the mainland beach (y ≈ 510–520 there), on the sand and
+    // tideline ramps, with a wet tideline lip and a sand crest.
+    const visible = open.filter(t => t.y > 477 && t.y < 509 && t.x > 416);
+    assert.ok(visible.length >= 100, `${visible.length} sandbar texels in the channel`);
+    const hex = rgb => `#${rgb.map(c => c.toString(16).padStart(2, '0')).join('')}`;
+    const colours = new Set(open.map(t => hex(t.rgb)));
+    assert.ok(colours.has(ART_RAMPS.tideline[2]), 'a wet edge');
+    assert.ok(colours.has(ART_RAMPS.sand[2]) && colours.has(ART_RAMPS.sand[0]), 'a crest and a rim');
+    // An organic contour: the spit's width changes along its length.
+    const widths = new Map();
+    for (const t of open) widths.set(t.y, (widths.get(t.y) || 0) + 1);
+    assert.ok(new Set(widths.values()).size >= 4, 'the flanks bulge and pinch');
+
+    // Never over what the terrain bake covered (a baked boulder or dock
+    // over the water): a covered cell under the spit paints nothing.
+    const covered = fakeCoastRenderer();
+    const coast = covered._coastBake.coast;
+    Object.assign(coast, { x: 400, y: 460, cols: 40, rows: 40 });
+    coast.covered = new Uint8Array(coast.cols * coast.rows);
+    const [cx, cy] = WORLD_ASH_SANDBAR.points[2];
+    const cell = ((cy - coast.y) >> 1) * coast.cols + ((cx - coast.x) >> 1);
+    coast.covered[cell] = 1;
+    const spared = tideOverlayTexels(covered, { level: -2, sandbarExposed: true }).sandbar;
+    assert.ok(spared.length > 0);
+    assert.ok(!spared.some(t => ((t.x - coast.x) >> 1) === ((cx - coast.x) >> 1) && ((t.y - coast.y) >> 1) === ((cy - coast.y) >> 1)));
+});
+
+test('the tide overlay is a ground band under every scenery record on both backends', () => {
+    withFakeDocument(() => {
+        const layers = tideOverlayLayers(fakeCoastRenderer(), { level: -2, sandbarExposed: true });
+        assert.ok(layers.length > 0);
+        for (const layer of layers) {
+            const record = tideOverlayRecord(layer);
+            // GpuSceneBuilder orders every `ground:` record right after the
+            // terrain and before every sprite; the Canvas category draws it
+            // at TIDE_OVERLAY_SORT_Y, before every sorted sprite.
+            assert.ok(record.id.startsWith('ground:'));
+            assert.equal(record.occluder, 0);
+            assert.equal(record.elevation, 0);
+            assert.ok(TIDE_OVERLAY_SORT_Y < -1e5);
+        }
+    });
+});
+
 // ─── 3. Lantern Night, the solstice alignment and the eclipse keys ───────────
 
 test('Lantern Night is a clear evening within a day of the full moon', () => {
@@ -851,8 +1072,15 @@ test('the Solstice Belfry Alignment keys June 20–21 and December 21–22 at th
 
 test('the 2026–2027 eclipse keys hold exactly their UTC windows', () => {
     const ids = ECLIPSE_SKY_KEYS.map(row => row.id);
-    assert.deepEqual(ids, ['lunar-2026-03-03', 'solar-2026-08-12', 'lunar-2026-08-28', 'solar-2027-08-02']);
+    assert.deepEqual(ids, ['lunar-2026-03-03', 'solar-2026-08-12', 'lunar-2026-08-28', 'solar-2027-02-06', 'solar-2027-08-02']);
     const utc = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h, mi, s);
+    // 2027-02-06 annular (magnitude 0.928): antumbral U1 14:03:53 → greatest
+    // 15:59:35 → U4 17:55:24 UT; never full, so it peaks at 0.75.
+    assert.equal(eclipseSkyKeyAt(utc(2027, 2, 6, 14, 3, 52)), null);
+    assert.deepEqual(eclipseSkyKeyAt(utc(2027, 2, 6, 14, 3, 53)), { id: 'solar-2027-02-06', body: 'sun', type: 'annular', strength: 0.25 });
+    assert.equal(eclipseSkyKeyAt(utc(2027, 2, 6, 15, 59, 35)).strength, 0.75);
+    assert.equal(eclipseSkyKeyAt(utc(2027, 2, 6, 17, 55, 23)).strength, 0.25);
+    assert.equal(eclipseSkyKeyAt(utc(2027, 2, 6, 17, 55, 24)), null);
     // 2026-08-12 total solar: U1 16:58:06 → greatest 17:45:53 → U4 18:34:05 UTC.
     assert.equal(eclipseSkyKeyAt(utc(2026, 8, 12, 16, 58, 5)), null);
     assert.deepEqual(eclipseSkyKeyAt(utc(2026, 8, 12, 16, 58, 6)), { id: 'solar-2026-08-12', body: 'sun', type: 'total', strength: 0.25 });
@@ -882,10 +1110,17 @@ test('the 2026–2027 eclipse keys hold exactly their UTC windows', () => {
 });
 
 test('an eclipse keys the sky only while its body is up: umbra over the sun, blood on the moon', () => {
-    const solar = createAtmosphereSnapshot({ now: new Date(2026, 7, 12, 17, 45, 53), solarSite: GREENWICH, weatherOverride: { type: 'clear' } });
+    // 2026-08-12 greatest eclipse from inside the path of totality
+    // (Reykjavik): the full umbra.
+    const reykjavik = { zone: 'reykjavik', lat: 64.15, lon: -21.94, offsetMinutes: () => 0 };
+    const solar = createAtmosphereSnapshot({ now: new Date(2026, 7, 12, 17, 45, 53), solarSite: reykjavik, weatherOverride: { type: 'clear' } });
     assert.equal(solar.sky.sun.visible, true);
     assert.deepEqual(solar.skyKeys.eclipse, { id: 'solar-2026-08-12', body: 'sun', type: 'total', strength: 1 });
     assert.equal(eclipseStrength(solar.skyKeys, 'sun'), 1);
+    // Greenwich lies off the path: a partial, capped, never totality.
+    const partial = createAtmosphereSnapshot({ now: new Date(2026, 7, 12, 17, 45, 53), solarSite: GREENWICH, weatherOverride: { type: 'clear' } });
+    assert.equal(partial.sky.sun.visible, true);
+    assert.deepEqual(partial.skyKeys.eclipse, { id: 'solar-2026-08-12', body: 'sun', type: 'total', strength: PARTIAL_SOLAR_CAP });
     const umbra = skyKeyPalette(solar.sky.palette, solar.skyKeys);
     const luma = hex => {
         const n = parseInt(hex.slice(1), 16);
@@ -911,6 +1146,59 @@ test('an eclipse keys the sky only while its body is up: umbra over the sun, blo
     assert.equal(eclipseStrength(blood.skyKeys, 'sun'), 0);
     assert.equal(BLOOD_MOON_HEX, ART_RAMPS.clothCrimson[1]);
     assert.ok(Math.abs(moonAgeDaysAt(Date.UTC(2026, 2, 3, 11, 33)) - SYNODIC_MONTH_DAYS / 2) < 1, 'the lunation clock agrees it is full');
+});
+
+test('a solar eclipse is seen only near its track; a lunar eclipse wherever the moon is up', () => {
+    const utc = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h, mi, s);
+    const peak2026 = utc(2026, 8, 12, 17, 45, 53);
+    const annularPeak = utc(2027, 2, 6, 15, 59, 35);
+    const peak2027 = utc(2027, 8, 2, 10, 6, 29);
+    const at = (t, lat, lon) => eclipseSkyKeyAt(t, { lat, lon })?.strength ?? null;
+    // On the central path: full (the annular at its magnitude).
+    assert.equal(at(peak2026, 43.26, -2.93), 1, 'Bilbao, totality');
+    assert.equal(at(annularPeak, -38.72, -62.27), 0.75, 'Bahía Blanca, annularity');
+    assert.equal(at(annularPeak, 5.6, -0.19), 0.75, 'Accra, annularity');
+    assert.equal(at(peak2027, 25.69, 32.64), 1, 'Luxor, totality');
+    assert.equal(at(peak2027, 36.72, -4.42), 1, 'Málaga, totality');
+    // Near but off the path: the partial cap.
+    assert.equal(at(peak2026, 41.39, 2.17), PARTIAL_SOLAR_CAP, 'Barcelona, partial');
+    assert.equal(at(peak2026, 48.86, 2.35), PARTIAL_SOLAR_CAP, 'Paris, partial');
+    assert.equal(at(annularPeak, -34.9, -56.16), PARTIAL_SOLAR_CAP, 'Montevideo, partial');
+    assert.equal(at(annularPeak, 5.32, -4.03), PARTIAL_SOLAR_CAP, 'Abidjan, partial');
+    assert.equal(at(peak2027, 48.86, 2.35), PARTIAL_SOLAR_CAP, 'Paris, partial');
+    // Far from the track: no eclipse at all.
+    assert.equal(at(peak2026, -22.9, -43.2), null, 'Rio, 2026');
+    assert.equal(at(peak2026, -33.9, 151.2), null, 'Sydney, 2026');
+    assert.equal(at(annularPeak, 40.71, -74.0), null, 'New York, 2027-02');
+    assert.equal(at(peak2027, 40.71, -74.0), null, 'New York, 2027-08');
+    // The cap never lifts a key: before the peak the partial site keys as the path does, up to its cap.
+    assert.equal(at(utc(2026, 8, 12, 16, 58, 6), 48.86, 2.35), 0.25);
+    // A lunar key is the same everywhere (the moon's own visibility decides).
+    for (const [lat, lon] of [[51.48, 0], [-33.9, 151.2], [21.3, -157.8]]) {
+        assert.equal(at(utc(2026, 3, 3, 11, 33, 37), lat, lon), 1);
+    }
+    for (const row of ECLIPSE_SKY_KEYS) {
+        assert.equal(Boolean(row.visibility), row.body === 'sun', `${row.id}: only solar eclipses carry visibility boxes`);
+        assert.equal(eclipseVisibilityCap(row, null), 1, 'no site: no geographic gate');
+    }
+    // The snapshot reads the site's real latitude, not the village's clamped one.
+    const highNorth = createAtmosphereSnapshot({ now: new Date(2026, 7, 12, 17, 45, 53), solarSite: { zone: 'scoresby', lat: 75, lon: -26, offsetMinutes: () => 0 }, weatherOverride: { type: 'clear' } });
+    if (highNorth.sky.sun.visible) assert.equal(highNorth.skyKeys.eclipse?.strength, 1, 'east Greenland stays on the path');
+});
+
+test('puddles mirror the keyed sky, and the plate palette itself on ordinary dates', () => {
+    const base = createAtmosphereSnapshot({ now: new Date(2026, 6, 15, 12, 0), solarSite: GREENWICH, weatherOverride: { type: 'clear' } });
+    const renderer = {};
+    assert.equal(keyedSkyPalette(renderer, base), base.sky.palette, 'no key: the same palette object');
+    const umbra = createAtmosphereSnapshot({ now: new Date(2026, 7, 12, 17, 45, 53), solarSite: { zone: 'reykjavik', lat: 64.15, lon: -21.94, offsetMinutes: () => 0 }, weatherOverride: { type: 'clear' } });
+    const keyed = keyedSkyPalette(renderer, umbra);
+    assert.deepEqual(keyed, skyKeyPalette(umbra.sky.palette, umbra.skyKeys));
+    assert.notEqual(keyed.upperBand, umbra.sky.palette.upperBand, 'the eclipse darkens the mirrored sky');
+    assert.equal(keyedSkyPalette(renderer, umbra), keyed, 'memoized: one upload per keyed sky');
+    assert.equal(keyedSkyPalette(renderer, { sky: null, skyKeys: umbra.skyKeys }), null);
+    // The resident feed carries it (WorldFrameRenderer's GPU branch).
+    const source = readFileSync(new URL('../../claudeville/src/presentation/character-mode/WorldFrameRenderer.js', import.meta.url), 'utf8');
+    assert.match(source, /gpuFeed\.skyPalette = keyedSkyPalette\(renderer, atmosphere\)/);
 });
 
 test('ordinary dates and every pinned capture date leave the sky untouched', () => {

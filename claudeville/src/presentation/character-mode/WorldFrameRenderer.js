@@ -42,6 +42,7 @@ import { drawCanvasWaterColumns } from './CanvasWaterState.js';
 import { drawCanvasEmitterCuts, drawCanvasGradeOverlays, drawMineCrystalGlow } from './EmitterCuts.js';
 import { roofLightningSheen } from './RoofWeather.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
+import { skyKeyPalette, skyKeyToken } from './SkyRenderer.js';
 import { groundOptionsFor, groundStateAt, liquidPrecipitation } from './GroundState.js';
 import { ungradeRgb } from './CanvasGrade.js';
 import { PEAK, armPeakMarks, drawMomentEdgePlates, setMomentStage, takePeakMarks } from './EffectStamps.js';
@@ -378,8 +379,28 @@ function cappedSkyRgb(hex, cap) {
     return luma > cap ? rgb.map(channel => channel * cap / luma) : rgb;
 }
 
+/**
+ * W6.3 — the sky palette the puddles mirror: SkyRenderer `skyKeyPalette`
+ * under the snapshot's sky keys (Lantern Night, the solstice alignment, an
+ * eclipse), so a puddle shows the sky the plate draws. On an ordinary date
+ * it is `atmosphere.sky.palette` itself; a keyed palette is memoized per
+ * (palette, key token), so the resident path's identity check uploads it
+ * once, not every frame.
+ */
+export function keyedSkyPalette(renderer, atmosphere) {
+    const palette = atmosphere?.sky?.palette || null;
+    const keys = atmosphere?.skyKeys;
+    if (!palette || !keys?.active) return palette;
+    const token = skyKeyToken(keys);
+    const memo = renderer?._keyedSkyPalette;
+    if (memo?.palette === palette && memo.token === token) return memo.keyed;
+    const keyed = skyKeyPalette(palette, keys);
+    if (renderer) renderer._keyedSkyPalette = { palette, token, keyed };
+    return keyed;
+}
+
 function puddleLayerFor(renderer, mask, level, atmosphere) {
-    const palette = atmosphere?.sky?.palette;
+    const palette = keyedSkyPalette(renderer, atmosphere);
     const grade = atmosphere?.lightGrade || null;
     const key = `${mask.revision}|${level}|${palette?.upperBand}|${palette?.horizon}|${grade?.cacheKey || ''}`;
     const cached = renderer._canvasPuddleLayer;
@@ -912,7 +933,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         // baked site mask, reflecting the graded sky palette.
         gpuFeed.puddles = renderer._groundState?.puddles || 0;
         gpuFeed.puddleMask = renderer.groundPuddleMask || null;
-        gpuFeed.skyPalette = atmosphere?.sky?.palette || null;
+        // W6.3 — the puddles mirror the keyed sky (Lantern Night, the
+        // solstice, an eclipse), the plate's own palette object otherwise.
+        gpuFeed.skyPalette = keyedSkyPalette(renderer, atmosphere);
         // 3.5 — the authored palette ramp travels as a plain decoded image; a
         // missing or unexpected table leaves the pilot at today's response.
         gpuFeed.paletteLut = renderer.assets?.get?.(PALETTE_RAMP_ASSET_ID) || null;

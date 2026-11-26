@@ -851,6 +851,8 @@ export function validCoastArtifact(snapshot) {
         || !byteField(field.bankZone, MAP_SIZE * MAP_SIZE)
         || !byteField(field.caps, MAP_SIZE * MAP_SIZE)
         || !bake || typeof bake.key !== 'string' || !Number.isFinite(bake.fieldMs) || !Number.isFinite(bake.bakeMs)) return false;
+    // W6.3 — the quay-course sample is optional (an older bake lacks it).
+    if (bake.tideCourse != null && !(bake.tideCourse instanceof Uint8Array && bake.tideCourse.length % TIDE_COURSE_STRIDE === 0)) return false;
     const coast = bake.coast;
     if (coast === null) return bake.waterFields === null;
     if (!coast || !Number.isInteger(coast.x) || !Number.isInteger(coast.y)
@@ -2032,6 +2034,16 @@ function quayLedge(x, y) {
     return ASHLAR[hash2(x, y, 941) < 0.3 ? 5 : 6];
 }
 
+// A bank face's facing (0 lit, 1 mid, 2 shade) from the coast field's
+// gradient at the face's top texel. The bake and the tide's high-water dry
+// course (`quayDryStoneRgb`) read it the same way.
+function bankFaceFacing(field, x, y) {
+    const gx = field.signedDistanceAtWorld(x + 1, y) - field.signedDistanceAtWorld(x - 1, y);
+    const gy = field.signedDistanceAtWorld(x, y + 1) - field.signedDistanceAtWorld(x, y - 1);
+    const side = 0.3 * Math.hypot(gx, gy);
+    return gx < -side ? 0 : gx > side ? 2 : 1;
+}
+
 function paintBanks(buf, coast, field, renderer) {
     const { w, h, role, data } = buf;
     const water = k => k >= CLASS_FOAM && k <= TEXEL_OPEN;
@@ -2102,10 +2114,7 @@ function paintBanks(buf, coast, field, renderer) {
         let run = 0;
         while (run < lead + courses + 4 && j + run < h && water(role[at + run * w]) && !blocked(x, y + run)) run++;
         const height = Math.min(lead + courses, Math.max(0, run - 3));
-        const gx = field.signedDistanceAtWorld(x + 1, y) - field.signedDistanceAtWorld(x - 1, y);
-        const gy = field.signedDistanceAtWorld(x, y + 1) - field.signedDistanceAtWorld(x, y - 1);
-        const side = 0.3 * Math.hypot(gx, gy);
-        const facing = gx < -side ? 0 : gx > side ? 2 : 1;
+        const facing = bankFaceFacing(field, x, y);
         for (let row = 0; row < height; row++) {
             land(x, y + row, row < lead ? quayLedge(x, y + row) : bankColour(zone, x, row - lead, height - lead, facing, snow, grass));
         }
@@ -3428,12 +3437,41 @@ export function registerCoastBake(renderer) {
             // 3.1 + 3.6 — the resident water fields (units 7 and 8), after
             // every reflection and cliff decision.
             bake.waterFields = bakeWaterFields(r, bake.coast, getCoastField(r));
+            // W6.3 — the quay courses the tide repaints, read from the final
+            // terrain (this is the last stage) so both backends draw them.
+            bake.tideCourse = captureTideCourse(ctx, r);
         },
     });
     return () => {
         offCoast();
         offReflections();
     };
+}
+
+// The bake's `tideCourse` (sampleTideCourse) from the terrain canvas the
+// finish pass draws into: one read of the feet's bounding rows. Null where
+// the pass draws through a scaled transform (the uncached fallback keeps no
+// artifact; the tide then recomputes the dry course).
+function captureTideCourse(ctx, renderer) {
+    const bake = renderer._coastBake;
+    const field = renderer._coastField;
+    const t = ctx.getTransform?.();
+    if (!bake?.waterFields || !field?.bankZone || !t || t.a !== 1 || t.d !== 1 || t.b !== 0 || t.c !== 0
+        || !Number.isInteger(t.e) || !Number.isInteger(t.f)) return null;
+    const feet = quayWaterlineFeet(bake.waterFields, field.bankZone, { caps: field.caps || null });
+    if (!feet.length) return new Uint8Array(0);
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const foot of feet) {
+        x0 = Math.min(x0, foot.x); x1 = Math.max(x1, foot.x);
+        y0 = Math.min(y0, foot.y - TIDE_BAKED_WET_ROWS - 1); y1 = Math.max(y1, foot.y - TIDE_BAKED_WET_ROWS);
+    }
+    const w = x1 - x0 + 1;
+    const h = y1 - y0 + 1;
+    const data = ctx.getImageData(x0 + t.e, y0 + t.f, w, h).data;
+    return sampleTideCourse(feet, (x, y) => {
+        const o = ((y - y0) * w + (x - x0)) * 4;
+        return data[o + 3] ? [data[o], data[o + 1], data[o + 2]] : null;
+    });
 }
 
 function reflectionSourcesKey(renderer) {
@@ -4795,25 +4833,32 @@ export function canvasSeaMarkRgb(renderer, stop, x, y, marked, outer = true) {
 
 // ---------------------------------------------------------------------------
 // W6.3 (spec 04 §5.6) — the real lunar tide's two coast effects, as runtime
-// overlays over the one coast bake: no new bake, no field in the coast
-// artifact, and nothing at all while the tide is level. `atmosphere.lunarTide`
+// overlays over the one coast bake: no new bake pass, no overlay state in the
+// coast artifact (it keeps only the bake's small `tideCourse` sample of the
+// quay courses), and nothing at all while the tide is level. `atmosphere.lunarTide`
 // (AtmosphereState) carries `level` (L, −2 … +2) and `sandbarExposed`
 // (h ≤ −0.92).
 //
 // Quay wet course: `clamp(1 − L, 0, 3)` dark wet-stone rows on the quay faces
 // (bank zones 2 dressed ashlar, 3 Harbor piles, 4 the Forge quay) above the
 // waterline, where that water is the tide's (the sea and the Harbor: a
-// depth cap above the lagoon's; never a river or a lagoon). The bake's own tideline row is the level course (L = 0: one
-// row), so the overlay paints only the rows a low tide adds above it (L = −1:
-// one, L = −2: two) and nothing at high water. The waterline is the contact
-// foot the bake encoded into the resident water field (`cycleOffset`
-// 33 … 112, one base-three digit a texel: 1 = the first water row under a
-// face), which the artifact already carries.
+// depth cap above the lagoon's; never a river or a lagoon). The bake's own
+// tideline row (foot.y − 1) is the level course (L = 0: one row), so the
+// overlay paints only what the tide changes: at low water the rows it adds
+// above that course (L = −1: one, L = −2: two), and at high water (L ≥ 1:
+// none) the baked course itself, repainted with the dry face texel the bake
+// laid directly above it (foot.y − 2). The waterline is the contact foot the
+// bake encoded into the resident water field (`cycleOffset` 33 … 112, one
+// base-three digit a texel: 1 = the first water row under a face), which the
+// artifact already carries.
 //
 // Sandbar: one authored spit, the tombolo that joins the World Ash islet to
-// the mainland tongue across the shallow channel south of it, drawn only
-// while the sandbar is exposed, on the sand and tideline ramps, every texel
-// opaque, and only over the field's water.
+// the mainland across the shallow channel south of it, east of the mossy
+// boulder baked on the mainland tongue, drawn only while the sandbar is
+// exposed, on the sand and tideline ramps, every texel opaque, and only over
+// open water: never a cell the terrain bake covered (`coast.covered`: a
+// boulder, dock or foundation baked over the water) and never inside its
+// `keepClear` boxes.
 export const TIDE_WET_COURSE_ZONES = Object.freeze([2, 3, 4]);
 export const TIDE_BAKED_WET_ROWS = 1;
 export const TIDE_MAX_WET_ROWS = 3;
@@ -4873,16 +4918,84 @@ export function quayWaterlineFeet(waterFields, bankZone, { zones = TIDE_WET_COUR
     return out.sort((a, b) => (a.x - b.x) || (a.y - b.y));
 }
 
+// A quay face's full height in rows by bank zone, as the bake lays it
+// (paintBanks: `zone + 4`, the Forge quay its grounding profile's courses).
+const FORGE_QUAY_ROWS = Object.values(BUILDING_GROUNDING_PROFILES).find(profile => profile?.quay?.rows)?.quay.rows ?? 8;
+const TIDE_FACE_ROWS = Object.freeze({ 2: 6, 3: 7, 4: FORGE_QUAY_ROWS });
+
 /**
- * The wet-course texels a tide level adds over the bake: `{ x, y, rgb }` on
- * the tideline ramp's two wet-stone stops, rows TIDE_BAKED_WET_ROWS + 1 …
- * `tideWetCourseRows(level)` above each foot. Empty at L ≥ 0. Pure.
+ * The dry face texel the bake laid directly above a quay foot's wet course
+ * (foot.y − 2): the bake's own `bankColour` at the face row above the
+ * waterline course, faced from the coast field's gradient at the face's top
+ * exactly as the bake faced it (`bankFaceFacing`). Without a field the face
+ * reads mid-facing. Pure.
  */
-export function quayWetCourseTexels(feet, level) {
-    const rows = tideWetCourseRows(level);
+export function quayDryStoneRgb(foot, field = null) {
+    const rows = TIDE_FACE_ROWS[foot.zone] ?? TIDE_FACE_ROWS[2];
+    const facing = typeof field?.signedDistanceAtWorld === 'function'
+        ? bankFaceFacing(field, foot.x, foot.y - rows)
+        : 1;
+    return bankColour(TIDE_FACE_ROWS[foot.zone] ? foot.zone : 2, foot.x, rows - 2, rows, facing, false, GRASS);
+}
+
+// The bake's own sample of every quay foot's two face rows (`tideCourse`):
+// TIDE_COURSE_STRIDE bytes a foot, in `quayWaterlineFeet` order, the final
+// terrain colour of the dry row (foot.y − 2, RGB) then of the wet course
+// (foot.y − 1, RGB).
+export const TIDE_COURSE_STRIDE = 6;
+const TIDELINE_KEYS = new Set(TIDE.map(([r, g, b]) => (r << 16) | (g << 8) | b));
+
+/**
+ * Sample the quay courses for `feet` through `rgbAt(x, y)` (the final terrain
+ * colour, `[r, g, b]`): `Uint8Array(feet.length * TIDE_COURSE_STRIDE)`. Pure.
+ */
+export function sampleTideCourse(feet, rgbAt) {
+    const out = new Uint8Array((feet?.length || 0) * TIDE_COURSE_STRIDE);
+    for (let i = 0; i < out.length / TIDE_COURSE_STRIDE; i++) {
+        const { x, y } = feet[i];
+        const dry = rgbAt(x, y - TIDE_BAKED_WET_ROWS - 1) || [0, 0, 0];
+        const wet = rgbAt(x, y - TIDE_BAKED_WET_ROWS) || [0, 0, 0];
+        out.set([dry[0], dry[1], dry[2], wet[0], wet[1], wet[2]], i * TIDE_COURSE_STRIDE);
+    }
+    return out;
+}
+
+/**
+ * The quay-course texels a tide level changes over the bake: `{ x, y, rgb }`.
+ * Low water (L < 0) adds rows TIDE_BAKED_WET_ROWS + 1 … `tideWetCourseRows`
+ * above each foot on the tideline ramp's two wet-stone stops; high water
+ * (L ≥ 1) repaints the baked wet course (foot.y − 1) with the dry face texel
+ * directly above it (foot.y − 2), so no wet row shows; level water (L = 0)
+ * changes nothing. With the bake's `course` sample (`sampleTideCourse`) the
+ * dry texel is the baked one, and a foot whose wet course a structure or
+ * prop covers (its sampled course off the tideline ramp: a Forge stair, a
+ * pier deck, a baked boulder) is left alone at every level; without it the
+ * dry texel is recomputed (`quayDryStoneRgb`). Pure.
+ */
+export function quayWetCourseTexels(feet, level, { field = null, course = null } = {}) {
+    const L = Math.max(-2, Math.min(2, Math.round(Number(level) || 0)));
     const out = [];
-    if (rows <= TIDE_BAKED_WET_ROWS || !Array.isArray(feet)) return out;
-    for (const foot of feet) {
+    if (L === 0 || !Array.isArray(feet)) return out;
+    const sampled = course instanceof Uint8Array && course.length === feet.length * TIDE_COURSE_STRIDE ? course : null;
+    const intact = i => {
+        if (!sampled) return true;
+        const o = i * TIDE_COURSE_STRIDE + 3;
+        return TIDELINE_KEYS.has((sampled[o] << 16) | (sampled[o + 1] << 8) | sampled[o + 2]);
+    };
+    if (L > 0) {
+        for (let i = 0; i < feet.length; i++) {
+            if (!intact(i)) continue;
+            const foot = feet[i];
+            const o = i * TIDE_COURSE_STRIDE;
+            const rgb = sampled ? [sampled[o], sampled[o + 1], sampled[o + 2]] : quayDryStoneRgb(foot, field);
+            out.push({ x: foot.x, y: foot.y - TIDE_BAKED_WET_ROWS, rgb, dry: true });
+        }
+        return out;
+    }
+    const rows = tideWetCourseRows(L);
+    for (let i = 0; i < feet.length; i++) {
+        if (!intact(i)) continue;
+        const foot = feet[i];
         for (let k = TIDE_BAKED_WET_ROWS + 1; k <= rows; k++) {
             const y = foot.y - k;
             out.push({ x: foot.x, y, rgb: TIDE[hash2(foot.x, y, 977) < 0.35 ? 0 : 1] });
@@ -4891,19 +5004,30 @@ export function quayWetCourseTexels(feet, level) {
     return out;
 }
 
-// The authored spit, world px: a centre line from the mainland tongue's tip
-// (south) to the islet's sand (north) across the channel, its half-width
-// wide at both roots and pinched at the waist.
+// The authored spit, world px: a centre line from the mainland shore (south,
+// rooted on its beach) to the islet's sand (north) across the open channel
+// east of the mossy boulder (scenery DISTRICT_PROPS `veg.boulder.mossy.large`
+// at tile 22, 10: world (384, 512), a 64 px sprite anchored at [32, 40]),
+// its half-width wide at both roots and pinched at the waist. `keepClear`
+// lists world boxes no sandbar texel may enter: that boulder's whole sprite
+// box, so the bar can never lie on the rock whatever the bake covered.
 export const WORLD_ASH_SANDBAR = Object.freeze({
     points: Object.freeze([
-        Object.freeze([386, 507]),
-        Object.freeze([391, 494]),
-        Object.freeze([398, 483]),
-        Object.freeze([404, 473]),
+        Object.freeze([427, 522]),
+        Object.freeze([431, 509]),
+        Object.freeze([431, 497]),
+        Object.freeze([435, 485]),
+        Object.freeze([441, 471]),
     ]),
     rootHalfWidth: 7,
-    waistHalfWidth: 3,
+    waistHalfWidth: 4,
+    // A slow swell in the half-width along the spit (texels), so its flanks
+    // bulge and pinch like a drift bar rather than run ruler-straight.
+    swell: 1,
     minWaterSd: 0.02,
+    keepClear: Object.freeze([
+        Object.freeze({ x0: 352, y0: 472, x1: 416, y1: 536 }),
+    ]),
 });
 
 function sandbarDistance(x, y, points) {
@@ -4934,11 +5058,16 @@ function sandbarDistance(x, y, points) {
  * tideline ramp: SAND[1] body, a SAND[2] crest down the centre (solid, then
  * an ordered-dither seam), a SAND[0] rim, and on the south-facing lip a wet
  * tideline fleck.
- * `isWaterAt(x, y)` keeps it on the channel's water. Pure.
+ * `isWaterAt(x, y)` keeps it on the channel's open water; the shape's
+ * `keepClear` boxes are never painted. Pure.
  */
 export function worldAshSandbarTexels(isWaterAt = () => true, shape = WORLD_ASH_SANDBAR) {
     const { points, rootHalfWidth, waistHalfWidth } = shape;
-    const halfWidthAt = t => waistHalfWidth + (rootHalfWidth - waistHalfWidth) * Math.pow(Math.abs(2 * t - 1), 1.5);
+    const keepClear = shape.keepClear || NO_TIDE_LAYERS;
+    const cleared = (x, y) => keepClear.some(box => x >= box.x0 && x < box.x1 && y >= box.y0 && y < box.y1);
+    const swell = Number(shape.swell) || 0;
+    const halfWidthAt = t => waistHalfWidth + (rootHalfWidth - waistHalfWidth) * Math.pow(Math.abs(2 * t - 1), 1.5)
+        + swell * Math.sin(t * Math.PI * 3 + 0.7) * Math.sin(t * Math.PI);
     const xs = points.map(p => p[0]);
     const ys = points.map(p => p[1]);
     const x0 = Math.floor(Math.min(...xs) - rootHalfWidth - 1);
@@ -4947,14 +5076,14 @@ export function worldAshSandbarTexels(isWaterAt = () => true, shape = WORLD_ASH_
     const y1 = Math.ceil(Math.max(...ys) + rootHalfWidth + 1);
     const inside = (x, y) => {
         const { d, t } = sandbarDistance(x + 0.5, y + 0.5, points);
-        const edge = halfWidthAt(t) + (hash2(x >> 1, y >> 1, 983) - 0.5) * 1.2;
+        const edge = halfWidthAt(t) + (hash2(x >> 1, y >> 1, 983) - 0.5) * (swell ? 1.8 : 1.2);
         return d <= edge ? { d, edge } : null;
     };
     const out = [];
     for (let y = y0; y <= y1; y++) {
         for (let x = x0; x <= x1; x++) {
             const hit = inside(x, y);
-            if (!hit || !isWaterAt(x, y)) continue;
+            if (!hit || cleared(x, y) || !isWaterAt(x, y)) continue;
             let rgb = SAND[1];
             if (!inside(x, y + 1)) rgb = hash2(x, y, 989) < 0.4 ? TIDE[2] : SAND[0];
             else if (hit.d >= hit.edge - 1) rgb = SAND[0];
@@ -4978,14 +5107,27 @@ export function tideOverlayTexels(renderer, tide) {
     const bake = renderer?._coastBake;
     const field = renderer?._coastField;
     if (!bake?.waterFields || !field?.bankZone) return { wet: NO_TIDE_LAYERS, sandbar: NO_TIDE_LAYERS };
-    const feet = quayWaterlineFeet(bake.waterFields, field.bankZone, { caps: field.caps || null });
+    const feet = level === 0 ? NO_TIDE_LAYERS : quayWaterlineFeet(bake.waterFields, field.bankZone, { caps: field.caps || null });
     const minSd = WORLD_ASH_SANDBAR.minWaterSd;
+    const coast = bake.coast;
     return {
-        wet: quayWetCourseTexels(feet, level),
+        wet: quayWetCourseTexels(feet, level, { field, course: bake.tideCourse ?? null }),
         sandbar: sandbar && typeof field.signedDistanceAtWorld === 'function'
-            ? worldAshSandbarTexels((x, y) => field.signedDistanceAtWorld(x + 0.5, y + 0.5) > minSd)
+            ? worldAshSandbarTexels((x, y) => field.signedDistanceAtWorld(x + 0.5, y + 0.5) > minSd && !coastCellCovered(coast, x, y))
             : NO_TIDE_LAYERS,
     };
+}
+
+// True where the terrain bake covered the coast lattice cell under world
+// texel (x, y) with a structure or a baked prop (a boulder, dock, pier deck
+// or foundation laid over the water: `coast.covered`).
+function coastCellCovered(coast, x, y) {
+    const covered = coast?.covered;
+    if (!covered) return false;
+    const c = (x - coast.x) >> 1;
+    const r = (y - coast.y) >> 1;
+    if (c < 0 || r < 0 || c >= coast.cols || r >= coast.rows) return false;
+    return covered[r * coast.cols + c] === 1;
 }
 
 function tideLayerCanvas(texels) {

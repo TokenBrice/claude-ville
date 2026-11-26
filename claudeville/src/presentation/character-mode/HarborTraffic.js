@@ -44,7 +44,7 @@ import {
 import { drawPixelFlame, fillPixelEllipse } from './PixelShapes.js';
 import { PENNANT_REST_FRAME, currentPennantTime, currentPennantWind, drawBranchPennon, drawPennant, pennantFrame } from './PixelPennant.js';
 
-import { anchorLampStrip, drawHullFallback, drawHullLamps, drawTideOverlayFallback, hullGeometry, hullHeadingDirection, hullLampPoints, hullLampStrip, hullMasthead, hullRecords, hullStrip, liveryStrip, rollFrameIndex, tideOverlayRecord } from './HarborHulls.js';
+import { anchorLampStrip, drawHullFallback, drawHullLamps, drawTideOverlayFallback, hullGeometry, hullHeadingDirection, hullLampPoints, hullLampStrip, hullMasthead, hullRecords, hullStrip, hullWaterlineY, liveryStrip, rollFrameIndex, tideOverlayRecord } from './HarborHulls.js';
 import { tideOverlayLayers } from './CoastBake.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
 
@@ -1459,7 +1459,8 @@ export class HarborTraffic {
         for (const item of lit) {
             const pose = item.pose;
             const lamp = hullLampPoints(pose)[0] || { x: pose.x, y: pose.y - 10 };
-            const foot = { x: Math.round(pose.x), y: Math.round(pose.y) };
+            // The lamp column stands on the water the tide lifted with it.
+            const foot = { x: Math.round(pose.x), y: hullWaterlineY(pose) };
             out.push(normalizeLightSource({
                 id: `harbor-lamp:${item.id}`,
                 kind: 'point',
@@ -1545,8 +1546,11 @@ export class HarborTraffic {
     }
 
     _drawLampReflection(ctx, pose, lamp, alpha, tick, id) {
-        const waterline = Math.round(pose.y) + (pose.sink | 0) + 2;
-        const reach = Math.max(3, Math.min(14, Math.round(pose.y - lamp.y) >> 1));
+        // W6.3 — the shimmer lies on the water the tide lifted with the hull
+        // (hullWaterlineY), so it never parts from the hull at L ≠ 0.
+        const water = hullWaterlineY(pose);
+        const waterline = water + (pose.sink | 0) + 2;
+        const reach = Math.max(3, Math.min(14, Math.round(water - lamp.y) >> 1));
         const seed = stableHash(`${id}:lamp-shimmer`);
         const x = Math.floor(lamp.x);
         ctx.fillStyle = HARBOR_LAMP_COLOR;

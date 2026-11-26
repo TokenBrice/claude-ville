@@ -148,14 +148,22 @@ export function solsticeAlignmentAt({ month, day, minuteOfDay, solarNoonMinute, 
     return { kind: solstice.kind, aligned };
 }
 
-// The 2026–2027 eclipse keys: exact UTC contact times (Espenak / NASA GSFC).
-// A solar key spans the umbra's hours on Earth (U1 → U4) and peaks at
-// greatest eclipse; a lunar key spans the umbral phase (U1 → U4), full
-// through totality (U2 → U3) for a total eclipse and peaking at greatest
-// eclipse for a partial one, at its umbral magnitude. The windows are the
-// eclipse's own hours, not a local visibility prediction: the sky keys them
-// only while the eclipsed body is up over the village.
+// The 2026–2027 eclipse keys: exact UTC contact times (Espenak / NASA GSFC,
+// EclipseWise). A solar key spans the umbra's (an annular eclipse's
+// antumbra's) hours on Earth (U1 → U4) and peaks at greatest eclipse at its
+// magnitude; a lunar key spans the umbral phase (U1 → U4), full through
+// totality (U2 → U3) for a total eclipse and peaking at greatest eclipse for
+// a partial one, at its umbral magnitude. The windows are the eclipse's own
+// hours; the sky keys them only while the eclipsed body is up over the
+// village. A lunar eclipse is seen wherever the moon is up. A solar one is
+// seen only near its track: `visibility` lists coarse lat/lon boxes (degrees,
+// east and north positive), each with the strongest key it allows: 1 on the
+// central path, PARTIAL_SOLAR_CAP across the partial region. A site outside
+// every box sees no eclipse. Coarse boxes, not a local circumstances
+// prediction.
 const utc = (y, mo, d, h, mi, s) => Date.UTC(y, mo - 1, d, h, mi, s);
+export const PARTIAL_SOLAR_CAP = 0.5;
+const box = (latMin, latMax, lonMin, lonMax, cap) => Object.freeze({ lat: Object.freeze([latMin, latMax]), lon: Object.freeze([lonMin, lonMax]), cap });
 export const ECLIPSE_SKY_KEYS = Object.freeze([
     Object.freeze({
         id: 'lunar-2026-03-03', body: 'moon', type: 'total', magnitude: 1,
@@ -166,6 +174,16 @@ export const ECLIPSE_SKY_KEYS = Object.freeze([
         id: 'solar-2026-08-12', body: 'sun', type: 'total', magnitude: 1,
         start: utc(2026, 8, 12, 16, 58, 6), fullFrom: null, peak: utc(2026, 8, 12, 17, 45, 53),
         fullTo: null, end: utc(2026, 8, 12, 18, 34, 5),
+        // Totality: east Greenland, western Iceland, northern Spain and the
+        // Balearics; partial over the Arctic, Europe, north Africa and
+        // north-east North America.
+        visibility: Object.freeze([
+            box(66, 82, -32, -21, 1),
+            box(63, 67, -25, -21.5, 1),
+            box(40.5, 44, -10, 0, 1),
+            box(38.5, 40.8, -1.5, 4.5, 1),
+            box(25, 90, -100, 60, PARTIAL_SOLAR_CAP),
+        ]),
     }),
     Object.freeze({
         id: 'lunar-2026-08-28', body: 'moon', type: 'partial', magnitude: 0.93,
@@ -173,9 +191,40 @@ export const ECLIPSE_SKY_KEYS = Object.freeze([
         fullTo: null, end: utc(2026, 8, 28, 5, 51, 55),
     }),
     Object.freeze({
+        // Annular (magnitude 0.928, so its key peaks a step short of full):
+        // antumbral U1 14:03:53 → greatest 15:59:35 → U4 17:55:24 UT.
+        id: 'solar-2027-02-06', body: 'sun', type: 'annular', magnitude: 0.928,
+        start: utc(2027, 2, 6, 14, 3, 53), fullFrom: null, peak: utc(2027, 2, 6, 15, 59, 35),
+        fullTo: null, end: utc(2027, 2, 6, 17, 55, 24),
+        // Annularity: Patagonia and Buenos Aires province, the South Atlantic
+        // off Uruguay and southern Brazil, and the Gulf of Guinea coast;
+        // partial over South America, Antarctica and west and south Africa.
+        visibility: Object.freeze([
+            box(-45, -40, -73, -64, 1),
+            box(-41.5, -37.5, -64, -58, 1),
+            box(-37, -33.5, -56, -51.5, 1),
+            box(3.5, 7.5, -2, 4.5, 1),
+            box(-90, 20, -95, 35, PARTIAL_SOLAR_CAP),
+        ]),
+    }),
+    Object.freeze({
         id: 'solar-2027-08-02', body: 'sun', type: 'total', magnitude: 1,
         start: utc(2027, 8, 2, 8, 23, 16), fullFrom: null, peak: utc(2027, 8, 2, 10, 6, 29),
         fullTo: null, end: utc(2027, 8, 2, 11, 49, 44),
+        // Totality: the Strait of Gibraltar, northern Morocco, Algeria and
+        // Tunisia, Libya and Egypt (Luxor), the Red Sea, Saudi Arabia and
+        // Yemen, the Gulf of Aden and Somalia's horn; partial over Europe,
+        // Africa, the Middle East and western and southern Asia.
+        visibility: Object.freeze([
+            box(34.6, 36.9, -7, -2, 1),
+            box(33.4, 36.8, -2, 11.5, 1),
+            box(31, 34, 11.5, 25, 1),
+            box(25, 32, 24, 33.5, 1),
+            box(20, 26, 33, 40.5, 1),
+            box(14, 21, 39.5, 47.5, 1),
+            box(9.5, 14.5, 46.5, 52.5, 1),
+            box(-35, 72, -35, 95, PARTIAL_SOLAR_CAP),
+        ]),
     }),
 ]);
 // Keys step in quarters (palette-snapped strength), never a smooth ramp.
@@ -191,18 +240,43 @@ function eclipseShare(row, t) {
     return (row.end - t) / (row.end - row.peak);
 }
 
+const inRange = (value, [min, max]) => value >= min && value <= max;
+
+/**
+ * The strongest key a solar eclipse allows at a site `{ lat, lon }` (degrees):
+ * the largest `cap` among its `visibility` boxes holding the site, 0 outside
+ * them all, 1 for a row without boxes (a lunar eclipse) or without a site.
+ */
+export function eclipseVisibilityCap(row, site = null) {
+    if (!row?.visibility) return 1;
+    const lat = Number(site?.lat);
+    const lon = Number(site?.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return 1;
+    const wrapped = ((lon + 540) % 360) - 180;
+    let cap = 0;
+    for (const area of row.visibility) {
+        if (inRange(lat, area.lat) && inRange(wrapped, area.lon)) cap = Math.max(cap, area.cap);
+    }
+    return cap;
+}
+
 /**
  * The eclipse key at a UTC instant: `{ id, body, type, strength }` with
  * `strength` in quarter steps (the share of the way to full, scaled by the
- * eclipse's umbral magnitude, floored to a quarter, at least 0.25), or null
- * outside every window (end exclusive). A deep partial (0.93) peaks at 0.75.
+ * eclipse's magnitude, floored to a quarter, at least 0.25), or null outside
+ * every window (end exclusive). A deep partial (0.93) peaks at 0.75. With a
+ * `site` (`{ lat, lon }`) a solar key is held to `eclipseVisibilityCap`: none
+ * far from the track, at most PARTIAL_SOLAR_CAP in the partial region; a
+ * lunar key is the same everywhere.
  */
-export function eclipseSkyKeyAt(utcMs) {
+export function eclipseSkyKeyAt(utcMs, site = null) {
     const t = Number(utcMs);
     if (!Number.isFinite(t)) return null;
     for (const row of ECLIPSE_SKY_KEYS) {
         if (t < row.start || t >= row.end) continue;
-        const share = Math.max(0, Math.min(1, eclipseShare(row, t))) * row.magnitude;
+        const cap = eclipseVisibilityCap(row, site);
+        if (!(cap > 0)) continue;
+        const share = Math.min(cap, Math.max(0, Math.min(1, eclipseShare(row, t))) * row.magnitude);
         const strength = Math.max(1, Math.floor(share * ECLIPSE_KEY_STEPS + 1e-9)) / ECLIPSE_KEY_STEPS;
         return { id: row.id, body: row.body, type: row.type, strength };
     }

@@ -2,7 +2,7 @@
 // Evensong 10-day listening harness (spec §5.5, run by hand, not in CI):
 //
 //   node scripts/audio/evensong-harness.mjs [--input-dir agents/evensong/days]
-//                                           [--out-dir agents/evensong/render]
+//                                           [--out-dir agents/evensong/render] (or --out)
 //                                           [--synthetic] [--days 10]
 //                                           [--key A] [--mode minor]
 //                                           [--voice isle] [--seed 0x5eed]
@@ -24,7 +24,6 @@ import { pathToFileURL } from 'node:url';
 import {
     EVENSONG_BARS,
     EVENSONG_BEATS_PER_BAR,
-    EVENSONG_BPM,
     EVENSONG_DAY_BARS,
     EVENSONG_GAIN_DB,
     composeEvensong,
@@ -34,11 +33,7 @@ import {
 import { RANGES } from '../../claudeville/src/presentation/shared/audio/bgm/ScoreKit.js';
 import { LOUDNESS_TARGETS } from '../../claudeville/src/presentation/shared/audio/Loudness.js';
 import { noteHz } from '../../claudeville/src/presentation/shared/audio/MusicalScale.js';
-import {
-    cellScore,
-    engineFigure,
-    nearestVoicing,
-} from '../../claudeville/src/presentation/shared/audio/music/Sequencer.js';
+import { compileEvensongEvents } from '../../claudeville/src/presentation/shared/audio/bgm/BandEngine.js';
 import { loudness, writeWavFloat } from './lib/analyze.mjs';
 import { AUDIO_DIR, REPO_ROOT, startStaticServer } from './lib/server.mjs';
 import { DEFAULT_SEED, HARNESS_CHROME_ARGS, newHarnessPage, pullPcm } from './lib/capture.mjs';
@@ -643,58 +638,8 @@ export function renderPianoRollPng(score, { dayLabel = 'DAY 01', lufsI = null } 
 
 // -------------------------------------------------- schedule compilation ----
 
-function compileEvensongEvents(score) {
-    const cs = cellScore('evensong', score, {
-        family: score.family,
-        engine: score.engine || 'arpQ',
-    });
-    const bpb = cs.bpb;
-    const baseBeatSec = 60 / (score.bpm || EVENSONG_BPM);
-    const ritard = score.close?.ritard || 1;
-    const dayBeatEnd = EVENSONG_DAY_BARS * bpb;
-
-    const beatToSec = (beat) => {
-        if (beat <= dayBeatEnd) return beat * baseBeatSec;
-        return dayBeatEnd * baseBeatSec + (beat - dayBeatEnd) * baseBeatSec * ritard;
-    };
-
-    const events = [];
-    for (const n of cs.lead) {
-        const t = beatToSec(n.beat);
-        const dur = beatToSec(n.beat + n.beats) - t;
-        events.push({ seat: 'lead', t, dur, semi: n.semi, vel: 0.85 });
-    }
-    for (const n of cs.bass) {
-        const t = beatToSec(n.beat);
-        const dur = beatToSec(n.beat + n.beats) - t;
-        events.push({ seat: 'bass', t, dur, semi: n.semi, vel: 0.95 });
-    }
-
-    // Comp (`engine`) via nearestVoicing + engineFigure (exact Sequencer logic).
-    let prevComp = null;
-    const totalBeats = cs.bars * bpb;
-    for (let i = 0; i < cs.timeline.length; i++) {
-        const span = cs.timeline[i];
-        const b1 = i + 1 < cs.timeline.length ? cs.timeline[i + 1].beat : totalBeats;
-        if (b1 <= span.beat + 1e-6) continue;
-        const mel = cs.lead.find(n => n.beat <= span.beat + 1e-6 && n.beat + n.beats > span.beat + 1e-6);
-        const voiced = nearestVoicing(span.name, prevComp, {
-            avoidTopPc: mel ? (((mel.semi % 12) + 12) % 12) : null,
-        });
-        if (!voiced) continue;
-        prevComp = voiced.semis;
-        const barBeat = Math.floor(span.beat / bpb + 1e-6) * bpb;
-        for (const ev of engineFigure(cs.engine || 'arpQ', voiced.semis, span.beat, b1, bpb, barBeat)) {
-            const t = beatToSec(ev.beat);
-            const dur = beatToSec(ev.beat + ev.beats) - t;
-            events.push({ seat: 'engine', t, dur, semi: ev.semi, vel: ev.vel ?? 0.85 });
-        }
-    }
-
-    events.sort((a, b) => a.t - b.t);
-    const totalSec = beatToSec(totalBeats);
-    return { events, totalSec };
-}
+// The live engine's own compiler (bgm/BandEngine.js `compileEvensongEvents`):
+// the loudness pre-gate renders exactly the events the Evensong band plays.
 
 // ------------------------------------------ offline renderer (Chromium) ----
 
@@ -1130,7 +1075,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
     const args = parseArgs(process.argv.slice(2));
     runHarness({
         inputDir: args['input-dir'],
-        outDir: args['out-dir'],
+        outDir: args['out-dir'] ?? args.out,
         synthetic: Boolean(args.synthetic),
         days: args.days,
         key: args.key,

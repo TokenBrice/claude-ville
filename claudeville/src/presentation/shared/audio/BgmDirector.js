@@ -67,7 +67,6 @@ import { arrangementKeyframeAt } from './DayArc.js';
 import { BandEngine, EVENSONG_BREATH_SEC, holdTownBand } from './bgm/BandEngine.js';
 import { EVENSONG_QUEUE_CAP_MS, composeEvensong, createEvensongDayLedger, evensongDayKey } from './bgm/Evensong.js';
 import { phaseKey } from './MusicalScale.js';
-import { repoProfile } from '../RepoColor.js';
 import { Sequencer } from './music/Sequencer.js';
 import { arrangementWeatherFor } from './music/Voicings.js';
 import { resolveCueSpot } from './SpatialField.js';
@@ -106,18 +105,19 @@ const ATTENTION_DB = -2;
 // W6.3 — the Evensong's lifecycle states (`snapshot().evensong.state`).
 const EVENSONG_LIVE_STATES = new Set(['gathering', 'queued', 'playing']);
 
-// An agent id as an anonymous integer slot (FNV-1a): the ledger keeps no
-// agent string.
-function agentSlotOf(agentId) {
-    if (agentId == null || agentId === '') return null;
-    const text = String(agentId);
+// An agent id or a repo as an anonymous integer (FNV-1a): the ledger keeps
+// no agent or repo string.
+function anonymousSlotOf(text) {
+    if (text == null || text === '') return null;
+    const value = String(text);
     let hash = 0x811c9dc5;
-    for (let i = 0; i < text.length; i++) {
-        hash ^= text.charCodeAt(i);
+    for (let i = 0; i < value.length; i++) {
+        hash ^= value.charCodeAt(i);
         hash = Math.imul(hash, 0x01000193);
     }
     return (hash >>> 0) % 1000003;
 }
+const agentSlotOf = anonymousSlotOf;
 
 function factTime(value) {
     const at = Number(value);
@@ -249,7 +249,18 @@ export class BgmDirector {
             eventBus.on('distress:watchtower', (payload) => {
                 const kind = payload?.kind === 'errored' ? 'errored' : payload?.kind === 'recovered' ? 'mended' : null;
                 if (!kind) return;
-                this._dayLedger.record({ kind, agentSlot: agentSlotOf(cuePayload(payload).agentId) }, factTime(payload?.at));
+                this._dayLedger.record({ kind, agentSlot: agentSlotOf(cuePayload(payload).agentId) }, factTime(payload?.at ?? payload?.ts));
+            }),
+            // An agent that leaves closes its open error, as in the Chronicle:
+            // a session that ended completes, any other removal departs.
+            eventBus.on('agent:removed', (agent) => {
+                const agentSlot = agentSlotOf(agent?.id);
+                if (agentSlot == null) return;
+                const ended = Number(agent?.sessionEndedAt);
+                this._dayLedger.record(
+                    { kind: Number.isFinite(ended) && ended > 0 ? 'completed' : 'departed', agentSlot },
+                    Number.isFinite(ended) && ended > 0 ? ended : Date.now(),
+                );
             }),
         ];
     }
@@ -266,11 +277,13 @@ export class BgmDirector {
     _recordDayFact(outcome) {
         const fact = verifiedOutcomeFact(outcome);
         if (!fact) return;
-        // The repo is reduced to its pennant slot at once (no string kept).
-        const repoSlot = fact.repo ? repoProfile(fact.repo)?.pennantIndex : null;
+        // The repo is reduced at once to an anonymous key (no string kept);
+        // the ledger numbers the day's keys by first activity, the order the
+        // Chronicle gives its repos, so the fallback and the Chronicle sing
+        // the same repo on the same degree.
         this._dayLedger.record({
             kind: fact.kind,
-            repoSlot: Number.isInteger(repoSlot) ? repoSlot : null,
+            repoKey: anonymousSlotOf(fact.repo),
             agentSlot: agentSlotOf(fact.agentId),
         }, factTime(outcome?.at));
     }

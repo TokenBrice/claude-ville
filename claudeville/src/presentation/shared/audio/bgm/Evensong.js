@@ -33,6 +33,9 @@ export const EVENSONG_VOICES = Object.freeze(['lead', 'bass', 'engine']);
 
 const EPS = 1e-6;
 const QUICK_PAIR_SEC = 0.3; // ScoreKit / score-analyzer S1 threshold
+// The widest step the lead may take inside the close and from bar 14 into
+// it: 5 semitones, the span of two pentatonic steps.
+export const EVENSONG_CLOSE_LEAP_SEMIS = 5;
 const SHORT_NOTE_MAX_BEATS = 1;
 const MIN_COMMIT_BEATS = 0.5;
 const MAX_COMMIT_BEATS = 2;
@@ -138,14 +141,20 @@ function keyChords(key) {
     const { tonicPc, mode } = musicKey(norm);
     const shift = mod12(tonicPc - 9);
     const I = tonicChord(norm);
-    const V = transposeChordName('E', shift) || I;
     if (mode === 'minor') {
+        // A push's dominant is the natural minor v (Em in A minor), never the
+        // harmonic V: E major's G# grinds a semitone under the pentatonic ♭7
+        // (G) and its 3rd under the tonic. The one tone left that sits a
+        // semitone off v (♭3, C over Em's B) is kept out of the v half by
+        // the composer (`pushHalfClashes`).
+        const V = transposeChordName('Em', shift) || I;
         const iv = transposeChordName('Dm', shift) || I;
         const VI = transposeChordName('F', shift) || I;
         const VII = transposeChordName('G', shift) || I;
         const III = transposeChordName('C', shift) || I;
         return { I, IV: iv, V, palette: [I, VI, iv, III, VII] };
     }
+    const V = transposeChordName('E', shift) || I;
     const IV = transposeChordName('D', shift) || I;
     const vi = transposeChordName('F#m', shift) || I;
     const ii = transposeChordName('Bm', shift) || I;
@@ -266,6 +275,7 @@ function ingestDayEvents(dayEvents) {
             index: i,
             kind,
             verified: isVerifiedWorkEvent(ev, kind),
+            explicitResolved: ev.resolved === true || ev.open === false || ev.mended === true,
             time,
             explicitRepoSlot: explicitSlot(ev),
             rawRepo: rawRepoIdentifier(ev),
@@ -310,6 +320,7 @@ function ingestDayEvents(dayEvents) {
             index: item.index,
             kind: item.kind,
             verified: item.verified,
+            explicitResolved: item.explicitResolved,
             time: item.time,
             repoSlot,
             agentSlot,
@@ -349,43 +360,50 @@ function eventToSlot(ev, indexInVerified, totalVerified, bounds) {
     return Math.min(EVENSONG_TOTAL_SLOTS - 1, Math.floor(frac * EVENSONG_TOTAL_SLOTS));
 }
 
-function hasOpenFailureAtEvensong(ingested, bounds) {
+// The kinds that close an agent's open error: the Chronicle Loom's contract
+// (ChronicleLoom ERROR_RESOLVING_KINDS), so Evensong's suspension and the
+// Loom's open-error cells always agree on the same day.
+export const EVENSONG_ERROR_CLOSING_KINDS = Object.freeze(['mended', 'resolved', 'completed', 'departed']);
+const ERROR_CLOSING_KINDS = new Set(EVENSONG_ERROR_CLOSING_KINDS);
+
+// Chronological open-error pass over ingested events up to `end` (in `unit`):
+// an `errored` event opens an error for its agent unless it is stamped
+// resolved; any closing kind closes every open error of the same agent (an
+// event without an agent pairs with the other agent-less events, as the
+// Loom's per-agent map does). Returns the open errors, `{ agentSlot, repoSlot }`.
+function openErrorsOf(ingested, unit, end) {
     const open = [];
     for (const ev of ingested) {
-        if (bounds.unit !== 'index' && ev.time && ev.time.unit === bounds.unit && ev.time.value > bounds.end + EPS) {
-            continue;
-        }
+        if (unit !== 'index' && ev.time && ev.time.unit === unit && ev.time.value > end + EPS) continue;
         if (ev.kind === 'errored') {
-            open.push({ agentSlot: ev.agentSlot, repoSlot: ev.repoSlot });
-        } else if (ev.kind === 'mended' || ev.kind === 'resolved') {
-            if (ev.agentSlot != null) {
-                let matched = false;
-                for (let i = open.length - 1; i >= 0; i--) {
-                    if (open[i].agentSlot === ev.agentSlot) {
-                        open.splice(i, 1);
-                        matched = true;
-                    }
-                }
-                if (!matched) {
-                    for (let i = open.length - 1; i >= 0; i--) {
-                        if (open[i].repoSlot === ev.repoSlot) open.splice(i, 1);
-                    }
-                }
-            } else if (ev.repoSlot != null) {
-                let matched = false;
-                for (let i = open.length - 1; i >= 0; i--) {
-                    if (open[i].repoSlot === ev.repoSlot) {
-                        open.splice(i, 1);
-                        matched = true;
-                    }
-                }
-                if (!matched && open.length) open.length = 0;
-            } else {
-                open.length = 0;
+            if (!ev.explicitResolved) open.push(Object.freeze({ agentSlot: ev.agentSlot, repoSlot: ev.repoSlot }));
+        } else if (ERROR_CLOSING_KINDS.has(ev.kind)) {
+            for (let i = open.length - 1; i >= 0; i--) {
+                if (open[i].agentSlot === ev.agentSlot) open.splice(i, 1);
             }
         }
     }
-    return open.length > 0;
+    return open;
+}
+
+/**
+ * The errors still open at `endTs`, matching the Chronicle Loom's contract:
+ * `mended`, `resolved`, `completed` and `departed` each close every open
+ * error of the same agent; an `errored` row stamped `resolved: true`,
+ * `open: false` or `mended: true` never opens. `endTs` is in the events' own
+ * time unit (epoch ms for `ts`/`timestamp`, minutes for `minuteOfDay`/`time`);
+ * later events are ignored, and the default keeps them all. Returns frozen
+ * `{ agentSlot, repoSlot }` entries (anonymous slots, no strings). Pure.
+ */
+export function openErrorsAt(events, endTs = Infinity) {
+    const ingested = ingestDayEvents(events);
+    const unit = ingested.find(ev => ev.time)?.time.unit ?? 'index';
+    const end = Number(endTs);
+    return Object.freeze(openErrorsOf(ingested, Number.isFinite(end) ? unit : 'index', end));
+}
+
+function hasOpenFailureAtEvensong(ingested, bounds) {
+    return openErrorsOf(ingested, bounds.unit, bounds.end).length > 0;
 }
 
 // Thin one bar's slot-deduped events to at most EVENSONG_MAX_NOTES_PER_BAR (4),
@@ -590,19 +608,43 @@ function pickCommitBarHarmony(barNotes, palette, prevChord, prevBass, prevMelAtB
     return { chord: bestChord, bassNotes: [[firstBass, 2], [secondBass, 2]], lastBass: secondBass };
 }
 
+// Every lead pitch of scale degree 2 (+2 semitones over the tonic): the
+// open-error suspension's candidates. In a minor key degree 2 (B in A minor)
+// lies outside the minor pentatonic on purpose: the one non-pentatonic note
+// Evensong plays, held against the tonic so the day ends unresolved. The
+// pentatonic membership rule covers bars 1–14 only.
+function suspensionSemis(normKey) {
+    const { tonicPc, mode } = musicKey(normKey);
+    const deg2Pc = mod12(tonicPc + 2);
+    const high = mode === 'minor' ? RANGES.nightLeadHigh : RANGES.lead.high;
+    const out = [];
+    for (let s = RANGES.lead.low; s <= high; s++) {
+        if (pcOfSemi(s) === deg2Pc) out.push(s);
+    }
+    return out;
+}
+
+// The pitch classes a semitone off any tone of a push bar's opening chord.
+function pushHalfClashes(chordName) {
+    const tones = chordPitchClasses(chordName)?.pcs || [];
+    const out = new Set();
+    for (const tone of tones) {
+        out.add(mod12(tone + 1));
+        out.add(mod12(tone - 1));
+    }
+    for (const tone of tones) out.delete(tone);
+    return out;
+}
+
 function buildClose(normKey, hasOpenFailure, lastDayNote) {
     const tonic = tonicChord(normKey);
     const tonicBass = rootBassFor(tonic);
     if (hasOpenFailure) {
         // Suspension: scale degree 2 (+2 semitones above tonic) held over the
         // tonic for bar 15, letting it hang unresolved into bar 16. No tag.
-        const { tonicPc, mode } = musicKey(normKey);
-        const deg2Pc = mod12(tonicPc + 2);
-        const high = mode === 'minor' ? RANGES.nightLeadHigh : RANGES.lead.high;
-        const candidates = [];
-        for (let s = RANGES.lead.low; s <= high; s++) {
-            if (pcOfSemi(s) === deg2Pc) candidates.push(s);
-        }
+        // In minor this is the intentional non-pentatonic exception
+        // (`suspensionSemis`).
+        const candidates = suspensionSemis(normKey);
         const ref = lastDayNote ? lastDayNote.pitch : 0;
         let deg2Semi = candidates[0];
         let bestDist = Infinity;
@@ -736,10 +778,67 @@ export function composeEvensong(dayEvents, key = { tonic: 'A', mode: 'minor' }) 
         : (cadenceKit(normKey, EVENSONG_BEATS_PER_BAR).tag.melody.find(([s]) => s != null)?.[0] ?? null);
     const { tonicPc: closeTonicPc } = musicKey(normKey);
     const suspensionPc = mod12(closeTonicPc + 2);
+    const closeTargets = openFailure ? suspensionSemis(normKey) : (plagalFirstSemi != null ? [plagalFirstSemi] : []);
+
+    const tonicFifthIndices = indicesForDegrees(scale, normKey, [0, 3]);
+
+    // Bar 14 leads into the close: when the day's last note falls in bar 14,
+    // it must sit within EVENSONG_CLOSE_LEAP_SEMIS of the close's first note
+    // (the tag's, or a degree-2 suspension's), on 1 or 5 if it is a push or
+    // a release, and never the close's own pitch a beat before it
+    // (`finalReady`). Walking back from it, each earlier note keeps only the
+    // pitches from which the rest of the line can still get there under the
+    // same rules (two scale steps a note, no quick repeat, pushes and
+    // releases on 1 or 5): `approachSets`, read by `reachesClose`.
+    const lastNoteIndex = flatNotes.length - 1;
+    const lastNote = flatNotes[lastNoteIndex] ?? null;
+    const closeBeat = EVENSONG_DAY_BARS * EVENSONG_BEATS_PER_BAR;
+    const approachClose = Boolean(lastNote) && lastNote.bar === EVENSONG_DAY_BARS - 1 && closeTargets.length > 0;
+    const lastSpecial = Boolean(lastNote) && (lastNote.kind === 'push' || lastNote.kind === 'release');
+    const lastNearClose = Boolean(lastNote) && (closeBeat - lastNote.start) <= SHORT_NOTE_MAX_BEATS + EPS;
+    const finalReady = scale.map((_, idx) => idx).filter(idx => (
+        closeTargets.some(t => Math.abs(scale[idx] - t) <= EVENSONG_CLOSE_LEAP_SEMIS)
+        && (!lastSpecial || tonicFifthIndices.includes(idx))
+        && !(lastNearClose && ((plagalFirstSemi != null && scale[idx] === plagalFirstSemi)
+            || (openFailure && pcOfSemi(scale[idx]) === suspensionPc)))
+    ));
+    const approachSets = new Array(flatNotes.length).fill(null);
+    if (approachClose && finalReady.length) {
+        let later = new Set(finalReady);
+        approachSets[lastNoteIndex] = later;
+        for (let i = lastNoteIndex - 1; i >= 0; i--) {
+            const note = flatNotes[i];
+            const after = flatNotes[i + 1];
+            const special = note.kind === 'push' || note.kind === 'release';
+            const set = new Set();
+            for (let c = 0; c < scale.length; c++) {
+                if (special && !tonicFifthIndices.includes(c)) continue;
+                const here = { pitch: scale[c], start: note.start, dur: note.dur };
+                for (const r of later) {
+                    if (Math.abs(r - c) > EVENSONG_MAX_LEAP_STEPS) continue;
+                    if (isForbiddenSamePitchPair(here, { pitch: scale[r], start: after.start, dur: after.dur })) continue;
+                    set.add(c);
+                    break;
+                }
+            }
+            if (!set.size) break; // no line reaches the close from here: earlier notes stay free
+            approachSets[i] = set;
+            later = set;
+        }
+    }
+    const reachesClose = (i, c) => !approachSets[i] || approachSets[i].has(c);
+
+    // Minor push bars open on v: a note sounding in that half avoids the
+    // pitch classes a semitone off v's tones (♭3 against v's fifth). A push
+    // on 1 or 5 never does; a commit, or a push the quick-pair guard moved
+    // off 1 and 5, may.
+    const pushHalfClash = normKey.mode === 'minor' ? pushHalfClashes(harmonyPalette.V) : null;
+    const pushBarSet = new Set(plannedBars.filter(plan => plan.kind === 'push').map(plan => plan.bar));
+    const clashesAt = (note, idx) => Boolean(pushHalfClash) && note.kind !== 'release' && note.pos < EVENSONG_SLOTS_PER_BAR / 2
+        && pushBarSet.has(note.bar) && pushHalfClash.has(pcOfSemi(scale[idx]));
 
     // 3. Assign pitches sequentially with leap folding (<= 2 scale steps) and
     //    zero forbidden quick same-pitch pairs.
-    const tonicFifthIndices = indicesForDegrees(scale, normKey, [0, 3]);
     // Boundary indices whose only {1, 5} within <= 2 steps is themselves: avoid
     // landing on them right before another push/release so it always has a fresh {1, 5}.
     const trappedSpecialIndices = new Set(
@@ -829,6 +928,38 @@ export function composeEvensong(dayEvents, key = { tonic: 'A', mode: 'minor' }) 
                 && !isForbiddenSamePitchPair(prevNote, { pitch: scale[c], start: cur.start, dur: cur.dur })
             ));
             if (alts.length) idx = alts[0];
+        }
+
+        // Repair: a pitch that leaves the close out of reach or clashes with
+        // a minor push bar's v moves to the nearest pitch that keeps every
+        // rule (leap, quick pair, a push or release on 1 or 5, the next
+        // push's escape, the close guard), giving up the clash, then the
+        // escape, before ever giving up the approach.
+        if (!reachesClose(i, idx) || clashesAt(cur, idx)) {
+            const special = cur.kind === 'push' || cur.kind === 'release';
+            const fits = (c, { clash, escape, onDegree = special }) => {
+                if (c < 0 || c >= scale.length) return false;
+                const probe = { pitch: scale[c], start: cur.start, dur: cur.dur };
+                if (prevNote && Math.abs(c - prevNote.scaleIdx) > EVENSONG_MAX_LEAP_STEPS) return false;
+                if (prevNote && isForbiddenSamePitchPair(prevNote, probe)) return false;
+                if (onDegree && !tonicFifthIndices.includes(c)) return false;
+                if (!reachesClose(i, c)) return false;
+                if (clash && clashesAt(cur, c)) return false;
+                if (escape && nextIsSpecial && !tonicFifthIndices.some(ti => Math.abs(ti - c) <= EVENSONG_MAX_LEAP_STEPS
+                    && !isForbiddenSamePitchPair(probe, { pitch: scale[ti], start: next.start, dur: next.dur }))) return false;
+                if (i === lastNoteIndex && (closeBeat - cur.start) <= SHORT_NOTE_MAX_BEATS + EPS
+                    && ((plagalFirstSemi != null && scale[c] === plagalFirstSemi) || (openFailure && pcOfSemi(scale[c]) === suspensionPc))) return false;
+                return true;
+            };
+            const order = scale.map((_, c) => c).sort((a, b) => (Math.abs(a - idx) - Math.abs(b - idx)) || (a - b));
+            // A push the quick-pair guard already moved off 1 and 5 may at
+            // least move off the clash.
+            const offDegree = special && !tonicFifthIndices.includes(idx);
+            const repaired = order.find(c => fits(c, { clash: true, escape: true }))
+                ?? order.find(c => fits(c, { clash: false, escape: true }))
+                ?? order.find(c => fits(c, { clash: false, escape: false }))
+                ?? (offDegree ? order.find(c => fits(c, { clash: true, escape: true, onDegree: false })) : undefined);
+            if (repaired != null) idx = repaired;
         }
 
         cur.scaleIdx = idx;
@@ -1154,7 +1285,8 @@ function checkBarAlignment(notes, expectedBars, beatsPerBar, label, errors) {
  *   - zero quick same-pitch pairs in every melodic voice
  *   - every lead note inside the lead voice's playable range
  *   - at most 4 notes per bar in bars 1–14
- *   - zero consecutive melodic leaps exceeding 2 scale steps
+ *   - zero consecutive melodic leaps exceeding 2 scale steps in bars 1–14,
+ *     and none over 5 semitones inside the close or from bar 14 into it
  *   - exact bar durations (4 beats per bar across all 16 bars, total 64 beats)
  *   - zero percussion voices, -3 dB trim metadata
  * Returns `{ ok, errors }`.
@@ -1287,11 +1419,20 @@ export function validateEvensongGrammar(score) {
         }
     }
 
-    // Close (bars 15–16): consecutive leaps inside the close <= 5 semitones
-    // (the span of 2 pentatonic steps, satisfied by both the plagal tag and suspension).
+    // Close (bars 15–16): consecutive leaps inside the close, and the step
+    // from bar 14's last note into the close's first, <= 5 semitones (the
+    // span of 2 pentatonic steps; the close's degree-2 suspension is not
+    // pentatonic in minor, so the close is measured in semitones).
+    const lastDay = dayLead[dayLead.length - 1];
+    if (lastDay && closeLead.length && Math.floor(lastDay.start / effectiveBpb + EPS) === EVENSONG_DAY_BARS - 1) {
+        const semis = Math.abs(closeLead[0].pitch - lastDay.pitch);
+        if (semis > EVENSONG_CLOSE_LEAP_SEMIS) {
+            errors.push(`leap of ${semis} semitones from bar ${EVENSONG_DAY_BARS} into the close (${lastDay.pitch} -> ${closeLead[0].pitch}) at beat ${closeLead[0].start}`);
+        }
+    }
     for (let i = 1; i < closeLead.length; i++) {
         const semis = Math.abs(closeLead[i].pitch - closeLead[i - 1].pitch);
-        if (semis > 5) {
+        if (semis > EVENSONG_CLOSE_LEAP_SEMIS) {
             errors.push(`close leap of ${semis} semitones (${closeLead[i - 1].pitch} -> ${closeLead[i].pitch}) at beat ${closeLead[i].start}`);
         }
     }
@@ -1308,7 +1449,7 @@ export const EVENSONG_CHIME_HOUR = EVENSONG_END_HOUR;
 // current visit; a day whose breath comes later than this has no Evensong.
 export const EVENSONG_QUEUE_CAP_MS = 4 * 60 * 1000;
 
-const LEDGER_KINDS = new Set(['commit', 'push', 'release', 'errored', 'mended']);
+const LEDGER_KINDS = new Set(['commit', 'push', 'release', 'errored', ...EVENSONG_ERROR_CLOSING_KINDS]);
 const LEDGER_LIMIT = 1024;
 
 /** The local calendar day of `date` as `YYYY-MM-DD` (the clock's `localDate`). */
@@ -1321,42 +1462,61 @@ export function evensongDayKey(date) {
 /**
  * The day's verified work as Evensong reads it, kept by the band director
  * from the facts it already hears (`outcome:verified`, the watchtower's
- * errors and mends). Each entry is reduced at once to its kind, its local
- * minute and anonymous integers (the repo's pennant slot, the agent's hash
- * slot): no repo or agent string is ever kept. `record(fact, at)` takes the
- * fact's own time (never reads the clock); `events(day)` returns that local
- * day's entries in `composeEvensong`'s input shape. FIFO-capped, deduplicated.
+ * errors and mends, agents leaving). Each entry is reduced at once to its
+ * kind, its local minute and anonymous integers (a repo slot or an anonymous
+ * repo key, the agent's hash slot): no repo or agent string is ever kept.
+ * `record(fact, at)` takes the fact's own time (never reads the clock);
+ * `events(day)` returns that local day's entries in time order in
+ * `composeEvensong`'s input shape, each anonymous repo key numbered by its
+ * first activity that day (0, 1, 2 …: the Chronicle's repo order), clear of
+ * any explicit slot. FIFO-capped, deduplicated.
  */
 export function createEvensongDayLedger({ limit = LEDGER_LIMIT } = {}) {
     let entries = [];
     const seen = new Set();
     return {
-        record({ kind, repoSlot = null, agentSlot = null } = {}, at) {
+        record({ kind, repoSlot = null, repoKey = null, agentSlot = null } = {}, at) {
             const name = String(kind || '').toLowerCase();
             if (!LEDGER_KINDS.has(name)) return false;
             const when = at instanceof Date ? at : new Date(Number(at));
             const day = evensongDayKey(when);
             if (!day) return false;
             const repo = Number.isInteger(repoSlot) && repoSlot >= 0 ? repoSlot : null;
+            const anon = repo == null && Number.isInteger(repoKey) && repoKey >= 0 ? repoKey : null;
             const agent = Number.isInteger(agentSlot) && agentSlot >= 0 ? agentSlot : null;
-            const key = `${name}|${when.getTime()}|${repo}|${agent}`;
+            const key = `${name}|${when.getTime()}|${repo}|${anon}|${agent}`;
             if (seen.has(key)) return false;
             seen.add(key);
             entries.push(Object.freeze({
                 day,
                 key,
+                order: when.getTime(),
                 kind: name,
                 minuteOfDay: when.getHours() * 60 + when.getMinutes() + when.getSeconds() / 60,
                 ...(repo != null ? { repoSlot: repo } : {}),
+                ...(anon != null ? { repoKey: anon } : {}),
                 ...(agent != null ? { agentSlot: agent } : {}),
             }));
             while (entries.length > limit) seen.delete(entries.shift().key);
             return true;
         },
         events(day) {
-            return entries
-                .filter(entry => entry.day === day)
-                .map(({ day: _day, key: _key, ...event }) => event);
+            const list = entries
+                .map((entry, index) => ({ entry, index }))
+                .filter(({ entry }) => entry.day === day)
+                .sort((a, b) => (a.entry.order - b.entry.order) || (a.index - b.index))
+                .map(({ entry }) => entry);
+            const explicit = new Set(list.filter(entry => entry.repoSlot != null).map(entry => entry.repoSlot));
+            const firstSeen = new Map();
+            let next = 0;
+            return list.map(({ day: _day, key: _key, order: _order, repoKey, ...event }) => {
+                if (repoKey == null) return event;
+                if (!firstSeen.has(repoKey)) {
+                    while (explicit.has(next)) next++;
+                    firstSeen.set(repoKey, next++);
+                }
+                return { ...event, repoSlot: firstSeen.get(repoKey) };
+            });
         },
         clear() {
             entries = [];

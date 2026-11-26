@@ -1396,8 +1396,11 @@ export function lunarTideAt(date, site = null, previousLevel = null) {
 
 // W6.3 — the sky keys (config/villageCalendar.js predicates) for one
 // snapshot. Each is off (false / null) on an ordinary date; an eclipse keys
-// only while its body is up over the village.
-function buildSkyKeys({ date, minute, phase, weather, cloudCover, sun, moon, arcState, solarDay }) {
+// only while its body is up over the village, and a solar one only near its
+// track (its coarse visibility boxes at the site's real latitude and
+// longitude: full on the central path, capped across the partial region);
+// a lunar eclipse is seen wherever the moon is up.
+function buildSkyKeys({ date, minute, phase, weather, cloudCover, sun, moon, arcState, solarDay, site }) {
     const lanternNight = isLanternNight({
         moonAgeDays: arcState.ageDays,
         phase,
@@ -1413,7 +1416,8 @@ function buildSkyKeys({ date, minute, phase, weather, cloudCover, sun, moon, arc
         solarNoonMinute: solarDay?.solarNoonMinute,
         sunUp: sun?.visible === true,
     });
-    const key = eclipseSkyKeyAt(arcState.instantMs);
+    const where = site ? { lat: Number.isFinite(site.trueLat) ? site.trueLat : site.lat, lon: site.lon } : null;
+    const key = eclipseSkyKeyAt(arcState.instantMs, where);
     const eclipse = key && (key.body === 'sun' ? sun?.visible === true : moon?.visible === true) ? key : null;
     return {
         lanternNight,
@@ -1843,7 +1847,7 @@ export function createAtmosphereSnapshot({
         lighting,
         // W6.3 — the equilibrium lunar tide (spec 04 §5.6) and the sky keys.
         lunarTide: tide,
-        skyKeys: buildSkyKeys({ date: effectiveDate, minute, phase, weather, cloudCover, sun, moon, arcState, solarDay }),
+        skyKeys: buildSkyKeys({ date: effectiveDate, minute, phase, weather, cloudCover, sun, moon, arcState, solarDay, site }),
         reactions: buildReactions(phase, phaseProgress, weather, lighting),
         motion: {
             driftEnabled,
