@@ -114,14 +114,15 @@
 }
 
 .chronicle__date-button:hover:not(:disabled),
-.chronicle__export-button:hover,
+.chronicle__export-button:hover:not(:disabled),
 .settings-actions__reset:hover:not(:disabled),
 .settings-button:hover:not(:disabled) {
     color: var(--ink-1);
     background: var(--bg-2);
 }
 
-.chronicle__date-button:disabled {
+.chronicle__date-button:disabled,
+.chronicle__export-button:disabled {
     cursor: not-allowed;
     color: var(--ink-4);
     box-shadow: inset 0 0 0 1px var(--line-1);
@@ -628,6 +629,13 @@
     border-bottom: 1px solid var(--line-1);
 }
 
+.chronicle__life-bust {
+    align-self: start;
+    padding: 2px;
+    background: var(--bg-0);
+    box-shadow: inset 0 0 0 1px var(--line-2);
+}
+
 .chronicle__life-bust canvas { display: block; }
 
 .chronicle__life-heading {
@@ -813,3 +821,555 @@
 .chronicle__entry--waiting .chronicle__glyph { color: var(--cv-status-waiting-user); }
 .chronicle__entry--errored .chronicle__glyph { color: var(--cv-status-errored); }
 .chronicle__entry--rate_limited .chronicle__glyph { color: var(--cv-status-rate-limited); }
+.chronicle__entry--compacted .chronicle__glyph { color: var(--ink-2); }
+.chronicle__entry--release .chronicle__glyph { color: var(--gold); }
+
+/* ── Chronicle 24-hour Sun-Arc Ribbon & Diurnal Chapters (W4-E) ───────── */
+
+.chronicle__sun-arc {
+    margin: 0 0 16px;
+    padding: 8px 12px;
+    background: var(--bg-0);
+    border: 1px solid var(--line-1);
+}
+
+.chronicle__sun-arc-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.chronicle__sun-arc-title {
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.chronicle__sun-arc-readout {
+    color: var(--ink-2);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.chronicle__sun-arc-canvas {
+    display: block;
+    width: 100%;
+    height: 36px;
+    border: 1px solid var(--line-2);
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: pointer;
+}
+
+.chronicle__sun-arc-scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    font-variant-numeric: tabular-nums;
+}
+
+.chronicle__chapters {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.chronicle__chapter-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 8px;
+    background: var(--bg-0);
+    border: 1px solid var(--line-1);
+    border-bottom: 0;
+}
+
+.chronicle__chapter--dawn .chronicle__chapter-header {
+    box-shadow: inset 2px 0 0 var(--brass);
+}
+
+.chronicle__chapter--day .chronicle__chapter-header {
+    box-shadow: inset 2px 0 0 var(--gold);
+}
+
+.chronicle__chapter--dusk .chronicle__chapter-header {
+    box-shadow: inset 2px 0 0 var(--brass);
+}
+
+.chronicle__chapter--night .chronicle__chapter-header {
+    box-shadow: inset 2px 0 0 var(--line-2);
+}
+
+.chronicle__chapter-title {
+    color: var(--ink-1);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.chronicle__chapter-meta {
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.chronicle__entry--target {
+    background: var(--bg-3);
+    box-shadow: inset 2px 0 0 var(--gold);
+    padding-left: 6px;
+}
+
+/* ── Retold Scrubber (W4-E, ?retold=YYYY-MM-DD) ─────────────────────────
+   Walnut bottom-centre playback bar mounted inside the World container.
+   Never uses position: fixed; bottom-edge stacking coordinates via
+   publishReservedBox. */
+
+.retold-scrubber {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    z-index: 40;
+    display: grid;
+    grid-template-columns: auto minmax(240px, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    width: min(680px, calc(100% - 32px));
+    padding: 8px 12px;
+    color: var(--ink-1);
+    transition:
+        opacity var(--cv-step-in),
+        transform var(--cv-step-in);
+}
+
+.retold-scrubber--theatre.retold-scrubber--hidden {
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, 16px);
+}
+
+.retold-scrubber__play {
+    min-width: 64px;
+    min-height: 28px;
+    padding: 0 10px;
+    color: var(--ink-1);
+    background: var(--bg-0);
+    box-shadow: inset 0 0 0 1px var(--line-2);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.retold-scrubber__play:hover {
+    background: var(--bg-2);
+    color: var(--gold-hi);
+}
+
+.retold-scrubber__play--paused {
+    color: var(--gold);
+    box-shadow: inset 0 0 0 1px var(--brass);
+}
+
+.retold-scrubber__timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.retold-scrubber__meta {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.retold-scrubber__date {
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.retold-scrubber__clock {
+    color: var(--ink-1);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+    font-variant-numeric: tabular-nums;
+}
+
+.retold-scrubber__track {
+    position: relative;
+    height: 16px;
+    background: var(--bg-0);
+    box-shadow: inset 0 0 0 1px var(--line-2);
+    cursor: pointer;
+    touch-action: none;
+}
+
+.retold-scrubber__bands {
+    position: absolute;
+    inset: 1px;
+    pointer-events: none;
+}
+
+.retold-scrubber__band {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+}
+
+.retold-scrubber__band--night { background: var(--bg-1); }
+.retold-scrubber__band--dawn { background: var(--bg-2); }
+.retold-scrubber__band--day { background: var(--bg-3); }
+.retold-scrubber__band--dusk { background: var(--bg-2); }
+
+.retold-scrubber__fill {
+    position: absolute;
+    top: 1px;
+    bottom: 1px;
+    left: 1px;
+    background: color-mix(in srgb, var(--brass) 36%, transparent);
+    pointer-events: none;
+}
+
+.retold-scrubber__pins {
+    position: absolute;
+    inset: 0;
+}
+
+.retold-scrubber__pin {
+    position: absolute;
+    top: 1px;
+    bottom: 1px;
+    width: 6px;
+    margin-left: -3px;
+    padding: 0;
+    background: transparent;
+    cursor: pointer;
+}
+
+.retold-scrubber__pin::after {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 2px;
+    width: 2px;
+    height: 10px;
+    background: var(--brass);
+}
+
+.retold-scrubber__pin--chapter::after {
+    top: 0;
+    height: 14px;
+    background: var(--line-2);
+}
+
+.retold-scrubber__pin--push::after,
+.retold-scrubber__pin--release::after {
+    background: var(--gold);
+}
+
+.retold-scrubber__pin--errored::after {
+    top: 3px;
+    height: 6px;
+    width: 4px;
+    left: 1px;
+    background: var(--cv-status-errored);
+}
+
+.retold-scrubber__pin--waiting::after {
+    top: 3px;
+    height: 6px;
+    width: 4px;
+    left: 1px;
+    background: var(--cv-status-waiting-user);
+}
+
+.retold-scrubber__pin:hover::after {
+    background: var(--gold-hi);
+}
+
+.retold-scrubber__handle {
+    position: absolute;
+    top: -1px;
+    width: 8px;
+    height: 18px;
+    margin-left: -4px;
+    background: var(--gold-hi);
+    box-shadow: 0 0 0 1px var(--seam);
+    pointer-events: auto;
+}
+
+.retold-scrubber__scale {
+    display: flex;
+    justify-content: space-between;
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    font-variant-numeric: tabular-nums;
+}
+
+.retold-scrubber__speeds {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    gap: 2px;
+}
+
+.retold-scrubber__speed {
+    min-width: 30px;
+    min-height: 24px;
+    padding: 0 6px;
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+}
+
+.retold-scrubber__speed:hover {
+    color: var(--ink-1);
+    background: var(--bg-2);
+}
+
+.retold-scrubber__speed--active {
+    color: var(--gold-hi);
+    background: var(--bg-3);
+    box-shadow: inset 0 0 0 1px var(--brass);
+}
+
+/* ── Postcard Studio (W4-E, Shift+P) ────────────────────────────────────
+   Framing overlay + walnut control sheet mounted inside the World view. */
+
+.postcard-studio {
+    position: absolute;
+    inset: 0;
+    z-index: 45;
+    pointer-events: none;
+}
+
+.postcard-studio[hidden] {
+    display: none;
+}
+
+.postcard-studio__crop-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.postcard-studio__mask {
+    position: absolute;
+    background: color-mix(in srgb, var(--bg-0) 64%, transparent);
+}
+
+.postcard-studio__aperture {
+    position: absolute;
+    box-shadow:
+        inset 0 0 0 1px var(--gold),
+        0 0 0 1px var(--seam);
+}
+
+.postcard-studio__aperture--woodcut {
+    box-shadow:
+        inset 0 0 0 8px var(--bg-3),
+        inset 0 0 0 9px var(--brass),
+        0 0 0 1px var(--seam);
+}
+
+.postcard-studio__aperture-label {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    padding: 4px 6px;
+    background: var(--bg-1);
+    color: var(--ink-1);
+    box-shadow: inset 0 0 0 1px var(--line-2);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.postcard-studio__aperture--woodcut .postcard-studio__aperture-label {
+    top: 14px;
+    left: 14px;
+}
+
+.postcard-studio__sheet {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    width: 328px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    color: var(--ink-1);
+    pointer-events: auto;
+}
+
+.postcard-studio__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line-1);
+}
+
+.postcard-studio__title-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.postcard-studio__title {
+    color: var(--ink-1);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.postcard-studio__hint {
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+}
+
+.postcard-studio__close {
+    display: inline-grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+}
+
+.postcard-studio__close:hover {
+    color: var(--ink-1);
+    background: var(--bg-2);
+}
+
+.postcard-studio__group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.postcard-studio__label {
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.postcard-studio__options {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 2px;
+    padding: 2px;
+}
+
+.postcard-studio__option {
+    min-height: 24px;
+    padding: 0 6px;
+    color: var(--ink-3);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.postcard-studio__option:hover:not(:disabled) {
+    color: var(--ink-1);
+    background: var(--bg-2);
+}
+
+.postcard-studio__option--active {
+    color: var(--gold-hi);
+    background: var(--bg-3);
+    box-shadow: inset 0 0 0 1px var(--brass);
+}
+
+.postcard-studio__option:disabled {
+    cursor: not-allowed;
+    color: var(--ink-4);
+}
+
+.postcard-studio__actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.postcard-studio__action {
+    min-height: 28px;
+    padding: 0 8px;
+    color: var(--ink-2);
+    background: var(--bg-0);
+    box-shadow: inset 0 0 0 1px var(--line-2);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.postcard-studio__action:hover:not(:disabled) {
+    color: var(--ink-1);
+    background: var(--bg-2);
+}
+
+.postcard-studio__action--primary {
+    color: var(--gold-hi);
+    box-shadow: inset 0 0 0 1px var(--brass);
+}
+
+.postcard-studio__action--recording {
+    color: var(--cv-status-errored);
+    box-shadow: inset 0 0 0 1px var(--cv-status-errored);
+}
+
+.postcard-studio__action:disabled {
+    cursor: not-allowed;
+    color: var(--ink-4);
+    box-shadow: inset 0 0 0 1px var(--line-1);
+}
+
+.postcard-studio__progress {
+    height: 4px;
+    background: var(--bg-0);
+    box-shadow: inset 0 0 0 1px var(--line-1);
+}
+
+.postcard-studio__progress[hidden] {
+    display: none;
+}
+
+.postcard-studio__progress-fill {
+    width: 0;
+    height: 100%;
+    background: var(--gold);
+}
+
+.postcard-studio__status {
+    margin: 0;
+    color: var(--ink-3);
+    font: var(--fs-body)/var(--lh-body) var(--font-body);
+}
+
+.postcard-studio__status--ok {
+    color: var(--ink-1);
+}
+
+.postcard-studio__status--warn {
+    color: var(--cv-status-waiting-user);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .retold-scrubber {
+        transition: none;
+    }
+}
