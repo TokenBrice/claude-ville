@@ -265,15 +265,21 @@ fn sampleAlbedo(uv: vec2f) -> vec4f {
   return vec4f(0.0);
 }
 
+// Recover the same premultiplied canvas byte as the GL upload.
+fn emissionTexel(uv: vec2f) -> vec4f {
+  let c = textureSampleLevel(emissiveMap, albedoSampler, uv, 0.0);
+  let a = floor(c.a * 255.0 + 0.5);
+  return vec4f(floor(c.rgb * a + 0.5) / max(a, 1.0), c.a);
+}
 fn sampleEmission(uv: vec2f, albedoAlpha: f32) -> vec4f {
-  if (!fatOn || !fatSeam(fatAlbedoTaps) || v_gate == 0.0) { return textureSampleLevel(emissiveMap, albedoSampler, uv, 0.0); }
+  if (!fatOn || !fatSeam(fatAlbedoTaps) || v_gate == 0.0) { return emissionTexel(uv); }
   var sum = vec4f(0.0);
   for (var i = 0; i < 4; i++) {
     let coverage = fatTapWeight(fatAlbedoTaps, i) * fatTap[i].a;
     if (coverage == 0.0) { continue; }
     let local = clamp(fatAlbedoTaps.base + fatTapOffset(i), vec2f(0.0), vec2f(v_texelRect.zw));
     let tapUv = (vec2f(v_texelRect.xy) + local + 0.5) / vec2f(albedoSize());
-    sum += coverage * fatPremultiplied(textureSampleLevel(emissiveMap, albedoSampler, tapUv, 0.0));
+    sum += coverage * fatPremultiplied(emissionTexel(tapUv));
   }
   // Output applies albedo alpha once.
   if (sum.a > 0.0) { return vec4f(sum.rgb / sum.a, sum.a / albedoAlpha); }

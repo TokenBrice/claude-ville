@@ -5,7 +5,7 @@
 // grade (`emitterWeight` in SCENE_FRAGMENT). Two kinds of emitter never reach
 // that path by themselves, and this module carries them:
 //
-// 1. Cache-layer props. The plaza rune braziers and the street and scenic
+// 1. Cache-layer props. The plaza braziers (prop.plazaBrazier) and the street and scenic
 //    lanterns are baked into the terrain texture (IsometricRenderer
 //    `_drawAmbientGroundProps`), which has no emissive map, so their flame
 //    sidecars would never be read. `cacheEmitterRecords` adds one record per
@@ -71,8 +71,7 @@ function hasEmissiveSidecar(assets, id) {
 /**
  * GPU records for the terrain-baked emitter props. Plain records (the policy
  * normalizer fills the V9 fields): no painter depth, sequence between the
- * terrain and the drawables. Only while the world-pilot atlas is already
- * resident, so a lone prop never pulls the atlas pages in.
+ * terrain and the drawables. Atlas-backed props use already resident pages.
  * `channelRevision(assets, atlasId)` is GpuSceneBuilder's atlas channel
  * revision, so these records share the landmark batches' channel textures.
  */
@@ -82,7 +81,6 @@ export function cacheEmitterRecords(renderer, channelRevision) {
     const records = cacheWaterRecords(renderer);
     mirrorAccentRecords(renderer, records);
     bridgeEmitterRecords(renderer, records);
-    if (!renderer._gpuAtlasResident) return records;
     for (const prop of cacheLayerProps()) {
         // W1-C 1.3 — plaza braziers bake cold charcoal/ash by day and swap to
         // the lit flame sheet (`prop.plazaBrazier.lit`) only once the
@@ -96,6 +94,7 @@ export function cacheEmitterRecords(renderer, channelRevision) {
         const frame = assets.getAtlasFrame?.(resolvedId);
         const atlasId = frame?.atlas;
         if (atlasId) {
+            if (!renderer._gpuAtlasResident) continue;
             const albedo = assets.getAtlas?.(atlasId, 'albedo') || null;
             const emissive = assets.getAtlas?.(atlasId, 'emissive') || null;
             if (!albedo || !emissive || !frame?.rect) continue;
@@ -295,24 +294,14 @@ function maskedSource(source, mask, recordKey, textureKey) {
 const BRIDGE_FLAME_MATERIAL = materialClassId('fire');
 
 function bridgeEmitterRecords(renderer, records) {
-    const assets = renderer.assets;
     if (typeof document === 'undefined') return;
-    for (const span of renderer.bridgeSpans || []) {
-        const id = renderer._bridgeSpriteId?.(span);
-        if (!id || !hasEmissiveSidecar(assets, id) || renderer.bridgeLightsLit?.(span) !== true) continue;
-        const sidecar = assets.getCompanion?.(id, 'emissive');
-        const placement = sidecar ? renderer._bridgeSpritePlacement?.(span) : null;
-        if (!placement) continue;
-        const { w, h } = placement.dims;
-        const winter = placement.img !== assets.get?.(id);
-        const textureKey = `bridge-emitter:${id}:${assets.assetVersion || 0}${winter ? `:${renderer.propWinter?.key}` : ''}`;
-        const key = `bridge-emitter:${span.id || id}`;
+    for (const { key, textureKey, source, sidecar, x, y, w, h } of bridgeFlames(renderer)) {
         records.push({
             id: key,
             stableKey: key,
             textureKey,
             sidecarKey: `${textureKey}:channels`,
-            source: maskedSource(placement.img, sidecar, key, textureKey),
+            source,
             materialSource: null,
             emissiveSource: sidecar,
             occluderSource: null,
@@ -322,8 +311,8 @@ function bridgeEmitterRecords(renderer, records) {
             sy: 0,
             sw: w,
             sh: h,
-            x: placement.x,
-            y: placement.y,
+            x,
+            y,
             width: w,
             height: h,
             material: BRIDGE_FLAME_MATERIAL,
@@ -337,53 +326,41 @@ function bridgeEmitterRecords(renderer, records) {
             sourceKind: 'individual',
         });
     }
-    // W1-C 1.5 — north-farm-bridge mirrors `bridge.landmark.farm.ew` horizontally
-    // around (3, 7.5); emit its 4 lantern flames at night on the Lamplighter's Round.
-    const farmId = 'bridge.landmark.farm.ew';
-    if (renderer.bridgeTiles?.get?.('3,7')?.bridgeId === 'north-farm-bridge'
-        && hasEmissiveSidecar(assets, farmId)
-        && renderer.bridgeLightsLit?.({ start: tileToWorld(3, 5), end: tileToWorld(3, 10) }) === true) {
-        const sidecar = assets.getCompanion?.(farmId, 'emissive');
-        const baseImg = renderer.propWinter?.image?.(farmId) || assets.get?.(farmId);
-        const dims = assets.getDims?.(farmId);
-        if (sidecar && baseImg && dims) {
-            const [ax, ay] = assets.getAnchor(farmId);
-            const mid = tileToWorld(3, 7.5);
-            const winter = baseImg !== assets.get?.(farmId);
-            const key = 'bridge-emitter:north-farm-bridge';
-            const textureKey = `bridge-emitter:${farmId}:mirror:${assets.assetVersion || 0}${winter ? `:${renderer.propWinter?.key}` : ''}`;
-            const flipped = mirroredBridgeFlames(baseImg, sidecar, dims.w, dims.h, key, textureKey);
-            records.push({
-                id: key,
-                stableKey: key,
-                textureKey,
-                sidecarKey: `${textureKey}:channels`,
-                source: flipped.albedo,
-                materialSource: null,
-                emissiveSource: flipped.emissive,
-                occluderSource: null,
-                sourceWidth: dims.w,
-                sourceHeight: dims.h,
-                sx: 0,
-                sy: 0,
-                sw: dims.w,
-                sh: dims.h,
-                x: Math.round(mid.x + ax - dims.w),
-                y: Math.round(mid.y - ay),
-                width: dims.w,
-                height: dims.h,
-                material: BRIDGE_FLAME_MATERIAL,
-                elevation: 0,
-                emissive: 0,
-                emissiveGate: 1,
-                occluder: 0,
-                textureRevision: textureKey,
-                sidecarRevision: textureKey,
-                sequence: -0.5,
-                sourceKind: 'individual',
-            });
-        }
+}
+
+function* bridgeFlames(renderer) {
+    const assets = renderer.assets;
+    for (const span of renderer.bridgeSpans || []) {
+        const id = renderer._bridgeSpriteId?.(span);
+        if (!id || !hasEmissiveSidecar(assets, id) || renderer.bridgeLightsLit?.(span) !== true) continue;
+        const sidecar = assets.getCompanion?.(id, 'emissive');
+        const placement = sidecar ? renderer._bridgeSpritePlacement?.(span) : null;
+        if (!placement) continue;
+        const { w, h } = placement.dims;
+        const winter = placement.img !== assets.get?.(id);
+        const textureKey = `bridge-emitter:${id}:${assets.assetVersion || 0}${winter ? `:${renderer.propWinter?.key}` : ''}`;
+        const key = `bridge-emitter:${span.id || id}`;
+        yield { key, textureKey, source: maskedSource(placement.img, sidecar, key, textureKey), sidecar,
+            x: placement.x, y: placement.y, w, h };
     }
+    const farm = farmBridgeFlames(renderer);
+    if (farm) yield farm;
+}
+
+// The Canvas cut and both resident backends use the same flipped mask and world origin.
+function farmBridgeFlames(renderer) {
+    const placement = renderer._litFarmBridgePlacement?.();
+    if (!placement) return null;
+    const { id, img, dims: { w, h }, x, y } = placement;
+    const assets = renderer.assets;
+    if (!hasEmissiveSidecar(assets, id)) return null;
+    const sidecar = emissiveSidecarFor(assets, id);
+    if (!sidecar) return null;
+    const winter = img !== assets.get(id);
+    const key = 'bridge-emitter:north-farm-bridge';
+    const textureKey = `bridge-emitter:${id}:mirror:${assets.assetVersion || 0}${winter ? `:${renderer.propWinter?.key}` : ''}`;
+    const flipped = mirroredBridgeFlames(img, sidecar, w, h, key, textureKey);
+    return { key, textureKey, source: flipped.albedo, sidecar: flipped.emissive, x, y, w, h };
 }
 
 const mirroredBridgeCache = new Map();
@@ -403,6 +380,7 @@ function mirroredBridgeFlames(source, sidecar, w, h, key, textureKey) {
     const emissive = flip(sidecar);
     const albedo = flip(source);
     const aCtx = albedo.getContext('2d', { willReadFrequently: true });
+    aCtx.setTransform(1, 0, 0, 1, 0, 0);
     aCtx.globalCompositeOperation = 'destination-in';
     aCtx.drawImage(emissive, 0, 0);
     const entry = { textureKey, albedo, emissive };
@@ -500,14 +478,14 @@ function emissiveImageFor(assets, id, albedo, key) {
     return null;
 }
 
-function cutFor(assets, id, grade = null) {
-    const key = `${assets.assetVersion || ''}|${id}`;
+function cutFor(assets, id, grade = null, placement = null) {
+    const key = placement?.textureKey || `${assets.assetVersion || ''}|${id}`;
     const carryStep = nightCarryStepFor(grade);
     const cached = cuts.get(key);
     if (cached && cached.carryStep === carryStep) return cached.cut;
-    const albedo = assets.get?.(id);
+    const albedo = placement?.source || assets.get?.(id);
     if (!albedo) return null;
-    const emissive = emissiveImageFor(assets, id, albedo, key);
+    const emissive = placement?.sidecar || emissiveImageFor(assets, id, albedo, key);
     if (!emissive) return null;
     const cut = buildEmitterCut(albedo, emissive, quantisedGradeForStep(carryStep));
     cuts.set(key, { carryStep, cut });
@@ -717,6 +695,8 @@ function* emitterPlacements(renderer) {
         const y = (span.start.y + span.end.y) / 2;
         yield { id, x, y, sortY: -Infinity, staticSortY: -Infinity, gate: 1, skipPropPrefix: 'bridge.rail.' + span.id };
     }
+    const farm = farmBridgeFlames(renderer);
+    if (farm) yield { placement: farm, x: farm.x, y: farm.y, sortY: -Infinity, gate: 1 };
 }
 
 function overlaps(a, x, y, w, h) {
@@ -1073,9 +1053,9 @@ function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight
     const assets = renderer.assets;
     const alpha = Math.min(1, Math.max(0, emitter.gate) * core);
     if (alpha < 0.02) return;
-    const cut = cutFor(assets, emitter.id, grade);
+    const cut = cutFor(assets, emitter.id, grade, emitter.placement);
     if (!cut) return;
-    const [ax, ay] = assets.getAnchor(emitter.id);
+    const [ax, ay] = emitter.placement ? [0, 0] : assets.getAnchor(emitter.id);
     const x = Math.round(emitter.x - ax) + cut.x;
     const y = Math.round(emitter.y - ay) + cut.y;
     const { width, height } = cut.canvas;

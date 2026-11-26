@@ -1382,7 +1382,7 @@ export function aerialHazeStart(fog = 0, clearDay = 0, clearNight = 0) {
 
 // Daytime bloom: only buildings with an open work gate (working Forge fire,
 // awake Portal, working Command braziers) activate the daytime bloom path;
-// static props (such as prop.runeBrazier) never trigger daytime bloom on their
+// static props (such as prop.plazaBrazier) never trigger daytime bloom on their
 // own, and passive emitters stay at the 0.14 daylight core.
 export const DAYTIME_WORK_BLOOM_CORE = 0.36;
 export const DAYTIME_WORK_BLOOM_STRENGTH = 0.22;

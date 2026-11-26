@@ -610,6 +610,59 @@ const VILLAGE_WALL_SEA_TOWER_SPRITE_ID = 'prop.villageWallSeaTower';
 // always lays the same piers, lanterns, loops and ivy.
 const VILLAGE_WALL_SEEDS = Object.freeze({ west: 101, east: 211 });
 
+class FountainWaterSprite extends StaticPropSprite {
+    constructor(renderer, fountain) {
+        const id = 'prop.plazaFountainWater';
+        const [ax, ay] = renderer.assets.getAnchor(id);
+        super({
+            id, tileX: fountain.tileX, tileY: fountain.tileY,
+            sortY: tileToWorld(fountain.tileX, fountain.tileY).y + 0.5,
+            bounds: { left: -ax, right: 80 - ax, top: -ay, bottom: 88 - ay },
+            materialClass: 'water',
+            drawFn: (ctx, x, y) => ctx.drawImage(renderer.assets.get(id), this._paintFrame * 80, 0, 80, 88,
+                Math.round(x - ax), Math.round(y - ay), 80, 88),
+        });
+        this.renderer = renderer;
+        this._frames = [];
+    }
+
+    _getCachedCanvas(zoom) {
+        if (snowBucketOf(this.renderer._groundState?.snowCover) >= 3) {
+            this._cacheCanvas = null;
+            return null;
+        }
+        if (!this._frames.length) {
+            if (!this.renderer.assets.get(this.id) || typeof document === 'undefined') return null;
+            for (let frame = 0; frame < 4; frame++) {
+                this._paintFrame = frame;
+                this._cacheCanvas = null;
+                const cached = super._getCachedCanvas(zoom);
+                if (!cached) {
+                    this.releaseCache();
+                    return null;
+                }
+                cached.textureKey = `${this.id}:frame${frame}`;
+                this._frames.push(cached);
+            }
+        }
+        const frame = this.renderer.motionScale > 0 ? Math.floor((this.renderer.motionTimeMs || 0) / 250) % 4 : 0;
+        this._cacheCanvas = this._frames[frame];
+        return this._cacheCanvas;
+    }
+
+    draw(ctx, zoom) {
+        const cached = this._getCachedCanvas(zoom);
+        if (cached) ctx.drawImage(cached.canvas, cached.x, cached.y);
+    }
+
+    releaseCache() {
+        for (const cached of this._frames) releaseCanvasBackingStore(cached.canvas);
+        this._frames.length = 0;
+        this._cacheCanvas = null;
+        this._alphaMask = null;
+    }
+}
+
 export class IsometricRenderer {
     constructor(world, options = {}) {
         this.world = world;
@@ -9048,7 +9101,7 @@ export class IsometricRenderer {
     // context or an evicted texture re-bakes the canvas synchronously (the
     // coast passes dominate; ~285 ms was measured on a loaded host), so the
     // canvas stays while a WebGPU switch is pending (`releaseTerrainCanvas`).
-    _getTerrainCache({ allowResident = false } = {}) {
+    _getTerrainCache({ allowResident = false, prepareCold = false } = {}) {
         const bounds = this._terrainCacheBounds();
         const meta = this._getTerrainCacheMeta(bounds);
         if (!meta.singleSurfaceWithinBudget) {
@@ -9082,12 +9135,12 @@ export class IsometricRenderer {
         if (allowResident && this._terrainResident?.key === key) {
             return { canvas: this._terrainResident, bounds, resident: true };
         }
-        const staged = this._stageTerrainOffFrame(key, bounds, dpr, season, allowResident);
+        const staged = !prepareCold && !this._forceFreshGpuOutput && this._stageTerrainOffFrame(key, bounds, dpr, season, allowResident);
         if (staged) return staged;
         this._terrainResident = null;
-        const persistedKey = this._persistedTerrainKey(bounds, dpr, season);
         const ready = this._terrainArtifactRead?.ready;
-        if (persistedKey && ready?.key === persistedKey) {
+        if (ready?.key && ready.key === this._persistedTerrainKey(bounds, dpr, season)) {
+            this._cancelTerrainRestage();
             this._discardTerrainArtifactWrite();
             releaseCanvasBackingStore(this.terrainCache);
             Object.assign(this, ready.host);
@@ -9100,8 +9153,12 @@ export class IsometricRenderer {
             this._terrainArtifactStats.state = 'hit';
             return { canvas: this.terrainCache, bounds };
         }
-        // Only the initial loop frame may briefly hold for a matching read.
-        // Every other miss keeps today's synchronous bake in this same frame.
+        if (prepareCold) {
+            const job = this._terrainRestage ||= { key, bounds, dpr, season, fields: {}, cold: true };
+            this._stepTerrainRestage(job);
+            return this.terrainCache ? { canvas: this.terrainCache, bounds } : null;
+        }
+        // Capture and recovery callers need a complete canvas before returning.
         this._discardTerrainArtifactRead();
         this._discardTerrainArtifactWrite();
         this._cancelTerrainRestage();
@@ -9213,7 +9270,7 @@ export class IsometricRenderer {
             }
         }
         if (!job.steps || job.steps.length) {
-            whenIdle(() => this._stepTerrainRestage(job));
+            if (!job.cold) whenIdle(() => this._stepTerrainRestage(job));
             return;
         }
         this._terrainRestage = null;
@@ -9230,7 +9287,8 @@ export class IsometricRenderer {
         this.terrainCache = job.canvas;
         this.terrainCacheBounds = job.bounds;
         this.terrainCacheKey = job.key;
-        this._terrainRestages = (this._terrainRestages || 0) + 1;
+        this.terrainCacheBaseKey = this._terrainBakeKey(job.bounds, job.dpr, job.season, false);
+        if (!job.cold) this._terrainRestages = (this._terrainRestages || 0) + 1;
         this._landTerrainBake(job.ctx, job.canvas, job.bounds, job.dpr, job.season);
         this._invalidateIdleFrame?.();
     }
@@ -9379,6 +9437,18 @@ export class IsometricRenderer {
     }
 
     _prepareTerrainArtifactFrame(allowWait = false) {
+        if (!this._terrainArtifactReadAllowsBake(allowWait)) return false;
+        // Hold presentation while the live loop advances one cold-bake slice per frame.
+        // Explicit renderNow captures can still finish the surface in their own task.
+        if (!this.terrainCache && !this._terrainResident && !this._forceFreshGpuOutput
+            && typeof requestAnimationFrame === 'function') {
+            if (!this._getTerrainCacheMeta().singleSurfaceWithinBudget) return true;
+            return Boolean(this._getTerrainCache({ prepareCold: true }));
+        }
+        return true;
+    }
+
+    _terrainArtifactReadAllowsBake(allowWait) {
         if (this._disposed || !globalThis.indexedDB || !globalThis.crypto?.subtle || !terrainArtifactInputsSettled(this)) return true;
         if (this._terrainArtifactNeedsRead) this._prepareTerrainArtifactRead();
         const bounds = this._terrainCacheBounds();
@@ -9687,14 +9757,16 @@ export class IsometricRenderer {
             .filter((prop) => prop.layer === 'sorted' && !prop.landmark)
             .filter((prop) => prop.walkBlock === true || !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.sceneryClearTiles, this.bridgeTiles))
             .map((prop) => {
-                const dims = this.assets?.getDims?.(prop.id);
                 const entry = this.assets?.getEntry?.(prop.id);
                 // 2.9 — precomputed so the per-frame drawFn does no lookup work:
                 // land props get a contact shadow, water-surface props none.
                 const contactShadow = !this.waterTiles.has(`${Math.floor(prop.tileX)},${Math.floor(prop.tileY)}`);
-                const channels = entry?.occluderSidecar === true
-                    ? { occluder: (ctx, x, y) => this.sprites?.drawCompanion?.(ctx, prop.id, 'occluder', x, y) }
-                    : null;
+                const channels = {};
+                for (const channel of ['material', 'occluder']) {
+                    if (entry?.[channel + 'Sidecar'] === true) {
+                        channels[channel] = (ctx, x, y) => this.sprites.drawCompanion(ctx, prop.id, channel, x, y);
+                    }
+                }
                 return new StaticPropSprite({
                     tileX: prop.tileX,
                     tileY: prop.tileY,
@@ -9732,45 +9804,9 @@ export class IsometricRenderer {
         // 7.1 / W1-D 1.6 — rest-seat furniture: authored oak trestle sheets
         // (with night-only candle emissives on the lamp clock) and pier kerbs.
         sprites.push(...buildRestSeatPropSprites({ assets: this.assets, lampsLit: () => this.villageLampsLit() }));
-        // W1-C 1.1 — 4-frame animated spout & basin ripple overlay over the
-        // civic plaza fountain (`prop.plazaFountainWater`, 4 fps, frame 0 when
-        // reduced motion is active).
-        const civicFountain = DISTRICT_PROPS.find((p) => p.id === 'prop.plazaFountain' && p.district === 'civic');
-        if (civicFountain && this.assets?.has?.('prop.plazaFountainWater')) {
-            const waterId = 'prop.plazaFountainWater';
-            const frameW = 80;
-            const frameH = 88;
-            const [ax, ay] = this.assets.getAnchor(waterId);
-            const waterSprite = new StaticPropSprite({
-                tileX: civicFountain.tileX,
-                tileY: civicFountain.tileY,
-                id: waterId,
-                bounds: { left: -ax, right: frameW - ax, top: -ay, bottom: frameH - ay, splitY: 0 },
-                splitForOcclusion: false,
-                sortY: tileToWorld(civicFountain.tileX, civicFountain.tileY).y - 0.25,
-                materialClass: 'water',
-                drawFn: (ctx, x, y) => {
-                    const sheet = this.assets?.get?.(waterId);
-                    if (!sheet) return;
-                    const frame = (this.motionScale ?? 1) > 0
-                        ? (Math.floor((this.motionTimeMs || 0) / 250) % 4)
-                        : 0;
-                    ctx.drawImage(sheet, frame * frameW, 0, frameW, frameH, Math.round(x - ax), Math.round(y - ay), frameW, frameH);
-                },
-            });
-            let cachedFrame = -1;
-            const origGetCached = waterSprite._getCachedCanvas.bind(waterSprite);
-            waterSprite._getCachedCanvas = (zoom) => {
-                const frame = (this.motionScale ?? 1) > 0
-                    ? (Math.floor((this.motionTimeMs || 0) / 250) % 4)
-                    : 0;
-                if (frame !== cachedFrame) {
-                    cachedFrame = frame;
-                    waterSprite.invalidateCache();
-                }
-                return origGetCached(zoom);
-            };
-            sprites.push(waterSprite);
+        const fountain = DISTRICT_PROPS.find(prop => prop.id === 'prop.plazaFountain' && prop.district === 'civic');
+        if (fountain && this.assets?.has?.('prop.plazaFountainWater')) {
+            sprites.push(new FountainWaterSprite(this, fountain));
         }
         // The Tavern's arches and beam, over the drinkers on its floor.
         sprites.push(...buildTavernArcadeSprites({ building: this.world?.buildings?.get?.('tavern'), assets: this.assets }));
@@ -10772,19 +10808,32 @@ export class IsometricRenderer {
         }
     }
 
-    _drawMirroredPlankSprite(ctx, id, wx, wy, useWinter = false) {
+    _mirroredPlankPlacement(id, wx, wy, useWinter) {
         const img = (useWinter ? this.propWinter?.image?.(id) : null) || this.assets?.get?.(id);
-        if (!img) return;
+        if (!img) return null;
         const dims = this.assets.getDims(id) || { w: img.width, h: img.height };
         const [ax, ay] = this.assets.getAnchor(id);
+        return { id, img, dims, x: Math.round(wx) - Math.round(ax), y: Math.round(wy - ay) };
+    }
+
+    _drawMirroredPlankSprite(ctx, id, wx, wy, useWinter = false) {
+        const placement = this._mirroredPlankPlacement(id, wx, wy, useWinter);
+        if (!placement) return;
         const tx = Math.round(wx);
-        const dy = Math.round(wy - ay);
         ctx.save();
         SpriteRenderer.disableSmoothing(ctx);
         ctx.translate(tx, 0);
         ctx.scale(-1, 1);
-        ctx.drawImage(img, Math.round(ax - dims.w), dy);
+        ctx.drawImage(placement.img, tx - placement.x - placement.dims.w, placement.y);
         ctx.restore();
+    }
+
+    _litFarmBridgePlacement() {
+        const id = 'bridge.landmark.farm.ew';
+        if (this.bridgeTiles?.get?.('3,7')?.bridgeId !== 'north-farm-bridge' || !this.assets?.has?.(id)
+            || !this.bridgeLightsLit({ start: tileToWorld(3, 5), end: tileToWorld(3, 10) })) return null;
+        const mid = tileToWorld(3, 7.5);
+        return this._mirroredPlankPlacement(id, mid.x, mid.y, true);
     }
 
     _drawHarborCausewayTile(ctx, screenX, screenY, orientation = 'EW', seed = 0) {
@@ -11338,26 +11387,15 @@ export class IsometricRenderer {
                 });
             });
         }
-        // W1-C 1.5 — north-farm-bridge mirrors `bridge.landmark.farm.ew`
-        // horizontally around `(3, 7.5)` so its 4 end-post lanterns light on
-        // the Lamplighter's Round as well.
-        const farmId = 'bridge.landmark.farm.ew';
-        const farmLights = this.assets?.getEntry?.(farmId)?.lights;
-        if (this.bridgeTiles?.get?.('3,7')?.bridgeId === 'north-farm-bridge'
-            && Array.isArray(farmLights) && farmLights.length && this.assets?.has?.(farmId)
-            && this.bridgeLightsLit({ start: tileToWorld(3, 5), end: tileToWorld(3, 10) })) {
-            const dims = this.assets.getDims(farmId) || { w: 192, h: 112 };
-            const [ax, ay] = this.assets.getAnchor(farmId);
-            const mid = tileToWorld(3, 7.5);
-            const baseX = Math.round(mid.x);
-            const baseY = Math.round(mid.y - ay);
+        const farm = this._litFarmBridgePlacement();
+        const farmLights = farm && this.assets.getEntry?.(farm.id)?.lights;
+        if (Array.isArray(farmLights)) {
             farmLights.forEach((light, index) => {
                 const [sx, sy] = Array.isArray(light?.at) ? light.at : [];
                 if (!Number.isFinite(sx) || !Number.isFinite(sy)) return;
                 const height = Math.max(0, Number(light.height) || 0);
-                // Mirrored around baseX: local x' = baseX - (ax - dims.w + sx) = baseX + dims.w - ax - sx
-                const wx = baseX + (dims.w - ax - sx);
-                const wy = baseY + sy + height;
+                const wx = farm.x + farm.dims.w - 1 - sx;
+                const wy = farm.y + sy + height;
                 const foot = worldToTile(wx, wy);
                 out.push({
                     id: `bridge-light:north-farm-bridge:${index}`,

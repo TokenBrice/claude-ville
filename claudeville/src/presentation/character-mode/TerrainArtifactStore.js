@@ -183,6 +183,7 @@ export function terrainArtifactConfiguration(renderer) {
         'bridgeSpans']) {
         scene[key] = renderer[key];
     }
+    scene.avenueTiles = renderer.avenueTiles instanceof Set ? [...renderer.avenueTiles].sort() : null;
     scene.buildings = [...renderer.world?.buildings || []].map(([id, building]) => [id, {
         type: building.type, position: { tileX: building.position.tileX, tileY: building.position.tileY },
         width: building.width, height: building.height, entrance: building.entrance, district: building.district,
@@ -209,6 +210,7 @@ export function captureTerrainArtifactFields(renderer) {
     if (!ground || !coast) return null;
     // v3 — the memoized coast texture (coastFieldTexels) is never persisted:
     // it is rebuilt from coastField / mirrorStops at upload.
+    if (coast.bake?.coast) delete coast.bake.coast.contactFoot;
     const water = coast.bake?.waterFields;
     if (water?.texels !== undefined) {
         const { texels, ...rest } = water;
@@ -272,6 +274,7 @@ export function validTerrainArtifact(artifact) {
         && artifact.height === Math.max(1, Math.round(artifact.bounds.h * artifact.dpr))
         && artifact.rgba instanceof Uint8ClampedArray && artifact.rgba.length === artifact.width * artifact.height * 4
         && validGroundArtifact(artifact.ground) && validCoastArtifact(artifact.coast)
+        && artifact.coast.bake?.coast?.contactFoot === undefined
         && artifact.coast.bake?.waterFields?.texels === undefined
         && validTerrainSubstrate(artifact.manifest, artifact.coast);
 }

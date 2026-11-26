@@ -426,6 +426,7 @@ const GPU_TIMER_RING = 30;
 // culling the stacked full-screen draws.
 const DEBUG_LOAD_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp sampler2D;
 in vec2 v_uv;
 layout(location = 0) out vec4 outColor;
 uniform sampler2D u_scene;
@@ -441,6 +442,7 @@ void main() {
 function quadVertexSource(capture = false) {
     return `#version 300 es
 precision highp float;
+precision highp sampler2D;
 precision highp int;
 ${capture ? 'layout(location = 7) in uint a_captureWord; flat out uint v_captureWord;' : ''}
 layout(location = 0) in vec4 a_rect;
@@ -1402,8 +1404,10 @@ float fatTapWeight(FatTaps t, int i) {
 }
 `;
 
+// Match WGSL f32 sampling before palette, material and light thresholds.
 export const SCENE_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp sampler2D;
 precision highp int;
 in vec2 v_uv;
 in vec2 v_world;
@@ -1532,15 +1536,22 @@ vec4 sampleAlbedo(vec2 uv) {
 }
 
 uniform sampler2D u_emissiveMap;
+// Canvas uploads may round a half-byte in opposite directions when unpremultiplying.
+// Recover the stored premultiplied byte before using the sidecar's straight hue.
+vec4 emissionTexel(vec2 uv) {
+    vec4 c = textureLod(u_emissiveMap, uv, 0.0);
+    float a = floor(c.a * 255.0 + 0.5);
+    return vec4(floor(c.rgb * a + 0.5) / max(a, 1.0), c.a);
+}
 vec4 sampleEmission(vec2 uv, float albedoAlpha) {
-    if (!fatOn || !fatSeam(fatAlbedoTaps) || v_gate == 0.0) return textureLod(u_emissiveMap, uv, 0.0);
+    if (!fatOn || !fatSeam(fatAlbedoTaps) || v_gate == 0.0) return emissionTexel(uv);
     vec4 sum = vec4(0.0);
     for (int i = 0; i < 4; i++) {
         float coverage = fatTapWeight(fatAlbedoTaps, i) * fatTap[i].a;
         if (coverage == 0.0) continue;
         vec2 local = clamp(fatAlbedoTaps.base + fatTapOffset(i), vec2(0.0), vec2(v_texelRect.zw));
         vec2 tapUv = (vec2(v_texelRect.xy) + local + 0.5) / vec2(albedoSize());
-        sum += coverage * fatPremultiplied(textureLod(u_emissiveMap, tapUv, 0.0));
+        sum += coverage * fatPremultiplied(emissionTexel(tapUv));
     }
     // Return straight hue and contribution per covered texel. Output applies albedo alpha once.
     return sum.a > 0.0 ? vec4(sum.rgb / sum.a, sum.a / albedoAlpha) : vec4(0.0);
@@ -3508,6 +3519,7 @@ void main() {
 
 const BLOOM_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp sampler2D;
 precision highp int;
 in vec2 v_uv;
 layout(location = 0) out vec4 outColor;
@@ -3736,6 +3748,7 @@ vec3 shadeOpenSea(vec2 cell) {
 // applies here, per record — the SDR frame writes the texel unchanged.
 const MARK_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp sampler2D;
 precision highp int;
 in vec2 v_uv;
 flat in vec4 v_uvClamp;
@@ -3748,6 +3761,7 @@ void main() {
 
 const COMPOSITE_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp sampler2D;
 precision highp int;
 in vec2 v_uv;
 layout(location = 0) out vec4 outColor;
@@ -3922,6 +3936,7 @@ void main() {
 
 const PARTICLE_FRAGMENT = `#version 300 es
 precision highp float;
+precision highp sampler2D;
 precision highp int;
 in vec2 v_local;
 in vec2 v_world;
@@ -4053,6 +4068,7 @@ float rainU01(uint h) {
 
 export const RAIN_VERTEX = `#version 300 es
 precision highp float;
+precision highp sampler2D;
 precision highp int;
 uniform vec3 u_camera;
 uniform vec2 u_resolution;

@@ -894,6 +894,7 @@ export class BuildingSprite {
     setHovered(b) { this.hovered = b; }
 
     update(dt) {
+        this._partPassSerial = ((this._partPassSerial || 0) + 1) | 0;
         this.frame += (dt / 16) * (this.motionScale || 0);
         // Selectable instruments are re-registered by this frame's draw pass.
         this._instrumentHits.length = 0;
@@ -3162,11 +3163,12 @@ export class BuildingSprite {
         if (splitPass === 'column' && column && building) {
             const cache = this._frameColumnPartCache || (this._frameColumnPartCache = new Map());
             let cached = cache.get(building);
-            const clockMs = this._partClockMs();
-            if (!cached || cached.frame !== this.frame || cached.clockMs !== clockMs || cached.wx !== wx || cached.wy !== wy || cached.entry !== entry) {
+            const serial = this._partPassSerial;
+            const lamps = lampsLitAt(this.atmosphereState);
+            if (!cached || serial === undefined || cached.serial !== serial || cached.lamps !== lamps || cached.wx !== wx || cached.wy !== wy || cached.entry !== entry) {
                 const whole = cached?.draws || [];
                 this.partDrawsFor(entry, building, wx, wy, 'whole', null, whole, null);
-                cached = { frame: this.frame, clockMs, wx, wy, entry, draws: whole };
+                cached = { serial, lamps, wx, wy, entry, draws: whole };
                 cache.set(building, cached);
             }
             const whole = cached.draws;

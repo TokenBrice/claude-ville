@@ -1086,25 +1086,26 @@ function recordForProp(renderer, drawable, sequence) {
         : null;
     const materialName = sprite.materialClass || authoredClass || materialForProp(sprite);
     const elevated = Math.max(0, finite(sprite.bounds?.bottom) - finite(sprite.bounds?.top));
+    const ownMaterial = !useAtlas && cached.material;
     const materialSource = (useAtlas
         ? assets?.getAtlas?.(atlasFrame.atlas, 'material')
-        : (isPilot && resolved?.origin !== 'fallback' ? resolved.material : null)) || null;
+        : (ownMaterial || (resolved?.origin !== 'fallback' && resolved?.material))) || null;
     const emissiveSource = (useAtlas
         ? assets?.getAtlas?.(atlasFrame.atlas, 'emissive')
-        : (isPilot && resolved?.origin !== 'fallback' ? resolved.emissive : null)) || null;
+        : (resolved?.origin !== 'fallback' && resolved?.emissive)) || null;
     // A procedural prop's own channels, painted beside its cached albedo
     // (StaticPropSprite `channels`): an occluder canvas is a 2.3 surface
     // channel (the village wall), an emissive canvas its lit glass.
     const ownOccluder = useAtlas ? null : cached.occluder || null;
     const ownEmissive = useAtlas || emissiveSource ? null : cached.emissive || null;
-    const ownChannels = Boolean(ownOccluder || ownEmissive);
+    const ownChannels = Boolean(ownOccluder || ownEmissive || ownMaterial);
     const record = {
         id: `prop:${propId || `${sprite.tileX},${sprite.tileY}`}:${part}${column ? `:${column.index}` : ''}`,
         stableKey: drawable.stableKey || propId || `${sprite.tileX},${sprite.tileY}`,
         textureKey,
-        sidecarKey: materialSource
+        sidecarKey: ownChannels ? `${textureKey}:own` : materialSource
             ? (useAtlas && atlasFrame?.atlas ? `${atlasFrame.atlas}:channels` : `${propId}:channels`)
-            : (ownChannels ? `${textureKey}:own` : ''),
+            : '',
         source,
         materialSource,
         emissiveSource: emissiveSource || ownEmissive,
