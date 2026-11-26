@@ -41,26 +41,26 @@ function recordHex(staging, offset, bytes) {
 const STAGED = [
     '000024410000e040000000420000c0410000803b0000803c0000883d0000e03d0000403f000040400000c03fcdcc4c3e',
     '0000a24100006041000000420000c0410000003c0000003d0000903d0000003e0000403f000040400000c03fcdcc4c3e',
-    '0000f2410000a841000000420000c0410000403c0000403d0000983d0000103e0000403f000040400000c03fcdcc4c3e000066660100050084032880fd7f0c8002000900',
-    '000021420000e041000000420000c0410000883d0000083e0000a83d0000143e0000403f000040400000c03fcdcc4c3e0200ffff000000000000ff7f0080ff7f00000000',
-    '0000494200000c42000000420000c0410000a03c0000a03d0000a83d0000303e0000403f000040400000c03fcdcc4c3e0000ffff000001000000ff7f0080ff7f00000000',
-    '0000714200002842000000420000c0410000c03c0000c03d0000b03d0000403e0000403f000040400000c03fcdcc4c3e0000ffff000000000000ff7f0080ff7f00000000',
+    '0000f2410000a841000000420000c0410000403c0000403d0000983d0000103e0000403f000040400000c03fcdcc4c3e000066660100050084032880fd7f0c800200090000000000',
+    '000021420000e041000000420000c0410000883d0000083e0000a83d0000143e0000403f000040400000c03fcdcc4c3e0200ffff000000000000ff7f0080ff7f0000000000000000',
+    '0000494200000c42000000420000c0410000a03c0000a03d0000a83d0000303e0000403f000040400000c03fcdcc4c3e0000ffff000001000000ff7f0080ff7f0000000000000000',
+    '0000714200002842000000420000c0410000c03c0000c03d0000b03d0000403e0000403f000040400000c03fcdcc4c3e0000ffff000000000000ff7f0080ff7f0000000000000000',
 ];
 
-test('record staging reproduces the V9 68-byte layout and the head-only default batches byte for byte', () => {
+test('record staging reproduces the V9 72-byte layout and the head-only default batches byte for byte', () => {
     const batches = frameBatches();
     const staging = createRecordStaging();
     const byteLength = stageGpuRecords(batches, staging);
     assert.deepEqual(batches.map(b => [b.tail, b.cueRuns, b.instanceOffset, b.count]), [
         [false, false, 0, 2],
         [true, false, 96, 1],
-        [true, false, 164, 1],
-        [true, true, 232, 2],
+        [true, false, 168, 1],
+        [true, true, 240, 2],
     ]);
-    assert.equal(byteLength, 368);
+    assert.equal(byteLength, 384);
     const staged = [];
     for (const batch of batches) {
-        const stride = batch.tail ? 68 : 48;
+        const stride = batch.tail ? 72 : 48;
         for (let i = 0; i < batch.count; i++) staged.push(recordHex(staging, batch.instanceOffset + i * stride, stride));
     }
     assert.deepEqual(staged, STAGED);
@@ -74,14 +74,14 @@ test('a full-tail staging writes the default tail WebGL2 feeds as constant attri
     ];
     const byteLength = stageGpuRecords(batches, staging, { fullTail: true });
     assert.equal(byteLength, 2 * RECORD_INSTANCE_BYTES);
-    assert.deepEqual(batches.map(b => [b.tail, b.cueRuns, b.instanceOffset]), [[true, false, 0], [true, false, 68]]);
+    assert.deepEqual(batches.map(b => [b.tail, b.cueRuns, b.instanceOffset]), [[true, false, 0], [true, false, 72]]);
     for (const batch of batches) {
-        const tail = Array.from(new Uint16Array(staging.f32.buffer, batch.instanceOffset + 48, 10));
-        assert.deepEqual(tail, [...RECORD_TAIL_RESPONSE, ...RECORD_TAIL_RECEIVER, 0, 0]);
+        const tail = Array.from(new Uint16Array(staging.f32.buffer, batch.instanceOffset + 48, 12));
+        assert.deepEqual(tail, [...RECORD_TAIL_RESPONSE, ...RECORD_TAIL_RECEIVER, 0, 0, 0, 0]);
     }
 });
 
-test('the record stride assertion accepts only the 68-byte scalar-lane stride', () => {
-    assert.equal(assertRecordStride(68), true);
+test('the record stride assertion accepts only the 72-byte scalar-lane stride', () => {
+    assert.equal(assertRecordStride(72), true);
     assert.throws(() => assertRecordStride(80), /stride 80/);
 });

@@ -88,7 +88,7 @@ struct VsOut {
   // alpha, material, elevation, emissive (loc2)
   @location(2) surface: vec4f,
   // gate (loc3.y / 65535), ramp (loc3.z)
-  @location(3) gateRamp: vec2f,
+  @location(3) @interpolate(flat) gateRamp: vec2f,
   // 4.6 / B.1b — the fat path's record-local texel position.
   @location(4) texel: vec2f,
   @location(5) @interpolate(flat) originFrac: vec2f,
@@ -109,7 +109,7 @@ fn sceneVertex(vi: u32, ii: u32, glRows: bool) -> VsOut {
   let receiver = recordLoc4(r);
   // Strip corners (0,0) (1,0) (0,1) (1,1), each coordinate selected from the
   // staged rect. B.3 — a cue-run batch draws six vertices per dot.
-  let flags = u32(response.w + 0.5);
+  let flags = u32(response.w + 0.5) | (recordLoc6(r).x << 16u);
   var corner = i32(vi);
   var rect = recordLoc0(r);
   var uvRect = recordLoc1(r);
@@ -218,8 +218,27 @@ var<private> fatAlbedoPix: vec2f = vec2f(0.0);
 var<private> fatAlbedoTaps: FatTaps;
 var<private> fatTap: array<vec4f, 4>;
 fn fatPremultiplied(c: vec4f) -> vec4f { return vec4f(c.rgb * c.a, c.a); }
+fn indexedAlbedo(p: vec2i) -> vec4f {
+  let raw = albedoTexel(p);
+  if ((v_flags & RECORD_FLAG_RECOLOR_INDEX) == 0u) { return raw; }
+  let rgba = vec4i(raw * 255.0 + 0.5);
+  let color = vec4f(rgba) / 255.0;
+  let code = (i32(textureLoad(materialMap, p, 0).b * 255.0 + 0.5) >> 1u) & 63;
+  if (code == 0) { return color; }
+  let entry = textureLoad(paletteLut, vec2i(code, i32(v_ramp)), 0);
+  if (code < 32) { return vec4f(entry.rgb, color.a); }
+  let trim = textureLoad(paletteLut, vec2i(35, i32(v_ramp)), 0);
+  if (trim.a > 0.5) {
+    let delta = vec3i(trim.rgb * 255.0 + 0.5) - vec3i(entry.rgb * 255.0 + 0.5);
+    return vec4f(vec3f(clamp(rgba.rgb + delta, vec3i(0), vec3i(255))) / 255.0, color.a);
+  }
+  return color;
+}
 fn sampleAlbedo(uv: vec2f) -> vec4f {
-  if (!fatOn) { return albedoTexture(uv); }
+  if (!fatOn) {
+    if ((v_flags & RECORD_FLAG_RECOLOR_INDEX) != 0u) { return indexedAlbedo(vec2i(uv * vec2f(albedoSize()))); }
+    return albedoTexture(uv);
+  }
   let hi = v_texelRect.zw;
   let edge = vec2f(hi) + 0.5;
   let shift = floor((uv - clamp(v_uv, v_uvClamp.xy, v_uvClamp.zw)) * vec2f(albedoSize()) + 0.5);
@@ -232,11 +251,11 @@ fn sampleAlbedo(uv: vec2f) -> vec4f {
   let lo = vec2i(0);
   let origin = v_texelRect.xy;
   let b = vec2i(t.base);
-  fatTap[0] = albedoTexel(origin + clamp(b, lo, hi));
+  fatTap[0] = indexedAlbedo(origin + clamp(b, lo, hi));
   if (!fatSeam(t)) { return fatTap[0]; }
-  fatTap[1] = albedoTexel(origin + clamp(b + vec2i(1, 0), lo, hi));
-  fatTap[2] = albedoTexel(origin + clamp(b + vec2i(0, 1), lo, hi));
-  fatTap[3] = albedoTexel(origin + clamp(b + vec2i(1, 1), lo, hi));
+  fatTap[1] = indexedAlbedo(origin + clamp(b + vec2i(1, 0), lo, hi));
+  fatTap[2] = indexedAlbedo(origin + clamp(b + vec2i(0, 1), lo, hi));
+  fatTap[3] = indexedAlbedo(origin + clamp(b + vec2i(1, 1), lo, hi));
   let m = mix(
     mix(fatPremultiplied(fatTap[0]), fatPremultiplied(fatTap[1]), t.w.x),
     mix(fatPremultiplied(fatTap[2]), fatPremultiplied(fatTap[3]), t.w.x),
@@ -621,7 +640,8 @@ fn sceneSurface() -> SurfaceSample {
     albedoRgba = vec4f(mix(albedoRgba.rgb, waterStopRgb(waterStopForSd(reflectSd)), 0.38), albedoRgba.a);
   }
   var sidecar = vec4f(0.0);
-  if (batch.hasMaterialMap != 0u) { sidecar = textureSampleLevel(materialMap, albedoSampler, uv, 0.0); }
+  let recolorRecord = (v_flags & RECORD_FLAG_RECOLOR_INDEX) != 0u;
+  if (batch.hasMaterialMap != 0u && !(reflectRecord && recolorRecord)) { sidecar = textureSampleLevel(materialMap, albedoSampler, uv, 0.0); }
   let packedMap = (v_flags & RECORD_FLAG_PACKED_GEOMETRY) != 0u;
   let materialId = floor(sidecar.r * 255.0 + 0.5);
   var material = select(v_material, materialId, sidecar.a > 0.0 && !(packedMap && materialId > 254.5));
@@ -641,7 +661,8 @@ fn sceneSurface() -> SurfaceSample {
   emissive *= frame.coreEnergy;
   var geometry = vec4f(0.0);
   if (packedMap) {
-    if (frame.packedGeometry != 0u && sidecar.b > 0.0) { geometry = vec4f(sidecar.g, sidecar.b, 0.0, 1.0); }
+    let strength = select(sidecar.b, f32(u32(sidecar.b * 255.0 + 0.5) & 1u), recolorRecord);
+    if (frame.packedGeometry != 0u && strength > 0.0) { geometry = vec4f(sidecar.g, strength, 0.0, 1.0); }
   } else if (batch.hasOccluderMap != 0u) {
     geometry = textureSampleLevel(occluderMap, albedoSampler, uv, 0.0);
   }
@@ -771,7 +792,8 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   var wetReceiver = -1.0;
   let waterReceiver = materialNear(material, 8.0);
   // 3.5 — a pilot pixel collects the admitted light as one scalar.
-  var rampPixel = frame.hasPaletteLut != 0u && v_ramp > 0.5;
+  let recolorRecord = (v_flags & RECORD_FLAG_RECOLOR_INDEX) != 0u;
+  var rampPixel = frame.hasPaletteLut != 0u && !recolorRecord && v_ramp > 0.5 && v_ramp < 3.5;
   var admitted = 0.0;
   var rampHue = vec3f(0.0);
   var rampSteps = 0.0;
@@ -1201,10 +1223,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
     // lands at least its first course.
     var course = step(0.14, admitted) + step(0.45, admitted);
     if (frame.firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u && rampOwn) { course = max(course, step(1.5, rampSteps)); }
-    let ramp = textureSampleLevel(paletteLut, nearestSampler, vec2f(
-      (material + 0.5) / 11.0,
-      (course + 0.5) / 3.0
-    ), 0.0);
+    let ramp = textureLoad(paletteLut, vec2i(i32(clamp(material, 0.0, 10.0)), i32(course)), 0);
     var rampLit = receiverKnee(
       color * (ramp.rgb * 2.0) + vec3f(ramp.a * 0.25) * step(0.5, course) + reflectionLight,
       receiverLuma

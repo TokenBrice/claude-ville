@@ -4,10 +4,9 @@ import { Compositor } from '../../claudeville/src/presentation/character-mode/Co
 
 function compositorWith(entries) {
     const compositor = Object.create(Compositor.prototype);
-    Object.assign(compositor, { cache: new Map(), cacheUsedAt: new Map(), cachePixels: 0 });
-    for (const [key, pixels, ageMs] of entries) {
+    Object.assign(compositor, { cache: new Map(), cachePixels: 0 });
+    for (const [key, pixels] of entries) {
         compositor.cache.set(key, { width: pixels, height: 1 });
-        compositor.cacheUsedAt.set(key, performance.now() - ageMs);
         compositor.cachePixels += pixels;
     }
     return compositor;
@@ -16,12 +15,12 @@ function compositorWith(entries) {
 // Nine idle agents with distinct robe variants each sample a 1.7 Mpx action
 // strip every frame; trimming that set rebaked and re-uploaded every strip
 // on every frame (4 FPS in the many-waiting scenario).
-test('the compositor never trims composites drawn within the hot window', () => {
+test('the compositor enforces its pixel ceiling even if every strip was just drawn', () => {
     const strips = Array.from({ length: 9 }, (_, i) => [`strip|${i}`, 1_692_800, 0]);
     const compositor = compositorWith(strips);
     compositor._trimCache();
-    assert.equal(compositor.cache.size, 9);
-    assert.equal(compositor.cachePixels, 9 * 1_692_800);
+    assert.equal(compositor.cache.size, 7);
+    assert.equal(compositor.cachePixels, 7 * 1_692_800);
 });
 
 test('the compositor trims cold composites oldest first down to its limits', () => {
@@ -32,6 +31,5 @@ test('the compositor trims cold composites oldest first down to its limits', () 
     ]);
     compositor._trimCache();
     assert.deepEqual([...compositor.cache.keys()], ['cold-b', 'hot']);
-    assert.deepEqual([...compositor.cacheUsedAt.keys()], ['cold-b', 'hot']);
     assert.equal(compositor.cachePixels, 12_000_000);
 });

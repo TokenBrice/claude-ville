@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { astraWeaponPose } from '../../claudeville/src/presentation/character-mode/AstraWeaponPose.js';
 import { codexWeaponPose } from '../../claudeville/src/presentation/character-mode/CodexWeaponPose.js';
+import { equipmentLayer } from '../../claudeville/src/presentation/character-mode/AgentLayerRecords.js';
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { SpriteSheet, DIRECTIONS } from '../../claudeville/src/presentation/character-mode/SpriteSheet.js';
 
@@ -25,32 +26,34 @@ test('Astra wrists follow the rendered cell, independently of cape/crest bounds 
     assert.equal(astraWeaponPose({ dx: 0, dy: 0 }, 'e', 'runeblade'), null);
 });
 
-test('GPU baking passes all 80 source cells to the same equipment path used by Canvas', () => {
+test('the active GPU weapon layer uses the same authored wrist as the Canvas frame', t => {
+    const previous = globalThis.document;
+    t.after(() => { globalThis.document = previous; });
     const calls = [];
-    const context = { save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, translate() {}, drawImage() {} };
-    const previousDocument = globalThis.document;
-    globalThis.document = { createElement: () => ({ getContext: () => context }) };
-    try {
-        const sprite = {
-            spriteCanvas: { width: 736, height: 920 },
-            spriteSheet: { cellSize: 92 },
-            // Deliberately different from the cells being baked.
-            frame: 3, direction: 7, animState: 'idle',
-            _getCellContentBounds: () => ({ minX: 20, maxX: 70, minY: 20, maxY: 75 }),
-            _drawCodexEquipment(ctx, identity, geometry, layer, direction) {
-                const pose = astraWeaponPose(geometry, direction, 'runeblade');
-                assert.ok(pose, 'every baked frame needs its authored grip');
-                calls.push(`${geometry.cell.sx}:${geometry.cell.sy}:${layer}:${direction}`);
-            },
-        };
-        AgentSprite.prototype._composeGpuEquippedSheet.call(sprite, { spriteId: 'agent.codex.gpt6astra' });
-        assert.equal(new Set(calls).size, 160);
-        assert.ok(calls.includes('184:368:front:e'));
-        assert.ok(calls.includes('0:552:back:s'));
-    } finally {
-        if (previousDocument === undefined) delete globalThis.document;
-        else globalThis.document = previousDocument;
-    }
+    globalThis.document = { createElement: () => {
+        const canvas = {};
+        canvas.getContext = () => ({ canvas, drawImage() {}, getImageData(_x,_y,w,h) {
+            const data = new Uint8ClampedArray(w*h*4);
+            data[3] = 255;
+            return { data };
+        } });
+        return canvas;
+    } };
+    const identity = { spriteId: 'agent.codex.gpt6astra' };
+    const sprite = { direction: 2, _runtimeCodexEquipment: () => 'runeblade',
+        _drawCodexEquipment(ctx, identity, geometry, layer) {
+            calls.push([geometry.cell, layer, astraWeaponPose(geometry, 'e', 'runeblade')]);
+        },
+    };
+    const g = { cell: new SpriteSheet(null).cell('walk', 2, 4), dx:30, dy:25, drawScale:1 };
+    const front = equipmentLayer(sprite, identity, g, 'front');
+    assert.equal(equipmentLayer(sprite, identity, g, 'front'), front);
+    assert.equal(front.source.width, 1);
+    assert.equal(front.source.height, 1);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], g.cell);
+    assert.equal(calls[0][1], 'front');
+    assert.ok(calls[0][2]);
 });
 
 test('Astra hides the far hand with its blade; unprofiled sprites keep their fallback poses', () => {

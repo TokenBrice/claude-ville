@@ -10,6 +10,12 @@ import {
     writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { Compositor, HEAD_APEX_COLUMNS, STRIP_HEAD_MATCHED, sourceList } from '../../claudeville/src/presentation/character-mode/Compositor.js';
+import { DIRECTIONS, WALK_FRAMES } from '../../claudeville/src/presentation/character-mode/SpriteSheet.js';
+import { CODEX_CELESTIAL_GRIPS } from '../../claudeville/src/presentation/character-mode/CodexCelestialGrips.js';
+import { ASTRA_WRIST_TABLES, ASTRA_POSE_WRIST_TABLES } from '../../claudeville/src/presentation/character-mode/AstraWeaponPose.js';
+import { CODEX_ENGINEER_GRIPS, clearDetachedCodexWrench } from '../../claudeville/src/presentation/character-mode/CodexEngineerGrips.js';
+import { CODEX_PALADIN_GRIPS } from '../../claudeville/src/presentation/character-mode/CodexPaladinGrips.js';
 import { PNG } from 'pngjs';
 import { materialClassId } from '../../claudeville/src/presentation/character-mode/MaterialRegistry.js';
 import {
@@ -114,16 +120,26 @@ if (check) {
         failures += missingProfiles.length;
     }
 }
-for (const [id, profile] of Object.entries(PROFILES)) {
+const palettes = {};
+const anchors = {};
+for (const id of Object.keys(PROFILES).sort()) {
+    const profile = PROFILES[id];
     const entry = entries.get(id);
     if (!entry) throw new Error(`missing manifest entry ${id}`);
     if (id.startsWith('agent.') && !declaresSidecarFile(entry)) continue;
     // The same reviewed colour classification serves the base sheet and the
     // optional C2 action strip; both are the same character's albedo pixels.
     const sources = [pathForEntry(entry), ...actionStripPathsForEntry(entry).slice(0, 1)];
-    for (const sourcePath of sources) {
-        const albedo = PNG.sync.read(readFileSync(join(spritesRoot, sourcePath)));
-        const channels = authorChannels(albedo, profile);
+    const images = sources.map(path => PNG.sync.read(readFileSync(join(spritesRoot, path))));
+    let codes;
+    if (id.startsWith('agent.')) {
+        const palette = paletteFor(entry, images);
+        palettes[id] = palette.model;
+        codes = palette.codes;
+        anchors[id] = anchorsFor(entry, images);
+    }
+    for (const [i, sourcePath] of sources.entries()) {
+        const channels = authorChannels(images[i], profile, codes);
         for (const [channel, png] of Object.entries(channels)) {
             const outputPath = join(spritesRoot, sourcePath.replace(/\.png$/, `.${channel}.png`));
             const bytes = PNG.sync.write(png, { colorType: 6 });
@@ -133,7 +149,7 @@ for (const [id, profile] of Object.entries(PROFILES)) {
                     failures++;
                 }
             } else {
-                writeFileSync(outputPath, bytes);
+                if (!existsSync(outputPath) || !readFileSync(outputPath).equals(bytes)) writeFileSync(outputPath, bytes);
             }
         }
         const emissivePixels = channels.emissive ? countContributingPixels(channels.emissive) : 0;
@@ -141,6 +157,20 @@ for (const [id, profile] of Object.entries(PROFILES)) {
     }
 }
 
+for (const [name, models] of [['roster-palettes', palettes], ['anchors', anchors]]) {
+    const path = join(spritesRoot, 'characters', name + '.json');
+    const firelight = name === 'roster-palettes'
+        ? ',"firelight":' + JSON.stringify([...PNG.sync.read(readFileSync(join(spritesRoot, 'luts/light-ramp.command.png'))).data])
+        : '';
+    const json = '{"version":1' + firelight + ',"models":{\n' + Object.entries(models)
+        .map(([id, model]) => JSON.stringify(id) + ':' + JSON.stringify(model)).join(',\n') + '\n}}\n';
+    if (check) {
+        if (!existsSync(path) || readFileSync(path, 'utf8') !== json) {
+            console.error('[author-roster-channels] STALE ' + path);
+            failures++;
+        }
+    } else writeFileSync(path, json);
+}
 if (failures) {
     console.error(`[author-roster-channels] ${failures} stale or missing channel file(s)`);
     process.exit(1);
@@ -171,7 +201,70 @@ function terrain(material) {
     return { material, emissiveContribution: 0, emissiveColors: [], occluder: 'none' };
 }
 
-function authorChannels(albedo, profile) {
+function paletteFor(entry, images) {
+    const rgb = hex => hex.slice(1).match(/../g).map(v => parseInt(v, 16));
+    const robeAnchors = sourceList(entry.paletteSource?.robe).map(rgb);
+    const trimAnchors = sourceList(entry.paletteSource?.trim).map(rgb);
+    const codes = new Map();
+    const robeColors = [];
+    for (const { data } of images) {
+        for (let i = 0; i < data.length; i += 4) {
+            if (data[i + 3] < 16) continue;
+            const key = data.readUIntBE(i, 3);
+            if (codes.has(key)) continue;
+            const matches = a => a.every((v, c) => Math.abs(data[i + c] - v) <= 12);
+            const robe = robeAnchors.findIndex(matches);
+            const trim = trimAnchors.findIndex(matches);
+            codes.set(key, trim < 0 ? 0 : 32 + trim);
+            if (robe >= 0) robeColors.push([data[i], data[i+1], data[i+2], robe, trim]);
+        }
+    }
+    if (robeColors.length > 31) throw new Error(entry.id + ' exceeds 31 robe slots');
+    robeColors.sort((a, b) => a[3]-b[3] || a[0]-b[0] || a[1]-b[1] || a[2]-b[2]);
+    robeColors.forEach(([r,g,b], i) => codes.set((r << 16) | (g << 8) | b, i + 1));
+    return { model: { robeAnchors, robeColors, trimAnchors }, codes };
+}
+
+function anchorsFor(entry, [base, actions]) {
+    if (entry.id === 'agent.codex.gpt54') {
+        base = { ...base, data: Buffer.from(base.data) };
+        clearDetachedCodexWrench({ clearRect(x, y, w, h) {
+            for (let row = y; row < y + h; row++) base.data.fill(0, (row * base.width + x) * 4, (row * base.width + x + w) * 4);
+        } }, base.width, base.height);
+    }
+    const cell = base.width / DIRECTIONS.length;
+    const scan = Compositor.prototype;
+    const columns = HEAD_APEX_COLUMNS[entry.id];
+    const templates = STRIP_HEAD_MATCHED.has(entry.id) ? scan._headTemplates(base, cell, columns) : null;
+    const groups = { walk: [base, 0, WALK_FRAMES-1], idle: [base, WALK_FRAMES, base.height/cell-1] };
+    for (const [name, group] of Object.entries(entry.actionStrip?.groups || {})) groups[name] = [actions, ...group.rows];
+    const headApex = {};
+    for (const [name, [image, first, last]] of Object.entries(groups)) {
+        headApex[name] = {};
+        for (const [col, direction] of DIRECTIONS.entries()) {
+            const points = [];
+            for (let row = first; row <= last; row++) {
+                const x = col * cell, y = row * cell;
+                const apex = image === actions && templates?.[col]
+                    ? scan._matchHead(image.data, image.width, x, y, cell, templates[col])
+                    : scan._cellHeadApex(image.data, image.width, x, y, cell, columns);
+                points.push(apex.found ? [Math.round(apex.centroidX - x), apex.topY - y] : null);
+            }
+            headApex[name][direction] = points;
+        }
+    }
+    const grip = CODEX_CELESTIAL_GRIPS[entry.id] || CODEX_ENGINEER_GRIPS[entry.id] || CODEX_PALADIN_GRIPS[entry.id];
+    const tracks = grip?.wrists || ASTRA_WRIST_TABLES[entry.id];
+    if (!tracks) return { headApex };
+    const wrists = { walk: {}, idle: {}, ...(grip?.poseWrists || ASTRA_POSE_WRIST_TABLES[entry.id]) };
+    for (const [dir, frames] of Object.entries(tracks)) {
+        wrists.walk[dir] = frames.slice(0, WALK_FRAMES);
+        wrists.idle[dir] = frames.slice(WALK_FRAMES);
+    }
+    return { headApex, [CODEX_PALADIN_GRIPS[entry.id] ? 'wristL' : 'wristR']: wrists };
+}
+
+function authorChannels(albedo, profile, codes) {
     const material = blankLike(albedo);
     const emissive = blankLike(albedo);
     const occluder = blankLike(albedo);
@@ -185,6 +278,7 @@ function authorChannels(albedo, profile) {
         if (alpha === 0) continue;
         const rgb = rgbKey(albedo.data[index], albedo.data[index + 1], albedo.data[index + 2]);
         material.data[index] = materialColors.get(rgb) ?? materialIndex;
+        if (codes && alpha >= 16) material.data[index + 1] = codes.get(albedo.data.readUIntBE(index, 3));
         material.data[index + 3] = alpha;
 
         if (profile.occluder === 'alpha-silhouette') {

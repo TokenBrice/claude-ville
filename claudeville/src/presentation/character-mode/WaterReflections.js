@@ -72,7 +72,8 @@ export function insertBodyReflectionRecords(renderer, records) {
         _reflections.push({
             ...record,
             id: `ground:reflect:${record.id}`,
-            y: record.y + 2 * lift,
+            // Separate hats and weapons share the body’s waterline.
+            y: record.sharedLayer ? 2 * (sprite.y + 1 - height) - record.y : record.y + 2 * lift,
             height,
             sh,
             reflect: true,
@@ -84,10 +85,9 @@ export function insertBodyReflectionRecords(renderer, records) {
             ownerSlot: 0,
             emissive: 0,
             occluder: 0,
-            // Albedo only: a reflection neither glows nor carries the body's
-            // material/occluder channels.
-            sidecarKey: '',
-            materialSource: null,
+            // Indexed albedo needs the color code even on the water twin.
+            sidecarKey: record.recolorIndex ? record.sidecarKey : '',
+            materialSource: record.recolorIndex ? record.materialSource : null,
             emissiveSource: null,
             occluderSource: null,
         });

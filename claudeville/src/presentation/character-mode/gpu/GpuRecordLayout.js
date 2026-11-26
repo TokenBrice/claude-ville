@@ -9,9 +9,10 @@
 //   loc4 USHORT x4  depth key, footY, frontCornerX, frontCornerY        56-63
 //                   (receiver coordinates integer world px + 32768)
 //   loc5 USHORT x2  (ownerSlot, landmarkId)                             64-67
+//   loc6 USHORT x2  (flags high half, variant or alpenglow row)           68-71
 // Continuous surface values stay float32; the integer fields pack as
 // uint16, little-endian (a WGSL reader takes each u32 lane's low half). A
-// batch whose records all carry the default tail (loc3-loc5: layer 0, gate
+// batch whose records all carry the default tail (loc3-loc6: layer 0, gate
 // 1, no ramp or flags, far-plane depth, ground-self receiver, no identity) —
 // terrain, ground casts and marks, every ground-cue chord — stages only the
 // 48-byte head; WebGL2 then reads the tail as constant generic attributes.
@@ -28,10 +29,11 @@ export const RECORD_LAYOUT = Object.freeze([
     Object.freeze({ name: 'loc3', offset: 48, type: 'uint16', count: 4 }),
     Object.freeze({ name: 'loc4', offset: 56, type: 'uint16', count: 4 }),
     Object.freeze({ name: 'loc5', offset: 64, type: 'uint16', count: 2 }),
+    Object.freeze({ name: 'loc6', offset: 68, type: 'uint16', count: 2 }),
 ]);
 export const RECORD_OFFSETS = Object.freeze(Object.fromEntries(RECORD_LAYOUT.map(field => [field.name, field.offset])));
 export const RECORD_HEAD_BYTES = 48;
-export const RECORD_INSTANCE_BYTES = 68;
+export const RECORD_INSTANCE_BYTES = 72;
 // The default tail as WebGL2 constant generic attributes (loc3, loc4).
 export const RECORD_TAIL_RESPONSE = Object.freeze([0, 65535, 0, 0]);
 export const RECORD_TAIL_RECEIVER = Object.freeze([0, RECEIVER_BIAS - 1, RECEIVER_BIAS, RECEIVER_BIAS - 1]);
@@ -42,7 +44,7 @@ const COMPONENT_BYTES = Object.freeze({ float32: 4, uint16: 2 });
 // overlap, the head ends where loc3 starts, and the record is exactly
 // `stride` bytes. The layout table checks itself at module load; a backend
 // passes the stride its shader layout reports (a WebGPU storage struct of
-// scalar lanes must report 68, never the 80 of vec4 lanes).
+// scalar lanes must report 72, never the 80 of vec4 lanes).
 export function assertRecordStride(stride = RECORD_INSTANCE_BYTES) {
     let end = 0;
     for (const field of RECORD_LAYOUT) {
@@ -69,11 +71,12 @@ function receiverToUint16(value) {
     return number >= 65535 ? 65535 : number;
 }
 
-// True when a record's V9 tail (loc3-loc5) is all defaults, so its batch may
+// True when a record's V9 tail (loc3-loc6) is all defaults, so its batch may
 // stage the head alone.
 export function recordHasDefaultTail(record) {
     return (record.emissiveGate ?? 1) >= 1
         && !record.paletteRamp
+        && !record.recolorRow && !record.meta
         && !record.flags
         && !record.depthKey
         && (record.footY ?? -1) === -1
@@ -111,7 +114,7 @@ export function writeGpuRecordInstance(f32, u16, byteOffset, record, tail) {
     // loc3.x — the record's albedo-page layer (0 when unpaged).
     u16[h] = paged ? record.pageLayer : 0;
     u16[h + 1] = unitToUint16(record.emissiveGate ?? 1);
-    u16[h + 2] = record.paletteRamp ? 1 : 0;
+    u16[h + 2] = record.recolorRow || Number(record.paletteRamp) || 0;
     u16[h + 3] = record.flags || 0;
     u16[h + 4] = record.depthKey || 0;
     u16[h + 5] = receiverToUint16(record.footY ?? -1);
@@ -119,6 +122,8 @@ export function writeGpuRecordInstance(f32, u16, byteOffset, record, tail) {
     u16[h + 7] = receiverToUint16(record.frontCornerY ?? -1);
     u16[h + 8] = record.ownerSlot || 0;
     u16[h + 9] = record.landmarkId || 0;
+    u16[h + 10] = record.flags >>> 16;
+    u16[h + 11] = record.meta || 0;
 }
 
 // Staging views over one growable ArrayBuffer (`stageGpuRecords` fills it).
@@ -128,10 +133,10 @@ export function createRecordStaging() {
 }
 
 // Every batch of the frame into one staging buffer at its own byte offset:
-// sets `batch.tail` (68-byte records, else the 48-byte head), `batch.cueRuns`
+// sets `batch.tail` (72-byte records, else the 48-byte head), `batch.cueRuns`
 // (B.3: plain ground-cue records keep the default tail, so a cue batch with
 // a tail holds dot runs), `batch.instanceOffset` and `batch.count`. Returns
-// the staged byte length. `fullTail` stages every batch at 68 bytes (a
+// the staged byte length. `fullTail` stages every batch at 72 bytes (a
 // backend with base-instance draws reads one stride for the whole frame).
 export function stageGpuRecords(batches, staging, { fullTail = false } = {}) {
     let byteLength = 0;

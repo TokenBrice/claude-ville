@@ -48,6 +48,7 @@ import {
     MIST,
     PALETTE_LUT_HEIGHT,
     PALETTE_LUT_WIDTH,
+    agentPaletteLut,
     resolveAtmosphereCourses,
     resolveCamera,
     resolveFatPixels,
@@ -329,7 +330,7 @@ export const SEA_BODY_ROWS = Object.freeze([190, 350]);
 // The sea's shelf takes swell caps only this far (tiles) off the beach, so
 // the swash and the near-shore cycle keep the shore band to themselves.
 export const SWELL_SHORE_SD = 0.8;
-// V9 / B.1a — one instance per record (GpuRecordLayout: the 68-byte layout,
+// V9 / B.1a — one instance per record (GpuRecordLayout: the 72-byte layout,
 // the head-only default tail, the shared staging), drawn as a 4-vertex
 // TRIANGLE_STRIP with every attribute at divisor 1; loc5 is read through
 // vertexAttribIPointer. A head-only batch's draw disables arrays 3-5 and the
@@ -444,6 +445,7 @@ layout(location = 2) in vec4 a_surface;
 layout(location = 3) in vec4 a_response;
 layout(location = 4) in vec4 a_receiver;
 layout(location = 5) in uvec2 a_identity;
+layout(location = 6) in uvec2 a_extended;
 uniform vec3 u_camera;
 uniform vec2 u_resolution;
 uniform sampler2D u_albedo;
@@ -457,8 +459,8 @@ out float v_alpha;
 out float v_material;
 out float v_elevation;
 out float v_emissive;
-out float v_gate;
-out float v_ramp;
+flat out float v_gate;
+flat out float v_ramp;
 flat out vec2 v_originFrac;
 flat out vec4 v_uvClamp;
 flat out vec3 v_receiver;
@@ -480,7 +482,7 @@ void main() {
     // the staged rect, never interpolated, so every edge is the staged value.
     // B.3 — a ground-cue batch holding dot runs draws six vertices per dot
     // (GroundCueRecords.CUE_RUN_GLSL); the rect and uv rect become the dot's.
-    uint flags = uint(a_response.w + 0.5);
+    uint flags = uint(a_response.w + 0.5) | (a_extended.x << 16u);
     int corner = gl_VertexID;
     vec4 rect = a_rect;
     vec4 uvRect = a_uvRect;
@@ -1381,8 +1383,8 @@ in float v_alpha;
 in float v_material;
 in float v_elevation;
 in float v_emissive;
-in float v_gate;
-in float v_ramp;
+flat in float v_gate;
+flat in float v_ramp;
 // V9 per-record values, flat: the record's origin fraction (sprite-origin
 // shading grid), its source-rect clamp, receiver geometry (footY,
 // frontCornerX, frontCornerY; integer world px, -1 = none/ground self),
@@ -1441,8 +1443,30 @@ vec2 fatAlbedoPix = vec2(0.0);
 FatTaps fatAlbedoTaps;
 vec4 fatTap[4];
 vec4 fatPremultiplied(vec4 c) { return vec4(c.rgb * c.a, c.a); }
+uniform highp sampler2D u_materialMap;
+uniform highp sampler2D u_paletteLut;
+vec4 indexedAlbedo(ivec2 p) {
+    vec4 color = albedoTexel(p);
+    if ((v_flags & ${GPU_RECORD_FLAGS.recolorIndex}u) == 0u) return color;
+    // Resolve on the authored byte grid before any filtering or lighting.
+    ivec4 rgba = ivec4(color * 255.0 + 0.5);
+    color = vec4(rgba) / 255.0;
+    int code = (int(texelFetch(u_materialMap, p, 0).b * 255.0 + 0.5) >> 1) & 63;
+    if (code == 0) return color;
+    vec4 entry = texelFetch(u_paletteLut, ivec2(code, int(v_ramp)), 0);
+    if (code < 32) return vec4(entry.rgb, color.a);
+    vec4 target = texelFetch(u_paletteLut, ivec2(35, int(v_ramp)), 0);
+    if (target.a > 0.5) {
+        ivec3 delta = ivec3(target.rgb * 255.0 + 0.5) - ivec3(entry.rgb * 255.0 + 0.5);
+        color.rgb = vec3(clamp(rgba.rgb + delta, 0, 255)) / 255.0;
+    }
+    return color;
+}
 vec4 sampleAlbedo(vec2 uv) {
-    if (!fatOn) return albedoTexture(uv);
+    if (!fatOn) {
+        if ((v_flags & ${GPU_RECORD_FLAGS.recolorIndex}u) != 0u) return indexedAlbedo(ivec2(uv * vec2(albedoSize())));
+        return albedoTexture(uv);
+    }
     // main() clamps uv to the record rect (edge texel centres) and moves it
     // only by whole texels (row ripples, the cast wobble), each clamped
     // again: the same steps in record-local texels.
@@ -1458,18 +1482,18 @@ vec4 sampleAlbedo(vec2 uv) {
     ivec2 lo = ivec2(0);
     ivec2 origin = v_texelRect.xy;
     ivec2 b = ivec2(t.base);
-    fatTap[0] = albedoTexel(origin + clamp(b, lo, hi));
+    fatTap[0] = indexedAlbedo(origin + clamp(b, lo, hi));
     if (!fatSeam(t)) return fatTap[0];
-    fatTap[1] = albedoTexel(origin + clamp(b + ivec2(1, 0), lo, hi));
-    fatTap[2] = albedoTexel(origin + clamp(b + ivec2(0, 1), lo, hi));
-    fatTap[3] = albedoTexel(origin + clamp(b + ivec2(1, 1), lo, hi));
+    fatTap[1] = indexedAlbedo(origin + clamp(b + ivec2(1, 0), lo, hi));
+    fatTap[2] = indexedAlbedo(origin + clamp(b + ivec2(0, 1), lo, hi));
+    fatTap[3] = indexedAlbedo(origin + clamp(b + ivec2(1, 1), lo, hi));
     vec4 m = mix(
         mix(fatPremultiplied(fatTap[0]), fatPremultiplied(fatTap[1]), t.w.x),
         mix(fatPremultiplied(fatTap[2]), fatPremultiplied(fatTap[3]), t.w.x),
         t.w.y);
     return m.a > 0.0 ? vec4(m.rgb / m.a, m.a) : vec4(0.0);
 }
-uniform sampler2D u_materialMap;
+
 uniform sampler2D u_emissiveMap;
 vec4 sampleEmission(vec2 uv, float albedoAlpha) {
     if (!fatOn || !fatSeam(fatAlbedoTaps) || v_gate == 0.0) return textureLod(u_emissiveMap, uv, 0.0);
@@ -1583,7 +1607,7 @@ uniform float u_wetness;
 // class id) x 3 px tall (course: barely lit / mid / light). RGB is a tint
 // multiplier encoded as texel * 2 (0.5 = x1.0), A an authored additive lift
 // scaled by PALETTE_LUT_LIFT. Nearest-sampled; absent table = today response.
-uniform sampler2D u_paletteLut;
+
 uniform bool u_hasPaletteLut;
 // NL-2 / NL-1 (Firelight.resolveFirelight): x the firelight-on-people
 // strength (look nl2), y 1 while the tuned ramp landing is on (look nl1 > 0).
@@ -2470,7 +2494,8 @@ void main() {
         alpha *= course < 0.5 ? 0.42 : course < 1.5 ? 0.28 : 0.16;
         albedo.rgb = mix(albedo.rgb, WATER_STOPS[waterStopForSd(reflectSd)], 0.38);
     }
-    vec4 sidecar = u_hasMaterialMap ? textureLod(u_materialMap, uv, 0.0) : vec4(0.0);
+    bool recolorRecord = (v_flags & ${GPU_RECORD_FLAGS.recolorIndex}u) != 0u;
+    vec4 sidecar = u_hasMaterialMap && !(reflectRecord && recolorRecord) ? textureLod(u_materialMap, uv, 0.0) : vec4(0.0);
     bool packedMap = (v_flags & ${GPU_RECORD_FLAGS.packedGeometry}u) != 0u;
     float materialId = floor(sidecar.r * 255.0 + 0.5);
     float material = sidecar.a > 0.0 && !(packedMap && materialId > 254.5) ? materialId : v_material;
@@ -2492,8 +2517,9 @@ void main() {
     // ambient ramp: authored emitters stay identifiable by day and reach full
     // energy once the exposure envelope says the village needs them.
     emissive *= u_coreEnergy;
+    float strength = recolorRecord ? float(int(sidecar.b * 255.0 + 0.5) & 1) : sidecar.b;
     vec4 geometry = packedMap
-        ? (u_packedGeometry && sidecar.b > 0.0 ? vec4(sidecar.g, sidecar.b, 0.0, 1.0) : vec4(0.0))
+        ? (u_packedGeometry && strength > 0.0 ? vec4(sidecar.g, strength, 0.0, 1.0) : vec4(0.0))
         : u_hasOccluderMap ? textureLod(u_occluderMap, uv, 0.0) : vec4(0.0);
     // 2.3 — a surface-coded landmark (V9 flag 16) carries the true height
     // above ground / 255 in R and its face and height code in B; its fog lift
@@ -2610,7 +2636,7 @@ void main() {
     // 3.5 — a pilot pixel collects the admitted light as one scalar instead of
     // adding it toward white; the authored ramp then decides what that much
     // light does to this material.
-    bool rampPixel = u_hasPaletteLut && v_ramp > 0.5;
+    bool rampPixel = u_hasPaletteLut && !recolorRecord && v_ramp > 0.5 && v_ramp < 3.5;
     float admitted = 0.0;
     // The strongest ramp light's own colour and pool course (3.5 landing).
     vec3 rampHue = vec3(0.0);
@@ -3211,10 +3237,7 @@ void main() {
         // its fire never stays unlit.
         float course = step(0.14, admitted) + step(0.45, admitted);
         if (u_firelight.y > 0.5 && ownLandmark != ${FIRELIGHT_PILOT_LANDMARK}u && rampOwn) course = max(course, step(1.5, rampSteps));
-        vec4 ramp = textureLod(u_paletteLut, vec2(
-            (material + 0.5) / 11.0,
-            (course + 0.5) / 3.0
-        ), 0.0);
+        vec4 ramp = texelFetch(u_paletteLut, ivec2(clamp(material, 0.0, 10.0), course), 0);
         vec3 rampLit = receiverKnee(
             color * (ramp.rgb * 2.0) + vec3(ramp.a * 0.25) * step(0.5, course) + reflectionLight,
             receiverLuma
@@ -4433,7 +4456,7 @@ export class GpuWorldRenderer {
         this.vao = gl.createVertexArray();
         this.vertexBuffer = gl.createBuffer();
         gl.bindVertexArray(this.vao);
-        for (let location = 0; location <= 5; location++) {
+        for (let location = 0; location <= 6; location++) {
             gl.enableVertexAttribArray(location);
             gl.vertexAttribDivisor(location, 1);
         }
@@ -4441,12 +4464,12 @@ export class GpuWorldRenderer {
         this._pointedInstance = -1;
         this._recordTailArrays = true;
         // T1 mark VAO: the same six V9 attributes over the mark pass's own
-        // buffer, full 68-byte records (every mark carries its flags).
+        // buffer, full 72-byte records (every mark carries its flags).
         this.markVao = gl.createVertexArray();
         this.markBuffer = gl.createBuffer();
         this.markBufferBytes = 0;
         gl.bindVertexArray(this.markVao);
-        for (let location = 0; location <= 5; location++) {
+        for (let location = 0; location <= 6; location++) {
             gl.enableVertexAttribArray(location);
             gl.vertexAttribDivisor(location, 1);
         }
@@ -5196,7 +5219,7 @@ export class GpuWorldRenderer {
     }
 
     // V9 / B.1a — one instance per record, every batch in one buffer at its
-    // own byte offset (GpuRecordLayout.stageGpuRecords): 68 bytes, or the
+    // own byte offset (GpuRecordLayout.stageGpuRecords): 72 bytes, or the
     // 48-byte head alone when every record of the batch has the default tail.
     _stageFrameVertices(batches, upload = true) {
         const staging = this._recordStaging;
@@ -5235,17 +5258,19 @@ export class GpuWorldRenderer {
         gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, offset + RECORD_OFFSETS.loc2);
         if (batch.tail) {
             if (!this._recordTailArrays) {
-                for (let location = 3; location <= 5; location++) gl.enableVertexAttribArray(location);
+                for (let location = 3; location <= 6; location++) gl.enableVertexAttribArray(location);
                 this._recordTailArrays = true;
             }
             gl.vertexAttribPointer(3, 4, gl.UNSIGNED_SHORT, false, stride, offset + RECORD_OFFSETS.loc3);
             gl.vertexAttribPointer(4, 4, gl.UNSIGNED_SHORT, false, stride, offset + RECORD_OFFSETS.loc4);
             gl.vertexAttribIPointer(5, 2, gl.UNSIGNED_SHORT, stride, offset + RECORD_OFFSETS.loc5);
+            gl.vertexAttribIPointer(6, 2, gl.UNSIGNED_SHORT, stride, offset + RECORD_OFFSETS.loc6);
         } else if (this._recordTailArrays !== false) {
-            for (let location = 3; location <= 5; location++) gl.disableVertexAttribArray(location);
+            for (let location = 3; location <= 6; location++) gl.disableVertexAttribArray(location);
             gl.vertexAttrib4fv(3, RECORD_TAIL_RESPONSE);
             gl.vertexAttrib4fv(4, RECORD_TAIL_RECEIVER);
             gl.vertexAttribI4ui(5, 0, 0, 0, 0);
+            gl.vertexAttribI4ui(6, 0, 0, 0, 0);
             this._recordTailArrays = false;
         }
         this._pointedInstance = offset;
@@ -5498,14 +5523,12 @@ export class GpuWorldRenderer {
         // 3.5 — the authored ramp table. An absent, wrong-sized, or shed table
         // leaves the pilot with today's additive response.
         const lutSource = resolvePaletteLut(qualityLevel, feed);
-        const lut = lutSource
-            ? this._textureFor('lut:palette-ramp', lutSource, feed.paletteLutRevision ?? null)
-            : null;
-        this.paletteLutActive = Boolean(lut);
+        const lut = this.uploadTypedTexture('lut:palette-ramp', agentPaletteLut);
+        this.paletteLutActive = Boolean(lutSource && lut);
         gl.activeTexture(gl.TEXTURE0 + SCENE_SAMPLER_UNITS.paletteLut);
         gl.bindTexture(gl.TEXTURE_2D, lut || this.emptyMaterialTexture);
         gl.uniform1i(uniforms.u_paletteLut, SCENE_SAMPLER_UNITS.paletteLut);
-        gl.uniform1i(uniforms.u_hasPaletteLut, lut ? 1 : 0);
+        gl.uniform1i(uniforms.u_hasPaletteLut, this.paletteLutActive ? 1 : 0);
         // NL-2 / NL-1 — firelight on people and the tuned ramp (Firelight.js).
         const firelight = resolveFirelight(this._firelight ||= new Float32Array(2));
         gl.uniform2f(uniforms.u_firelight, firelight[0], firelight[1]);
@@ -5929,7 +5952,7 @@ export class GpuWorldRenderer {
     // Wave 10 S5 / T1 — the attention-mark pass (MARK_FRAGMENT) onto the
     // presented frame: `marks` are V9 screen-space records in draw order
     // (AttentionPlates `attentionMarkRecords`), batched by texture without
-    // reordering, full 68-byte records on the mark VAO. `markRecords` is how
+    // reordering, full 72-byte records on the mark VAO. `markRecords` is how
     // many were drawn this frame; the overlay prints only the plate ink when
     // it equals the frame's mark count, else it draws the whole plate.
     // `late` (drawLateMarks) counts into `lateMarkRecords` instead.
@@ -5995,6 +6018,7 @@ export class GpuWorldRenderer {
             gl.vertexAttribPointer(3, 4, gl.UNSIGNED_SHORT, false, stride, offset + RECORD_OFFSETS.loc3);
             gl.vertexAttribPointer(4, 4, gl.UNSIGNED_SHORT, false, stride, offset + RECORD_OFFSETS.loc4);
             gl.vertexAttribIPointer(5, 2, gl.UNSIGNED_SHORT, stride, offset + RECORD_OFFSETS.loc5);
+            gl.vertexAttribIPointer(6, 2, gl.UNSIGNED_SHORT, stride, offset + RECORD_OFFSETS.loc6);
             gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batch.count);
             drawn += batch.count;
             for (let recordIndex = 0; recordIndex < batch.count; recordIndex++) {

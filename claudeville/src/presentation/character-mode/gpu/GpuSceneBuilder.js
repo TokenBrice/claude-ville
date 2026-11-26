@@ -1,3 +1,4 @@
+import { agentPaletteLut, canvasOverflowRecord, finishAgentLayerFrame } from '../AgentLayerRecords.js';
 import {
     DAYLIGHT_PASSIVE_CORE_SCALE,
     effectBudgetMode,
@@ -129,8 +130,8 @@ function sidecarFor(assets, id, kind = 'material') {
 // occluder height, B occlusion strength (0 = no geometry; an authored 0
 // packs as 1), A presence. It replaces the occluder companion, so it never
 // carries 2.3 surface codes; emissive stays its own RGBA channel.
-export function packGeometryPixels(material = null, occluder = null, pixelCount = null) {
-    const requestedPixels = Number(pixelCount);
+export function packGeometryPixels(material = null, occluder = null, pixelCount = null, indexed = false) {
+    const requestedPixels = pixelCount == null ? NaN : Number(pixelCount);
     const pixels = Number.isFinite(requestedPixels)
         ? Math.max(0, Math.floor(requestedPixels))
         : Math.ceil(Math.max(Number(material?.length) || 0, Number(occluder?.length) || 0) / 4);
@@ -141,7 +142,9 @@ export function packGeometryPixels(material = null, occluder = null, pixelCount 
         if (!materialPresent && !geometryPresent) continue;
         packed[index] = materialPresent ? material[index] : 255;
         packed[index + 1] = geometryPresent ? occluder[index] : 0;
-        packed[index + 2] = geometryPresent ? Math.max(1, occluder[index + 1]) : 0;
+        packed[index + 2] = indexed
+            ? (((materialPresent ? material[index+1] : 0) & 63) << 1) | Number(geometryPresent)
+            : geometryPresent ? Math.max(1, occluder[index + 1]) : 0;
         packed[index + 3] = 255;
     }
     return packed;
@@ -1465,7 +1468,18 @@ function agentCellOrigin(cellIndex, columns, cell) {
 // The occluder channel's frame toggle gates the packed geometry in the shader
 // (`u_packedGeometry`), so the channel never needs a skip/restore repack.
 export function packGpuAgentFrameAtlas(renderer, records) {
-    const agentRecords = records.filter(record => String(record.id || '').startsWith('agent:'));
+    finishAgentLayerFrame();
+    agentPaletteLut.used.clear();
+    for (const record of records) {
+        if (!record.paletteIdentity) continue;
+        record.recolorRow = agentPaletteLut.rowFor(record.paletteIdentity);
+        record.recolorIndex = record.recolorRow !== 0;
+        if (!record.recolorIndex) {
+            // More than 252 distinct identities visible in this frame.
+            canvasOverflowRecord(record);
+        }
+    }
+    const agentRecords = records.filter(record => !record.sharedLayer && String(record.id || '').startsWith('agent:'));
     if (!agentRecords.length || typeof document === 'undefined') return records;
     let cell = 1;
     let hasMaterialSource = false;
@@ -1835,7 +1849,7 @@ function insertLampSilhouetteRecords(renderer, records, at) {
         // else the packer's frame key for the slot.
         const contentKey = record.walkStrip
             ? `w:${record.walkStrip.key}:${record.walkStrip.frame}:${record.sx},${record.sy}`
-            : `f:${frameKeys?.get(id) || ''}:${record.sx},${record.sy}`;
+            : `f:${record.sharedLayer ? record.textureKey : frameKeys?.get(id) || ''}:${record.sx},${record.sy}`;
         bodies.push({ agentId, sprite, record, cast, contentKey });
     }
     const shadows = lampSilhouetteRecords(bodies, {

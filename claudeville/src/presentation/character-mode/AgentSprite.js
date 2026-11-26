@@ -1,3 +1,7 @@
+import {
+    agentLayerRecords, canvasPoseCell, avatarIdleCell, equipmentLayer, headLayer, headPose, layerRecord,
+    modelLayerSheet, paletteIdentity, layerCacheStats, clearLayerCaches,
+} from './AgentLayerRecords.js';
 import { resolveObservation } from './ObservationCertainty.js';
 import { drawEventShape, clearEventShapeCache } from '../shared/EventShapes.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
@@ -47,7 +51,7 @@ import {
     paintThoughtPlate,
     snapScreenOrigin,
 } from './WorldLabelKit.js';
-import { Compositor, agentPaletteVariant, bakeSpriteOutline, opaqueRimSheet, resolveHeadAccessory, snowCapTexels } from './Compositor.js';
+import { Compositor, agentPaletteVariant, bakeSpriteOutline, sourceGeneration, resolveHeadAccessory, snowCapTexels } from './Compositor.js';
 import { fillPixelEllipse } from './PixelShapes.js';
 import {
     actionNeededRingColor,
@@ -649,34 +653,6 @@ const CODEX_EQUIPMENT_CACHE = new Map();
 const CODEX_EQUIPMENT_CACHE_ENTRY_LIMIT = 320;
 const CODEX_EQUIPMENT_CACHE_PIXEL_LIMIT = 2_000_000;
 let codexEquipmentCachePixels = 0;
-// Padding per cell side in the GPU equipped sheet: covers the tallest baked
-// weapon overhang (polearm/dawnblade tips reach ~50px past the pose anchor).
-const GPU_EQUIP_SHEET_PAD = 24;
-// Padded equipped albedo sheets shared by every sprite of one profile. The
-// channel companions are never copied: the agent atlas draws the unpadded
-// sidecar cell at the pad offset (the record's `channelRect`). 48M px ≈ 30
-// armed profiles; a pinned (on-screen) profile is never evicted, so the
-// overage above the cap is reported on Shift-D instead.
-const GPU_EQUIPPED_SHEET_CACHE = new Map();
-const GPU_EQUIPPED_SHEET_CACHE_ENTRY_LIMIT = 12;
-const GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT = 48_000_000;
-let gpuEquippedSheetCachePixels = 0;
-// W8.7 — padded equipped copies of a gripped strip group (the run rows),
-// keyed by the composed strip canvas they were baked from: they live exactly
-// as long as the Compositor keeps that palette's strip.
-const GPU_EQUIPPED_POSE_STRIPS = new WeakMap();
-// B.2 — an equipped albedo only a crowd (0.5x LOD) body samples is released
-// once its LOD sheet is baked and no 1:1 body has used it for
-// GPU_EQUIPPED_RELEASE_IDLE_MS; the entry keeps the LOD sheet. A 1:1 body
-// that needs it again recomposes it: at most one compose per animation frame
-// (urgent bodies inline, the rest from the derived-art idle queue), and the
-// body stays on its LOD sheet until its turn. Composition is deterministic,
-// so a recomposed sheet is the same pixels.
-const GPU_EQUIPPED_RELEASE_IDLE_MS = 3000;
-const GPU_EQUIPPED_RELEASE_SWEEP_MS = 1000;
-let gpuEquippedLastSweepAt = 0;
-let gpuEquippedComposeBlocked = false;
-const gpuEquippedComposeStats = { composes: 0, releases: 0, maxComposeMs: 0, lastComposeMs: 0 };
 const SHARED_DERIVED_HIGH_WATER_ESTIMATE_BYTES = 192 * 1024 * 1024;
 const ACTIVE_PROFILE_REFS = new Map();
 const PRIVATE_DERIVED_CACHE_ESTIMATES = new Map();
@@ -698,34 +674,6 @@ let packedGeometryCachePixels = 0;
 const AUTHORED_EMISSION = new WeakMap();
 const CHANNEL_SOURCE_IDS = new WeakMap();
 let channelSourceSerial = 0;
-
-function gpuEquippedSheetEntryPixels(entry) {
-    return (entry?.albedo?.width || 0) * (entry?.albedo?.height || 0);
-}
-
-// One equipped-sheet compose per animation frame; the next frame reopens it.
-function claimGpuEquippedCompose() {
-    if (gpuEquippedComposeBlocked) return false;
-    if (typeof requestAnimationFrame !== 'function') return true;
-    gpuEquippedComposeBlocked = true;
-    requestAnimationFrame(() => { gpuEquippedComposeBlocked = false; });
-    return true;
-}
-
-// Releases the albedo of every entry whose LOD sheet is baked and that no 1:1
-// body has sampled for GPU_EQUIPPED_RELEASE_IDLE_MS.
-function sweepGpuEquippedSheets(now) {
-    if (now - gpuEquippedLastSweepAt < GPU_EQUIPPED_RELEASE_SWEEP_MS) return;
-    gpuEquippedLastSweepAt = now;
-    for (const entry of GPU_EQUIPPED_SHEET_CACHE.values()) {
-        if (!entry.albedo || !entry.lod || now - entry.fullUsedAt < GPU_EQUIPPED_RELEASE_IDLE_MS) continue;
-        gpuEquippedSheetCachePixels -= gpuEquippedSheetEntryPixels(entry);
-        releaseCanvasBackingStore(entry.albedo);
-        entry.albedo = null;
-        gpuEquippedComposeStats.releases++;
-    }
-    gpuEquippedSheetCachePixels = Math.max(0, gpuEquippedSheetCachePixels);
-}
 
 function channelSourceId(source) {
     let id = CHANNEL_SOURCE_IDS.get(source);
@@ -1066,15 +1014,6 @@ export class AgentSprite {
         // Canvas implementations do not expose allocation sizes. All byte
         // values below estimate RGBA backing from dimensions; cache entries
         // are counted once here regardless of how many sprites reference them.
-        // B.2 — equipped entries hold the padded albedo only; the pinned
-        // overage is what on-screen profiles hold above the pixel cap (they
-        // are never evicted), shown on Shift-D.
-        const profilePins = activeProfilePins();
-        let gpuEquippedPinnedPixels = 0;
-        for (const entry of GPU_EQUIPPED_SHEET_CACHE.values()) {
-            if (entryIsPinned(entry, profilePins)) gpuEquippedPinnedPixels += gpuEquippedSheetEntryPixels(entry);
-        }
-        const gpuEquippedPinnedOverageBytes = Math.max(0, gpuEquippedPinnedPixels - GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT) * 4;
         const privateDerivedEstimateBytes = [...PRIVATE_DERIVED_CACHE_ESTIMATES.values()]
             .reduce((sum, bytes) => sum + bytes, 0);
         const activeSpriteCount = [...ACTIVE_PROFILE_REFS.values()]
@@ -1114,11 +1053,11 @@ export class AgentSprite {
         const codexEquipmentEstimateBytes = codexEquipmentCachePixels * 4;
         // Despite the cache name, these are Canvas source backings. Their GL
         // uploads remain separate GPU-owned leaves in the renderer ledger.
-        const gpuEquippedSheetEstimateBytes = gpuEquippedSheetCachePixels * 4;
+        const layerStats = layerCacheStats();
         const cpuDerivedEstimateBytes = compositorEstimateBytes
             + processedSpriteEstimateBytes
             + codexEquipmentEstimateBytes
-            + gpuEquippedSheetEstimateBytes
+            + layerStats.layerCacheBytes
             + packedGeometryEstimateBytes
             + privateDerivedEstimateBytes
             + gpuAgentMaterialAtlasEstimateBytes
@@ -1131,17 +1070,11 @@ export class AgentSprite {
             codexEquipmentAssets: CODEX_EQUIPMENT_CACHE.size,
             codexEquipmentPixels: codexEquipmentCachePixels,
             codexEquipmentEstimateBytes,
-            gpuEquippedSheets: GPU_EQUIPPED_SHEET_CACHE.size,
-            gpuEquippedSheetPixels: gpuEquippedSheetCachePixels,
-            gpuEquippedSheetEstimateBytes,
-            gpuEquippedPinnedOverageBytes,
-            gpuEquippedReleasedSheets: [...GPU_EQUIPPED_SHEET_CACHE.values()].filter((entry) => !entry.albedo).length,
-            gpuEquippedLodEstimateBytes: [...GPU_EQUIPPED_SHEET_CACHE.values()]
-                .reduce((sum, entry) => sum + canvasEstimateBytes(entry.lod), 0),
-            gpuEquippedComposes: gpuEquippedComposeStats.composes,
-            gpuEquippedReleases: gpuEquippedComposeStats.releases,
-            gpuEquippedMaxComposeMs: gpuEquippedComposeStats.maxComposeMs,
-            gpuEquippedSheetPixelLimit: GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT,
+            ...layerStats,
+            gpuEquippedSheetPixelLimit: 0,
+            gpuEquippedSheets: 0,
+            gpuEquippedSheetEstimateBytes: 0,
+            gpuEquippedMaxComposeMs: 0,
             packedGeometrySheets: PACKED_GEOMETRY_CACHE.size,
             packedGeometryEstimateBytes,
             processedSpriteEstimateBytes,
@@ -1163,9 +1096,9 @@ export class AgentSprite {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
                     estimateBytes: codexEquipmentEstimateBytes,
                 },
-                gpuEquippedAlbedoSheets: {
+                agentLayerSheets: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
-                    estimateBytes: gpuEquippedSheetEstimateBytes,
+                    estimateBytes: layerStats.layerCacheBytes,
                 },
                 packedGeometrySheets: {
                     ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
@@ -1212,9 +1145,6 @@ export class AgentSprite {
         for (const [key, entry] of CODEX_EQUIPMENT_CACHE) {
             candidates.push({ key: `equipment:${key}`, cacheKey: key, cache: CODEX_EQUIPMENT_CACHE, entry, estimateBytes: canvasEstimateBytes(entry.canvas) });
         }
-        for (const [key, entry] of GPU_EQUIPPED_SHEET_CACHE) {
-            candidates.push({ key: `gpu-equipped:${key}`, cacheKey: key, cache: GPU_EQUIPPED_SHEET_CACHE, entry, estimateBytes: gpuEquippedSheetEntryPixels(entry) * 4 });
-        }
         let residentEstimateBytes = candidates.reduce((sum, entry) => sum + entry.estimateBytes, 0);
         if (!shouldEvictAtHighWater(residentEstimateBytes, highWaterEstimateBytes)) {
             return { evicted: [], residentEstimateBytes };
@@ -1246,8 +1176,7 @@ export class AgentSprite {
             .reduce((sum, canvas) => sum + canvasEstimateBytes(canvas) / 4, 0);
         codexEquipmentCachePixels = [...CODEX_EQUIPMENT_CACHE.values()]
             .reduce((sum, entry) => sum + canvasEstimateBytes(entry.canvas) / 4, 0);
-        gpuEquippedSheetCachePixels = [...GPU_EQUIPPED_SHEET_CACHE.values()]
-            .reduce((sum, entry) => sum + gpuEquippedSheetEntryPixels(entry), 0);
+
     }
 
     static releaseSharedCaches() {
@@ -1256,7 +1185,7 @@ export class AgentSprite {
         // incoming sprites may already reference one of these shared canvases.
         PROCESSED_SPRITE_CACHE.clear();
         CODEX_EQUIPMENT_CACHE.clear();
-        GPU_EQUIPPED_SHEET_CACHE.clear();
+        clearLayerCaches();
         PACKED_GEOMETRY_CACHE.clear();
         TOOL_CLASSIFICATION_CACHE.clear();
         SHEET_CONTENT_METADATA.clear();
@@ -1265,7 +1194,6 @@ export class AgentSprite {
         clearEventShapeCache();
         processedSpriteCachePixels = 0;
         codexEquipmentCachePixels = 0;
-        gpuEquippedSheetCachePixels = 0;
         packedGeometryCachePixels = 0;
     }
 
@@ -1341,10 +1269,8 @@ export class AgentSprite {
         // snapping. Canvas remains authoritative for hit testing and fallback.
         this.gpuWorldEnabled = false;
         this._gpuFrameRecord = null;
-        this._gpuEquippedSheetKey = '';
-        this._gpuEquippedSheetLayout = null;
-        this._gpuEquippedEntry = null;
-        this._gpuPlainSpriteCanvas = null;
+        this._layerProfile = null;
+        this._layerFrame = null;
         this.gpuOverlayRenderer = new AgentGpuOverlayRenderer(this);
         this._lastBuildingType = null;
         this._lastIntentId = null;
@@ -1594,10 +1520,8 @@ export class AgentSprite {
         this._spriteIdentity = null;
         this._gpuFrameRecord = null;
         this._gpuBaseSpriteCanvas = null;
-        this._gpuEquippedSheetKey = '';
-        this._gpuEquippedSheetLayout = null;
-        this._gpuEquippedEntry = null;
-        this._gpuPlainSpriteCanvas = null;
+        this._layerProfile = null;
+        this._layerFrame = null;
         this._bubbleLayoutCacheKey = '';
         this._bubbleLayoutCache = null;
         this._releaseProfileOwnership();
@@ -4781,28 +4705,38 @@ export class AgentSprite {
             ? accessory.startsWith('overlay.') ? accessory : `overlay.accessory.${accessory}`
             : null;
 
-        if (!validSpriteSource(this.spriteCanvas) || this._spriteProfileKey !== profileKey) {
+        const layered = Boolean(this.compositor.accessoryImage && this.assets?.get);
+        const modelSource = layered ? this.assets.get(spriteId) : null;
+        if (!validSpriteSource(this.spriteCanvas) || this._spriteProfileKey !== profileKey
+            || (modelSource && modelSource !== this.spriteCanvas)) {
             const profileRefs = ACTIVE_PROFILE_REFS.get(profileKey);
             // Plan 2.4 — the shared rim is baked into the sheet both backends
             // sample. Sheets that get their baked weapon scrubbed take the rim
             // after the scrub (_prepareSpriteCanvas), so no ghost outline is
             // left where the weapon was.
-            const baseCanvas = profileRefs?.baseCanvas
+            const baseCanvas = layered ? modelSource : profileRefs?.baseCanvas
                 || this.compositor.spriteFor(spriteId, paletteKey, variant, accessory, teamTrim, {
                     outline: !this._shouldScrubBakedCodexWeapon(identity),
                 });
-            const spriteCanvas = this._prepareSpriteCanvas(baseCanvas, identity, profileKey);
+            const spriteCanvas = layered ? baseCanvas : this._prepareSpriteCanvas(baseCanvas, identity, profileKey);
             if (validSpriteSource(spriteCanvas)) {
                 // Commit the body, bounds and GPU source generation together.
                 // A pending lazy sheet leaves the previous generation intact.
                 const spriteSheet = new SpriteSheet(spriteCanvas);
                 this._syncProfileOwnership(profileKey, [spriteId, equipmentAssetId, accessoryAssetId]);
-                baseCanvas.__cvProfileKeys ||= new Set();
-                baseCanvas.__cvProfileKeys.add(profileKey);
+                if (!layered) {
+                    baseCanvas.__cvProfileKeys ||= new Set();
+                    baseCanvas.__cvProfileKeys.add(profileKey);
+                }
                 const committedRefs = ACTIVE_PROFILE_REFS.get(profileKey);
-                if (committedRefs) committedRefs.baseCanvas = baseCanvas;
+                if (committedRefs) committedRefs.baseCanvas = layered ? null : baseCanvas;
                 this._gpuBaseSpriteCanvas = baseCanvas;
-                this._gpuPlainSpriteCanvas = baseCanvas;
+                this._layerProfile = layered ? {
+                    palette: paletteIdentity(spriteId, variant, teamTrim, this.assets.palettes?.[paletteKey]?.trim),
+                    paletteKey, accessory, identity,
+                } : null;
+                if (layered) baseCanvas.__cvSourceGeneration ??= String(sourceGeneration(baseCanvas));
+                this._equipmentAssetId = equipmentAssetId;
                 this.spriteCanvas = spriteCanvas;
                 this.spriteSheet = spriteSheet;
                 this._spriteProfileKey = profileKey;
@@ -4824,14 +4758,6 @@ export class AgentSprite {
             spriteId = identity.spriteId || profileKey.split('|')[0];
         }
         this._syncProfileOwnership(profileKey, []);
-
-        // B.2 — false while this 1:1 body's released equipped sheet waits for
-        // its recompose turn: the 1:1 body samples its LOD sheet meanwhile.
-        const fullSheetReady = this._syncGpuEquippedSheet(identity, profileKey, {
-            full: !budgetMode,
-            urgent: this.selected || this.hovered
-                || [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(this.agent?.status),
-        });
 
         // The update loop owns the body's pose (walk, stop beat, idle);
         // lingering departures and reduced motion hold a resting idle frame
@@ -5082,7 +5008,6 @@ export class AgentSprite {
             poseGroup: poseGripFrame >= 0 ? pose.group : null,
             poseFrame: poseGripFrame,
         };
-        if (poseGripFrame >= 0 && this.gpuWorldEnabled) pose.equipped = this._gpuEquippedPoseStrip(identity, pose);
         this._layoutLanternMark(frameGeometry);
         this._setGpuFrameRecord({
             cell: pose ? cell : bodyCell,
@@ -5098,11 +5023,6 @@ export class AgentSprite {
             // 2.2 — the resident renderer samples the same authored cell the
             // Canvas body blits, so both backends show one pose.
             pose,
-            // B.2 — while its released equipped sheet waits for the recompose
-            // turn, the 1:1 body samples that sheet's 0.5x LOD copy at its own
-            // 1:1 size (each LOD texel two world texels), so it never changes
-            // size for those frames.
-            lod: !fullSheetReady && !pose,
         });
         // Agent records are submitted independently of terrain coverage, even
         // beyond the island. Only the resident backend owns their body paint.
@@ -5124,12 +5044,9 @@ export class AgentSprite {
             if (!sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'back');
             // Plan 2.4 — the rim is baked into the sheet; Canvas lifts the
             // tagged half-alpha rim to match the GPU daytime opaque floor.
-            const canvasSource = opaqueRimSheet(bodySource) || bodySource;
-            ctx.drawImage(
-                canvasSource,
-                bodyCell.sx, bodyCell.sy, bodyCell.sw, bodyCell.sh,
-                dx, dy, bodyCell.sw, bodyCell.sh
-            );
+            const layer = this._layerFrame;
+            if (layer?.canvas) ctx.drawImage(layer.canvas, dx, dy);
+            else ctx.drawImage(bodySource, bodyCell.sx, bodyCell.sy, bodyCell.sw, bodyCell.sh, dx, dy, bodyCell.sw, bodyCell.sh);
         }
         // Frozen/darkened body tint while rate-limited — static overlay, so it
         // reads identically under reduced motion. One owner per backend: this
@@ -5166,6 +5083,10 @@ export class AgentSprite {
             }
         }
         this._snowCap = snow;
+        if (canvasBody && this._layerFrame?.hat) {
+            const hat = this._layerFrame.hat;
+            ctx.drawImage(hat.source, hat.sx, hat.sy, hat.sw, hat.sh, dx + hat.x, dy + hat.y, hat.sw, hat.sh);
+        }
         if (canvasBody && !sheathed) this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
         // 7.1 — the stone seat's front faces over the sitter's legs; 7.2 — the
         // petitioner's floor candle; the Tavern patron's tankard. All after
@@ -5294,13 +5215,17 @@ export class AgentSprite {
         return Object.prototype.hasOwnProperty.call(CODEX_EQUIPMENT_BY_CLASS, modelClass);
     }
 
-    _clearBakedCodexSidearmPixels(ctx, width, height, modelClass = 'codex') {
-        const cellSize = Math.round(width / DIRECTIONS.length) || 92;
+    _clearBakedCodexSidearmPixels(ctx, width, height, modelClass = 'codex', originX = 0, originY = 0, cellSize = Math.round(width / DIRECTIONS.length) || 92) {
         const rows = Math.floor(height / cellSize);
         if (!Number.isFinite(cellSize) || cellSize <= 0 || rows <= 0) return;
 
         if (this._normalizedBakedWeaponClass(modelClass) === 'gpt54') {
-            clearDetachedCodexWrench(ctx, width, height);
+            if (originX || originY || width === cellSize) {
+                ctx.save();
+                ctx.translate(-originX, -originY);
+                clearDetachedCodexWrench(ctx, cellSize * DIRECTIONS.length, originY + height);
+                ctx.restore();
+            } else clearDetachedCodexWrench(ctx, width, height);
             return;
         }
 
@@ -5309,8 +5234,8 @@ export class AgentSprite {
         const marks = new Uint8Array(width * height);
         const selectors = this._bakedWeaponSelectorsForClass(modelClass);
         for (let row = 0; row < rows; row++) {
-            for (let col = 0; col < DIRECTIONS.length; col++) {
-                const zones = this._bakedWeaponMaskZonesForClass(modelClass, DIRECTIONS[col], cellSize);
+            for (let col = 0; col < width / cellSize; col++) {
+                const zones = this._bakedWeaponMaskZonesForClass(modelClass, DIRECTIONS[col + originX / cellSize], cellSize);
                 for (const zone of zones) {
                     this._markBakedWeaponPixels(data, marks, width, col * cellSize, row * cellSize, zone, selectors);
                 }
@@ -5913,36 +5838,25 @@ export class AgentSprite {
     }
 
     setGpuWorldEnabled(enabled) {
-        // Force an equipped-sheet rebuild when GPU mode actually flips: the
-        // composed sheet key survives a disable/enable cycle, but
-        // _gpuBaseSpriteCanvas may have been reset to the untouched base sheet
-        // in the meantime. This setter runs every frame, so an unconditional
-        // reset would recompose the 80-cell sheet each frame.
-        if (Boolean(enabled) !== this.gpuWorldEnabled) this._gpuEquippedSheetKey = '';
         this.gpuOverlayRenderer.setEnabled(enabled);
     }
 
     getGpuWorldRecords() {
         const records = this.gpuOverlayRenderer.getRecords();
-        const frost = this._frostTintRecord();
-        const snow = this._snowCapRecord();
-        const candle = this._queueCandleRecord();
-        const tankard = this._tankardRecord();
-        const lantern = this._lanternRecord();
-        const stones = this._gpuFrameRecord ? this._seatStoneStamps() : null;
-        if (!stones && !candle && !tankard && !frost && !snow && !lantern) return records;
-        // 7.1 — the stone seat's top face paints before the body, its front
-        // faces after it (record order is paint order within the body slot);
-        // the frost tint and the snow course lie on the body itself, before
-        // either.
-        const out = stones ? [this._seatStoneRecord(stones.back, 'back'), ...records] : [...records];
-        if (frost) out.push(frost);
-        if (snow) out.push(snow);
-        if (stones) out.push(this._seatStoneRecord(stones.front, 'front'));
-        if (candle) out.push(candle);
-        if (tankard) out.push(tankard);
-        if (lantern) out.push(lantern);
-        return out;
+        const body = this._gpuFrameRecord;
+        if (!body) return records;
+        const layer = this._layerFrame;
+        const geometry = body.frameGeometry;
+        const equipment = layer && !layer.sheathed && geometry && this._runtimeCodexEquipment(this._spriteIdentity);
+        const weapon = side => equipment && layerRecord(body, equipmentLayer(this, this._spriteIdentity, geometry, side), 'weapon-'+side, geometry);
+        const stones = this._seatStoneStamps();
+        return agentLayerRecords({ body,
+            seatBack: stones && this._seatStoneRecord(stones.back, 'back'),
+            weaponBack: weapon('back'), frost: this._frostTintRecord(), snow: this._snowCapRecord(),
+            hat: layer?.hat && layerRecord(body, layer.hat, 'head', geometry),
+            weaponFront: weapon('front'), seatFront: stones && this._seatStoneRecord(stones.front, 'front'),
+            candle: this._queueCandleRecord(), tankard: this._tankardRecord(), lantern: this._lanternRecord(),
+        });
     }
 
     // VQ-9 — the rate-limited frost tint on the resident path: the cold slate
@@ -5989,9 +5903,42 @@ export class AgentSprite {
     }
 
     _setGpuFrameRecord(record) {
-        this.gpuOverlayRenderer.setFrameRecord(record);
+        const profile = this._layerProfile;
+        const pose = record.pose;
+        this._layerFrame = null;
+        let sheet = null;
+        if (profile) {
+            const scrub = !pose && this._shouldScrubBakedCodexWeapon(profile.identity)
+                ? (ctx, w, h, x, y, size) => this._clearBakedCodexSidearmPixels(ctx, w, h, profile.identity.modelClass, x, y, size) : null;
+            if (this.gpuWorldEnabled) {
+                sheet = modelLayerSheet(this.assets, record.spriteId, pose?.strip, pose?.group, scrub, packGeometryPixels, pose?.cell || record.cell, record.lod);
+            } else {
+                const cell = pose?.cell || record.cell;
+                const head = headPose(cell, pose?.group, pose?.strip?.meta.groups[pose.group].rows[0] || 0);
+                this._layerFrame = {
+                    canvas: canvasPoseCell(this.assets, profile.palette, pose?.source || this.spriteCanvas, cell, pose?.strip, scrub),
+                    hat: headLayer(this.compositor, record.spriteId, profile.accessory, profile.paletteKey, head.group,
+                        head.frame, this.direction, record.drawScale, true),
+                };
+            }
+        }
+        if (sheet) {
+            const original = pose?.cell || record.cell;
+            const head = headPose(original, pose?.group, pose?.strip?.meta.groups[pose.group].rows[0] || 0);
+            const cell = { ...original, sx: original.sx - sheet.x, sy: original.sy - sheet.y };
+            if (record.lod) {
+                cell.sx /= 2;
+                cell.sy /= 2;
+                cell.sw /= 2;
+                cell.sh = Math.ceil(cell.sh/2);
+            }
+            const hat = headLayer(this.compositor, record.spriteId, profile.accessory, profile.paletteKey,
+                head.group, head.frame, this.direction, record.drawScale);
+            this._layerFrame = { hat, sheathed: pose?.strip?.meta?.grip?.sheathe && !(record.frameGeometry.poseFrame >= 0) };
+            this.gpuOverlayRenderer.setFrameRecord({ ...record, layer: { sheet, cell, palette: profile.palette } });
+        } else this.gpuOverlayRenderer.setFrameRecord(record);
         const frame = this._gpuFrameRecord;
-        if (frame?.materialSource || frame?.emissiveSource) {
+        if (!frame?.sharedLayer && (frame?.materialSource || frame?.emissiveSource)) {
             GPU_AGENT_CHANNEL_ATLAS_RECORDS.set(this._resourceOwnerKey, {
                 sw: frame.sw,
                 sh: frame.sh,
@@ -6012,184 +5959,6 @@ export class AgentSprite {
 
     _authoredEmissionSource(emissive) {
         return authoredEmissionSource(emissive, this.assets);
-    }
-
-    // GPU-world bodies are sampled from a packed sheet texture, so the runtime
-    // codex equipment (composited per-frame around the Canvas body blit) must
-    // be baked into every cell of that sheet or WebGL villagers render
-    // empty-handed. Geometry is derived purely from cell bounds + direction,
-    // so baking at drawScale 1 reproduces the Canvas result exactly; the GPU
-    // then scales the whole cell. Each cell gets GPU_EQUIP_SHEET_PAD px of
-    // padding on every side — an upright blade tip extends well past the 92px
-    // body cell (dawnblade: ~46px above the shoulder anchor) and clipping it
-    // at the cell edge truncates the weapon on screen. Cells are still clipped
-    // to their own padded rect so a tip can never bleed into a neighbour.
-    _composeGpuEquippedSheet(identity) {
-        const sheet = this.spriteCanvas;
-        if (!sheet?.width || !sheet?.height) return null;
-        const cellSize = this.spriteSheet?.cellSize || 92;
-        const pad = GPU_EQUIP_SHEET_PAD;
-        const padded = cellSize + pad * 2;
-        const cols = Math.floor(sheet.width / cellSize);
-        const rows = Math.floor(sheet.height / cellSize);
-        const canvas = document.createElement('canvas');
-        canvas.width = cols * padded;
-        canvas.height = rows * padded;
-        // B.2 — CPU-backed: the base sheet is a CPU canvas, and the sheet only
-        // feeds the CPU agent atlas and the LOD bake, so no step keeps a GPU copy.
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (!ctx) return null;
-        ctx.imageSmoothingEnabled = false;
-        for (let col = 0; col < cols; col++) {
-            const directionKey = DIRECTIONS[col] || 's';
-            for (let row = 0; row < rows; row++) {
-                const cell = { sx: col * cellSize, sy: row * cellSize, sw: cellSize, sh: cellSize };
-                const bounds = this._getCellContentBounds(cell);
-                if (!bounds) continue;
-                const frameGeometry = { cell, dx: 0, dy: 0, bounds, drawScale: 1 };
-                ctx.save();
-                ctx.beginPath();
-                ctx.rect(col * padded, row * padded, padded, padded);
-                ctx.clip();
-                ctx.translate(col * padded + pad, row * padded + pad);
-                this._drawCodexEquipment(ctx, identity, frameGeometry, 'back', directionKey);
-                ctx.drawImage(sheet, cell.sx, cell.sy, cellSize, cellSize, 0, 0, cellSize, cellSize);
-                this._drawCodexEquipment(ctx, identity, frameGeometry, 'front', directionKey);
-                ctx.restore();
-            }
-        }
-        return canvas;
-    }
-
-    // Keeps _gpuBaseSpriteCanvas in sync with the current profile and asset
-    // version. Asset version participates so a weapon sprite arriving after a
-    // fallback-vector compose triggers a rebuild (and, via the key doubling as
-    // the record's textureRevision, a texture re-upload). Composed sheets are
-    // shared across sprites via a module-level cache — a padded sheet is
-    // ~6 MB, and audit swarms routinely field 20+ villagers of one profile.
-    // Only the albedo is re-laid: the frame record points the channel
-    // companions at their unpadded sidecar cell (`channelRect`).
-    // B.2 — `full` asks for the albedo a 1:1 body samples; a crowd body only
-    // needs the entry's LOD sheet, so a released albedo stays released. A
-    // compose waits for the frame's single compose slot (claimed inline by an
-    // `urgent` body, else from the derived-art idle queue); until then a new
-    // profile draws its plain sheet and a released one its LOD sheet, and the
-    // return value is false when a 1:1 body must stay on the LOD sheet.
-    _syncGpuEquippedSheet(identity, profileKey, { full = true, urgent = false } = {}) {
-        if (!this.gpuWorldEnabled) return true;
-        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        sweepGpuEquippedSheets(now);
-        const equipment = this._normalizedCodexEquipment(this._runtimeCodexEquipment(identity));
-        const key = `${profileKey}|${equipment || '_'}|${this.assets?.assetVersion || 0}`;
-        if (this._gpuEquippedSheetKey !== key) {
-            this._gpuEquippedSheetKey = key;
-            this._gpuEquippedEntry = null;
-            this._gpuEquippedSheetLayout = null;
-            this._gpuBaseSpriteCanvas = this._gpuPlainSpriteCanvas || this._gpuBaseSpriteCanvas;
-            const cached = equipment ? GPU_EQUIPPED_SHEET_CACHE.get(key) : null;
-            if (cached) {
-                // LRU refresh.
-                GPU_EQUIPPED_SHEET_CACHE.delete(key);
-                GPU_EQUIPPED_SHEET_CACHE.set(key, cached);
-            }
-        }
-        if (!equipment) return true;
-        let entry = GPU_EQUIPPED_SHEET_CACHE.get(key) || null;
-        if (!entry || (full && !entry.albedo)) {
-            const queued = typeof this.assets?.enqueueDerivedArt === 'function';
-            const inline = (urgent || !entry || !queued) && claimGpuEquippedCompose();
-            if (inline) entry = this._composeGpuEquippedEntry(identity, key, profileKey, { withLod: !full, now }) || entry;
-            else if (queued) this._enqueueGpuEquippedCompose(identity, key, profileKey, { urgent, withLod: !full });
-        }
-        this._gpuEquippedEntry = entry;
-        if (!entry) {
-            this._gpuBaseSpriteCanvas = this._gpuPlainSpriteCanvas || this._gpuBaseSpriteCanvas;
-            this._gpuEquippedSheetLayout = null;
-            return true;
-        }
-        this._gpuBaseSpriteCanvas = entry.albedo || entry.stub;
-        this._gpuEquippedSheetLayout = entry.layout;
-        if (!full) return true;
-        if (!entry.albedo) return false;
-        entry.fullUsedAt = now;
-        return true;
-    }
-
-    // Composes (or recomposes a released) equipped entry; `withLod` also bakes
-    // the entry's LOD sheet in the same slot when a crowd body asked for it.
-    _composeGpuEquippedEntry(identity, key, profileKey, { withLod = false, now = performance.now() } = {}) {
-        const started = performance.now();
-        const composed = this._composeGpuEquippedSheet(identity);
-        if (!composed) return null;
-        const layout = { pad: GPU_EQUIP_SHEET_PAD, cellSize: this.spriteSheet?.cellSize || 92 };
-        let entry = GPU_EQUIPPED_SHEET_CACHE.get(key);
-        if (entry) {
-            entry.albedo = composed;
-        } else {
-            entry = {
-                albedo: composed,
-                lod: null,
-                // Stands in for a released albedo: same size, never drawn.
-                stub: { width: composed.width, height: composed.height },
-                layout,
-                profileKey,
-                fullUsedAt: now,
-            };
-            GPU_EQUIPPED_SHEET_CACHE.set(key, entry);
-        }
-        entry.fullUsedAt = now;
-        if (withLod && !entry.lod) {
-            entry.lod = this.compositor?.halfScaleSheet?.(composed, layout.cellSize + layout.pad * 2) || null;
-        }
-        const ms = performance.now() - started;
-        gpuEquippedComposeStats.composes++;
-        gpuEquippedComposeStats.lastComposeMs = ms;
-        gpuEquippedComposeStats.maxComposeMs = Math.max(gpuEquippedComposeStats.maxComposeMs, ms);
-        gpuEquippedSheetCachePixels += gpuEquippedSheetEntryPixels(entry);
-        while (
-            GPU_EQUIPPED_SHEET_CACHE.size > GPU_EQUIPPED_SHEET_CACHE_ENTRY_LIMIT
-            || gpuEquippedSheetCachePixels > GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT
-        ) {
-            const oldestKey = oldestUnpinnedCacheKey(GPU_EQUIPPED_SHEET_CACHE);
-            if (oldestKey == null) break;
-            const oldest = GPU_EQUIPPED_SHEET_CACHE.get(oldestKey);
-            GPU_EQUIPPED_SHEET_CACHE.delete(oldestKey);
-            gpuEquippedSheetCachePixels -= gpuEquippedSheetEntryPixels(oldest);
-            releaseSharedEntry(oldest);
-        }
-        gpuEquippedSheetCachePixels = Math.max(0, gpuEquippedSheetCachePixels);
-        return entry;
-    }
-
-    _enqueueGpuEquippedCompose(identity, key, profileKey, { urgent = false, withLod = false } = {}) {
-        const assets = this.assets;
-        const job = {
-            key: `equipped-sheet:${key}`,
-            kind: 'agent',
-            onScreen: true,
-            selected: Boolean(urgent),
-            build: () => {
-                if (this._gpuEquippedSheetKey !== key || !this.spriteCanvas || !this.gpuWorldEnabled) return;
-                if (GPU_EQUIPPED_SHEET_CACHE.get(key)?.albedo) return;
-                if (!claimGpuEquippedCompose()) {
-                    assets.enqueueDerivedArt(job);
-                    return;
-                }
-                this._composeGpuEquippedEntry(identity, key, profileKey, { withLod });
-            },
-        };
-        assets.enqueueDerivedArt(job);
-    }
-
-    // B.2 — the crowd LOD sheet of the body's GPU sheet. An equipped entry
-    // keeps its own, which outlives a released albedo.
-    _gpuLodSheet(source, cellSize) {
-        const entry = this._gpuEquippedEntry;
-        if (entry && (source === entry.albedo || source === entry.stub)) {
-            if (!entry.lod && entry.albedo) entry.lod = this.compositor?.halfScaleSheet?.(entry.albedo, cellSize) || null;
-            return entry.lod;
-        }
-        return this.compositor?.halfScaleSheet?.(source, cellSize) || null;
     }
 
     _drawFrozenTint(ctx, cell, dx, dy, source = null) {
@@ -6345,7 +6114,11 @@ export class AgentSprite {
         const key = `${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
         const cached = this._cellBoundsCache.get(key);
         if (cached) return cached;
-        const bounds = measureCellContentBounds(this.spriteCanvas, cell, this._sheetContentKey());
+        const raw = measureCellContentBounds(this.spriteCanvas, cell, this._sheetContentKey());
+        const bounds = this._layerProfile ? sheetMetadataEntry(this.spriteCanvas, this._sheetContentKey(), 'rim:'+key, () => ({
+            minX: Math.max(0, raw.minX-1), minY: Math.max(0, raw.minY-1),
+            maxX: Math.min(cell.sw-1, raw.maxX+1), maxY: Math.min(cell.sh-1, raw.maxY+1),
+        })) : raw;
         this._cellBoundsCache.set(key, bounds);
         return bounds;
     }
@@ -6359,7 +6132,7 @@ export class AgentSprite {
     // measured metadata.
     _sheetContentKey() {
         const sourceGeneration = this.spriteCanvas?.__cvSourceGeneration;
-        return `${this._spriteProfileKey}|${this.assets?.assetVersion || 0}`
+        return `${this._layerProfile?.palette.model || this._spriteProfileKey}|${this.assets?.assetVersion || 0}`
             + (sourceGeneration ? `|${sourceGeneration}` : '');
     }
 
@@ -7241,6 +7014,7 @@ export class AgentSprite {
     }
 
     _actionStripSource(identity, spriteId, strip) {
+        if (this._layerProfile) return strip.image;
         return this.compositor?.stripFor(`${spriteId}|${strip.path || 'actions'}`, strip.image, {
             baseSpriteId: spriteId,
             paletteKey: identity?.paletteKey || this._providerKey(),
@@ -7260,64 +7034,6 @@ export class AgentSprite {
         if (!Array.isArray(rows)) return -1;
         const stripCell = Number(pose.strip.meta.cell) || DEFAULT_CELL;
         return Math.floor(pose.cell.sy / stripCell) - Number(rows[0]);
-    }
-
-    // W8.7 — the resident body samples the strip cell, so a gripped group
-    // needs the runtime weapon baked in exactly as `_composeGpuEquippedSheet`
-    // bakes the base sheet: padded cells (blade tips overhang the 92px cell),
-    // back layer, body, front layer. Only the group's rows are re-laid; the
-    // record reads `firstRow` to find its cell.
-    _gpuEquippedPoseStrip(identity, pose) {
-        const equipment = this._normalizedCodexEquipment(this._runtimeCodexEquipment(identity));
-        const source = pose.source;
-        const rows = pose.strip.meta.groups[pose.group].rows;
-        if (!equipment || !source?.width) return null;
-        const key = `${pose.group}|${equipment}|${this.assets?.assetVersion || 0}`;
-        let entries = GPU_EQUIPPED_POSE_STRIPS.get(source);
-        const cached = entries?.get(pose.group);
-        if (cached?.key === key) return cached;
-        if (typeof document === 'undefined') return null;
-        const cellSize = Number(pose.strip.meta.cell) || DEFAULT_CELL;
-        const pad = GPU_EQUIP_SHEET_PAD;
-        const padded = cellSize + pad * 2;
-        const firstRow = Number(rows[0]);
-        const frames = Number(rows[1]) - firstRow + 1;
-        const canvas = document.createElement('canvas');
-        canvas.width = DIRECTIONS.length * padded;
-        canvas.height = frames * padded;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (!ctx) return null;
-        ctx.imageSmoothingEnabled = false;
-        const fallbackBounds = { minX: 0, minY: 0, maxX: cellSize - 1, maxY: cellSize - 1 };
-        for (let col = 0; col < DIRECTIONS.length; col++) {
-            for (let frame = 0; frame < frames; frame++) {
-                // The base walk cell only seeds the procedural fallback
-                // geometry; the authored hand comes from `poseFrame`.
-                const cell = this.spriteSheet.cell('walk', col, frame);
-                const frameGeometry = {
-                    cell,
-                    dx: 0,
-                    dy: 0,
-                    bounds: this._getCellContentBounds(cell) || fallbackBounds,
-                    drawScale: 1,
-                    poseGroup: pose.group,
-                    poseFrame: frame,
-                };
-                ctx.save();
-                ctx.beginPath();
-                ctx.rect(col * padded, frame * padded, padded, padded);
-                ctx.clip();
-                ctx.translate(col * padded + pad, frame * padded + pad);
-                this._drawCodexEquipment(ctx, identity, frameGeometry, 'back', DIRECTIONS[col]);
-                ctx.drawImage(source, col * cellSize, (firstRow + frame) * cellSize, cellSize, cellSize, 0, 0, cellSize, cellSize);
-                this._drawCodexEquipment(ctx, identity, frameGeometry, 'front', DIRECTIONS[col]);
-                ctx.restore();
-            }
-        }
-        const entry = { canvas, pad, cellSize, firstRow, key };
-        if (!entries) GPU_EQUIPPED_POSE_STRIPS.set(source, entries = new Map());
-        entries.set(pose.group, entry);
-        return entry;
     }
 
     // The loaded strip when this profile ships a `run` group, else null: a
@@ -7582,10 +7298,19 @@ export class AgentSprite {
     // holds a live reference to a sprite the renderer may dispose. Returns null
     // until the character sheet is loaded; callers retry.
     captureMiniature(size = 14) {
-        const source = this.spriteCanvas || this._composeBaseSheet();
+        const profile = this._layerProfile;
+        let portrait = profile && avatarIdleCell(this.compositor, profile.palette.model, profile.paletteKey,
+            profile.palette.variant, profile.accessory, this._teamTrimAccent());
+        if (!portrait && !this.spriteCanvas && this.compositor?.accessoryImage) {
+            const identity = getModelVisualIdentity(this.agent?.model, this.agent?.effort, this.agent?.provider, this.agent?.id);
+            const provider = this._providerKey();
+            portrait = avatarIdleCell(this.compositor, identity.spriteId || `agent.${provider}.base`, identity.paletteKey || provider,
+                this._hashVariant(), this._runtimeHeadAccessory(identity, this.agent), this._teamTrimAccent());
+        }
+        const source = portrait || this.spriteCanvas || (!this.compositor?.accessoryImage && this._composeBaseSheet());
         if (!source) return null;
         const sheet = source === this.spriteCanvas && this.spriteSheet ? this.spriteSheet : new SpriteSheet(source);
-        const cell = sheet.cell('idle', 0, 0);
+        const cell = portrait ? { sx: 0, sy: 0, sw: portrait.width, sh: portrait.height } : sheet.cell('idle', 0, 0);
         const bounds = this._cellContentBoundsOf(source, cell);
         const cropW = Math.max(1, bounds.maxX - bounds.minX + 1);
         const cropH = Math.max(1, bounds.maxY - bounds.minY + 1);

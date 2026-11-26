@@ -246,7 +246,7 @@ function recordAccessor(field) {
         return `fn record${field.name[0].toUpperCase()}${field.name.slice(1)}(r: RecordInstance) -> vec4f { return vec4f(${lanes.map(lane => `r.${lane}`).join(', ')}); }`;
     }
     // A uint16 attribute, read as the GLSL attribute reads it: the exact
-    // integer as a float (loc3/loc4) or as an unsigned integer (loc5).
+    // integer as a float (loc3/loc4) or as an unsigned integer (loc5/loc6).
     const halves = lanes.flatMap(lane => [`(r.${lane} & 0xffffu)`, `(r.${lane} >> 16u)`]);
     if (field.count === 2) {
         return `fn record${field.name[0].toUpperCase()}${field.name.slice(1)}(r: RecordInstance) -> vec2u { return vec2u(${halves.join(', ')}); }`;

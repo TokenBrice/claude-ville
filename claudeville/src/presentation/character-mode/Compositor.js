@@ -15,12 +15,6 @@ import { DEFAULT_CELL, DIRECTIONS, WALK_FRAMES, IDLE_FRAMES } from './SpriteShee
 
 const CACHE_ENTRY_LIMIT = 24;
 const CACHE_PIXEL_LIMIT = 12_500_000;
-// A composite sampled within this window is the live working set (twelve
-// robe variants × a 1.7 Mpx action strip each outgrow the pixel limit with
-// nine idle agents). Evicting one only rebakes it — palette swap and rim over
-// the whole sheet — and re-uploads it to the GPU on its next frame, so the
-// limits bound cold entries and never trim a set that is still being drawn.
-const CACHE_HOT_MS = 2000;
 // Reuse still-live outputs across compositor registration/LRU misses without
 // owning a second set of backing stores. Metadata has the same entry bound.
 const LIVE_COMPOSED_SHEETS = new WeakMap();
@@ -42,7 +36,7 @@ function liveComposedSheets(assets) {
 // real provenance instead of the version string alone.
 const SOURCE_GENERATIONS = new WeakMap();
 let sourceGenerationSeq = 0;
-function sourceGeneration(img) {
+export function sourceGeneration(img) {
     if (!img) return 0;
     let generation = SOURCE_GENERATIONS.get(img);
     if (generation == null) {
@@ -92,17 +86,19 @@ const HEAD_TEMPLATE_H = 8;
 // Opaque bounds of an overlay's pixels (alpha >= 16), or null when empty.
 export function overlayOpaqueBounds(data, w, h) {
     let top = h;
+    let bottom = -1;
     let left = w;
     let right = -1;
     for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
             if (data[(y * w + x) * 4 + 3] < 16) continue;
             if (y < top) top = y;
+            bottom = y;
             if (x < left) left = x;
             if (x > right) right = x;
         }
     }
-    return right < 0 ? null : { top, left, right };
+    return right < 0 ? null : { top, bottom, left, right };
 }
 const HEAD_TEMPLATE_HALF_W = 7;
 const HEAD_MATCH_DX = 5;
@@ -152,13 +148,13 @@ function cosmeticHash(id) {
 
 // Plan 2.4 — one baked rim for both backends: 4-neighbour, 1 texel, warm
 // near-black tagged at half alpha in the composed sheet so GPU light passes
-// and LOD voting skip it; GPU shaders and Canvas `opaqueRimSheet` lift it to
+// and LOD voting skip it; GPU shaders and Canvas cells lift it to
 // DAY_RIM_ALPHA (~0.96) by day (relaxed 2026-11-23, operator decision).
 const OUTLINE_RGB = [28, 20, 16];
-const OUTLINE_ALPHA = 128;
+export const OUTLINE_ALPHA = 128;
 export const DAY_RIM_ALPHA = 245;
 const OPAQUE_ALPHA = 16;
-const OPAQUE_RIM_CACHE = new WeakMap();
+
 // W2.3 — crowd individuation. Variant identity inside a family is the
 // authored robe taking a value step and a bounded hue rotation (OKLab, L kept)
 // on the sheet's declared `paletteSource.robe` pixels only; skin, hair, trim
@@ -226,7 +222,6 @@ export class Compositor {
         this.assets = assetManager;
         this.cache = new Map();
         this.cachePixels = 0;
-        this.cacheUsedAt = new Map();
         Compositor._shared = this;
         for (const cb of Compositor._sharedListeners.splice(0)) cb(this);
     }
@@ -245,7 +240,7 @@ export class Compositor {
             const cached = this.cache.get(key);
             this.cache.delete(key);
             this.cache.set(key, cached);
-            this._trimCache(this._markUsed(key));
+            this._trimCache();
             return cached;
         }
 
@@ -266,7 +261,7 @@ export class Compositor {
             live.set(generationKey, previous);
             this.cache.set(key, reused);
             this.cachePixels += reused.width * reused.height;
-            this._trimCache(this._markUsed(key));
+            this._trimCache();
             return reused;
         }
         const dims = this.assets.getDims(baseId);
@@ -294,7 +289,7 @@ export class Compositor {
         while (live.size > CACHE_ENTRY_LIMIT) live.delete(live.keys().next().value);
         this.cache.set(key, canvas);
         this.cachePixels += canvas.width * canvas.height;
-        this._trimCache(this._markUsed(key));
+        this._trimCache();
         return canvas;
     }
 
@@ -321,7 +316,7 @@ export class Compositor {
             const cached = this.cache.get(key);
             this.cache.delete(key);
             this.cache.set(key, cached);
-            this._trimCache(this._markUsed(key));
+            this._trimCache();
             return cached;
         }
         const width = stripImage.naturalWidth || stripImage.width || 0;
@@ -345,7 +340,7 @@ export class Compositor {
         if (outline) bakeSpriteOutline(ctx, width, height, cellSize || DEFAULT_CELL);
         this.cache.set(key, canvas);
         this.cachePixels += width * height;
-        this._trimCache(this._markUsed(key));
+        this._trimCache();
         return canvas;
     }
 
@@ -366,22 +361,11 @@ export class Compositor {
         return `${robeKey},${trim}`;
     }
 
-    // Hits trim too, so a transient peak (a crowd passing through) is released
-    // once it cools instead of waiting for the next bake.
-    _markUsed(key) {
-        const now = performance.now();
-        this.cacheUsedAt.set(key, now);
-        return now;
-    }
-
-    _trimCache(now = performance.now()) {
+    _trimCache() {
         while (this.cache.size > CACHE_ENTRY_LIMIT || this.cachePixels > CACHE_PIXEL_LIMIT) {
-            // Map order is recency order: once the oldest entry is hot, all are.
             const oldestKey = this.cache.keys().next().value;
-            if (oldestKey == null || now - (this.cacheUsedAt.get(oldestKey) ?? -Infinity) < CACHE_HOT_MS) break;
             const oldest = this.cache.get(oldestKey);
             this.cache.delete(oldestKey);
-            this.cacheUsedAt.delete(oldestKey);
             this.cachePixels -= (oldest?.width || 0) * (oldest?.height || 0);
         }
         this.cachePixels = Math.max(0, this.cachePixels);
@@ -400,7 +384,6 @@ export class Compositor {
         // Bodies, avatars and a replacement compositor can still sample the
         // same output. Drop ownership; never invalidate their backing stores.
         this.cache.clear();
-        this.cacheUsedAt.clear();
         this.cachePixels = 0;
     }
 
@@ -474,6 +457,26 @@ export class Compositor {
 
     // `grid` lets an action strip reuse the same head-apex anchoring on its own
     // row count; the base sheet passes nothing and keeps the 10-row layout.
+    accessoryImage(accessory, paletteKey, backFacing) {
+        const id = accessory.startsWith('overlay.') ? accessory : 'overlay.accessory.' + accessory;
+        const image = this.assets.get(id);
+        if (!image) return null;
+        const name = id.slice('overlay.accessory.'.length);
+        const dims = this.assets.getDims(id);
+        const palette = this.assets.palettes?.[paletteKey];
+        const key = [sourceGeneration(image), paletteKey, name, backFacing, palette?.trim].join('|');
+        this._hatImages ??= new Map();
+        if (this._hatImages.has(key)) return this._hatImages.get(key);
+        const pair = this._harmonizeOverlay(image, dims, palette, {
+            tint: !COSMETIC_SET.has(name), fillBack: ACCESSORY_BACK_FILL.has(name),
+        });
+        const height = backFacing ? Math.max(1, Math.round(dims.h * (ACCESSORY_BACK_CROP[name] ?? DEFAULT_BACK_CROP))) : dims.h;
+        const stamp = { key, image: backFacing ? pair.back : pair.front, bounds: pair.opaque, height, anchor: this.assets.getAnchor(id) };
+        if (this._hatImages.size >= 128) this._hatImages.delete(this._hatImages.keys().next().value);
+        this._hatImages.set(key, stamp);
+        return stamp;
+    }
+
     _compositeAccessory(ctx, baseId, accessory, paletteKey, grid = null) {
         const overlayId = accessory.startsWith?.('overlay.')
             ? accessory
@@ -796,7 +799,7 @@ Compositor._sharedListeners = [];
 
 // 0.5 — normalize a manifest paletteSource role (string or short string list)
 // to a source color list. A role the sheet does not declare swaps nothing.
-function sourceList(value) {
+export function sourceList(value) {
     const list = Array.isArray(value) ? value : [value];
     return list.filter((v) => /^#[0-9a-fA-F]{6}$/.test(String(v || ''))).slice(0, 3);
 }
@@ -870,7 +873,7 @@ function variantIndex(variant) {
 }
 
 // Trim follows the historical 0..3 variant so every agent keeps its sash.
-function trimIndex(index, rampLength) {
+export function trimIndex(index, rampLength) {
     return (index % ROBE_VALUE_STEPS.length) % Math.max(1, rampLength);
 }
 
@@ -989,36 +992,6 @@ export function bakeSpriteOutline(ctx, width, height, cellSize = DEFAULT_CELL, o
     ctx.putImageData(image, 0, 0);
 }
 
-// Canvas 2D twin of the GPU `bakedRim` daytime lift: keeps the source sheet's
-// half-alpha rim tag intact for GPU/LOD consumers while returning a cached
-// copy whose tagged dark rim texels (a in (0.4, 0.6), max RGB < 0.16) render
-// at DAY_RIM_ALPHA (245/255 ≈ 0.96; relaxed 2026-11-23, operator decision).
-export function opaqueRimSheet(source) {
-    if (!source?.width || !source?.height || typeof document === 'undefined') return null;
-    const cached = OPAQUE_RIM_CACHE.get(source);
-    if (cached && cached.width === source.width && cached.height === source.height) return cached;
-    const srcCtx = source.getContext?.('2d', { willReadFrequently: true });
-    if (!srcCtx) return null;
-    const width = source.width;
-    const height = source.height;
-    const image = srcCtx.getImageData(0, 0, width, height);
-    const data = image.data;
-    for (let i = 0; i < data.length; i += 4) {
-        const a = data[i + 3];
-        if (a > 102 && a < 153 && Math.max(data[i], data[i + 1], data[i + 2]) <= 40) {
-            data[i + 3] = DAY_RIM_ALPHA;
-        }
-    }
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.imageSmoothingEnabled = false;
-    ctx.putImageData(image, 0, 0);
-    OPAQUE_RIM_CACHE.set(source, canvas);
-    return canvas;
-}
-
 // EF-6 — snow on the still (AgentSprite._snowCapCell): the one course of snow
 // a body holds after standing still while snow lies in the village. Down each
 // column the first texel under the silhouette's ink edge takes it (the baked
@@ -1067,6 +1040,10 @@ function lodLuma(data, offset) {
 }
 
 export function downsampleMajority(src, srcWidth, dst, width, height, srcCellSize = DEFAULT_CELL) {
+    return downsampleMajorityWithChannels(src, srcWidth, dst, width, height, srcCellSize);
+}
+
+export function downsampleMajorityWithChannels(src, srcWidth, dst, width, height, srcCellSize, packed, dstPacked) {
     const srcHeight = height * 2;
     const cell = Math.max(2, Math.round(Number(srcCellSize) || DEFAULT_CELL));
     const picks = [0, 0, 0, 0];
@@ -1156,6 +1133,7 @@ export function downsampleMajority(src, srcWidth, dst, width, height, srcCellSiz
             dst[out + 1] = src[best + 1];
             dst[out + 2] = src[best + 2];
             dst[out + 3] = 255;
+            if (dstPacked) dstPacked.set(packed.subarray(best, best + 4), out);
         }
     }
     return dst;
@@ -1168,7 +1146,7 @@ function hexToRgb(hex) {
 
 // 4.14: accept "#rrggbb" only (TeamColor accents are 7-char hex strings).
 // Returns [r, g, b] or null if not recognized — callers then skip the override.
-function parseTrimColor(value) {
+export function parseTrimColor(value) {
     if (!value || typeof value !== 'string') return null;
     const text = value.trim().replace('#', '');
     if (!/^[0-9a-fA-F]{6}$/.test(text)) return null;

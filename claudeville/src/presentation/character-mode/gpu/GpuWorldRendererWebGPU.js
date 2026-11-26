@@ -1,7 +1,7 @@
 // Wave 10 (10.1 Stage A) — the resident world on WebGPU, behind WebGL2 and
 // opt-in (`?renderer=webgpu`). The same interface as GpuWorldRenderer (contract
 // §4.4) over the same inputs: GpuSceneBuilder's record stream batched by
-// `buildStableGpuBatches`, staged by GpuRecordLayout (68-byte records, one
+// `buildStableGpuBatches`, staged by GpuRecordLayout (72-byte records, one
 // storage buffer per frame, each batch drawn from its slice through
 // firstInstance), and every per-frame value resolved by GpuFrameState — this
 // file uploads, it never re-derives frame state. Shaders are the WGSL twins in
@@ -42,6 +42,9 @@ import {
     createSeaState,
     resolveOccluderChannel,
     resolvePaletteLut,
+    agentPaletteLut,
+    PALETTE_LUT_WIDTH,
+    PALETTE_LUT_HEIGHT,
     resolvePuddles,
     resolveSeaWeather,
     resolveWaterFx,
@@ -100,7 +103,7 @@ const BLOOM_SCALE = 0.375;
 const TARGET_RETENTION_MS = 5000;
 const EMA_ALPHA = 0.1;
 // The same evictable-source ceiling as the WebGL2 cache (GpuWorldRenderer).
-const PALETTE_LUT_BYTES = 11 * 3 * 4;
+const PALETTE_LUT_BYTES = PALETTE_LUT_WIDTH * PALETTE_LUT_HEIGHT * 4;
 const SPILL_FIELD_BYTES = 256 * 144 * 4 * 2;
 const MAX_CACHED_TEXTURE_BYTES = 160 * 1024 * 1024 - PALETTE_LUT_BYTES - SPILL_FIELD_BYTES;
 const MAX_CACHED_TEXTURES = 512;
@@ -1316,9 +1319,9 @@ export class GpuWorldRendererWebGPU {
             s.puddleSky = vec3Pair(puddles.sky);
         }
         const lutSource = resolvePaletteLut(qualityLevel, feed);
-        const lut = lutSource ? this._textureFor('lut:palette-ramp', lutSource, feed.paletteLutRevision ?? null) : null;
-        this.paletteLutActive = Boolean(lut);
-        s.hasPaletteLut = Boolean(lut);
+        const lut = this.uploadTypedTexture('lut:palette-ramp', agentPaletteLut);
+        this.paletteLutActive = Boolean(lut && lutSource);
+        s.hasPaletteLut = this.paletteLutActive;
         // NL-2 / NL-1 — firelight on people and the tuned ramp (Firelight.js).
         s.firelight = resolveFirelight(this._firelight ||= new Float32Array(2));
         const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
@@ -1685,7 +1688,7 @@ export class GpuWorldRendererWebGPU {
             const passCpu = {};
             let mark = performance.now();
             const passUploadBytes = this.uploadBytes;
-            // [upload] — V9 records (68-byte, whole frame), textures, particles.
+            // [upload] — V9 records (72-byte, whole frame), textures, particles.
             const byteLength = stageGpuRecords(batches, this._recordStaging, { fullTail: true });
             const u = globalThis.GPUBufferUsage;
             this._ensureBuffer('_recordBuffer', '_recordBufferBytes', byteLength, u.STORAGE | u.COPY_DST, 'world-records');

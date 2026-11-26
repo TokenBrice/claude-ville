@@ -1,3 +1,4 @@
+import { avatarIdleCell } from '../character-mode/AgentLayerRecords.js';
 /**
  * Mini character avatar canvas for the dashboard
  * Static recreation of AgentSprite drawing logic
@@ -384,9 +385,9 @@ export class AvatarCanvas {
         if (!source) return false;
 
         const sourceWidth = source.image.naturalWidth || source.image.width;
-        const cellSize = Math.floor(sourceWidth / 8);
+        const cellSize = source.cellSize || Math.floor(sourceWidth / 8);
         if (!Number.isFinite(cellSize) || cellSize <= 0) return false;
-        const bounds = this._spriteFrameBounds(source, cellSize, IDLE_SOUTH_ROW);
+        const bounds = this._spriteFrameBounds(source, cellSize, source.row ?? IDLE_SOUTH_ROW);
         const sourceW = bounds.maxX - bounds.minX + 1;
         const sourceH = bounds.maxY - bounds.minY + 1;
         if (AVATAR_SIZES[this.size].crisp) {
@@ -399,7 +400,7 @@ export class AvatarCanvas {
             const drawH = sourceH * scale;
             const dx = Math.round((this.canvas.width - drawW) / 2);
             const dy = drawH > this.canvas.height ? 1 : Math.round((this.canvas.height - drawH) / 2);
-            ctx.drawImage(source.image, bounds.minX, IDLE_SOUTH_ROW * cellSize + bounds.minY,
+            ctx.drawImage(source.image, bounds.minX, (source.row ?? IDLE_SOUTH_ROW) * cellSize + bounds.minY,
                 sourceW, sourceH, dx, dy, drawW, drawH);
             return true;
         }
@@ -425,7 +426,7 @@ export class AvatarCanvas {
         ctx.drawImage(
             source.image,
             bounds.minX,
-            IDLE_SOUTH_ROW * cellSize + bounds.minY,
+            (source.row ?? IDLE_SOUTH_ROW) * cellSize + bounds.minY,
             sourceW,
             sourceH,
             dx,
@@ -460,7 +461,7 @@ export class AvatarCanvas {
 
         const source = this._avatarSheetSource(identity, spriteId, { accessory: false });
         if (!source) return false;
-        const cellSize = Math.floor((source.image.naturalWidth || source.image.width) / 8);
+        const cellSize = source.cellSize || Math.floor((source.image.naturalWidth || source.image.width) / 8);
         if (!Number.isFinite(cellSize) || cellSize <= 0) return false;
         // Crop metadata authored against a different cell size cannot be
         // trusted; fall back to the full body rather than blit garbage.
@@ -474,7 +475,7 @@ export class AvatarCanvas {
             const { sx, sy } = cropWindow(crop, face, winW, winH, cellSize, box.window);
             const drawW = winW * box.cropScale;
             const drawH = winH * box.cropScale;
-            ctx.drawImage(source.image, sx, IDLE_SOUTH_ROW * cellSize + sy, winW, winH,
+            ctx.drawImage(source.image, sx, (source.row ?? IDLE_SOUTH_ROW) * cellSize + sy, winW, winH,
                 Math.round((this.canvas.width - drawW) / 2), this.canvas.height - drawH, drawW, drawH);
             return true;
         }
@@ -482,7 +483,7 @@ export class AvatarCanvas {
             ctx,
             source.image,
             crop.x,
-            IDLE_SOUTH_ROW * cellSize + crop.y,
+            (source.row ?? IDLE_SOUTH_ROW) * cellSize + crop.y,
             crop.w,
             crop.h,
             box,
@@ -538,14 +539,9 @@ export class AvatarCanvas {
                     headBare: entry?.headBare === true,
                 })
                 : null;
-            const composited = compositor.spriteFor(
-                spriteId,
-                paletteKey,
-                this._paletteVariant(providerKey),
-                accessory,
-                this._teamTrimAccent(),
-            );
-            if (composited) return { image: composited };
+            const cell = avatarIdleCell(compositor, spriteId, paletteKey, this._paletteVariant(providerKey),
+                accessory, this._teamTrimAccent());
+            if (cell) return { image: cell, cellSize: cell.width, row: 0 };
         }
         if (!this._ensureSpriteImage(spriteId)) return null;
         if (!this.spriteImage.complete || !this.spriteImage.naturalWidth) return null;

@@ -261,37 +261,13 @@ test('a run strip whose other poses sheathe the weapon authors the weapon hand f
     assert.equal(AgentSprite.prototype._poseGripFrame(sol.id, { ...runPose(sol, 0, 0), group: 'read' }), -1);
 });
 
-test('the resident run strip bakes the held weapon around every run cell', () => {
-    const calls = [];
-    const previousDocument = globalThis.document;
-    const ctx = {
-        save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, translate() {},
-        drawImage: (_source, sx, sy) => calls.push(`body:${sx / 92}:${sy / 92}`),
-    };
-    globalThis.document = { createElement: () => ({ getContext: () => ctx }) };
-    try {
-        const entry = RUN_PROFILES.find(candidate => candidate.id === 'agent.codex.gpt56luna');
-        const identity = getModelVisualIdentity('gpt-5.6-luna', 'high', 'codex');
-        const sprite = Object.assign(Object.create(AgentSprite.prototype), {
-            assets: { assetVersion: 3 },
-            spriteSheet: new SpriteSheet(null),
-            _getCellContentBounds: () => null,
-            _runtimeCodexEquipment: () => identity.equipment,
-            _normalizedCodexEquipment: equipment => equipment,
-            _drawCodexEquipment(_ctx, _identity, geometry, layer, direction) {
-                calls.push(`${layer}:${direction}:${geometry.poseGroup}:${geometry.poseFrame}`);
-            },
-        });
-        const pose = { ...runPose(entry, 0, 0), source: { width: 736 } };
-        const strip = sprite._gpuEquippedPoseStrip(identity, pose);
-        assert.equal(strip.firstRow, 21);
-        assert.ok(strip.pad > 0, 'blade tips overhang the 92px cell');
-        assert.equal(calls.length, 8 * 6 * 3);
-        assert.deepEqual(calls.slice(0, 3), ['back:s:run:0', 'body:0:21', 'front:s:run:0']);
-        assert.deepEqual(calls.slice(-3), ['back:sw:run:5', 'body:7:26', 'front:sw:run:5']);
-        assert.equal(sprite._gpuEquippedPoseStrip(identity, pose), strip, 'one bake per strip source');
-    } finally {
-        if (previousDocument === undefined) delete globalThis.document;
-        else globalThis.document = previousDocument;
+test('the resident run group uses the registered strip and tracks the current hand row', () => {
+    const entry = RUN_PROFILES.find(candidate => candidate.id === 'agent.codex.gpt56luna');
+    const strip = { image: { width: 736 } };
+    const sprite = Object.assign(Object.create(AgentSprite.prototype), { _layerProfile: {} });
+    assert.equal(sprite._actionStripSource({}, entry.id, strip), strip.image);
+    for (let frame = 0; frame < 6; frame++) {
+        const pose = runPose(entry, 0, frame);
+        assert.equal(sprite._poseGripFrame(entry.id, pose), frame);
     }
 });

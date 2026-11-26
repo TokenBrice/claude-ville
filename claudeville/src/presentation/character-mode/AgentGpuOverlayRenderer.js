@@ -199,132 +199,53 @@ export class AgentGpuOverlayRenderer {
         pose = null,
         lod = false,
         stripProbe = false,
+        layer = null,
     }) {
         const host = this.host;
         if (!host.gpuWorldEnabled || !host.spriteCanvas || !cell) {
             host._gpuFrameRecord = null;
             return;
         }
-        // 2.2 — an authored C2 pose replaces both the sampled sheet and the
-        // source rect, so the resident body shows the same hands the Canvas
-        // body does. A strip owns its grip; only a group that authors the
-        // weapon hand (W8.7 run rows) samples its padded equipped copy.
-        const equippedPose = pose?.equipped || null;
-        let source = pose ? (equippedPose?.canvas || pose.source) : (host._gpuBaseSpriteCanvas || host.spriteCanvas);
         const status = host.agent?.status;
-        // Equipped codex sheets are re-laid on a padded cell grid so baked
-        // blade tips survive past the 92px body cell; remap the cell UVs and
-        // grow the on-screen quad by the same padding. The channel companions
-        // stay unpadded: `channelRect` places their sheet cell at the pad.
-        const layout = equippedPose || host._gpuEquippedSheetLayout;
-        const pad = equippedPose ? equippedPose.pad : (layout && source === host._gpuBaseSpriteCanvas ? layout.pad : 0);
-        const cellSize = pad ? layout.cellSize : 0;
-        const padded = pad ? cellSize + pad * 2 : 0;
-        const bodyCell = pose ? pose.cell : cell;
-        const gridCell = equippedPose ? bodyCell : cell;
-        const col = pad ? Math.floor(gridCell.sx / cellSize) : 0;
-        const row = pad ? Math.floor(gridCell.sy / cellSize) - (equippedPose?.firstRow || 0) : 0;
-        // 7.1 — a seated body arrives clipped at its seat line (sh < cell);
-        // the padded slot keeps its top pad and drops the rows below the clip.
-        const paddedRows = pad && bodyCell.sh < cellSize ? pad + bodyCell.sh : padded;
-        const frameKey = agentFrameKeyFromCell(bodyCell);
-        // Plan 2.7 — a crowd body samples the baked 0.5x LOD sheet at world
-        // scale 1: source rects halve, and with drawScale 0.5 the quad keeps
-        // one LOD texel per world texel. Authored channel sidecars describe
-        // the full-resolution cells, so the LOD body uses record defaults.
-        // B.2 — an equipped profile's LOD sheet outlives its released albedo.
-        const lodCell = pad ? padded : (host.spriteSheet?.cellSize || DEFAULT_CELL);
-        const lodSheet = lod && !pose
-            ? (host._gpuLodSheet
-                ? host._gpuLodSheet(source, lodCell)
-                : host.compositor?.halfScaleSheet?.(source, lodCell))
-            : null;
-        // A released albedo's stand-in is never drawn.
-        if (!lodSheet && source && source === host._gpuEquippedEntry?.stub) {
-            host._gpuFrameRecord = null;
-            return;
-        }
+        const original = pose?.cell || cell;
+        const bodyCell = layer?.cell || original;
+        const base = pose?.source || host._gpuBaseSpriteCanvas || host.spriteCanvas;
+        const lodSheet = lod && !pose && !layer ? host.compositor?.halfScaleSheet?.(base, host.spriteSheet?.cellSize || DEFAULT_CELL) : null;
+        const source = layer?.sheet.source || lodSheet || base;
         const sourceScale = lodSheet ? 0.5 : 1;
-        if (lodSheet) source = lodSheet;
-        const sheetCell = pad && !lodSheet && !pose;
-        const sheetMaterial = sheetCell
-            ? host.assets?.getSidecar?.(spriteId, 'material') || host.assets?.getMaterialSidecar?.(spriteId, 'material') || null
-            : null;
-        const sheetEmissive = sheetCell
-            ? host.assets?.getSidecar?.(spriteId, 'emissive') || host.assets?.getMaterialSidecar?.(spriteId, 'emissive') || null
-            : null;
-        const resolved = (sheetMaterial || sheetEmissive || pose || lodSheet)
-            ? null
-            : host.assets?.resolveMaterialChannels?.(spriteId, frameKey, {
-                kind: 'agent',
-                status,
-                selected: host.selected,
-                onScreen: true,
-            });
+        const resolved = !layer && !pose && !lodSheet && host.assets?.resolveMaterialChannels?.(spriteId, agentFrameKeyFromCell(cell), {
+            kind: 'agent', status, selected: host.selected, onScreen: true,
+        });
         const resolvedReady = resolved?.ready && resolved.origin !== 'fallback';
-        // A strip carries its own optional material companions; it never
-        // borrows the base sheet's, whose cells describe a different pose.
-        const authoredMaterial = lodSheet
-            ? null
-            : pose
-                ? pose.strip?.channels?.material || null
-                : sheetMaterial
-                    || (resolvedReady ? resolved.material : null)
-                    || (pad ? null : host.assets?.getSidecar?.(spriteId, 'material')
-                        || host.assets?.getMaterialSidecar?.(spriteId, 'material'))
-                    || null;
-        const authoredEmissive = lodSheet
-            ? null
-            : pose
-                ? pose.strip?.channels?.emissive || null
-                : sheetEmissive
-                    || (resolvedReady ? resolved.emissive : null)
-                    || (pad ? null : host.assets?.getSidecar?.(spriteId, 'emissive')
-                        || host.assets?.getMaterialSidecar?.(spriteId, 'emissive'))
-                    || null;
-        const authoredOccluder = lodSheet
-            ? null
-            : pose
-                ? pose.strip?.channels?.occluder || null
-                : sheetCell ? host.assets?.getSidecar?.(spriteId, 'occluder') || null
-                    : resolved?.occluder || host.assets?.getSidecar?.(spriteId, 'occluder') || null;
-        // B.2 — material + occluder travel as one packed geometry map (V9
-        // flag 32); an all-transparent emissive companion is dropped.
-        const materialSource = host._packedGeometrySource?.(authoredMaterial, authoredOccluder) || null;
-        const emissiveSource = host._authoredEmissionSource?.(authoredEmissive) || null;
-        // Sheet-layout companions of an equipped body: the unpadded cell,
-        // drawn at the pad offset inside the padded atlas slot. A padded strip
-        // pose keeps its strip-layout companions at the strip cell.
-        const channelRect = !(materialSource || emissiveSource)
-            ? null
-            : sheetCell && (sheetMaterial || sheetEmissive || authoredOccluder)
-                ? { sx: col * cellSize, sy: row * cellSize, sw: cellSize, sh: cellSize, dx: pad, dy: pad }
-                : pad && pose
-                    ? { sx: bodyCell.sx, sy: bodyCell.sy, sw: bodyCell.sw, sh: bodyCell.sh, dx: pad, dy: pad }
-                    : null;
+        const channel = name => {
+            if (pose) return pose.strip?.channels?.[name];
+            if (lodSheet) return null;
+            return (resolvedReady && resolved[name])
+                || host.assets?.getSidecar?.(spriteId, name) || host.assets?.getMaterialSidecar?.(spriteId, name);
+        };
+        const materialSource = layer ? layer.sheet.geometry : host._packedGeometrySource?.(channel('material'), channel('occluder')) || null;
+        const emissiveSource = host._authoredEmissionSource?.(layer ? layer.sheet.emission : channel('emissive')) || null;
         host._gpuFrameRecord = {
             id: `agent:${host.agent?.id || profileKey}`,
             stableKey: host.agent?.id || profileKey,
-            textureKey: pose
-                ? `agent-strip${equippedPose ? '-equipped' : ''}:${profileKey}:${pose.group}`
-                : `agent-sheet${lodSheet ? '-lod' : ''}:${profileKey}`,
-            sidecarKey: materialSource || emissiveSource ? `${spriteId}:${pose ? 'strip' : 'channels'}` : '',
+            textureKey: layer ? 'agent-model:' + layer.sheet.key :
+                pose ? `agent-strip:${profileKey}:${pose.group}` : `agent-sheet${lodSheet ? '-lod' : ''}:${profileKey}`,
+            sidecarKey: layer?.sheet.key || (materialSource || emissiveSource ? `${spriteId}:${pose ? 'strip' : 'channels'}` : ''),
             source,
             materialSource,
             emissiveSource,
             packedGeometry: Boolean(materialSource),
-            channelRect,
+            channelRect: null,
             channelRevision: resolved?.revision || host.assets?.assetVersion || null,
             sourceWidth: source.width,
             sourceHeight: source.height,
-            sx: (pad ? col * padded : bodyCell.sx) * sourceScale,
-            sy: (pad ? row * padded : bodyCell.sy) * sourceScale,
-            sw: (pad ? padded : bodyCell.sw) * sourceScale,
-            sh: (pad ? paddedRows : bodyCell.sh) * sourceScale,
-            x: dx - pad * drawScale,
-            y: dy - pad * drawScale,
-            width: (pad ? padded : bodyCell.sw) * drawScale,
-            height: (pad ? paddedRows : bodyCell.sh) * drawScale,
+            sx: bodyCell.sx * sourceScale,
+            sy: bodyCell.sy * sourceScale,
+            sw: bodyCell.sw * sourceScale,
+            sh: bodyCell.sh * sourceScale,
+            x: dx, y: dy,
+            width: original.sw * drawScale,
+            height: original.sh * drawScale,
             alpha: departedTableau(host) ? alpha * 0.58 : alpha,
             material: gpuMaterialNameForProvider(host.agent?.provider),
             elevation: 0.52,
@@ -338,12 +259,8 @@ export class AgentGpuOverlayRenderer {
                         : status === AgentStatus.WORKING
                             ? 0.08
                             : 0,
-            // The equipped-sheet key folds in the asset version, so a weapon
-            // asset arriving after a fallback-vector bake re-uploads the sheet.
-            textureRevision: pose
-                ? `strip:${profileKey}:${pose.group}${equippedPose ? `:${equippedPose.key}` : ''}`
-                : `${lodSheet ? 'lod:' : ''}${host._gpuEquippedSheetKey || profileKey}`,
-            sidecarRevision: resolved?.revision || host.assets?.assetVersion || null,
+            textureRevision: layer?.sheet.key || (pose ? `strip:${profileKey}:${pose.group}` : `${lodSheet ? 'lod:' : ''}${profileKey}`),
+            sidecarRevision: layer?.sheet.key || resolved?.revision || host.assets?.assetVersion || null,
             contentTopY,
             poseKey: `${pose ? `${pose.group}:${bodyCell.sy}` : host.animState}:${host.direction}:${host.agent?.currentTool || ''}`,
             urgentPose: host.selected || host.hovered
@@ -352,10 +269,13 @@ export class AgentGpuOverlayRenderer {
             // `shadeExempt`, gpu/SunShade.js).
             shadeExempt: isAttentionStatus(status) && !departedTableau(host),
             frameGeometry,
-            // VQ-9 — the sampled cell carries the runtime gear baked over the
-            // body (a padded equipped sheet or strip).
-            bakedGear: pad > 0,
         };
+        if (layer) {
+            Object.assign(host._gpuFrameRecord, {
+                sharedLayer: true, pageable: false, paletteIdentity: layer.palette, variant: layer.palette.variant,
+            });
+            return;
+        }
         if (stripProbe) return;
         const walkFrame = !pose && !lodSheet && host.animState === 'walk' && host.motionScale > 0
             ? walkFrameOfCell(host.spriteSheet, host.direction, cell)

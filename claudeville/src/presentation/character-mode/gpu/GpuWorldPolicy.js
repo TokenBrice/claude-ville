@@ -1628,6 +1628,14 @@ export const GPU_RECORD_FLAGS = Object.freeze({
     // of an action-needed villager (and what lies on it) and a petitioner's
     // floor candle. Attention loses nothing in shade.
     shadeExempt: 8192,
+    recolorIndex: 16384,
+    faceKeyed: 32768,
+    goldenRim: 65536,
+    reliefMaterial: 131072,
+    surfacePage: 262144,
+    mirrorSource: 524288,
+    shaftReceiver: 1048576,
+    surfaceRelative: 2097152,
 });
 
 // V9 / 0.6 — painter's depth. A record's or particle's painter `sortY` is
@@ -1699,13 +1707,25 @@ export function assignGpuRecordV9Fields(target, record, alpha, blend) {
         | (record.groundCast === true ? GPU_RECORD_FLAGS.groundCast : 0)
         | (record.seaFret === true ? GPU_RECORD_FLAGS.seaFret : 0)
         | (record.sunSelf === true ? GPU_RECORD_FLAGS.sunSelf : 0)
-        | (record.shadeExempt === true ? GPU_RECORD_FLAGS.shadeExempt : 0);
+        | (record.shadeExempt === true ? GPU_RECORD_FLAGS.shadeExempt : 0)
+        | ((record.flags || 0) & 0x3fc000)
+        | (record.recolorIndex === true ? GPU_RECORD_FLAGS.recolorIndex : 0)
+        | (record.faceKeyed === true ? GPU_RECORD_FLAGS.faceKeyed : 0)
+        | (record.goldenRim === true ? GPU_RECORD_FLAGS.goldenRim : 0)
+        | (record.reliefMaterial === true ? GPU_RECORD_FLAGS.reliefMaterial : 0)
+        | (record.surfacePage === true ? GPU_RECORD_FLAGS.surfacePage : 0)
+        | (record.mirrorSource === true ? GPU_RECORD_FLAGS.mirrorSource : 0)
+        | (record.shaftReceiver === true ? GPU_RECORD_FLAGS.shaftReceiver : 0)
+        | (record.surfaceRelative === true ? GPU_RECORD_FLAGS.surfaceRelative : 0);
     target.footY = finite(record.footY, Number.isFinite(depthSortY) ? depthSortY : -1);
     target.frontCornerX = finite(record.frontCornerX, 0);
     target.frontCornerY = finite(record.frontCornerY, -1);
     target.ownerSlot = uint16Field(record.ownerSlot);
     target.landmarkId = uint16Field(record.landmarkId);
     target.paletteRamp = Boolean(record.paletteRamp);
+    const indexed = (target.flags & GPU_RECORD_FLAGS.recolorIndex) !== 0;
+    target.recolorRow = indexed ? Math.min(255, uint16Field(record.recolorRow)) : 0;
+    target.meta = indexed ? Math.min(11, uint16Field(record.variant ?? record.meta)) : uint16Field(record.alpenglowRow ?? record.meta);
     return target;
 }
 

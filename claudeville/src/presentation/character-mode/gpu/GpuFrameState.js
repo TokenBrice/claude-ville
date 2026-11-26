@@ -54,8 +54,7 @@ export const FOOTPRINT_MARCH_STEPS = Object.freeze({ on: 8, 'four-steps': 4, off
 // the frame than the gold and silver paths.
 export const NOON_GLINT_GROW_GAIN = 2.5;
 // 3.5 — the authored ramp table: 11 material classes x 3 courses.
-export const PALETTE_LUT_WIDTH = 11;
-export const PALETTE_LUT_HEIGHT = 3;
+export { PALETTE_LUT_WIDTH, PALETTE_LUT_HEIGHT, agentPaletteLut } from '../AgentLayerRecords.js';
 // 3.4 — the open sea's C-W3 gust field (R8, SEA_GUST_SIZE^2 over the view),
 // refreshed on SEA_GUST_STEP_MS steps of the motion clock (an 8 Hz band).
 export const SEA_GUST_SIZE = 128;
@@ -1154,8 +1153,8 @@ export function resolvePuddles(feed, out = createPuddleUniforms(), level = POST_
 export function resolvePaletteLut(level, feed) {
     const source = level >= POST_FX_LEVELS.MINIMAL ? null : feed.paletteLut || null;
     return source
-        && source.width === PALETTE_LUT_WIDTH
-        && source.height === PALETTE_LUT_HEIGHT
+        && source.width === 11
+        && source.height === 3
         ? source
         : null;
 }

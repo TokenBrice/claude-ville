@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import * as CompositorModule from '../../claudeville/src/presentation/character-mode/Compositor.js';
+import { recolorCellBytes } from '../../claudeville/src/presentation/character-mode/AgentLayerRecords.js';
 import * as FirelightModule from '../../claudeville/src/presentation/character-mode/gpu/Firelight.js';
 import { contactShadowStamp, contactShadowWidth } from '../../claudeville/src/presentation/character-mode/AgentGroundMarks.js';
 import { effectBudgetMode } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
@@ -103,45 +104,28 @@ test('C-04: downsampleMajority keeps interior robe colours and attached crown ti
     assert.ok(goldCrownPx >= 260, `Sol.b 0.5x golden crown pixels ${goldCrownPx} >= 260`);
 });
 
-test('C-04: LOD_OUTLINE_ALPHA stays inside the shader bakedRim (0.4, 0.6) window and opaqueRimSheet lifts Canvas rims', () => {
-    const { LOD_OUTLINE_ALPHA, DAY_RIM_ALPHA, bakeSpriteOutline, opaqueRimSheet } = CompositorModule;
+test('C-04: LOD_OUTLINE_ALPHA stays inside the shader bakedRim (0.4, 0.6) window and Canvas cells lift their rims', () => {
+    const { LOD_OUTLINE_ALPHA, DAY_RIM_ALPHA, bakeSpriteOutline } = CompositorModule;
     assert.ok(Number.isInteger(LOD_OUTLINE_ALPHA), 'LOD_OUTLINE_ALPHA is an exported integer');
     // Shader bakedRim checks albedo.a > 0.4 (102/255) && albedo.a < 0.6 (153/255).
     assert.ok(LOD_OUTLINE_ALPHA >= 112 && LOD_OUTLINE_ALPHA <= 128,
         `LOD_OUTLINE_ALPHA=${LOD_OUTLINE_ALPHA} (${(LOD_OUTLINE_ALPHA / 255).toFixed(3)}) sits cleanly inside (0.4, 0.6)`);
 
-    const prevDocument = globalThis.document;
-    globalThis.document = {
-        createElement: () => {
-            let backing = makeMockCanvas(1, 1);
-            return {
-                get width() { return backing.width; },
-                set width(w) { backing = makeMockCanvas(w, backing.height); },
-                get height() { return backing.height; },
-                set height(h) { backing = makeMockCanvas(backing.width, h); },
-                get data() { return backing.data; },
-                getContext: () => backing.getContext('2d'),
-            };
-        },
-    };
-    try {
-        const canvas = makeMockCanvas(8, 8);
-        const ctx = canvas.getContext('2d');
-        const img = ctx.createImageData(8, 8);
-        const center = (4 * 8 + 4) * 4;
-        img.data.set([120, 140, 160, 255], center);
-        ctx.putImageData(img, 0, 0);
-        bakeSpriteOutline(ctx, 8, 8, 8, LOD_OUTLINE_ALPHA);
-        const leftRim = (4 * 8 + 3) * 4;
-        assert.equal(canvas.data[leftRim + 3], LOD_OUTLINE_ALPHA, 'bakeSpriteOutline applies custom LOD_OUTLINE_ALPHA');
-        const lifted = opaqueRimSheet(canvas);
-        assert.ok(lifted, 'opaqueRimSheet returns a Canvas 2D copy');
-        assert.equal(lifted.data[leftRim + 3], DAY_RIM_ALPHA, 'opaqueRimSheet lifts tagged dark rim to DAY_RIM_ALPHA');
-        assert.equal(lifted.data[center + 3], 255, 'opaqueRimSheet preserves interior opaque pixels');
-        assert.equal(canvas.data[leftRim + 3], LOD_OUTLINE_ALPHA, 'source sheet keeps half-alpha rim tag for GPU/LOD');
-    } finally {
-        globalThis.document = prevDocument;
-    }
+    const canvas = makeMockCanvas(8, 8);
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(8, 8);
+    const center = (4 * 8 + 4) * 4;
+    img.data.set([120, 140, 160, 255], center);
+    ctx.putImageData(img, 0, 0);
+    bakeSpriteOutline(ctx, 8, 8, 8, LOD_OUTLINE_ALPHA);
+    const leftRim = (4 * 8 + 3) * 4;
+    assert.equal(canvas.data[leftRim + 3], LOD_OUTLINE_ALPHA, 'bakeSpriteOutline applies custom LOD_OUTLINE_ALPHA');
+    const lifted = canvas.data.slice();
+    recolorCellBytes(lifted, new Uint8Array(lifted.length), new Uint8Array(256), true);
+    assert.equal(lifted[leftRim + 3], DAY_RIM_ALPHA);
+    assert.equal(lifted[center + 3], 255);
+    assert.equal(canvas.data[leftRim + 3], LOD_OUTLINE_ALPHA);
+
 });
 
 test('C-04: AgentGroundMarks contact shadow widens to 0.84x and strengthens core/outer to 188/96 (2026-11-23)', () => {
