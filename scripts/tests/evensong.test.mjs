@@ -28,6 +28,10 @@ import {
     tonicChord,
 } from '../../claudeville/src/presentation/shared/audio/bgm/ScoreKit.js';
 import { phaseKey } from '../../claudeville/src/presentation/shared/audio/MusicalScale.js';
+import {
+    ERROR_RESOLVING_KINDS as LOOM_ERROR_RESOLVING_KINDS,
+    openErrorsAt as loomOpenErrorsAt,
+} from '../../claudeville/src/presentation/shared/ChronicleLoom.js';
 import { EVENSONG_RELEASE_HARMONY_VEL, compileEvensongEvents } from '../../claudeville/src/presentation/shared/audio/bgm/BandEngine.js';
 import { quickPairs, range, timeline, totalBeats } from '../audio/score-analyzer.mjs';
 import {
@@ -579,15 +583,14 @@ describe('Evensong council fixes (W6 lane C)', () => {
 
     it('closes an open error on mended, resolved, completed and departed, as the Chronicle Loom does', () => {
         assert.deepEqual([...EVENSONG_ERROR_CLOSING_KINDS], ['mended', 'resolved', 'completed', 'departed']);
-        const loom = readFileSync(new URL('../../claudeville/src/presentation/shared/ChronicleLoom.js', import.meta.url), 'utf8');
-        const block = /const ERROR_RESOLVING_KINDS = new Set\(\[([\s\S]*?)\]\)/.exec(loom)?.[1] || '';
-        const loomKinds = [...block.matchAll(/LOOM_EVENT_KIND\.([A-Z]+)/g)].map(m => m[1].toLowerCase());
-        assert.deepEqual(loomKinds.sort(), [...EVENSONG_ERROR_CLOSING_KINDS].sort(), 'the same four kinds as the Loom');
+        assert.deepEqual([...LOOM_ERROR_RESOLVING_KINDS].sort(), [...EVENSONG_ERROR_CLOSING_KINDS].sort(), 'the same four kinds as the Loom');
 
         const errored = { ts: makeDayTs(14, 0), kind: 'errored', agentId: 'a1', repo: 'r' };
         assert.equal(openErrorsAt([errored]).length, 1, 'an errored row opens');
+        assert.equal(loomOpenErrorsAt([errored]).length, 1, 'Loom openErrorsAt matches');
         for (const kind of EVENSONG_ERROR_CLOSING_KINDS) {
             assert.deepEqual(openErrorsAt([errored, { ts: makeDayTs(15, 0), kind, agentId: 'a1' }]), [], `${kind} closes`);
+            assert.equal(loomOpenErrorsAt([errored, { ts: makeDayTs(15, 0), kind, agentId: 'a1' }]).length, 0, `Loom ${kind} closes`);
             assert.equal(openErrorsAt([errored, { ts: makeDayTs(15, 0), kind, agentId: 'a2' }]).length, 1, `another agent's ${kind} does not`);
             assert.equal(openErrorsAt([errored, { ts: makeDayTs(15, 0), kind, agentId: 'a1' }], makeDayTs(14, 30)).length, 1, `${kind} after endTs is ignored`);
         }

@@ -358,7 +358,11 @@ export function buildChronicleScenario({ lower, upper }, { events, samples }, { 
         // The capture loop can sample a departed session during its grace period.
         if (previous === null && row.kind !== 'arrived') continue;
         const sample = !row.kind;
-        const position = sample ? { tileX: row.tileX, tileY: row.tileY } : null;
+        const position = sample
+            ? (row.surfaceId != null
+                ? { tileX: row.tileX, tileY: row.tileY, surfaceId: row.surfaceId }
+                : { tileX: row.tileX, tileY: row.tileY })
+            : null;
         const status = STATUS.get(row.kind);
         if (!previous) {
             const agent = {
@@ -381,7 +385,11 @@ export function buildChronicleScenario({ lower, upper }, { events, samples }, { 
                 previous.gateArrival = null;
             }
             const update = {};
-            if (position && (position.tileX !== previous.position.tileX || position.tileY !== previous.position.tileY)) update.position = position;
+            if (position && (
+                position.tileX !== previous.position.tileX
+                || position.tileY !== previous.position.tileY
+                || (position.surfaceId ?? null) !== (previous.position.surfaceId ?? null)
+            )) update.position = position;
             if (row.model && row.model !== previous.model) update.model = row.model;
             if (row.provider && row.provider !== previous.provider) update.provider = row.provider;
             if (row.agentName && row.agentName !== previous.name) update.name = row.agentName;

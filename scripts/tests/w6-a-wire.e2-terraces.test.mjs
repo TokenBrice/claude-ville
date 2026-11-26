@@ -18,6 +18,7 @@ import { buildGpuWorldRecords } from '../../claudeville/src/presentation/charact
 import { hullRecords } from '../../claudeville/src/presentation/character-mode/HarborHulls.js';
 import { GpuWorldRendererWebGPU, planarMirrorFoot } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRendererWebGPU.js';
 import { RIPPLE_GRID_WIDTH } from '../../claudeville/src/presentation/character-mode/gpu/wgpu/WaterRippleCompute.js';
+import { buildChronicleScenario } from '../../claudeville/src/application/ChronicleScenario.js';
 
 const pilot = createSurfaceRegistry(createE2PilotTerrain());
 
@@ -370,6 +371,25 @@ test('Chronicle trail samples persist the selected floor on an overlapping tile'
     });
     host._ensureTrailRenderer();
     host.trailRenderer._capturePositions([agent], 1000);
+    // A floor-only surfaceId change on the same tile survives TrailRenderer deduplication.
+    sprite._surfaceIdAt = () => 0;
+    host.trailRenderer._capturePositions([agent], 1000);
     await host.trailRenderer.flush();
-    assert.deepEqual(writes.map(p => [p.tileX, p.tileY, p.surfaceId]), [[9, 11, 2]]);
+    assert.deepEqual(writes.map(p => [p.tileX, p.tileY, p.surfaceId]), [[9, 11, 2], [9, 11, 0]]);
+
+    // Recorded-day ChronicleScenario preserves surfaceId on initial add and floor-only updates.
+    const scenario = buildChronicleScenario(
+        { lower: 0, upper: 1_000_000 },
+        {
+            events: [],
+            samples: [
+                { agentId: 'walker', ts: 10_000, tileX: 9, tileY: 11, surfaceId: 2 },
+                { agentId: 'walker', ts: 400_000, tileX: 9, tileY: 11, surfaceId: 0 },
+            ],
+        },
+    );
+    const addStep = scenario.timeline.find(s => s.event === 'agent:add');
+    const obsStep = scenario.timeline.find(s => s.event === 'agent:observed');
+    assert.equal(addStep?.agent?.position?.surfaceId, 2);
+    assert.equal(obsStep?.update?.position?.surfaceId, 0);
 });

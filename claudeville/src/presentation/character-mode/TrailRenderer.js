@@ -526,10 +526,11 @@ export class TrailRenderer {
         if (last) {
             const dx = tileX - last.tileX;
             const dy = tileY - last.tileY;
-            if (
+            const sameSurface = (normalized.surfaceId ?? null) === (last.surfaceId ?? null);
+            if (sameSurface && (
                 Math.floor(last.ts / 1000) === Math.floor(ts / 1000)
                 || dx * dx + dy * dy < MIN_SAMPLE_DISTANCE_TILES * MIN_SAMPLE_DISTANCE_TILES
-            ) {
+            )) {
                 this._stats.duplicateDrops++;
                 return false;
             }

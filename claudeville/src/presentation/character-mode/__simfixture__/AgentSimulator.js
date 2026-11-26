@@ -54,7 +54,9 @@ function positionFromSpec(value) {
     const tileX = Number(value?.tileX);
     const tileY = Number(value?.tileY);
     if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
-    return new Position(tileX, tileY);
+    const pos = new Position(tileX, tileY);
+    if (value?.surfaceId != null) pos.surfaceId = value.surfaceId;
+    return pos;
 }
 
 function buildAgent(spec, timeBase, rebase = value => value) {
