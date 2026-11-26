@@ -769,6 +769,7 @@ const CLIENT_STATIC_FILES = new Set([
   'icon-512.png',
   'manifest.webmanifest',
   'm.webmanifest',
+  'strip.webmanifest',
 ]);
 
 function isClientStaticPath(relativePath) {
@@ -791,10 +792,16 @@ function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Stat
       return sendError(res, 400, 'Bad Request');
     }
 
-    // `/m` and `/m/` are the mobile profile of the same shell: index.html's
-    // head script reads the path, and its `<base href="/">` keeps every
-    // relative URL rooted.
-    const relativePath = (requestedPath === '/' || requestedPath === '/m' || requestedPath === '/m/')
+    // `/m`, `/m/`, `/strip`, and `/strip/` are alternate profiles of the same
+    // shell: index.html's head script reads the path, and its `<base href="/">`
+    // keeps every relative URL rooted.
+    const relativePath = (
+      requestedPath === '/'
+      || requestedPath === '/m'
+      || requestedPath === '/m/'
+      || requestedPath === '/strip'
+      || requestedPath === '/strip/'
+    )
       ? 'index.html'
       : requestedPath.replace(/^\/+/, '');
     let filePath = path.resolve(root, relativePath);

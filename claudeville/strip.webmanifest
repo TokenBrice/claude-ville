@@ -1,0 +1,15 @@
+{
+  "id": "/strip/",
+  "name": "ClaudeVille Strip",
+  "short_name": "Village Strip",
+  "description": "Watch your AI coding CLI sessions as a compact desktop strip.",
+  "start_url": "/strip/",
+  "scope": "/strip/",
+  "display": "standalone",
+  "background_color": "#140e0a",
+  "theme_color": "#140e0a",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

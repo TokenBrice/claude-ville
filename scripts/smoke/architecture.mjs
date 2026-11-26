@@ -34,9 +34,141 @@ const FIXED_POSITION_ALLOWLIST = new Map([
   ['character.css', new Set(['.first-run-hint', '.world-grammar'])],
   ['layout.css', new Set(['.toast-container'])],
   ['modal.css', new Set(['.modal-overlay'])],
+  ['strip.css', new Set([':root[data-cv-profile="strip"] #stripRail'])],
   // Top-bar popovers escape the bar's overflow clip; the SOUND panel replaced the mixer panel (7.1).
   ['topbar.css', new Set(['.topbar__connection-panel', '.topbar__spend-panel', '.topbar__sound-panel'])],
 ]);
+const PROFILE_CSS_SCOPES = new Map([
+  ['mobile.css', ':root[data-cv-profile="mobile"]'],
+  ['strip.css', ':root[data-cv-profile="strip"]'],
+]);
+
+function splitSelectorList(prelude) {
+  const selectors = [];
+  let current = '';
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let quote = '';
+  for (let i = 0; i < prelude.length; i++) {
+    const ch = prelude[i];
+    if (quote) {
+      current += ch;
+      if (ch === '\\' && i + 1 < prelude.length) {
+        current += prelude[++i];
+      } else if (ch === quote) {
+        quote = '';
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+    } else if (ch === '(') {
+      parenDepth++;
+      current += ch;
+    } else if (ch === ')') {
+      parenDepth = Math.max(0, parenDepth - 1);
+      current += ch;
+    } else if (ch === '[') {
+      bracketDepth++;
+      current += ch;
+    } else if (ch === ']') {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      current += ch;
+    } else if (ch === ',' && parenDepth === 0 && bracketDepth === 0) {
+      const normalized = current.trim().replace(/\s+/g, ' ');
+      if (normalized) selectors.push(normalized);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  const normalized = current.trim().replace(/\s+/g, ' ');
+  if (normalized) selectors.push(normalized);
+  return selectors;
+}
+
+function collectStyleRuleSelectors(css, out = []) {
+  let i = 0;
+  const len = css.length;
+  while (i < len) {
+    while (i < len && /\s/.test(css[i])) i++;
+    if (i >= len) break;
+    let start = i;
+    let quote = '';
+    while (i < len) {
+      const ch = css[i];
+      if (quote) {
+        if (ch === '\\' && i + 1 < len) i += 2;
+        else {
+          if (ch === quote) quote = '';
+          i++;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        i++;
+      } else if (ch === '{' || ch === ';') {
+        break;
+      } else {
+        i++;
+      }
+    }
+    if (i >= len) break;
+    const prelude = css.slice(start, i).trim();
+    if (css[i] === ';') {
+      i++;
+      continue;
+    }
+    // css[i] === '{' — find the matching closing brace.
+    const bodyStart = i + 1;
+    let depth = 1;
+    i = bodyStart;
+    quote = '';
+    while (i < len && depth > 0) {
+      const ch = css[i];
+      if (quote) {
+        if (ch === '\\' && i + 1 < len) i += 2;
+        else {
+          if (ch === quote) quote = '';
+          i++;
+        }
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        i++;
+      } else if (ch === '{') {
+        depth++;
+        i++;
+      } else if (ch === '}') {
+        depth--;
+        if (depth > 0) i++;
+      } else {
+        i++;
+      }
+    }
+    const body = css.slice(bodyStart, i);
+    i++; // advance past '}'
+    if (!prelude) continue;
+    if (prelude.startsWith('@')) {
+      if (/^@(?:media|supports|layer|container|starting-style|scope|document)\b/i.test(prelude)) {
+        collectStyleRuleSelectors(body, out);
+      }
+      continue;
+    }
+    for (const selector of splitSelectorList(prelude)) out.push(selector);
+  }
+  return out;
+}
+
+function isScopedToProfile(selector, prefix) {
+  if (selector === prefix) return true;
+  if (!selector.startsWith(prefix)) return false;
+  const next = selector[prefix.length];
+  return next === ' ' || next === ':' || next === '.' || next === '[' || next === '>' || next === '+' || next === '~';
+}
 
 const failures = [];
 const read = relativePath => fs.readFileSync(path.join(REPO_ROOT, relativePath), 'utf8');
@@ -88,6 +220,14 @@ for (const fileName of fs.readdirSync(CSS_DIR).filter(name => name.endsWith('.cs
     const selectors = block[1].split(',').map(selector => selector.trim().replace(/\s+/g, ' '));
     for (const selector of selectors) {
       if (!allowedSelectors.has(selector)) fail(`position: fixed is not allowlisted: claudeville/css/${fileName} selector ${selector}`);
+    }
+  }
+  const requiredScope = PROFILE_CSS_SCOPES.get(fileName);
+  if (requiredScope) {
+    for (const selector of collectStyleRuleSelectors(css)) {
+      if (!isScopedToProfile(selector, requiredScope)) {
+        fail(`profile CSS scope violation: claudeville/css/${fileName} selector "${selector}" must be scoped under ${requiredScope}`);
+      }
     }
   }
 }

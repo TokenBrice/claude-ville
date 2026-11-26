@@ -1,0 +1,272 @@
+/* ── Village Strip profile (/strip/): compact desktop companion frieze ──
+   Strictly scoped under `:root[data-cv-profile="strip"]` (enforced by
+   `npm run verify:architecture`) so `/` and `/m/` remain byte-identical.
+   The World canvas spans `100vw × (100vh - 18px)` with zero scrollbars
+   (targeting 1440×240 companion strips), and `#stripRail` docks along the
+   bottom 18 px edge in the Keep walnut & brass palette. */
+
+:root[data-cv-profile="strip"] {
+    overflow: hidden;
+    overscroll-behavior: none;
+}
+
+:root[data-cv-profile="strip"] body {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background: var(--bg-0);
+}
+
+/* ── Hide desktop/mobile chrome surfaces ── */
+:root[data-cv-profile="strip"] #topbar,
+:root[data-cv-profile="strip"] .sidebar,
+:root[data-cv-profile="strip"] #worldDock,
+:root[data-cv-profile="strip"] #firstRunHint {
+    display: none;
+}
+
+:root[data-cv-profile="strip"] #activityPanel,
+:root[data-cv-profile="strip"] #dashboardMode {
+    display: none !important;
+}
+
+/* ── Full-bleed World frieze above the 18 px strip rail ── */
+:root[data-cv-profile="strip"] .main,
+:root[data-cv-profile="strip"] .main__body,
+:root[data-cv-profile="strip"] .content,
+:root[data-cv-profile="strip"] #characterMode {
+    width: 100vw;
+    height: calc(100vh - 18px);
+    min-width: 0;
+    min-height: 0;
+    flex: 0 0 auto;
+    overflow: hidden;
+}
+
+:root[data-cv-profile="strip"] #worldStack {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+/* Keep toasts clear of the 18 px bottom rail when shown. */
+:root[data-cv-profile="strip"] .toast-container {
+    right: 8px;
+    bottom: 24px;
+}
+
+/* ── Bottom 18 px walnut & brass strip rail ──
+   Contents, left to right:
+     ● LIVE · 12 WORKING · [bell] 1 NEEDS YOU · spacer · SOUND · OPEN FULL ↗
+   Data runs in Departure Mono 11 px on an 18 px line; labels use Press Start 2P 8 px. */
+:root[data-cv-profile="strip"] #stripRail {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 8px;
+    overflow: hidden;
+    white-space: nowrap;
+    background: var(--cv-surface-panel, var(--bg-1));
+    border-top: 1px solid var(--brass);
+    box-shadow: 0 -1px 0 var(--seam);
+    color: var(--ink-1);
+    font-family: var(--font-body);
+    font-size: var(--fs-body);
+    line-height: 18px;
+    font-variant-numeric: tabular-nums;
+}
+
+:root[data-cv-profile="strip"] #stripRail [hidden] {
+    display: none;
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__slot {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    flex-shrink: 0;
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__sep {
+    color: var(--ink-4);
+    flex-shrink: 0;
+    user-select: none;
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__label {
+    font-family: var(--font-display);
+    font-size: var(--fs-label);
+    line-height: 17px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--ink-2);
+}
+
+/* ── Connection state: ● LIVE ── */
+:root[data-cv-profile="strip"] #stripRail .strip-rail__live {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    color: var(--cv-status-working);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__live .strip-rail__label {
+    color: inherit;
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__dot {
+    width: 6px;
+    height: 6px;
+    flex-shrink: 0;
+    background: currentColor;
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__live--syncing {
+    color: var(--ink-3);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__live--polling {
+    color: var(--cv-status-idle);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__live--reconnecting {
+    color: var(--cv-status-rate-limited);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__live--disconnected,
+:root[data-cv-profile="strip"] #stripRail .strip-rail__live--stale {
+    color: var(--cv-status-errored);
+}
+
+/* ── Working tally: 12 WORKING ── */
+:root[data-cv-profile="strip"] #stripRail .strip-rail__working {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    color: var(--ink-1);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__count {
+    color: var(--ink-1);
+    font-family: var(--font-body);
+    font-size: var(--fs-body);
+    line-height: 17px;
+}
+
+/* ── Attention pill: [bell] 1 NEEDS YOU (MOSS 1m) ── */
+:root[data-cv-profile="strip"] #stripRail .strip-rail__attention {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 15px;
+    padding: 0 6px;
+    min-width: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    background: var(--cv-attn-fill-needs-you);
+    border: 1px solid var(--cv-status-waiting-user);
+    color: var(--ink-1);
+    font-family: var(--font-body);
+    font-size: var(--fs-body);
+    line-height: 13px;
+    cursor: pointer;
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__attention .strip-rail__label {
+    color: var(--cv-status-waiting-user);
+    line-height: 13px;
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__attention--error {
+    background: var(--cv-attn-fill-error);
+    border-color: var(--cv-status-errored);
+    color: var(--ink-1);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__attention--error .strip-rail__label {
+    color: var(--ink-1);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__attention--limit {
+    background: var(--cv-attn-fill-limit);
+    border-color: var(--cv-status-rate-limited);
+    color: var(--ink-1);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__attention--limit .strip-rail__label {
+    color: var(--ink-1);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__attention-icon {
+    width: 10px;
+    height: 10px;
+    flex-shrink: 0;
+    shape-rendering: crispEdges;
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__attention-detail {
+    color: var(--ink-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__attention:hover {
+    border-color: var(--gold-hi);
+}
+
+/* ── Flexible spacer ── */
+:root[data-cv-profile="strip"] #stripRail .strip-rail__spacer {
+    flex: 1 1 auto;
+    min-width: 8px;
+}
+
+/* ── Right controls: SOUND toggle & OPEN FULL ↗ link ── */
+:root[data-cv-profile="strip"] #stripRail .strip-rail__sound,
+:root[data-cv-profile="strip"] #stripRail .strip-rail__open {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 17px;
+    padding: 0 6px;
+    flex-shrink: 0;
+    color: var(--ink-2);
+    font-family: var(--font-display);
+    font-size: var(--fs-label);
+    line-height: 17px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__sound:hover,
+:root[data-cv-profile="strip"] #stripRail .strip-rail__open:hover {
+    color: var(--gold-hi);
+    background: var(--bg-2);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__sound[aria-pressed="true"] {
+    color: var(--gold);
+    background: var(--bg-3);
+}
+
+:root[data-cv-profile="strip"] #stripRail .strip-rail__open {
+    color: var(--gold);
+}
+
+:root[data-cv-profile="strip"] #stripRail :is(button, a):focus-visible {
+    outline: 1px solid var(--cv-focus);
+    outline-offset: -1px;
+}
