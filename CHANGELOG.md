@@ -2,6 +2,32 @@
 
 ---
 
+## v0.69.0 — *The Four Staves* · Nov 27, 2026
+
+Four carved stone staves replace the Hourglass Belfry on the northwest headland, Dashboard gains a dedicated four-provider Weekly Limits rail, T3 Code sessions (including GLM-5.4 subagents, idle Neon orchestrators, and tasklists) land natively in the village, audio settles into a calmer urgent-only signal diet with a pure *Town band only* preset, Settings consolidates into four clean sections with an *Idyllic* clear sky, and the Hall of Lives crash is gone.
+
+- **Modular 4-Pillar Runic Tide-Terrace and 4-Provider Weekly Limits.**
+  - Replaces the two-face Hourglass Belfry with an octagonal flagstone sundial terrace and four spaced carved stone-and-crystal pillars tracking **Claude**, **Codex**, **GLM**, and **Antigravity** weekly quotas left — with unified OKLab-compliant Tier-B house hues, night crystal glow, dark inset unknown shrouds, horizontal `LIMIT` wax seals, winter snow drifts, per-pillar hover plates, and a click-to-open terrace-clear **Quota Ledger** card.
+  - Extends `/api/usage` (`usageQuota.js`) with **GLM / z.AI** (`api.z.ai/api/monitor/usage/quota/limit` with strict allowlist, SV-7 backoff, and header credential validation), **Antigravity** (zero-network `~/.t3/caches/antigravity.json` primary with Gemini Weekly + 3P Shared windows and OAuth rotation-safe fallback), and separate **Codex** weekly vs 5-hour windows.
+  - Moves all four weekly limits into a dedicated compact **Dashboard Quota Rail** (`WEEKLY LIMITS` eyebrow, unified `% left` 12-segment bars, Claude `sevenDay` fallback, error-first 1280px badges, and `/m/` mobile wrapping).
+- **Full T3 Code support (`GLM-5.4`, orchestrator liveness, delegate lineage, and Taskboard).**
+  - Discovers T3 Code **`glm-5.4`** (`glm-acp-agent` / `acpRegistry_glm_agent`) subagents from SQL-bounded T3 SQLite queries and `~/.local/state/glm-acp-agent/sessions/` (filtering empty capability probes and archived runs, extracting uncached tokens and `todowrite` checklists).
+  - Keeps idle and crew-waiting **Antigravity / Neon** root orchestrators alive while their `agy acp` process holds `conversations/*.db`, scopes active runs strictly to the active attempt, fixes `parentConvId` and cross-provider `backgroundPending`, and tethers Claude, Codex, Antigravity, and GLM T3 delegates to their parents.
+  - Brings T3 Code tasklists onto the World Taskboard by parsing Antigravity `update_steps`, GLM `todowrite`, real Claude `TodoWrite` `content` items, and `TaskCreate`/`TaskUpdate` `tool_result` ID correlation + `~/.claude/tasks/` mirroring.
+- **Speech display modes and Idyllic sky.**
+  - Adds a 4-mode **Speech bubbles** setting (*Zoom-adaptive*, *Above agents*, *Bottom-left stream*, *Both*) with compact overlap-free overview bubbles when heavily zoomed out, full-width `READ (B)`, speaker name attribution in the bottom-left `SPOKEN` strip, and phantom hit-rect fixes.
+  - Adds **Idyllic** to **Village sky** (*Modeled*, *Real sky*, *Idyllic*): strictly offline clear weather with light fair-weather clouds and balmy frost-free winter nights while preserving the full real day/night cycle, moon and lunar tide, eclipses, aurora, and seasonal foliage.
+- **Audio calm signal diet, *Town band only*, and consolidated Settings.**
+  - Adds a fourth audio preset, **Town band only**, for continuous Isle Band music with zero signal bells (switching seamlessly with *Town band* without restarting the song, 800 ms fade on Hush/Quiet Hours, keeping OS Desktop Alerts unmuted, and fixing hidden-tab `mayStart` bell-state so active signals never double-ring).
+  - Refocuses *Signals* and *Town band* onto actionable alerts only (*Needs you*, *Error*, *Limit*, *Reminders*, and lost server link), silencing noisy routine/outcome/scenery chimes and keeping automatic captions on signals only.
+  - Removes inaudible **Town band voice** (locking to Isle Band and stripping unused chip synth) and **Tone**, drops redundant *Automatic camera* and *Collapse sidebar* checkboxes from Settings, reorganizes Settings into four clean sections with collapsible drawers, and fixes **Watchtowers** always reporting *"No providers were reported."* (caused by an unbound `window.fetch` call masked by the 1 Hz refresh timer).
+- **Hall of Lives crash, leak, and lineage fixes.**
+  - Eliminates the Chromium renderer OOM crash when opening Hall of Lives by caching a single `Intl.DateTimeFormat`, bounding timestamps, slicing top-3 chapters before formatting, adding a `5,000`-row `biographies` cap and cursor-paginated reads (`40` rows + *Show more*), releasing `AvatarCanvas` instances and backing stores via `Modal` `onClose`, and restricting durable `named:*` lineages to user-named, team-named, and project leads (including native Antigravity `/rename`).
+- **New ClaudeVille icon.**
+  - Updates the ClaudeVille brand icon to Fable's portrait.
+
+---
+
 ## v0.68.0 — *The Woven Isle* · Nov 26, 2026
 
 A seven-wave visual, architectural, and chronicle milestone that rebuilds ClaudeVille's ground, water, sky, lighting, village life, crowd motion, and daily memory from the texel up while preserving the zero-build Node and vanilla ES-module runtime.
