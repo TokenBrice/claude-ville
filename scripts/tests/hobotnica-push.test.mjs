@@ -217,9 +217,10 @@ test('canonical-ID overlay matches Claude, Antigravity, Codex, and disk GLM with
     instanceId: 'inst-dev',
     threadId: 'th-claude',
     childThreadId: null,
-    subagentId: 'sub-c',
+    subagentId: null,
     parentThreadId: null,
     waveId: 'wave-alpha',
+    pushOnly: false,
   });
 
   assert.equal(folded.find(s => s.sessionId === 'antigravity-conv-2222')?.signalSource, 'push');
@@ -294,6 +295,7 @@ test('diskless GLM synthesizes zai-hbt-<threadId> with agent.zai.glm sprite and 
       subagentId: 'sub-glm-1',
       parentThreadId: 'th-root',
       waveId: 'wave-9',
+      pushOnly: true,
     });
 
     const detail = getSessionDetailByProvider('zai', 'zai-hbt-th-glm-child-1', '/work/hobotnica');
@@ -501,7 +503,9 @@ test('instance isolation, bootId reset, chunked snapshot atomic commit, and 30s/
   const freshFold = store.fold([diskClaude], clock, { normalizeSession });
   const freshMerged = residency.merge(freshFold, clock);
   assert.equal(freshMerged.length, 2);
-  assert.equal(residency.size, 0, 'SessionResidency does not admit push-owned sessions');
+  assert.equal(residency.size, 1, 'SessionResidency admits overlaid disk-backed sessions but not push-only zai-hbt-*');
+  assert.equal(residency._residents.has('claude-ttl-1'), true);
+  assert.equal(residency._residents.has('zai-hbt-th-prod-1'), false);
 
   // At 31s (> PUSH_STALE_TTL_MS): disk-backed drops push overlay; push-only becomes stale
   clock += PUSH_STALE_TTL_MS + 1000;
@@ -684,4 +688,491 @@ test('AntigravityAdapter discovers both Hobotnica userdata and fallback ACP root
     t3code.clearT3Cache();
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('Opus B1: overlaid disk Claude/Codex awaiting operator approval stays resident at 190s while push-only zai-hbt-* drops at 60s', () => {
+  let clock = 1_750_000_000_000;
+  const store = new HobotnicaPushStore({ now: () => clock });
+  const residency = new SessionResidency();
+
+  const diskClaude = normalizeSession({
+    sessionId: 'claude-approval-190',
+    provider: 'claude',
+    project: '/work/repo',
+    lastActivity: clock,
+    turnState: 'working',
+    freshness: { state: 'fresh', observedAt: clock, ageMs: 0 },
+  });
+  const diskCodex = normalizeSession({
+    sessionId: 'codex-2026-11-27T12-00-00-approval-190',
+    provider: 'codex',
+    agentId: 'approval-190',
+    project: '/work/repo',
+    lastActivity: clock,
+    turnState: 'working',
+    freshness: { state: 'fresh', observedAt: clock, ageMs: 0 },
+  });
+
+  store.ingest(makeSnapshot([
+    makeAgent({
+      key: 'k-claude-approval',
+      owningThreadId: 'th-claude-approval',
+      providerDriver: 'claudeAgent',
+      nativeSessionId: 'claude-approval-190',
+      phase: 'awaiting_approval',
+      waitAudience: 'operator',
+      pendingActions: [
+        { kind: 'approval', audience: 'operator', summary: 'Approve rm -rf build', awaitingSinceMs: clock },
+      ],
+      updatedAtMs: clock,
+    }),
+    makeAgent({
+      key: 'k-codex-approval',
+      owningThreadId: 'th-codex-approval',
+      providerDriver: 'codex',
+      nativeSessionId: 'approval-190',
+      rolloutPath: '/home/u/.codex/sessions/2026/11/27/rollout-2026-11-27T12-00-00-approval-190.jsonl',
+      phase: 'awaiting_approval',
+      waitAudience: 'operator',
+      pendingActions: [
+        { kind: 'approval', audience: 'operator', summary: 'Approve deploy', awaitingSinceMs: clock },
+      ],
+      updatedAtMs: clock,
+    }),
+    makeAgent({
+      key: 'k-glm-pushonly',
+      owningThreadId: 'th-glm-pushonly',
+      providerDriver: 'acp-registry',
+      model: 'glm-5.4',
+      phase: 'awaiting_approval',
+      waitAudience: 'operator',
+      pendingActions: [
+        { kind: 'approval', audience: 'operator', summary: 'GLM push-only approval', awaitingSinceMs: clock },
+      ],
+      updatedAtMs: clock,
+    }),
+  ], { serverTimeMs: clock }), clock);
+
+  const initialFold = store.fold([diskClaude, diskCodex], clock, { normalizeSession });
+  const overlaidClaude = initialFold.find(s => s.sessionId === 'claude-approval-190');
+  const overlaidCodex = initialFold.find(s => s.sessionId === 'codex-2026-11-27T12-00-00-approval-190');
+  const syntheticGlm = initialFold.find(s => s.sessionId === 'zai-hbt-th-glm-pushonly');
+  assert.equal(overlaidClaude.hobotnica.pushOnly, false);
+  assert.equal(overlaidCodex.hobotnica.pushOnly, false);
+  assert.equal(syntheticGlm.hobotnica.pushOnly, true);
+
+  const merged0 = residency.merge(initialFold, clock);
+  assert.equal(merged0.length, 3);
+  assert.equal(residency.size, 2, 'only overlaid disk-backed sessions are admitted to residency');
+
+  // After 61s: push-only GLM drops cleanly via 60s TTL and is never resurrected by residency
+  clock += PUSH_DROP_TTL_MS + 1000;
+  const fold61 = store.fold([diskClaude, diskCodex], clock, { normalizeSession });
+  assert.equal(fold61.some(s => s.sessionId === 'zai-hbt-th-glm-pushonly'), false);
+
+  // Advance to 190s (> 2-minute active threshold): disk adapters stop returning idle-on-approval transcripts
+  clock += 129_000;
+  const fold190 = store.fold([], clock, { normalizeSession });
+  assert.equal(fold190.length, 0);
+  const merged190 = residency.merge(fold190, clock);
+
+  const residentClaude = merged190.find(s => s.sessionId === 'claude-approval-190');
+  const residentCodex = merged190.find(s => s.sessionId === 'codex-2026-11-27T12-00-00-approval-190');
+  assert.ok(residentClaude, 'overlaid disk Claude waiting on operator approval remains resident after 190s');
+  assert.equal(residentClaude.resident, true);
+  assert.equal(residentClaude.waitReason, 'approval');
+  assert.ok(residentCodex, 'overlaid disk Codex waiting on operator approval remains resident after 190s');
+  assert.equal(residentCodex.resident, true);
+  assert.equal(residentCodex.waitReason, 'approval');
+  assert.equal(merged190.some(s => s.sessionId === 'zai-hbt-th-glm-pushonly'), false, 'push-only zai-hbt-* stays dropped');
+});
+
+test('Astra M4 & Opus M2: generic ACP non-GLM entries are never classified as zai or synthesized as GLM villagers', () => {
+  assert.equal(normalizeProvider({ providerDriver: 'acp', model: 'Gemini via ACP', providerInstanceId: 'gemini-acp' }), null);
+  assert.equal(normalizeProvider({ providerDriver: 'acp-registry', model: 'gemini-2.5-pro', providerInstanceId: 'gemini' }), null);
+  assert.equal(normalizeProvider({ providerDriver: 'acpregistry', model: 'replay', providerInstanceId: 'replay' }), null);
+  assert.equal(normalizeProvider({ providerDriver: 'replay', model: 'replay' }), null);
+  assert.equal(normalizeProvider({ providerDriver: 'acp' }), null);
+  assert.equal(normalizeProvider({ providerDriver: 'acp-registry', provider: 'zai', model: 'custom-model' }), 'zai');
+  assert.equal(normalizeProvider({ providerDriver: 'acpregistry', model: 'z-ai/glm-5' }), 'zai');
+  assert.equal(normalizeProvider({ providerDriver: 'acp', providerInstanceId: 'acpregistry_zai' }), 'zai');
+  assert.equal(normalizeProvider({ providerDriver: 'acp', providerInstanceId: 'banzai-runner', model: 'gemini' }), null);
+
+  const now = 1_750_000_000_000;
+  const store = new HobotnicaPushStore({ now: () => now });
+  store.ingest(makeSnapshot([
+    makeAgent({
+      key: 'acp-gemini',
+      owningThreadId: 'th-acp-gemini',
+      providerDriver: 'acp-registry',
+      providerInstanceId: 'gemini-via-acp',
+      model: 'Gemini via ACP',
+      updatedAtMs: now,
+    }),
+    makeAgent({
+      key: 'acp-replay',
+      owningThreadId: 'th-acp-replay',
+      providerDriver: 'acp',
+      providerInstanceId: 'replay',
+      model: 'replay',
+      updatedAtMs: now,
+    }),
+  ], { serverTimeMs: now }), now);
+
+  const folded = store.fold([], now, { normalizeSession });
+  assert.equal(folded.length, 0, 'non-GLM ACP entries must never be synthesized as GLM villagers');
+});
+
+test('Astra M5 & Fable Minor: two-delta supersedes handoff resolves via tombstones without touching unrelated disk sessions', () => {
+  let clock = 1_750_000_000_000;
+  const store = new HobotnicaPushStore({ now: () => clock });
+  const unrelatedDisk = normalizeSession({
+    sessionId: 'claude-unrelated-999',
+    provider: 'claude',
+    lastActivity: clock - 1000,
+    turnState: 'working',
+  });
+
+  // Initial snapshot with oldKey
+  store.ingest(makeSnapshot([
+    makeAgent({
+      key: 'old-glm-key',
+      subagentId: 'sub-old-1',
+      owningThreadId: 'th-old-glm',
+      providerDriver: 'zai',
+      model: 'glm-5.4',
+      updatedAtMs: clock,
+    }),
+  ], { seq: 1, serverTimeMs: clock }), clock);
+  store.fold([unrelatedDisk], clock, { normalizeSession });
+
+  // Delta 1: remove oldKey
+  clock += 1000;
+  store.ingest({
+    protocol: 'hobotnica-telemetry.v1',
+    type: 'delta',
+    instanceId: 'inst-dev',
+    bootId: 'boot-1',
+    seq: 2,
+    mode: 'dev',
+    serverTimeMs: clock,
+    removes: ['old-glm-key'],
+  }, clock);
+
+  // Delta 2: upsert successor referencing oldKey + another agent attempting raw unrelated supersedes
+  clock += 1000;
+  store.ingest({
+    protocol: 'hobotnica-telemetry.v1',
+    type: 'delta',
+    instanceId: 'inst-dev',
+    bootId: 'boot-1',
+    seq: 3,
+    mode: 'dev',
+    serverTimeMs: clock,
+    upserts: [
+      makeAgent({
+        key: 'new-glm-key',
+        subagentId: 'sub-new-1',
+        owningThreadId: 'th-new-glm',
+        supersedes: 'old-glm-key',
+        providerDriver: 'zai',
+        model: 'glm-5.4',
+        updatedAtMs: clock,
+      }),
+      makeAgent({
+        key: 'rogue-glm-key',
+        owningThreadId: 'th-rogue-glm',
+        supersedes: 'claude-unrelated-999',
+        providerDriver: 'zai',
+        model: 'glm-5.4',
+        updatedAtMs: clock,
+      }),
+    ],
+  }, clock);
+
+  const folded = store.fold([unrelatedDisk], clock, { normalizeSession });
+  const successor = folded.find(s => s.sessionId === 'zai-hbt-th-new-glm');
+  const rogue = folded.find(s => s.sessionId === 'zai-hbt-th-rogue-glm');
+  const unrelatedAfter = folded.find(s => s.sessionId === 'claude-unrelated-999');
+
+  assert.equal(successor.supersedes, 'zai-hbt-th-old-glm', 'two-delta supersedes resolves via tombstones');
+  assert.equal(rogue.supersedes, null, 'unmapped raw supersedes string is ignored');
+  assert.equal(unrelatedAfter.sessionEndedAt, null, 'unrelated disk session is never marked ended by raw supersedes');
+
+  // Also verify two-delta handoff when remove happens BEFORE any intermediate fold
+  clock += 1000;
+  store.ingest({
+    protocol: 'hobotnica-telemetry.v1',
+    type: 'delta',
+    instanceId: 'inst-dev',
+    bootId: 'boot-1',
+    seq: 4,
+    mode: 'dev',
+    serverTimeMs: clock,
+    upserts: [
+      makeAgent({
+        key: 'unfolded-old-key',
+        owningThreadId: 'th-unfolded-old',
+        providerDriver: 'zai',
+        model: 'glm-5.4',
+        updatedAtMs: clock,
+      }),
+    ],
+  }, clock);
+  store.ingest({
+    protocol: 'hobotnica-telemetry.v1',
+    type: 'delta',
+    instanceId: 'inst-dev',
+    bootId: 'boot-1',
+    seq: 5,
+    mode: 'dev',
+    serverTimeMs: clock + 500,
+    removes: ['unfolded-old-key'],
+  }, clock + 500);
+  store.ingest({
+    protocol: 'hobotnica-telemetry.v1',
+    type: 'delta',
+    instanceId: 'inst-dev',
+    bootId: 'boot-1',
+    seq: 6,
+    mode: 'dev',
+    serverTimeMs: clock + 1000,
+    upserts: [
+      makeAgent({
+        key: 'unfolded-new-key',
+        owningThreadId: 'th-unfolded-new',
+        supersedes: 'unfolded-old-key',
+        providerDriver: 'zai',
+        model: 'glm-5.4',
+        updatedAtMs: clock + 1000,
+      }),
+    ],
+  }, clock + 1000);
+  const folded2 = store.fold([], clock + 1000, { normalizeSession });
+  const successor2 = folded2.find(s => s.sessionId === 'zai-hbt-th-unfolded-new');
+  assert.equal(successor2.supersedes, 'zai-hbt-th-unfolded-old', 'remove before fold still records tombstone');
+});
+
+test('Opus M3, Opus M4 & Fable Minor: GLM root vs pre-child delegate IDs stay distinct, pre-fold focus matches, and root clears hobotnica.subagentId/childThreadId', () => {
+  const now = 1_750_000_000_000;
+  const store = new HobotnicaPushStore({ now: () => now });
+
+  store.ingest(makeSnapshot([
+    makeAgent({
+      key: 'k-glm-root',
+      origin: 'root',
+      owningThreadId: 'th-shared-root',
+      childThreadId: 'stale-root-child-id',
+      subagentId: 'sub-root-noise',
+      providerDriver: 'acp-registry',
+      model: 'glm-5.4',
+      updatedAtMs: now,
+    }),
+    makeAgent({
+      key: 'k-glm-prechild-1',
+      origin: 'app_owned',
+      owningThreadId: 'th-shared-root',
+      parentThreadId: 'th-shared-root',
+      childThreadId: null,
+      subagentId: 'sub-prechild-1',
+      providerDriver: 'acp-registry',
+      model: 'glm-5.4',
+      updatedAtMs: now,
+    }),
+    makeAgent({
+      key: 'k-glm-prechild-2',
+      origin: 'app_owned',
+      owningThreadId: 'th-shared-root',
+      parentThreadId: 'th-shared-root',
+      childThreadId: null,
+      subagentId: null,
+      providerDriver: 'acp-registry',
+      model: 'glm-5.4',
+      updatedAtMs: now,
+    }),
+    makeAgent({
+      key: 'k-glm-child-with-thread',
+      origin: 'app_owned',
+      owningThreadId: 'th-shared-root',
+      parentThreadId: 'th-shared-root',
+      childThreadId: 'th-real-child',
+      subagentId: 'sub-real-child',
+      providerDriver: 'acp-registry',
+      model: 'glm-5.4',
+      updatedAtMs: now,
+    }),
+  ], { serverTimeMs: now }), now);
+
+  // Pre-fold focus resolution must match post-fold synthesized canonical IDs
+  assert.equal(store.resolveCanonicalId({ threadId: 'th-shared-root' }), 'zai-hbt-th-shared-root');
+  assert.equal(store.resolveCanonicalId({ threadId: 'th-shared-root', subagentId: 'sub-prechild-1' }), 'zai-hbt-sub-prechild-1');
+  assert.equal(store.resolveCanonicalId({ threadId: 'th-real-child', subagentId: 'sub-real-child' }), 'zai-hbt-th-real-child');
+
+  const folded = store.fold([], now, { normalizeSession });
+  assert.equal(folded.length, 4, 'root and pre-child delegates must never collide');
+  const ids = new Set(folded.map(s => s.sessionId));
+  assert.deepEqual(ids, new Set([
+    'zai-hbt-th-shared-root',
+    'zai-hbt-sub-prechild-1',
+    'zai-hbt-k-glm-prechild-2',
+    'zai-hbt-th-real-child',
+  ]));
+
+  const root = folded.find(s => s.sessionId === 'zai-hbt-th-shared-root');
+  const preChild1 = folded.find(s => s.sessionId === 'zai-hbt-sub-prechild-1');
+  const realChild = folded.find(s => s.sessionId === 'zai-hbt-th-real-child');
+
+  assert.equal(root.hobotnica.subagentId, null, 'Opus M4: root villager clears hobotnica.subagentId');
+  assert.equal(root.hobotnica.childThreadId, null, 'Opus M4: root villager clears hobotnica.childThreadId');
+  assert.equal(preChild1.parentSessionId, 'zai-hbt-th-shared-root');
+  assert.equal(preChild1.hobotnica.subagentId, 'sub-prechild-1');
+  assert.equal(preChild1.hobotnica.childThreadId, null);
+  assert.equal(realChild.hobotnica.subagentId, 'sub-real-child');
+  assert.equal(realChild.hobotnica.childThreadId, 'th-real-child');
+});
+
+test('Opus m1: completedAtMs propagates to sessionEndedAt for terminal phases', () => {
+  const now = 1_750_000_000_000;
+  const store = new HobotnicaPushStore({ now: () => now });
+  const finishedAt = now - 3_000;
+
+  store.ingest(makeSnapshot([
+    makeAgent({
+      key: 'child-completed',
+      origin: 'app_owned',
+      owningThreadId: 'th-root',
+      parentThreadId: 'th-root',
+      childThreadId: 'th-done',
+      providerDriver: 'zai',
+      model: 'glm-5.4',
+      phase: 'completed',
+      completedAtMs: finishedAt,
+      updatedAtMs: now - 1_000,
+    }),
+    makeAgent({
+      key: 'child-failed',
+      origin: 'app_owned',
+      owningThreadId: 'th-root',
+      parentThreadId: 'th-root',
+      childThreadId: 'th-failed',
+      providerDriver: 'zai',
+      model: 'glm-5.4',
+      phase: 'failed',
+      completedAtMs: finishedAt,
+      updatedAtMs: now - 1_000,
+    }),
+    makeAgent({
+      key: 'child-interrupted',
+      origin: 'app_owned',
+      owningThreadId: 'th-root',
+      parentThreadId: 'th-root',
+      childThreadId: 'th-interrupted',
+      providerDriver: 'zai',
+      model: 'glm-5.4',
+      phase: 'interrupted',
+      completedAtMs: finishedAt,
+      updatedAtMs: now - 1_000,
+    }),
+    makeAgent({
+      key: 'child-idle-not-terminal',
+      origin: 'app_owned',
+      owningThreadId: 'th-root',
+      parentThreadId: 'th-root',
+      childThreadId: 'th-idle',
+      providerDriver: 'zai',
+      model: 'glm-5.4',
+      phase: 'idle',
+      completedAtMs: finishedAt,
+      updatedAtMs: now - 1_000,
+    }),
+  ], { serverTimeMs: now }), now);
+
+  const folded = store.fold([], now, { normalizeSession });
+  assert.equal(folded.find(s => s.sessionId === 'zai-hbt-th-done')?.sessionEndedAt, finishedAt);
+  assert.equal(folded.find(s => s.sessionId === 'zai-hbt-th-failed')?.sessionEndedAt, finishedAt);
+  assert.equal(folded.find(s => s.sessionId === 'zai-hbt-th-interrupted')?.sessionEndedAt, finishedAt);
+  assert.equal(folded.find(s => s.sessionId === 'zai-hbt-th-idle')?.sessionEndedAt, null);
+});
+
+test('Fable M1 & Minors: ReDoS payload stays < 200ms, hostile toString object is skipped, timestamps are clamped, and password= is redacted', () => {
+  const now = 1_750_000_000_000;
+  const store = new HobotnicaPushStore({ now: () => now });
+  const redosString = 'a-'.repeat(120_000);
+
+  const startedAt = performance.now();
+  const res = store.ingest({
+    protocol: 'hobotnica-telemetry.v1',
+    type: 'delta',
+    instanceId: 'inst-dev',
+    bootId: 'boot-1',
+    seq: 1,
+    mode: 'dev',
+    serverTimeMs: now,
+    upserts: [
+      // Hostile object that throws if String() is called on it
+      {
+        key: { toString: 1 },
+        provider: { toString: 1 },
+        providerDriver: { toString: 1 },
+        phase: { toString: 1 },
+      },
+      // ReDoS + future timestamp + password= secret payload
+      makeAgent({
+        key: 'k-hardened',
+        owningThreadId: 'th-hardened',
+        providerDriver: 'zai',
+        model: 'glm-5.4',
+        phase: 'awaiting_approval',
+        waitAudience: 'operator',
+        promptDetail: `${redosString} password=hunter2`,
+        currentActivityLabel: `login password=hunter2 ${redosString}`,
+        latestSnippet: `db_password=hunter2 ${redosString}`,
+        startedAtMs: 9e15,
+        updatedAtMs: 9e15,
+        completedAtMs: 9e15,
+        workingSet: [{ path: 'src/auth.js', op: 'edit', at: 9e15 }],
+        pendingActions: [
+          {
+            kind: 'approval',
+            audience: 'operator',
+            summary: `Run auth with password=hunter2 ${redosString}`,
+            awaitingSinceMs: 9e15,
+          },
+        ],
+        recentTools: [
+          { tool: 'Bash', detail: `curl -u admin password=hunter2 ${redosString}`, ts: 9e15 },
+        ],
+        recentMessages: [
+          { role: 'assistant', text: `Connecting with password=hunter2 ${redosString}`, ts: 9e15 },
+        ],
+      }),
+    ],
+  }, now);
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(res.accepted, true);
+  assert.ok(elapsedMs < 200, `ReDoS ingest must finish in < 200ms, took ${elapsedMs.toFixed(1)}ms`);
+
+  const folded = store.fold([], now, { normalizeSession });
+  assert.equal(folded.length, 1, 'malformed entry skipped while valid entry in same delta applied');
+  const session = folded[0];
+  const maxAllowedTs = now + 60_000;
+
+  assert.ok(session.lastActivity <= maxAllowedTs, 'updatedAtMs clamped to now + 60_000');
+  assert.ok(session.turnStartedAt <= maxAllowedTs, 'startedAtMs clamped to now + 60_000');
+  assert.ok(session.awaitingSince <= maxAllowedTs, 'awaitingSince clamped to now + 60_000');
+  assert.ok(session.workingSet[0].at <= maxAllowedTs, 'workingSet[].at clamped to now + 60_000');
+
+  assert.match(session.promptDetail, /password=\[REDACTED\]/);
+  assert.doesNotMatch(session.promptDetail, /hunter2/);
+  assert.doesNotMatch(session.lastMessage || '', /hunter2/);
+
+  const detail = store.getDetail('zai', 'zai-hbt-th-hardened');
+  assert.ok(detail);
+  assert.match(detail.toolHistory[0].detail, /password=\[REDACTED\]/);
+  assert.doesNotMatch(detail.toolHistory[0].detail, /hunter2/);
+  assert.ok(detail.toolHistory[0].ts <= maxAllowedTs);
+  assert.match(detail.messages[0].content, /password=\[REDACTED\]/);
+  assert.doesNotMatch(detail.messages[0].content, /hunter2/);
+  assert.ok(detail.messages[0].ts <= maxAllowedTs);
 });

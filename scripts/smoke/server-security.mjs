@@ -286,6 +286,7 @@ fs.chmodSync(bridgeTokenFile, 0o600);
 let mockHobotnicaServer = null;
 let mockHobotnicaPort = 0;
 const receivedCockpitFocuses = [];
+let mockFocusBehavior = { statusCode: 200, body: { ok: true, delivered: true }, delayMs: 0 };
 
 try {
   mockHobotnicaServer = http.createServer((req, res) => {
@@ -298,8 +299,13 @@ try {
         authorization: req.headers.authorization || null,
         body: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'),
       });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, delivered: true }));
+      const current = { ...mockFocusBehavior };
+      const respond = () => {
+        res.writeHead(current.statusCode, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(current.body));
+      };
+      if (current.delayMs > 0) setTimeout(respond, current.delayMs);
+      else respond();
     });
   });
   await new Promise((resolve, reject) => {
@@ -664,6 +670,24 @@ try {
   });
   assert.equal(missingFileRes.statusCode, 401, 'missing bridge token file must fail closed');
 
+  // Symlinked secrets parent directory must also fail closed
+  const realSecretsDir = path.join(tmpHome, 'real-secrets-dir');
+  fs.mkdirSync(realSecretsDir, { recursive: true, mode: 0o700 });
+  const realSecretsToken = path.join(realSecretsDir, 'claudeville-bridge-token');
+  fs.writeFileSync(realSecretsToken, `${bridgeToken}\n`, { mode: 0o600 });
+  fs.chmodSync(realSecretsToken, 0o600);
+  fs.rmSync(bridgeSecretsDir, { recursive: true, force: true });
+  fs.symlinkSync(realSecretsDir, bridgeSecretsDir);
+  const symlinkParentRes = await request(port, {
+    method: 'POST',
+    pathname: '/api/ingest/hobotnica',
+    body: hobotnicaSnapshotBody,
+    headers: bearerHeaders,
+  });
+  assert.equal(symlinkParentRes.statusCode, 401, 'symlinked secrets parent dir must fail closed');
+  fs.unlinkSync(bridgeSecretsDir);
+  fs.mkdirSync(bridgeSecretsDir, { recursive: true, mode: 0o700 });
+
   // Restore valid 0600 regular token file and test 200 paths + WS focus & focus-external relay
   fs.writeFileSync(bridgeTokenFile, `${bridgeToken}\n`, { mode: 0o600 });
   fs.chmodSync(bridgeTokenFile, 0o600);
@@ -743,6 +767,7 @@ try {
   })));
   const externalResult = await externalResultPromise;
   assert.equal(externalResult.message.ok, true);
+  assert.equal(externalResult.message.delivered, true);
   assert.equal(externalResult.message.statusCode, 200);
   assert.equal(receivedCockpitFocuses.length, 1);
   assert.equal(receivedCockpitFocuses[0].method, 'POST');
@@ -753,7 +778,76 @@ try {
     subagentId: 'sub-sec-1',
     childThreadId: 'th-child-1',
   });
+
+  // Immediate second focus-external within 500ms must be rate-limited
+  const rateLimitedPromise = waitForJsonFrame(
+    focusSocket.socket,
+    msg => msg.type === 'focus-external-result',
+    externalResult.remainder,
+  );
+  focusSocket.socket.write(createMaskedClientFrame(JSON.stringify({
+    type: 'focus-external',
+    threadId: 'th-sec-1',
+  })));
+  const rateLimitedResult = await rateLimitedPromise;
+  assert.equal(rateLimitedResult.message.ok, false);
+  assert.equal(rateLimitedResult.message.reason, 'rate_limited');
+  assert.equal(receivedCockpitFocuses.length, 1, 'rate-limited request must not reach Hobotnica');
+
+  // After 500ms cooldown, Hobotnica 202 { delivered: false } must return ok: false, reason: no_cockpit
+  await new Promise(resolve => setTimeout(resolve, 550));
+  mockFocusBehavior = { statusCode: 202, body: { ok: true, delivered: false }, delayMs: 0 };
+  const noCockpitPromise = waitForJsonFrame(
+    focusSocket.socket,
+    msg => msg.type === 'focus-external-result',
+    rateLimitedResult.remainder,
+  );
+  focusSocket.socket.write(createMaskedClientFrame(JSON.stringify({
+    type: 'focus-external',
+    threadId: 'th-sec-1',
+  })));
+  const noCockpitResult = await noCockpitPromise;
+  assert.equal(noCockpitResult.message.ok, false);
+  assert.equal(noCockpitResult.message.delivered, false);
+  assert.equal(noCockpitResult.message.statusCode, 202);
+  assert.equal(noCockpitResult.message.reason, 'no_cockpit');
+  assert.equal(receivedCockpitFocuses.length, 2);
   focusSocket.socket.destroy();
+
+  // Single-in-flight guard: overlapping focus-external on one socket replies `busy`
+  mockFocusBehavior = { statusCode: 200, body: { ok: true, delivered: true }, delayMs: 120 };
+  const busySocket = await websocketUpgrade(port);
+  assert.equal(busySocket.statusCode, 101);
+  const busyInit = await waitForJsonFrame(
+    busySocket.socket,
+    msg => msg.type === 'init',
+    busySocket.remainder,
+  );
+  const firstBusyReplyPromise = waitForJsonFrame(
+    busySocket.socket,
+    msg => msg.type === 'focus-external-result',
+    busyInit.remainder,
+  );
+  busySocket.socket.write(createMaskedClientFrame(JSON.stringify({
+    type: 'focus-external',
+    threadId: 'th-sec-1',
+  })));
+  busySocket.socket.write(createMaskedClientFrame(JSON.stringify({
+    type: 'focus-external',
+    threadId: 'th-sec-1',
+  })));
+  const firstBusyReply = await firstBusyReplyPromise;
+  assert.equal(firstBusyReply.message.ok, false);
+  assert.equal(firstBusyReply.message.reason, 'busy');
+  const secondBusyReply = await waitForJsonFrame(
+    busySocket.socket,
+    msg => msg.type === 'focus-external-result',
+    firstBusyReply.remainder,
+  );
+  assert.equal(secondBusyReply.message.ok, true);
+  assert.equal(receivedCockpitFocuses.length, 3, 'in-flight rejected request must not reach Hobotnica');
+  busySocket.socket.destroy();
+  mockFocusBehavior = { statusCode: 200, body: { ok: true, delivered: true }, delayMs: 0 };
 
   const hostileSocket = await websocketUpgrade(port, { origin: 'https://attacker.example' });
   assert.equal(hostileSocket.statusCode, 403);

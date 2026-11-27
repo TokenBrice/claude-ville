@@ -8,7 +8,7 @@
 // serves bounded detail payloads for push-only sessions.
 
 const path = require('path');
-const { truncatePromptDetail } = require('./hooks');
+const { redactSecrets, truncatePromptDetail } = require('./hooks');
 const { createDetailResponse } = require('./shared');
 
 const PROTOCOL_VERSION = 'hobotnica-telemetry.v1';
@@ -18,12 +18,16 @@ const DEFAULT_ACTIVE_THRESHOLD_MS = 2 * 60 * 1000;
 
 const MAX_INSTANCES = 8;
 const MAX_ENTRIES_PER_INSTANCE = 256;
+const MAX_TOMBSTONES = 256;
+const TOMBSTONE_TTL_MS = 5 * 60_000;
 const MAX_SNAPSHOT_CHUNKS = 32;
 const MAX_PENDING_SNAPSHOTS_PER_INSTANCE = 4;
 const MAX_WORKING_SET = 16;
 const MAX_RECENT_TOOLS = 120;
 const MAX_RECENT_MESSAGES = 50;
 const MAX_PENDING_ACTIONS = 16;
+const MAX_RAW_REDACT_LEN = 2048;
+const MAX_FUTURE_SKEW_MS = 60_000;
 
 const SUPPORTED_PROVIDERS = new Set(['claude', 'codex', 'antigravity', 'zai']);
 const DISK_BACKED_PROVIDERS = new Set(['claude', 'codex', 'antigravity']);
@@ -37,6 +41,12 @@ const ACTIVE_PHASES = new Set([
   'awaiting_approval',
   'awaiting_input_blocking',
 ]);
+const TERMINAL_PHASES = new Set(['completed', 'failed', 'interrupted', 'stopped']);
+const GLM_ZAI_HINT_RE = /(?:^|[^a-z0-9])(?:glm|zai)(?:$|[^a-z0-9])/i;
+
+function safeStr(value) {
+  return typeof value === 'string' ? value : '';
+}
 
 function boundStr(value, maxLen = 256) {
   if (typeof value !== 'string') return null;
@@ -45,17 +55,60 @@ function boundStr(value, maxLen = 256) {
   return trimmed.length <= maxLen ? trimmed : trimmed.slice(0, maxLen);
 }
 
-function safeTimestamp(value, fallback) {
-  if (value === null || value === undefined || value === '') return fallback;
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
-  return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+function safeFiniteNumber(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const numeric = Number(trimmed);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  return null;
+}
+
+function clampTs(value, now, fallback = now) {
+  const maxAllowed = Math.max(0, now + MAX_FUTURE_SKEW_MS);
+  const numeric = safeFiniteNumber(value);
+  if (numeric === null || numeric <= 0) {
+    if (fallback === null) return null;
+    return Math.max(0, Math.min(fallback, maxAllowed));
+  }
+  const ms = numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+  return Math.max(0, Math.min(ms, maxAllowed));
+}
+
+function safeTruncateDetail(value) {
+  const sliced = safeStr(value).slice(0, MAX_RAW_REDACT_LEN);
+  if (!sliced) return null;
+  return truncatePromptDetail(sliced);
+}
+
+function safeRedactBoundStr(value, maxLen = 256) {
+  const sliced = safeStr(value).slice(0, MAX_RAW_REDACT_LEN);
+  if (!sliced) return null;
+  const redacted = redactSecrets(sliced)
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!redacted) return null;
+  return redacted.length <= maxLen ? redacted : redacted.slice(0, maxLen);
+}
+
+function hasGlmZaiHint(model, instanceId) {
+  return model.startsWith('glm')
+    || GLM_ZAI_HINT_RE.test(model)
+    || GLM_ZAI_HINT_RE.test(instanceId);
 }
 
 function normalizeProvider(raw) {
-  const driver = String(raw?.provider || raw?.providerDriver || '').trim().toLowerCase();
-  const model = String(raw?.model || '').trim().toLowerCase();
-  const instanceId = String(raw?.providerInstanceId || '').trim().toLowerCase();
+  if (!raw || typeof raw !== 'object') return null;
+  const rawProvider = safeStr(raw.provider).trim().toLowerCase();
+  const rawDriver = safeStr(raw.providerDriver).trim().toLowerCase();
+  const driver = rawProvider || rawDriver;
+  const model = safeStr(raw.model).trim().toLowerCase();
+  const instanceId = safeStr(raw.providerInstanceId).trim().toLowerCase();
 
   if (
     driver === 'claude'
@@ -70,28 +123,31 @@ function normalizeProvider(raw) {
   if (
     driver === 'zai'
     || driver === 'glm'
-    || driver === 'acp'
-    || driver === 'acp-registry'
-    || driver === 'acpregistry'
     || driver.startsWith('acpregistry_glm')
-    || driver.includes('glm')
-    || model.startsWith('glm')
-    || instanceId.includes('glm')
-    || instanceId.includes('zai')
+    || GLM_ZAI_HINT_RE.test(driver)
   ) {
+    return 'zai';
+  }
+  if (driver === 'acp' || driver === 'acp-registry' || driver === 'acpregistry') {
+    if (rawProvider === 'zai' || rawProvider === 'glm' || hasGlmZaiHint(model, instanceId)) {
+      return 'zai';
+    }
+    return null;
+  }
+  if (!driver && hasGlmZaiHint(model, instanceId)) {
     return 'zai';
   }
   return SUPPORTED_PROVIDERS.has(driver) ? driver : null;
 }
 
 function normalizeWorkingSetOp(op) {
-  const value = String(op || '').trim().toLowerCase();
+  const value = safeStr(op).trim().toLowerCase();
   if (value === 'write' || value === 'edit') return 'write';
   if (value === 'read' || value === 'search' || value === 'exec') return 'read';
   return null;
 }
 
-function normalizeWorkingSet(items, fallbackAt) {
+function normalizeWorkingSet(items, fallbackAt, now) {
   if (!Array.isArray(items) || items.length === 0) return [];
   const byPath = new Map();
   for (const item of items) {
@@ -99,7 +155,7 @@ function normalizeWorkingSet(items, fallbackAt) {
     const itemPath = boundStr(item.path, 240);
     const op = normalizeWorkingSetOp(item.op);
     if (!itemPath || !op) continue;
-    const at = safeTimestamp(item.at, fallbackAt);
+    const at = clampTs(item.at, now, fallbackAt);
     const existing = byPath.get(itemPath);
     if (!existing || at >= existing.at) {
       byPath.set(itemPath, { path: itemPath, op, at, source: 'push' });
@@ -132,11 +188,8 @@ function normalizeTokenUsage(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const pick = (...keys) => {
     for (const key of keys) {
-      const value = raw[key];
-      if (value !== null && value !== undefined && value !== '' && typeof value !== 'boolean') {
-        const numeric = Number(value);
-        if (Number.isFinite(numeric) && numeric >= 0) return Math.trunc(numeric);
-      }
+      const numeric = safeFiniteNumber(raw[key]);
+      if (numeric !== null && numeric >= 0) return Math.trunc(numeric);
     }
     return null;
   };
@@ -172,9 +225,9 @@ function hasObservedTokens(usage) {
 
 function normalizePlanProgress(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const total = Number(raw.total);
-  const done = Number(raw.completed ?? raw.done);
-  if (!Number.isFinite(total) || !Number.isFinite(done) || total < 0 || done < 0) return null;
+  const total = safeFiniteNumber(raw.total);
+  const done = safeFiniteNumber(raw.completed ?? raw.done);
+  if (total === null || done === null || total < 0 || done < 0) return null;
   const normalizedTotal = Math.trunc(total);
   return {
     done: Math.min(normalizedTotal, Math.trunc(done)),
@@ -183,7 +236,7 @@ function normalizePlanProgress(raw) {
   };
 }
 
-function normalizePendingActions(raw) {
+function normalizePendingActions(raw, now) {
   if (!Array.isArray(raw)) return [];
   const actions = [];
   for (const item of raw.slice(0, MAX_PENDING_ACTIONS)) {
@@ -193,54 +246,56 @@ function normalizePendingActions(raw) {
       : null;
     if (!audience) continue;
     const kind = boundStr(item.kind, 32) || 'approval';
-    const summary = boundStr(item.summary, 240) || '';
-    const awaitingSinceMs = Number.isFinite(Number(item.awaitingSinceMs))
-      ? Number(item.awaitingSinceMs)
-      : null;
+    const summary = safeRedactBoundStr(item.summary, 240) || '';
+    const awaitingSinceMs = clampTs(item.awaitingSinceMs, now, null);
     actions.push({ kind, audience, summary, awaitingSinceMs });
   }
   return actions;
 }
 
-function normalizeRecentTools(raw, fallbackTs) {
+function normalizeRecentTools(raw, fallbackTs, now) {
   if (!Array.isArray(raw)) return null;
   return raw.slice(-MAX_RECENT_TOOLS).flatMap((item) => {
     if (!item || typeof item !== 'object') return [];
-    const tool = boundStr(item.tool || item.name, 128);
+    const tool = boundStr(item.tool, 128) || boundStr(item.name, 128);
     if (!tool) return [];
+    const rawDetail = safeStr(item.detail) || safeStr(item.summary) || safeStr(item.input);
     const entry = {
       tool,
-      detail: truncatePromptDetail(item.detail || item.summary || item.input || '') || '',
-      ts: safeTimestamp(item.ts ?? item.at ?? item.timestamp, fallbackTs),
+      detail: safeTruncateDetail(rawDetail) || '',
+      ts: clampTs(item.ts ?? item.at ?? item.timestamp, now, fallbackTs),
     };
-    if (Number.isFinite(Number(item.toolExitCode ?? item.exitCode))) {
-      entry.toolExitCode = Number(item.toolExitCode ?? item.exitCode);
+    const exitCode = safeFiniteNumber(item.toolExitCode ?? item.exitCode);
+    if (exitCode !== null) {
+      entry.toolExitCode = exitCode;
     }
-    const stderr = boundStr(item.toolStderr || item.stderr, 200);
-    if (stderr) entry.toolStderr = truncatePromptDetail(stderr) || stderr;
+    const rawStderr = safeStr(item.toolStderr) || safeStr(item.stderr);
+    const stderr = rawStderr ? safeTruncateDetail(rawStderr) : null;
+    if (stderr) entry.toolStderr = stderr.slice(0, 200);
     return [entry];
   });
 }
 
-function normalizeRecentMessages(raw, fallbackTs) {
+function normalizeRecentMessages(raw, fallbackTs, now) {
   if (!Array.isArray(raw)) return null;
   return raw.slice(-MAX_RECENT_MESSAGES).flatMap((item) => {
     if (!item || typeof item !== 'object') return [];
     const role = item.role === 'user' || item.role === 'assistant' || item.role === 'system'
       ? item.role
       : 'assistant';
-    const content = boundStr(item.content || item.text || item.message, 1000);
+    const rawContent = safeStr(item.content) || safeStr(item.text) || safeStr(item.message);
+    const content = safeRedactBoundStr(rawContent, 1000);
     if (!content) return [];
     return [{
       role,
       content,
-      ts: safeTimestamp(item.ts ?? item.at ?? item.timestamp, fallbackTs),
+      ts: clampTs(item.ts ?? item.at ?? item.timestamp, now, fallbackTs),
     }];
   });
 }
 
 function derivePushLifecycle(raw, pendingActions, updatedAtMs, completedAtMs, now) {
-  const phase = String(raw.phase || '').trim().toLowerCase();
+  const phase = safeStr(raw.phase).trim().toLowerCase();
   const explicitAudience = raw.waitAudience === 'operator' || raw.waitAudience === 'parent'
     ? raw.waitAudience
     : null;
@@ -251,10 +306,15 @@ function derivePushLifecycle(raw, pendingActions, updatedAtMs, completedAtMs, no
     : (explicitAudience === 'parent' || hasParentAction ? 'parent' : null);
 
   const activeToolName = boundStr(raw.activeToolName, 128);
-  const explicitEnd = raw.sessionEndedAt != null && Number.isFinite(Number(raw.sessionEndedAt)) && Number(raw.sessionEndedAt) > 0
-    ? safeTimestamp(raw.sessionEndedAt, now)
-    : null;
-  const sessionEndedAt = explicitEnd || (phase === 'stopped' ? (completedAtMs || updatedAtMs) : null);
+  const explicitEnd = clampTs(raw.sessionEndedAt, now, null);
+  let sessionEndedAt = explicitEnd;
+  if (!sessionEndedAt) {
+    if (completedAtMs !== null && TERMINAL_PHASES.has(phase)) {
+      sessionEndedAt = clampTs(completedAtMs, now, completedAtMs);
+    } else if (phase === 'stopped') {
+      sessionEndedAt = clampTs(completedAtMs || updatedAtMs, now, updatedAtMs);
+    }
+  }
 
   if (waitAudience === 'operator' && !sessionEndedAt) {
     let waitReason = 'approval';
@@ -263,14 +323,14 @@ function derivePushLifecycle(raw, pendingActions, updatedAtMs, completedAtMs, no
     } else if (operatorAction?.kind === 'plan_review' || raw.waitReason === 'plan_review') {
       waitReason = 'plan_review';
     }
-    const rawDetail = operatorAction?.summary
-      || raw.promptDetail
-      || raw.currentActivityLabel
-      || raw.latestSnippet
-      || '';
-    const promptDetail = truncatePromptDetail(rawDetail);
-    const waitSince = safeTimestamp(
+    const rawDetail = safeStr(operatorAction?.summary)
+      || safeStr(raw.promptDetail)
+      || safeStr(raw.currentActivityLabel)
+      || safeStr(raw.latestSnippet);
+    const promptDetail = safeTruncateDetail(rawDetail);
+    const waitSince = clampTs(
       operatorAction?.awaitingSinceMs ?? raw.awaitingSince ?? updatedAtMs,
+      now,
       updatedAtMs,
     );
     const pendingTool = activeToolName
@@ -306,7 +366,7 @@ function derivePushLifecycle(raw, pendingActions, updatedAtMs, completedAtMs, no
     || phase === 'interrupted'
   ) {
     turnState = 'awaiting_input';
-  } else if (['working', 'tool_pending', 'awaiting_input', 'unknown'].includes(raw.turnState)) {
+  } else if (['working', 'tool_pending', 'awaiting_input', 'unknown'].includes(safeStr(raw.turnState))) {
     turnState = raw.turnState;
   }
 
@@ -342,35 +402,36 @@ function sanitizeAgentEntry(raw, instanceId, now) {
   const provider = normalizeProvider(raw);
   if (!provider) return null;
 
-  const owningThreadId = boundStr(raw.owningThreadId || raw.threadId || raw.key, 256);
+  const owningThreadId = boundStr(raw.owningThreadId, 256)
+    || boundStr(raw.threadId, 256)
+    || boundStr(raw.key, 256);
   const childThreadId = boundStr(raw.childThreadId, 256);
   const parentThreadId = boundStr(raw.parentThreadId, 256);
   const subagentId = boundStr(raw.subagentId, 256);
-  const key = boundStr(raw.key || childThreadId || owningThreadId || subagentId, 256);
+  const key = boundStr(raw.key, 256) || childThreadId || owningThreadId || subagentId;
   if (!key) return null;
-
-  const agentThreadId = childThreadId || owningThreadId || key;
-  const updatedAtMs = safeTimestamp(raw.updatedAtMs ?? raw.updatedAt, now);
-  const startedAtMs = safeTimestamp(raw.startedAtMs ?? raw.startedAt, updatedAtMs);
-  const completedAtMs = raw.completedAtMs != null && Number.isFinite(Number(raw.completedAtMs))
-    ? safeTimestamp(raw.completedAtMs, updatedAtMs)
-    : null;
-  const pendingActions = normalizePendingActions(raw.pendingActions);
-  const lifecycle = derivePushLifecycle(raw, pendingActions, updatedAtMs, completedAtMs, now);
 
   const origin = raw.origin === 'root' || raw.origin === 'app_owned'
     ? raw.origin
     : (parentThreadId ? 'app_owned' : 'root');
 
-  const recentTools = normalizeRecentTools(raw.recentTools, updatedAtMs);
-  const recentMessages = normalizeRecentMessages(raw.recentMessages, updatedAtMs);
+  const resolvedOwningThreadId = owningThreadId || childThreadId || key;
+  const agentThreadId = origin === 'root' ? resolvedOwningThreadId : (childThreadId || null);
+  const updatedAtMs = clampTs(raw.updatedAtMs ?? raw.updatedAt, now, now);
+  const startedAtMs = clampTs(raw.startedAtMs ?? raw.startedAt, now, updatedAtMs);
+  const completedAtMs = clampTs(raw.completedAtMs, now, null);
+  const pendingActions = normalizePendingActions(raw.pendingActions, now);
+  const lifecycle = derivePushLifecycle(raw, pendingActions, updatedAtMs, completedAtMs, now);
+
+  const recentTools = normalizeRecentTools(raw.recentTools, updatedAtMs, now);
+  const recentMessages = normalizeRecentMessages(raw.recentMessages, updatedAtMs, now);
   const hasDetailFields = recentTools !== null || recentMessages !== null;
 
   const entry = {
     instanceId,
     key,
     subagentId,
-    owningThreadId: owningThreadId || agentThreadId,
+    owningThreadId: resolvedOwningThreadId,
     parentThreadId,
     childThreadId,
     agentThreadId,
@@ -387,9 +448,9 @@ function sanitizeAgentEntry(raw, instanceId, now) {
     cwd: boundStr(raw.cwd, 512),
     projectName: boundStr(raw.projectName, 256),
     activeToolName: boundStr(raw.activeToolName, 128),
-    currentActivityLabel: boundStr(raw.currentActivityLabel, 120),
-    latestSnippet: boundStr(raw.latestSnippet, 140),
-    workingSet: normalizeWorkingSet(raw.workingSet, updatedAtMs),
+    currentActivityLabel: safeRedactBoundStr(raw.currentActivityLabel, 120),
+    latestSnippet: safeRedactBoundStr(raw.latestSnippet, 140),
+    workingSet: normalizeWorkingSet(raw.workingSet, updatedAtMs, now),
     planProgress: normalizePlanProgress(raw.planProgress),
     tokenUsage: normalizeTokenUsage(raw.tokenUsage),
     startedAtMs,
@@ -451,6 +512,7 @@ class HobotnicaPushStore {
         entries: new Map(),
         details: new Map(),
         pendingChunks: new Map(),
+        supersededTombstones: new Map(),
       };
       this._instances.set(instanceId, instance);
       return { instance, reset: false };
@@ -465,11 +527,55 @@ class HobotnicaPushStore {
       instance.entries.clear();
       instance.details.clear();
       instance.pendingChunks.clear();
+      instance.supersededTombstones.clear();
     }
     if (mode) instance.mode = mode;
     instance.lastSeenAt = now;
     instance.wasStale = wasStale;
     return { instance, reset };
+  }
+
+  _pruneTombstones(instance, now) {
+    if (!instance?.supersededTombstones?.size) return;
+    for (const [key, rec] of instance.supersededTombstones) {
+      if (now - rec.recordedAt >= TOMBSTONE_TTL_MS) {
+        instance.supersededTombstones.delete(key);
+      }
+    }
+  }
+
+  _recordTombstone(instance, key, canonicalId, now) {
+    if (!instance || !key || !canonicalId) return;
+    if (instance.supersededTombstones.has(key)) {
+      instance.supersededTombstones.delete(key);
+    }
+    while (instance.supersededTombstones.size >= MAX_TOMBSTONES) {
+      const oldestKey = instance.supersededTombstones.keys().next().value;
+      if (oldestKey === undefined) break;
+      instance.supersededTombstones.delete(oldestKey);
+    }
+    instance.supersededTombstones.set(key, { canonicalId, recordedAt: now });
+  }
+
+  _recordEntryTombstones(instance, entry, canonicalId, now) {
+    if (!instance || !entry || !canonicalId) return;
+    this._recordTombstone(instance, entry.key, canonicalId, now);
+    if (entry.origin !== 'root') {
+      if (entry.childThreadId) this._recordTombstone(instance, entry.childThreadId, canonicalId, now);
+      if (entry.subagentId) this._recordTombstone(instance, entry.subagentId, canonicalId, now);
+    } else if (entry.owningThreadId) {
+      this._recordTombstone(instance, entry.owningThreadId, canonicalId, now);
+    }
+    if (entry.nativeSessionId) {
+      this._recordTombstone(instance, entry.nativeSessionId, canonicalId, now);
+    }
+  }
+
+  _syntheticGlmCanonicalId(entry) {
+    if (entry.origin === 'root') {
+      return `zai-hbt-${entry.owningThreadId}`;
+    }
+    return `zai-hbt-${entry.childThreadId || entry.subagentId || entry.key}`;
   }
 
   _enforceEntryLimit(instance) {
@@ -544,6 +650,7 @@ class HobotnicaPushStore {
       instance.entries.clear();
       instance.details.clear();
       instance.pendingChunks.clear();
+      instance.supersededTombstones.clear();
       instance.wasStale = false;
       return { accepted: true, changed: reset || hadEntries };
     }
@@ -567,7 +674,12 @@ class HobotnicaPushStore {
       const snapshotId = boundStr(envelope.snapshotId, 128) || `snap-${now}`;
       const sanitized = [];
       for (const rawAgent of envelope.agents) {
-        const parsed = sanitizeAgentEntry(rawAgent, instanceId, now);
+        let parsed = null;
+        try {
+          parsed = sanitizeAgentEntry(rawAgent, instanceId, now);
+        } catch {
+          continue;
+        }
         if (parsed) sanitized.push(parsed);
       }
 
@@ -619,16 +731,43 @@ class HobotnicaPushStore {
     let changed = reset || instance.wasStale;
     instance.wasStale = false;
 
+    const recordRemovalTombstone = (entryKey, entry, aliasTarget = null) => {
+      const existing = instance.supersededTombstones.get(entryKey);
+      let canonicalId = existing && (now - existing.recordedAt < TOMBSTONE_TTL_MS)
+        ? existing.canonicalId
+        : null;
+      if (!canonicalId && entry) {
+        if (entry.provider === 'zai') {
+          canonicalId = this._expectedDiskCanonicalId(entry) || this._syntheticGlmCanonicalId(entry);
+        } else {
+          canonicalId = this._expectedDiskCanonicalId(entry);
+        }
+      }
+      if (!canonicalId) return;
+      this._recordEntryTombstones(instance, entry, canonicalId, now);
+      if (aliasTarget && aliasTarget !== entryKey) {
+        this._recordTombstone(instance, aliasTarget, canonicalId, now);
+      }
+    };
+
     for (const rawKey of envelope.removes || []) {
       const target = boundStr(rawKey, 256);
       if (!target) continue;
-      if (instance.entries.delete(target)) {
+      const directEntry = instance.entries.get(target);
+      if (directEntry) {
+        recordRemovalTombstone(target, directEntry, target);
+        instance.entries.delete(target);
         instance.details.delete(target);
         changed = true;
         continue;
       }
-      for (const [entryKey, entry] of instance.entries) {
-        if (entry.agentThreadId === target || entry.subagentId === target) {
+      for (const [entryKey, entry] of [...instance.entries]) {
+        const matches = entry.childThreadId === target
+          || (entry.origin === 'root' && entry.owningThreadId === target)
+          || (entry.origin !== 'root' && entry.subagentId === target)
+          || entry.agentThreadId === target;
+        if (matches) {
+          recordRemovalTombstone(entryKey, entry, target);
           instance.entries.delete(entryKey);
           instance.details.delete(entryKey);
           changed = true;
@@ -637,7 +776,12 @@ class HobotnicaPushStore {
     }
 
     for (const rawAgent of envelope.upserts || []) {
-      const parsed = sanitizeAgentEntry(rawAgent, instanceId, now);
+      let parsed = null;
+      try {
+        parsed = sanitizeAgentEntry(rawAgent, instanceId, now);
+      } catch {
+        continue;
+      }
       if (!parsed) continue;
       instance.entries.set(parsed.entry.key, parsed.entry);
       if (parsed.detail) {
@@ -656,6 +800,8 @@ class HobotnicaPushStore {
       if (now - instance.lastSeenAt >= PUSH_DROP_TTL_MS) {
         this._instances.delete(instanceId);
         removed = true;
+      } else {
+        this._pruneTombstones(instance, now);
       }
     }
     if (this._instances.size === 0 && removed) {
@@ -769,14 +915,16 @@ class HobotnicaPushStore {
     return null;
   }
 
-  _buildHobotnicaMeta(entry) {
+  _buildHobotnicaMeta(entry, { pushOnly = false } = {}) {
+    const isRoot = entry.origin === 'root';
     return {
       instanceId: entry.instanceId,
       threadId: entry.owningThreadId,
-      childThreadId: entry.childThreadId || null,
-      subagentId: entry.subagentId || null,
+      childThreadId: isRoot ? null : (entry.childThreadId || null),
+      subagentId: isRoot ? null : (entry.subagentId || null),
       parentThreadId: entry.parentThreadId || null,
       waveId: entry.waveId || null,
+      pushOnly: Boolean(pushOnly),
     };
   }
 
@@ -791,6 +939,7 @@ class HobotnicaPushStore {
     const canonicalByInstanceKey = new Map();
     const canonicalByInstanceThread = new Map();
     const canonicalByInstanceSubagent = new Map();
+    const canonicalByInstanceNative = new Map();
     const canonicalByNative = new Map();
     const canonicalByLookup = new Map();
     const canonicalToEntryRef = new Map();
@@ -799,24 +948,36 @@ class HobotnicaPushStore {
 
     const registerLookup = (instanceId, entry, canonicalId) => {
       canonicalByInstanceKey.set(`${instanceId}::${entry.key}`, canonicalId);
-      canonicalByInstanceThread.set(`${instanceId}::${entry.agentThreadId}`, canonicalId);
+      if (entry.agentThreadId) {
+        canonicalByInstanceThread.set(`${instanceId}::${entry.agentThreadId}`, canonicalId);
+        canonicalByLookup.set(`thread::${entry.agentThreadId}`, canonicalId);
+      }
+      if (entry.origin === 'root' && entry.owningThreadId) {
+        canonicalByInstanceThread.set(`${instanceId}::${entry.owningThreadId}`, canonicalId);
+        canonicalByLookup.set(`thread::${entry.owningThreadId}`, canonicalId);
+      }
       if (entry.subagentId) {
         canonicalByInstanceSubagent.set(`${instanceId}::${entry.subagentId}`, canonicalId);
         canonicalByLookup.set(`subagent::${entry.subagentId}`, canonicalId);
         canonicalByLookup.set(`thread+subagent::${entry.owningThreadId}::${entry.subagentId}`, canonicalId);
+        if (entry.childThreadId) {
+          canonicalByLookup.set(`thread+subagent::${entry.childThreadId}::${entry.subagentId}`, canonicalId);
+        }
       }
       canonicalByLookup.set(`key::${entry.key}`, canonicalId);
-      canonicalByLookup.set(`thread::${entry.agentThreadId}`, canonicalId);
-      if (!entry.childThreadId && entry.owningThreadId) {
-        canonicalByLookup.set(`thread::${entry.owningThreadId}`, canonicalId);
-      }
       if (entry.nativeSessionId) {
+        canonicalByInstanceNative.set(`${instanceId}::${entry.provider}::${entry.nativeSessionId}`, canonicalId);
+        canonicalByInstanceNative.set(`${instanceId}::${entry.provider}::${entry.nativeSessionId.toLowerCase()}`, canonicalId);
         canonicalByNative.set(`${entry.provider}::${entry.nativeSessionId}`, canonicalId);
         canonicalByNative.set(`${entry.provider}::${entry.nativeSessionId.toLowerCase()}`, canonicalId);
         canonicalByLookup.set(`native::${entry.nativeSessionId}`, canonicalId);
       }
       canonicalByLookup.set(`session::${canonicalId}`, canonicalId);
       canonicalToEntryRef.set(canonicalId, { instanceId, entryKey: entry.key });
+      const inst = this._instances.get(instanceId);
+      if (inst) {
+        this._recordEntryTombstones(inst, entry, canonicalId, now);
+      }
     };
 
     const threshold = Number.isFinite(Number(activeThresholdMs)) && Number(activeThresholdMs) > 0
@@ -882,7 +1043,7 @@ class HobotnicaPushStore {
               subagentKind: isDelegate ? 'delegate' : (disk.subagentKind || null),
               teamName: null,
               waveId: entry.waveId || null,
-              hobotnica: this._buildHobotnicaMeta(entry),
+              hobotnica: this._buildHobotnicaMeta(entry, { pushOnly: false }),
               signalSource: 'push',
               signalCertainty: 'observed',
               signalObservedAt: entry.updatedAtMs,
@@ -944,7 +1105,7 @@ class HobotnicaPushStore {
             subagentKind: isDelegate ? 'delegate' : (disk.subagentKind || null),
             teamName: null,
             waveId: entry.waveId || null,
-            hobotnica: this._buildHobotnicaMeta(entry),
+            hobotnica: this._buildHobotnicaMeta(entry, { pushOnly: false }),
             signalSource: 'push',
             signalCertainty: 'observed',
             signalObservedAt: entry.updatedAtMs,
@@ -955,8 +1116,8 @@ class HobotnicaPushStore {
           continue;
         }
 
-        // Diskless GLM ACP: synthesize `zai-hbt-<threadId>`.
-        const canonicalId = `zai-hbt-${entry.agentThreadId}`;
+        // Diskless GLM ACP: synthesize `zai-hbt-<id>` without colliding root and child IDs.
+        const canonicalId = this._syntheticGlmCanonicalId(entry);
         const isActivePhase = ACTIVE_PHASES.has(entry.phase) && !entry.sessionEndedAt;
         if (!isActivePhase && now - entry.updatedAtMs > threshold) {
           continue;
@@ -965,7 +1126,7 @@ class HobotnicaPushStore {
         const synthetic = {
           sessionId: canonicalId,
           provider: 'zai',
-          agentId: entry.nativeSessionId || entry.agentThreadId,
+          agentId: entry.nativeSessionId || entry.agentThreadId || entry.subagentId || entry.key,
           agentType: isDelegate ? 'sub-agent' : 'main',
           subagentKind: isDelegate ? 'delegate' : null,
           agentName: entry.title || entry.role || null,
@@ -975,7 +1136,7 @@ class HobotnicaPushStore {
           status: 'active',
           teamName: null,
           waveId: entry.waveId || null,
-          hobotnica: this._buildHobotnicaMeta(entry),
+          hobotnica: this._buildHobotnicaMeta(entry, { pushOnly: true }),
           lastActivity: entry.updatedAtMs,
           lastTool: entry.pendingTool || entry.activeToolName || null,
           lastToolInput: (entry.waitReason && entry.promptDetail)
@@ -1033,13 +1194,18 @@ class HobotnicaPushStore {
       }
 
       if (entry.supersedes) {
+        const instance = this._instances.get(instanceId);
+        const tombstone = instance?.supersededTombstones?.get(entry.supersedes);
+        const validTombstone = tombstone && (now - tombstone.recordedAt < TOMBSTONE_TTL_MS)
+          ? tombstone.canonicalId
+          : null;
         const oldCanonical = canonicalByInstanceKey.get(`${instanceId}::${entry.supersedes}`)
           || canonicalByInstanceThread.get(`${instanceId}::${entry.supersedes}`)
           || canonicalByInstanceSubagent.get(`${instanceId}::${entry.supersedes}`)
-          || canonicalByNative.get(`${entry.provider}::${entry.supersedes}`)
-          || canonicalByNative.get(`${entry.provider}::${entry.supersedes.toLowerCase()}`)
-          || (diskIndex.byAnyAlias.has(entry.supersedes) ? out[diskIndex.byAnyAlias.get(entry.supersedes)]?.sessionId : null)
-          || entry.supersedes;
+          || canonicalByInstanceNative.get(`${instanceId}::${entry.provider}::${entry.supersedes}`)
+          || canonicalByInstanceNative.get(`${instanceId}::${entry.provider}::${entry.supersedes.toLowerCase()}`)
+          || validTombstone
+          || null;
         if (oldCanonical && oldCanonical !== canonicalId) {
           session.supersedes = oldCanonical;
           const oldIdx = outIndexById.get(oldCanonical);
@@ -1142,13 +1308,13 @@ class HobotnicaPushStore {
           && entry.subagentId === subagentId;
         const matchesSub = subagentId && !threadId && entry.subagentId === subagentId;
         const matchesThread = threadId && !subagentId
-          && (entry.agentThreadId === threadId || entry.key === threadId || (!entry.childThreadId && entry.owningThreadId === threadId));
+          && (entry.agentThreadId === threadId || entry.key === threadId || (entry.origin === 'root' && entry.owningThreadId === threadId));
         const matchesNative = nativeSessionId && entry.nativeSessionId
           && entry.nativeSessionId.toLowerCase() === nativeSessionId.toLowerCase()
           && (!provider || entry.provider === provider);
         if (matchesPair || matchesSub || matchesThread || matchesNative) {
           if (entry.provider === 'zai') {
-            return entry.nativeSessionId ? `zai-${entry.nativeSessionId}` : `zai-hbt-${entry.agentThreadId}`;
+            return this._expectedDiskCanonicalId(entry) || this._syntheticGlmCanonicalId(entry);
           }
           const expected = this._expectedDiskCanonicalId(entry);
           if (expected) return expected;
@@ -1182,10 +1348,9 @@ class HobotnicaPushStore {
 
     let entryRef = this._canonicalToEntryRef.get(id) || null;
     if (!entryRef && id.startsWith('zai-hbt-')) {
-      const threadId = id.slice('zai-hbt-'.length);
       for (const [instanceId, instance] of this._instances) {
         for (const [entryKey, entry] of instance.entries) {
-          if (entry.provider === 'zai' && entry.agentThreadId === threadId) {
+          if (entry.provider === 'zai' && this._syntheticGlmCanonicalId(entry) === id) {
             entryRef = { instanceId, entryKey };
             break;
           }
@@ -1199,7 +1364,7 @@ class HobotnicaPushStore {
     if (!instance) return null;
     const entry = instance.entries.get(entryRef.entryKey);
     if (!entry) return null;
-    if (provider && String(provider).toLowerCase() !== entry.provider) return null;
+    if (provider && safeStr(provider).toLowerCase() !== entry.provider) return null;
 
     const detail = instance.details.get(entryRef.entryKey);
     const isSynthetic = id.startsWith('zai-hbt-');
@@ -1233,6 +1398,8 @@ module.exports = {
   PUSH_DROP_TTL_MS,
   MAX_INSTANCES,
   MAX_ENTRIES_PER_INSTANCE,
+  MAX_TOMBSTONES,
+  TOMBSTONE_TTL_MS,
   MAX_SNAPSHOT_CHUNKS,
   MAX_RECENT_TOOLS,
   MAX_RECENT_MESSAGES,

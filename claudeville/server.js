@@ -591,14 +591,22 @@ function resolveHobotnicaFocusPort() {
   return Number.isInteger(raw) && raw >= 1 && raw <= 65535 ? raw : 3873;
 }
 
-// Fail-closed 0600 bridge token reader: symlinks, missing/empty files, and
-// group/world-accessible modes on POSIX are rejected.
+// Fail-closed 0600 bridge token reader: symlinks (file or parent dir),
+// non-owner UIDs, missing/empty files, and group/world-accessible modes on
+// POSIX are rejected.
 function readBridgeTokenFile() {
   const filePath = bridgeTokenFilePath();
+  const parentDir = path.dirname(filePath);
+  let parentStat;
   let lstat;
   try {
+    parentStat = fs.lstatSync(parentDir);
     lstat = fs.lstatSync(filePath);
   } catch {
+    _bridgeTokenCache = { key: null, token: null };
+    return null;
+  }
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
     _bridgeTokenCache = { key: null, token: null };
     return null;
   }
@@ -606,15 +614,22 @@ function readBridgeTokenFile() {
     _bridgeTokenCache = { key: null, token: null };
     return null;
   }
-  if (process.platform !== 'win32' && (lstat.mode & 0o077) !== 0) {
-    _bridgeTokenCache = { key: null, token: null };
-    return null;
+  const currentUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (process.platform !== 'win32') {
+    if ((lstat.mode & 0o077) !== 0) {
+      _bridgeTokenCache = { key: null, token: null };
+      return null;
+    }
+    if (currentUid !== null && lstat.uid !== currentUid) {
+      _bridgeTokenCache = { key: null, token: null };
+      return null;
+    }
   }
   if (lstat.size <= 0 || lstat.size > BRIDGE_TOKEN_MAX_BYTES) {
     _bridgeTokenCache = { key: null, token: null };
     return null;
   }
-  const cacheKey = `${filePath}|${lstat.dev}:${lstat.ino}:${lstat.size}:${lstat.mtimeMs}:${lstat.mode}`;
+  const cacheKey = `${filePath}|${parentStat.dev}:${parentStat.ino}|${lstat.dev}:${lstat.ino}:${lstat.size}:${lstat.mtimeMs}:${lstat.mode}:${lstat.uid}`;
   if (_bridgeTokenCache.key === cacheKey && _bridgeTokenCache.token) {
     return _bridgeTokenCache.token;
   }
@@ -624,7 +639,10 @@ function readBridgeTokenFile() {
     fd = fs.openSync(filePath, flags);
     const opened = fs.fstatSync(fd);
     if (!opened.isFile()) return null;
-    if (process.platform !== 'win32' && (opened.mode & 0o077) !== 0) return null;
+    if (process.platform !== 'win32') {
+      if ((opened.mode & 0o077) !== 0) return null;
+      if (currentUid !== null && opened.uid !== currentUid) return null;
+    }
     if (opened.size <= 0 || opened.size > BRIDGE_TOKEN_MAX_BYTES) return null;
     const buffer = Buffer.allocUnsafe(opened.size);
     const bytesRead = fs.readSync(fd, buffer, 0, opened.size, 0);
@@ -1357,7 +1375,19 @@ function handleTextMessage(socket, message) {
   } catch { /* ignore */ }
 }
 
+const FOCUS_EXTERNAL_MIN_INTERVAL_MS = 500;
+const FOCUS_EXTERNAL_MAX_RESPONSE_BYTES = 4096;
+
 function handleWsFocusExternal(socket, data) {
+  if (socket._cvFocusExternalInFlight) {
+    wsSend(socket, { type: 'focus-external-result', ok: false, reason: 'busy' });
+    return;
+  }
+  const now = Date.now();
+  if (socket._cvLastFocusExternalAt && (now - socket._cvLastFocusExternalAt) < FOCUS_EXTERNAL_MIN_INTERVAL_MS) {
+    wsSend(socket, { type: 'focus-external-result', ok: false, reason: 'rate_limited' });
+    return;
+  }
   const threadId = boundedFocusId(data?.threadId);
   const subagentId = boundedFocusId(data?.subagentId);
   const childThreadId = boundedFocusId(data?.childThreadId);
@@ -1376,10 +1406,14 @@ function handleWsFocusExternal(socket, data) {
   const bodyStr = JSON.stringify(bodyObj);
   const port = resolveHobotnicaFocusPort();
 
+  socket._cvFocusExternalInFlight = true;
+  socket._cvLastFocusExternalAt = now;
+
   let replied = false;
   const reply = (payload) => {
     if (replied) return;
     replied = true;
+    socket._cvFocusExternalInFlight = false;
     if (!socket.destroyed && socket.writable) {
       wsSend(socket, { type: 'focus-external-result', ...payload });
     }
@@ -1398,9 +1432,43 @@ function handleWsFocusExternal(socket, data) {
       Authorization: `Bearer ${token}`,
     },
   }, (res) => {
-    res.resume();
     const statusCode = Number(res.statusCode) || 0;
-    reply({ ok: statusCode >= 200 && statusCode < 300, statusCode });
+    const chunks = [];
+    let totalBytes = 0;
+    let truncated = false;
+    res.on('data', (chunk) => {
+      if (truncated) return;
+      totalBytes += chunk.length;
+      if (totalBytes > FOCUS_EXTERNAL_MAX_RESPONSE_BYTES) {
+        const remaining = FOCUS_EXTERNAL_MAX_RESPONSE_BYTES - (totalBytes - chunk.length);
+        if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
+        truncated = true;
+        return;
+      }
+      chunks.push(chunk);
+    });
+    res.on('end', () => {
+      let parsed = null;
+      if (chunks.length > 0 && !truncated) {
+        try {
+          parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch {
+          parsed = null;
+        }
+      }
+      if (statusCode === 202 || parsed?.delivered === false) {
+        reply({ ok: false, delivered: false, statusCode, reason: 'no_cockpit' });
+        return;
+      }
+      if (statusCode === 200) {
+        reply({ ok: true, delivered: true, statusCode });
+        return;
+      }
+      reply({ ok: false, statusCode });
+    });
+    res.on('error', () => {
+      reply({ ok: false, reason: 'unreachable' });
+    });
   });
   req.setTimeout(2000, () => {
     req.destroy(new Error('timeout'));
@@ -1410,6 +1478,9 @@ function handleWsFocusExternal(socket, data) {
       ok: false,
       reason: err?.message === 'timeout' ? 'timeout' : 'unreachable',
     });
+  });
+  req.on('close', () => {
+    socket._cvFocusExternalInFlight = false;
   });
   req.end(bodyStr);
 }

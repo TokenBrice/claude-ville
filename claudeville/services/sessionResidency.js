@@ -48,11 +48,14 @@ class SessionResidency {
       // resumed; refreshing a still-live retained session is not a resumption.
       if (previous?.absent) this._stats.resumed++;
       this._residents.delete(id);
-      // Registry presence is checked live on each scan; push presence owns its
-      // own 30s stale / 60s drop lifecycle. A cached copy could outlive either.
+      const isPushOnly = session?.hobotnica?.pushOnly === true
+        || String(session?.sessionId || '').startsWith('zai-hbt-');
+      // Registry presence is checked live on each scan; push-only synthetic
+      // villagers own their own 30s stale / 60s drop lifecycle. Overlaid
+      // disk-backed sessions retain normal residency while awaiting approval.
       if (RETAINED_TURN_STATES.has(session.turnState)
         && session.signalSource !== 'registry'
-        && session.signalSource !== 'push'
+        && !isPushOnly
         && !session.sessionEndedAt && session.freshness?.state !== 'stale') {
         if (!previous) this._stats.admitted++;
         this._residents.set(id, {

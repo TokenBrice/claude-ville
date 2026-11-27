@@ -263,6 +263,7 @@ function normalizeHobotnicaMeta(value) {
     subagentId: bounded(value.subagentId, 256),
     parentThreadId: bounded(value.parentThreadId, 256),
     waveId: bounded(value.waveId, 128),
+    pushOnly: value.pushOnly === true,
   };
 }
 

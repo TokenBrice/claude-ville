@@ -79,7 +79,7 @@ function safeTimestamp(value, now) {
 
 function redactSecrets(value) {
   return String(value || '')
-    .replace(/\b((?:[A-Za-z0-9_-]*?(?:key|token)))\s*=\s*(?:"[^"]*"|'[^']*'|[^\s&;,]+)/gi, '$1=[REDACTED]')
+    .replace(/(^|[^A-Za-z0-9_-])([A-Za-z0-9_-]*(?:key|token|secret|password|passwd))\s*=\s*(?:"[^"]*"|'[^']*'|[^\s&;,]+)/gi, '$1$2=[REDACTED]')
     .replace(/[A-Za-z0-9_-]{32,}/g, '[REDACTED]');
 }
 
