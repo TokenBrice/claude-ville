@@ -2,6 +2,13 @@
 
 ---
 
+## v0.69.0.1 · Nov 27, 2026 — Hotfix
+
+- **Building shadows and ground decals stay rock-solid while zooming on WebGPU.** Eliminates frame-to-frame shadow jumping, flickering bands, and raised-terrace shadow drop-outs in the WebGPU Frontier `surfaceDepth` pass (`SURFACE_DEPTH_WGSL`). Ground-layer decals (`ground:shade`, building/tree/villager casts, cues, rings, reflections, haze, fog, and terrain-baked cache overlays with `footY == -1` and `writesDepth == false`) now pass cleanly without writing to `depth32float`, preserving terrain terrace depths intact while preventing cross-quad depth fighting at fractional zooms and depth rejection on raised terraces.
+- **Coplanar prop legs and building aprons stop clipping at fractional zooms.** Reconstructs `depthY` from `@builtin(position)` and frame uniforms instead of quad-interpolated `in.world.y`, guards the `footY == -1` sentinel north of `world.y = -1`, and offsets non-terrain standing sprites by `+1/128` rank ahead of flat terrain (keeping prop legs below `footY`, such as Tavern benches, and `surfacePage` aprons clear of terrain while remaining strictly below one H16 height step).
+
+---
+
 ## v0.69.0 — *The Four Staves* · Nov 27, 2026
 
 Four carved stone staves replace the Hourglass Belfry on the northwest headland, Dashboard gains a dedicated four-provider Weekly Limits rail, T3 Code sessions (including GLM-5.4 subagents, idle Neon orchestrators, and tasklists) land natively in the village, audio settles into a calmer urgent-only signal diet with a pure *Town band only* preset, Settings consolidates into four clean sections with an *Idyllic* clear sky, and the Hall of Lives crash is gone.

@@ -17,6 +17,7 @@ import { massingFacets } from '../../claudeville/src/presentation/character-mode
 import { buildGpuWorldRecords } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
 import { hullRecords } from '../../claudeville/src/presentation/character-mode/HarborHulls.js';
 import { GpuWorldRendererWebGPU, planarMirrorFoot } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRendererWebGPU.js';
+import { SURFACE_DEPTH_WGSL } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/scene.js';
 import { RIPPLE_GRID_WIDTH } from '../../claudeville/src/presentation/character-mode/gpu/wgpu/WaterRippleCompute.js';
 import { buildChronicleScenario } from '../../claudeville/src/application/ChronicleScenario.js';
 
@@ -339,16 +340,66 @@ test('Frontier resolves a walker crossing the Archive face in either draw order 
                         draw([face], level);
                         return w._frameState.basinParams[0];
                     });
-                    return { colors, tides, wet, boundary, face: await pixel([face]), walker: await pixel([raisedWalker]) };
+                    // Ground-layer decals (ground:shade) and standing props below footY must stay
+                    // invariant across fractional zooms on both flat ground and raised terraces
+                    // without disturbing terrace occlusion of ground-level walkers.
+                    const flatProbe = projectSurface(20, 22, 0);
+                    const flatTerrain = {
+                        ...record('terrain:static', '#40a040'),
+                        x: flatProbe.x - 1400, y: flatProbe.y - 700, width: 2800, height: 1488,
+                        footY: -1, depthSortY: null,
+                        terrainPlanes: terrainPlaneTexture(VILLAGE_SURFACES),
+                        surfaceOffset: VILLAGE_SURFACES.heightRange,
+                    };
+                    const shadeQuad = (cx, cy) => ({
+                        ...record('ground:shade', '#000000'),
+                        x: cx - 1408, y: cy - 768, width: 2816, height: 1536,
+                        alpha: 0.5, writesDepth: false, footY: -1, depthSortY: null,
+                    });
+                    const lowProp = {
+                        ...record('prop:bench', '#d06020'),
+                        x: flatProbe.x - 16, y: flatProbe.y - 16, width: 32, height: 32,
+                        writesDepth: true, supportH: 0, sublayerRank: 0,
+                        footY: flatProbe.y - 4, depthSortY: flatProbe.y - 4,
+                    };
+                    const sampleZoom = async (records, cx, cy, zoom) => {
+                        w.render({ records, camera: { x: 4 / zoom - cx, y: 4 / zoom - cy, zoom },
+                            feed: { reducedMotion: true, timeMs: 0 }, forceFreshOutput: true });
+                        return Array.from((await w.debugCaptureTargets()).scene.slice(144, 148));
+                    };
+                    const zoomChecks = [];
+                    for (const zoom of [1, 1.35, 1.75, 2, 2.5]) {
+                        const litFlat = await sampleZoom([flatTerrain], flatProbe.x, flatProbe.y, zoom);
+                        const shadedFlat = await sampleZoom([flatTerrain, shadeQuad(flatProbe.x, flatProbe.y)], flatProbe.x, flatProbe.y, zoom);
+                        const propFlat = await sampleZoom([flatTerrain, lowProp], flatProbe.x, flatProbe.y, zoom);
+                        const litTerrace = await sampleZoom([face], probe.x, probe.y, zoom);
+                        const shadedTerrace = await sampleZoom([face, shadeQuad(probe.x, probe.y)], probe.x, probe.y, zoom);
+                        const occludedBehindShadedTerrace = await sampleZoom([face, shadeQuad(probe.x, probe.y), groundWalker], probe.x, probe.y, zoom);
+                        zoomChecks.push({ zoom, litFlat, shadedFlat, propFlat, litTerrace, shadedTerrace, occludedBehindShadedTerrace });
+                    }
+                    return { colors, tides, wet, boundary, face: await pixel([face]), walker: await pixel([raisedWalker]), zoomChecks };
                 } finally { w.dispose(); }
             });
             assert.ok(result.wet && result.boundary, JSON.stringify(result));
             assert.deepEqual(result.tides, [-2, 0, 2]);
             assert.notDeepEqual(result.face, result.walker);
             assert.deepEqual(result.colors, [result.face, result.face, result.walker, result.walker]);
+            for (const row of result.zoomChecks) {
+                assert.ok(row.shadedFlat[1] < row.litFlat[1] * 0.75, `ground:shade dropped on flat ground at z=${row.zoom}: ${JSON.stringify(row)}`);
+                assert.ok(row.shadedTerrace[2] < row.litTerrace[2] * 0.75, `ground:shade dropped on raised terrace at z=${row.zoom}: ${JSON.stringify(row)}`);
+                assert.deepEqual(row.occludedBehindShadedTerrace, row.shadedTerrace, `ground:shade broke terrace occlusion at z=${row.zoom}: ${JSON.stringify(row)}`);
+                assert.ok(row.propFlat[0] > row.propFlat[1] + 40, `prop below footY clipped by terrain at z=${row.zoom}: ${JSON.stringify(row)}`);
+            }
             assert.deepEqual(errors, []);
         } finally { await browser?.close(); await server.stop(); }
     });
+
+test('SURFACE_DEPTH_WGSL keeps ground decals and coplanar props immune to fractional-zoom depth fighting', () => {
+    assert.match(SURFACE_DEPTH_WGSL, /batch\.terrainBatch == 0u && batch\.writesDepth == 0u && in\.receiver\.x < -0\.5[\s\S]*return SurfaceOut\(shaded\.color, shaded\.emission, 0\.0\);/);
+    assert.match(SURFACE_DEPTH_WGSL, /let depthY = select\(\(frame\.resolution\.y - glFragCoord\.y\) \/ max\(1e-5, frame\.cameraScale\) - frame\.cameraXy\.y, in\.world\.y, screenSpace\);/);
+    assert.match(SURFACE_DEPTH_WGSL, /select\(0\.0, max\(0\.0, in\.receiver\.x - depthY\), in\.receiver\.x > -0\.5\)/);
+    assert.match(SURFACE_DEPTH_WGSL, /let rank = select\(min\(batch\.sublayerRank, 7u\) \+ 1u, 0u, batch\.terrainBatch != 0u\);/);
+});
 
 test('the planar mirror meets the actual moored hull lip at low, mean and high tide', () => {
     const strip = { image: { width: 32, height: 24 }, frameWidth: 32, anchorX: 16, anchorY: 20 };

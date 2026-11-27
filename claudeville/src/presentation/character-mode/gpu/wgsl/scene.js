@@ -1575,8 +1575,22 @@ fn oct64Normal(id: u32) -> vec3f {
 fn surfaceFragment(in: VsOut, roles: bool) -> SurfaceOut {
   let shaded = renderScene(in, roles);
   if (shaded.color.a <= 0.0 || (batch.writesDepth != 0u && shaded.color.a < 0.5)) { discard; }
+  // Ground-layer decals (ground:shade, building/tree/agent casts, cues, haze,
+  // fog, reflections and terrain-baked cache overlays: footY == -1, no depth
+  // write) draw right after terrain:static and before every standing sprite.
+  // Passing them cleanly without writing depth preserves terrain's terrace
+  // depths while preventing flat-ground z-fighting across zoom levels and
+  // depth rejection on raised terraces.
+  if (batch.terrainBatch == 0u && batch.writesDepth == 0u && in.receiver.x < -0.5) {
+    return SurfaceOut(shaded.color, shaded.emission, 0.0);
+  }
   var color = shaded.color;
-  var h = batch.supportH + max(0.0, in.receiver.x - in.world.y);
+  let screenSpace = (v_flags & RECORD_FLAG_SCREEN_SPACE) != 0u;
+  // Reconstruct world Y from glFragCoord and frame uniforms rather than the
+  // quad-interpolated varying so quads of different sizes agree bit-for-bit at
+  // every pixel and fractional zoom.
+  let depthY = select((frame.resolution.y - glFragCoord.y) / max(1e-5, frame.cameraScale) - frame.cameraXy.y, in.world.y, screenSpace);
+  var h = batch.supportH + select(0.0, max(0.0, in.receiver.x - depthY), in.receiver.x > -0.5);
   if (batch.terrainBatch != 0u) {
     h = terraceHit.x;
   } else if ((v_flags & RECORD_FLAG_SURFACE_CODE) != 0u && batch.hasOccluderMap != 0u) {
@@ -1598,9 +1612,12 @@ fn surfaceFragment(in: VsOut, roles: bool) -> SurfaceOut {
       }
     }
   }
-  let Y = 2.0 * (in.world.y + h);
-  // A rank step survives depth32 rounding and the entire range is below one H16 step.
-  let D = Y + h / 2.0 + f32(min(batch.sublayerRank, 7u)) / 128.0;
+  let Y = 2.0 * (depthY + h);
+  // Keep standing sprites strictly in front of coplanar terrain (h = 0, rank 0)
+  // — including prop legs below footY and surfacePage ground aprons tested with
+  // depthCompare 'less' — while keeping the rank span below one H16 step.
+  let rank = select(min(batch.sublayerRank, 7u) + 1u, 0u, batch.terrainBatch != 0u);
+  let D = Y + h / 2.0 + f32(rank) / 128.0;
   return SurfaceOut(color, shaded.emission, clamp((6144.0 - D) / 8192.0, 0.000001, 0.999999));
 }
 @fragment fn surfaceFs(in: VsOut) -> SurfaceOut { return surfaceFragment(in, false); }
