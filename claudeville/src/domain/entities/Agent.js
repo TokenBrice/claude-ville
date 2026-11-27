@@ -80,6 +80,9 @@ export class Agent {
         rootSessionId,
         workflowId,
         workflowName,
+        waveId,
+        hobotnica,
+        supersedes,
         compactions,
         compactionCount,
         lastSessionActivity,
@@ -121,6 +124,9 @@ export class Agent {
         this.rootSessionId = rootSessionId || null;
         this.workflowId = workflowId || null;
         this.workflowName = workflowName || null;
+        this.waveId = waveId || null;
+        this.hobotnica = hobotnica && typeof hobotnica === 'object' ? { ...hobotnica } : null;
+        this.supersedes = supersedes || null;
         this.compactions = Array.isArray(compactions)
             ? compactions.slice(-4).map(item => ({
                 at: Number(item?.at) || 0,

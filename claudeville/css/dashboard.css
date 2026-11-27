@@ -920,7 +920,30 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    gap: 8px;
     padding: 0 12px 8px 16px;
+}
+.dash-card__call-external,
+.dash-card__open-external {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border: 1px solid var(--line-2);
+    background: var(--bg-2);
+    color: var(--ink-2);
+    font: var(--fs-label)/var(--lh-label) var(--font-display);
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.dash-card__call-external:hover,
+.dash-card__call-external:focus-visible,
+.dash-card__open-external:hover,
+.dash-card__open-external:focus-visible {
+    border-color: var(--gold);
+    background: var(--bg-3);
+    color: var(--gold-hi);
+    outline: none;
 }
 .dash-card__call-locate {
     display: inline-flex;

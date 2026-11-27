@@ -292,6 +292,10 @@ export class WebSocketClient {
             case 'pong':
                 if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
                 break;
+            case 'focus':
+                if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
+                eventBus.emit('ws:focus', data);
+                break;
             case 'snapshot-error':
                 if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
                 // VB-8 — the server could not build a snapshot for this socket:

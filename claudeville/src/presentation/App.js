@@ -2278,6 +2278,7 @@ export class App {
                 biographyService: () => this.biographyService,
                 affinityService: () => this.affinityService,
                 toast: this.toast,
+                onFocusExternal: (agent) => this._focusExternalAgent(agent),
             });
             return this.activityPanel;
         }).catch((error) => {
@@ -2601,7 +2602,11 @@ export class App {
                         if (!this._destroyed && renderer?._worldModeActive) renderer.frameWorldAgent(agent.id);
                     });
                 };
-                candidate = new module.DashboardRenderer(this.world, { toast: this.toast, onLocateInWorld: locate });
+                candidate = new module.DashboardRenderer(this.world, {
+                    toast: this.toast,
+                    onLocateInWorld: locate,
+                    onFocusExternal: (agent) => this._focusExternalAgent(agent),
+                });
                 this._eventUnsubscribers.push(eventBus.on(module.DASHBOARD_LOCATE_IN_WORLD_EVENT,
                     ({ agentId }) => locate(this.world.agents.get(agentId))));
                 if (this._destroyed) {
@@ -2648,19 +2653,88 @@ export class App {
     _bindDeepLink() {
         if (this._deepLinkBound) return;
         this._deepLinkBound = true;
+        this._selectedAgentId = null;
+        this._pendingFocusAgent = null;
         // Mirror the current agent selection into the URL fragment so links
         // like /#agent=<id> can be shared.
         this._eventUnsubscribers.push(eventBus.on('agent:selected', (agent) => {
             if (!agent?.id) return;
+            this._selectedAgentId = agent.id;
             // Absolute path + search: index.html's `<base href="/">` would
             // otherwise resolve a bare `#agent=` to `/`, dropping `/m/` and the query.
             history.replaceState(null, '', `${location.pathname}${location.search}#agent=${encodeURIComponent(agent.id)}`);
         }));
         this._eventUnsubscribers.push(eventBus.on('agent:deselected', () => {
+            this._selectedAgentId = null;
             if (location.hash.startsWith('#agent=')) {
                 history.replaceState(null, '', location.pathname + location.search);
             }
         }));
+        this._eventUnsubscribers.push(eventBus.on('agent:superseded', ({ fromId, agent } = {}) => {
+            if (!fromId || !agent?.id) return;
+            const match = /^#agent=(.+)$/.exec(location.hash);
+            let hashId = null;
+            if (match) {
+                try { hashId = decodeURIComponent(match[1]); } catch { hashId = null; }
+            }
+            if (this._selectedAgentId === fromId || hashId === fromId) {
+                this._focusAgentById(agent.id);
+            }
+        }));
+        this._eventUnsubscribers.push(eventBus.on('ws:focus', ({ sessionId } = {}) => {
+            this._focusAgentById(sessionId);
+        }));
+        this._eventUnsubscribers.push(eventBus.on('ws:message', (data) => {
+            if (data?.type === 'focus-external-result' && data.ok === false) {
+                this.toast?.show('Hobotnica cockpit is not open', 'warning');
+            }
+        }));
+        const consumePendingFocus = () => {
+            const pending = this._pendingFocusAgent;
+            if (!pending) return;
+            if (Date.now() > pending.until) {
+                this._pendingFocusAgent = null;
+                return;
+            }
+            const target = this.world?.agents?.get?.(pending.id);
+            if (target && !target.isDeparted) {
+                this._pendingFocusAgent = null;
+                this._focusAgentById(target.id);
+            }
+        };
+        this._eventUnsubscribers.push(eventBus.on('agent:added', consumePendingFocus));
+        this._eventUnsubscribers.push(eventBus.on('ws:update', consumePendingFocus));
+        this._onHashChange = () => this._applyDeepLink();
+        window.addEventListener('hashchange', this._onHashChange);
+    }
+
+    _focusAgentById(sessionId) {
+        const id = typeof sessionId === 'string' ? sessionId.trim() : '';
+        if (!id || this._destroyed) return false;
+        const agent = this.world?.agents?.get?.(id);
+        if (!agent) {
+            this._pendingFocusAgent = { id, until: Date.now() + 5000 };
+            return false;
+        }
+        this._pendingFocusAgent = null;
+        emitAgentSelected(agent);
+        if (this.renderer?._worldModeActive) {
+            this.renderer.frameWorldAgent?.(agent.id);
+        }
+        return true;
+    }
+
+    _focusExternalAgent(agent) {
+        const meta = agent?.hobotnica;
+        if (!meta?.threadId || !this.wsClient) return;
+        this.wsClient.send({
+            type: 'focus-external',
+            threadId: meta.threadId,
+            ...(meta.subagentId ? { subagentId: meta.subagentId } : {}),
+            ...(meta.childThreadId ? { childThreadId: meta.childThreadId } : {}),
+            ...(meta.instanceId ? { instanceId: meta.instanceId } : {}),
+            sessionId: agent.id,
+        });
     }
 
     _applyDeepLink() {
@@ -2672,8 +2746,7 @@ export class App {
         } catch {
             return;
         }
-        const agent = this.world?.agents?.get?.(agentId);
-        if (agent) emitAgentSelected(agent);
+        this._focusAgentById(agentId);
     }
 
     _bindChronicleSignals() {
@@ -3211,6 +3284,12 @@ export class App {
             window.removeEventListener('pagehide', this._onPageHide);
             this._onPageHide = null;
         }
+        if (this._onHashChange) {
+            window.removeEventListener('hashchange', this._onHashChange);
+            this._onHashChange = null;
+        }
+        this._pendingFocusAgent = null;
+        this._selectedAgentId = null;
 
         this._callLifecycle('SessionWatcher.stop', () => this.sessionWatcher?.stop?.());
         this._callLifecycle('WebSocketClient.disconnect', () => this.wsClient?.disconnect?.());

@@ -48,8 +48,11 @@ class SessionResidency {
       // resumed; refreshing a still-live retained session is not a resumption.
       if (previous?.absent) this._stats.resumed++;
       this._residents.delete(id);
-      // Registry presence is checked live on each scan. A cached copy could outlive its pid.
-      if (RETAINED_TURN_STATES.has(session.turnState) && session.signalSource !== 'registry'
+      // Registry presence is checked live on each scan; push presence owns its
+      // own 30s stale / 60s drop lifecycle. A cached copy could outlive either.
+      if (RETAINED_TURN_STATES.has(session.turnState)
+        && session.signalSource !== 'registry'
+        && session.signalSource !== 'push'
         && !session.sessionEndedAt && session.freshness?.state !== 'stale') {
         if (!previous) this._stats.admitted++;
         this._residents.set(id, {

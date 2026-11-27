@@ -435,7 +435,7 @@ const TURN_STATE_LABELS = Object.freeze({
 
 function safePromptDetail(agent, limit = PROMPT_DETAIL_MAX_LENGTH) {
     const source = agent?.promptDetail
-        || (agent?.signalSource === 'hook' ? agent?.lastToolInput : '');
+        || ((agent?.signalSource === 'hook' || agent?.signalSource === 'push') ? agent?.lastToolInput : '');
     const clean = String(source || '')
         .replace(/\b((?:[A-Za-z0-9_-]*?(?:key|token)))\s*=\s*(?:"[^"]*"|'[^']*'|[^\s&;,]+)/gi, '$1=[REDACTED]')
         .replace(/[A-Za-z0-9_-]{32,}/g, '[REDACTED]')
@@ -920,10 +920,11 @@ function hasOpenSurface(documentRef = globalThis.document) {
 }
 
 export class DashboardRenderer {
-    constructor(world, { toast = null, onLocateInWorld = null, frameAttention = null } = {}) {
+    constructor(world, { toast = null, onLocateInWorld = null, onFocusExternal = null, frameAttention = null } = {}) {
         this.world = world;
         this.toast = toast;
         this._onLocateInWorld = typeof onLocateInWorld === 'function' ? onLocateInWorld : null;
+        this._onFocusExternal = typeof onFocusExternal === 'function' ? onFocusExternal : null;
         this._frameAttention = typeof frameAttention === 'function' ? frameAttention : null;
         this.gridEl = document.getElementById('dashboardGrid');
         this.attentionEl = document.getElementById('dashboardAttentionQueue');
@@ -2032,6 +2033,7 @@ export class DashboardRenderer {
                         </span>
                         <span class="dash-card__strip-axis" aria-hidden="true"><span>10 min ago</span><span>now</span></span>
                     </span>
+                    <button type="button" class="dash-card__open-external" style="display: none" title="Open in Hobotnica ↗" aria-label="Open in Hobotnica">Open in Hobotnica ↗</button>
                     <button type="button" class="dash-card__copy-id" title="Copy session ID" aria-label="Copy session ID">ID</button>
                     <span class="dash-card__stale-badge" style="display: none" title="Showing cached data; latest refresh did not complete">STALE</span>
                 </div>
@@ -2086,6 +2088,12 @@ export class DashboardRenderer {
             event.stopPropagation();
             this._copyAgentId(card.dataset.agentId);
         });
+        const openExternalBtn = card.querySelector('.dash-card__open-external');
+        openExternalBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const current = this.world.agents.get(card.dataset.agentId);
+            if (current?.hobotnica?.threadId) this._onFocusExternal?.(current);
+        });
 
         const parentChip = card.querySelector('.dash-card__parent-chip');
         const selectParent = (event) => {
@@ -2124,6 +2132,7 @@ export class DashboardRenderer {
             providerBadge: card.querySelector('.dash-card__provider-badge'),
             detailStatus: card.querySelector('.dash-card__detail-status'),
             signalSource: card.querySelector('.dash-card__signal-source'),
+            openExternal: openExternalBtn,
             staleBadge: card.querySelector('.dash-card__stale-badge'),
             detail: card.querySelector('.dash-card__detail'),
             heroSlot: card.querySelector('.dash-card__hero-slot'),
@@ -2228,6 +2237,19 @@ export class DashboardRenderer {
         // interactive `<button>` inside `<button>`.
         const footer = document.createElement('div');
         footer.className = 'dash-card__call-footer';
+        const callOpenExternalBtn = document.createElement('button');
+        callOpenExternalBtn.type = 'button';
+        callOpenExternalBtn.className = 'dash-card__call-external';
+        callOpenExternalBtn.textContent = 'Open in Hobotnica ↗';
+        callOpenExternalBtn.title = 'Open in Hobotnica ↗';
+        callOpenExternalBtn.setAttribute('aria-label', 'Open in Hobotnica');
+        callOpenExternalBtn.style.display = 'none';
+        callOpenExternalBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const current = this.world?.agents?.get?.(cardEl.dataset.agentId);
+            if (current?.hobotnica?.threadId) this._onFocusExternal?.(current);
+        });
+        footer.appendChild(callOpenExternalBtn);
         const locateBtn = document.createElement('button');
         locateBtn.type = 'button';
         locateBtn.className = 'dash-card__call-locate';
@@ -2263,6 +2285,7 @@ export class DashboardRenderer {
         const refs = {
             root: call,
             footer,
+            openExternal: callOpenExternalBtn,
             locate: locateBtn,
             hero: call.querySelector('.dash-card__call-hero'),
             name: call.querySelector('.dash-card__call-name'),
@@ -2335,6 +2358,9 @@ export class DashboardRenderer {
 
         this._setText(refs.prov, signalProvenance(agent).toUpperCase());
         refs.prov.title = signalProvenance(agent);
+        if (refs.openExternal) {
+            refs.openExternal.style.display = agent?.hobotnica?.threadId ? '' : 'none';
+        }
         if (refs.locate) {
             refs.locate.setAttribute('aria-label', `Locate ${agent.name || agent.id} in World`);
         }
@@ -2906,6 +2932,7 @@ export class DashboardRenderer {
             agent.currentToolInput || '',
             agent.lastMessage || '',
             agent.projectPath || '',
+            agent.hobotnica?.threadId || '',
             JSON.stringify(agent.tokens || null),
             i18n.lang || '',
         ].join('|');
@@ -2977,6 +3004,9 @@ export class DashboardRenderer {
             this._setText(refs.signalSource, inLane ? '' : signalProvenance(agent).toUpperCase());
             this._setStyle(refs.signalSource, 'display', inLane ? 'none' : '');
             refs.signalSource.title = 'Signal source and certainty';
+            if (refs.openExternal) {
+                this._setStyle(refs.openExternal, 'display', agent?.hobotnica?.threadId ? '' : 'none');
+            }
 
             const reason = waitReasonLabel(agent);
             this._setText(refs.detailStatus, inLane ? '' : `${statusWord(status)}${reason ? ` — ${reason}` : ''}`);

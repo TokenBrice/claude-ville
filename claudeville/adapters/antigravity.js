@@ -986,6 +986,21 @@ function t3InstancesDir() {
   return path.join(t3UserDataDir(), 'providers', 'antigravity');
 }
 
+function hobotnicaHomeDir() {
+  const configured = typeof process.env.HOBOTNICA_HOME === 'string'
+    ? process.env.HOBOTNICA_HOME.trim()
+    : '';
+  return configured || path.join(os.homedir(), '.local', 'share', 'hobotnica');
+}
+
+function hobotnicaInstancesDirs() {
+  const home = hobotnicaHomeDir();
+  return [
+    path.join(home, 'userdata', 'providers', 'antigravity'),
+    path.join(home, 'providers', 'antigravity'),
+  ];
+}
+
 // T3 Code starts agy as `agy acp --gemini-dir ~/.t3/userdata/providers/antigravity/<instance>
 // --app-data-dir antigravity-acp`, one directory per provider instance.
 function t3AcpDirs() {
@@ -1002,10 +1017,37 @@ function t3AcpDirs() {
     .map(entry => path.join(instancesDir, entry.name, 'antigravity-acp'));
 }
 
-function isT3AcpRoot(rootDir) {
+// Hobotnica starts agy acp under `$HOBOTNICA_HOME/userdata/providers/antigravity/<instance>/antigravity-acp`
+// (or directly under `$HOBOTNICA_HOME/providers/antigravity/<instance>/antigravity-acp`), without sharing stock T3's SQLite DB.
+function hobotnicaAcpDirs() {
+  const dirs = [];
+  for (const instancesDir of hobotnicaInstancesDirs()) {
+    let entries;
+    try {
+      entries = fs.readdirSync(instancesDir, { withFileTypes: true });
+    } catch (error) {
+      noteReadFailure(error);
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        dirs.push(path.join(instancesDir, entry.name, 'antigravity-acp'));
+      }
+    }
+  }
+  return dirs;
+}
+
+function isHobotnicaAcpRoot(rootDir) {
   if (!rootDir) return false;
-  const t3Instances = `${t3InstancesDir()}${path.sep}`;
-  return rootDir.startsWith(t3Instances) || path.basename(rootDir) === 'antigravity-acp';
+  const resolved = path.resolve(rootDir);
+  return hobotnicaInstancesDirs().some(dir => resolved.startsWith(`${path.resolve(dir)}${path.sep}`));
+}
+
+function isT3AcpRoot(rootDir) {
+  if (!rootDir || isHobotnicaAcpRoot(rootDir)) return false;
+  const t3Instances = `${path.resolve(t3InstancesDir())}${path.sep}`;
+  return path.resolve(rootDir).startsWith(t3Instances) || path.basename(rootDir) === 'antigravity-acp';
 }
 
 class AntigravityAdapter {
@@ -1041,6 +1083,7 @@ class AntigravityAdapter {
       path.join(geminiDir, 'antigravity'),
       path.join(geminiDir, 'antigravity-ide'),
       ...t3AcpDirs(),
+      ...hobotnicaAcpDirs(),
     ])];
   }
 
