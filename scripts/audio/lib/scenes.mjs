@@ -167,7 +167,7 @@ export function marginVoices(lane) {
 // working, Willowbrook pinned, Isle Band).
 export const MARGIN_BEDS = {
     signals: { bed: 'village', mode: 'signals', atmosphere: DAY, silent: true, lanes: URGENT_MARGIN_LANES },
-    music: { bed: 'music', mode: 'bgm', atmosphere: DAY, lanes: URGENT_MARGIN_LANES },
+    music: { bed: 'music', mode: 'bgm', atmosphere: DAY, lanes: URGENT_MARGIN_LANES, gridLanes: MARGIN_LANES },
     bandBusy: { bed: 'music', mode: 'bgm', atmosphere: DAY, busy: true, piece: 'willowbrook', lanes: URGENT_MARGIN_LANES },
 };
 export function marginLanes(bedName) {
@@ -201,7 +201,7 @@ export function marginScene(bedName, lane, voice = null, only = null) {
     if (!bed || !marginLanes(bedName).includes(lane)) throw new Error(`unknown margin scene ${bedName}:${lane}`);
     const v = voice ?? marginVoices(lane)[0];
     if (!marginVoices(lane).includes(v)) throw new Error(`unknown margin voice ${lane}:${v}`);
-    const lanes = marginLanes(bedName);
+    const lanes = bed.gridLanes ?? marginLanes(bedName);
     const placements = [];
     let agent = 0;
     let slot = 0;

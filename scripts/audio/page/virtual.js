@@ -24,6 +24,7 @@ import { eventBus } from '/src/domain/events/DomainEvent.js';
 import { AudioEngine } from '/src/presentation/shared/audio/AudioEngine.js';
 import { cueScoreDiagnostics, scheduleAccent } from '/src/presentation/shared/audio/CueScore.js';
 import { CueKit, laneForCueKind } from '/src/presentation/shared/audio/cues/CueKit.js';
+import { resolveCueSpot } from '/src/presentation/shared/audio/SpatialField.js';
 import { PROGRAM_TRIM_DB } from '/src/presentation/shared/audio/Loudness.js';
 import {
     PRESET_FOR_MODE, atmosphereFor, atmosphereSummary, makeMarker, makeWorld, pinSequencer, plain, runAction, seedSoundStorage,
@@ -389,6 +390,7 @@ function scheduleActions(actions, { world, mark, controller, captions, at, onAcc
                 // sounds like once admitted — the discrimination gallery.
                 const agent = action.agentIndex != null ? [...world.agents.values()][action.agentIndex] : null;
                 const payload = { phase: 'day', ...(agent ? { agentId: agent.id, provider: agent.provider } : {}), ...(action.play.payload || {}) };
+                payload.spot ??= resolveCueSpot(payload, { agentId: payload.agentId ?? null, world });
                 mark(action.label || `play:${action.play.kind}`, { kind: 'event', cueKind: action.play.kind, agentId: agent?.id ?? null, voice: action.voice ?? null });
                 controller.cues.kit._playAccepted({ ...payload, kind: action.play.kind, lane: laneForCueKind(action.play.kind) }, {});
                 return;
