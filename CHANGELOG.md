@@ -2,6 +2,13 @@
 
 ---
 
+## v0.69.3 — *The Tollbridge Charter* · Nov 28, 2026
+
+- **Hybrid bridge circulation and deadlock-free crossings.** Adds an allocation-free `BridgeTrafficController` with dedicated two-way lanes on the central river bridge, alternating platoon locks on narrow spans (`west-river-plank`, `command-pond-plank`, `north-farm-bridge`), anti-starvation wave/time draining, stall hold-release escape, and T-junction courtesy/drain at `(18, 22)`. Pairs with continuous non-dock `±0.35`-tile `WalkClearance` bridge ramp boxes, corridor-aware `ORCA_BRIDGE_PASS_RADIUS` in `CrowdOrca`, real terrain `supportHeight` elevation planes, strict total-order bridge zipper ranking, lateral-peel-preserving right-of-way, and capacity-aware span congestion spillover in `VisitTileAllocator` and `Pathfinder`.
+- **Hobotnica SQLite session names, lineage, GLM discovery, and prompt cleanup.** Extends `t3code.js` with per-path cached read-only queries against `$HOBOTNICA_HOME/userdata/statev2.sqlite` (`~/.local/share/hobotnica/userdata/statev2.sqlite`) so renamed Hobotnica threads display their given name with `userNamed: true` across Antigravity, Claude (`entrypoint: 'hobotnica'`), Codex, and GLM (`glm-acp`) — alongside cross-provider delegate lineage, `backgroundPending`, Antigravity `.db` root-lock liveness, and Hobotnica OAuth token discovery in `usageQuota.js`, while keeping Hobotnica Antigravity roots strictly isolated from stock `~/.t3`. Updates `hobotnicaPush.js` to preserve disk `userNamed` titles and honor push `titleRenamed`, and strips nested `<USER_REQUEST>` / `<hobotnica_instructions>` / `<runtime_info>` wrappers (including compact-transcript truncations) from `lastPrompt`.
+
+---
+
 ## v0.69.2 — *The Bridgewarden's Bell* · Nov 28, 2026
 
 - **Hobotnica push bridge (`hobotnica-telemetry.v1`).** Adds an instance-scoped, in-memory helper-plus-fold (`hobotnicaPush.js`) fed by `POST /api/ingest/hobotnica` with fail-closed `0600` bridge-token authentication (`userdata/secrets/claudeville-bridge-token`, checking owner UID and non-symlink parent/file paths). Overlays live telemetry onto disk-backed Claude, Codex, Antigravity, and GLM sessions by canonical ID (preserving disk artifacts and holding pre-native sessions without phantom villagers), resolves cross-provider wave lineage (`parentSessionId`, `rootSessionId`, `waveId`, `teamName: null`), handles two-delta `supersedes` handoffs via bounded tombstones, gates Bell Lane alerts on `waitAudience: "operator"`, canonicalizes in-project `workingSet` file paths (dropping `exec` shell commands and backfilling missing project paths), and expires stale/dropped overlays at 30 s / 60 s while keeping overlaid disk approvals resident.
