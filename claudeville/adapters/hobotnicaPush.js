@@ -143,22 +143,56 @@ function normalizeProvider(raw) {
 function normalizeWorkingSetOp(op) {
   const value = safeStr(op).trim().toLowerCase();
   if (value === 'write' || value === 'edit') return 'write';
-  if (value === 'read' || value === 'search' || value === 'exec') return 'read';
+  if (value === 'read' || value === 'search') return 'read';
   return null;
 }
 
-function normalizeWorkingSet(items, fallbackAt, now) {
+function canonicalizePushWorkingSetPath(rawPath, project = null) {
+  if (typeof rawPath !== 'string') return null;
+  if (/[\u0000\r\n]/.test(rawPath)) return null;
+  const cleaned = rawPath.trim().replace(/^file:\/\//i, '');
+  if (!cleaned) return null;
+  let normalized = cleaned;
+  if (path.isAbsolute(cleaned)) {
+    const resolved = path.normalize(cleaned);
+    if (project && typeof project === 'string' && project.trim()) {
+      const normProj = path.resolve(project.trim());
+      if (resolved === normProj) return null;
+      if (resolved.startsWith(`${normProj}${path.sep}`)) {
+        normalized = resolved.slice(normProj.length + 1).split(path.sep).join('/');
+      } else {
+        normalized = resolved.split(path.sep).join('/');
+      }
+    } else {
+      normalized = resolved.split(path.sep).join('/');
+    }
+  } else {
+    normalized = cleaned.replace(/\\/g, '/');
+  }
+  return boundStr(normalized, 240);
+}
+
+function normalizeWorkingSet(items, fallbackAt, now, project = null) {
   if (!Array.isArray(items) || items.length === 0) return [];
   const byPath = new Map();
   for (const item of items) {
     if (!item || typeof item !== 'object') continue;
-    const itemPath = boundStr(item.path, 240);
     const op = normalizeWorkingSetOp(item.op);
-    if (!itemPath || !op) continue;
+    if (!op) continue;
+    const itemPath = canonicalizePushWorkingSetPath(item.path, project);
+    if (!itemPath) continue;
     const at = clampTs(item.at, now, fallbackAt);
     const existing = byPath.get(itemPath);
-    if (!existing || at >= existing.at) {
+    if (!existing) {
       byPath.set(itemPath, { path: itemPath, op, at, source: 'push' });
+    } else {
+      const mergedOp = existing.op === 'write' || op === 'write' ? 'write' : op;
+      byPath.set(itemPath, {
+        path: itemPath,
+        op: mergedOp,
+        at: Math.max(existing.at, at),
+        source: 'push',
+      });
     }
   }
   return [...byPath.values()]
@@ -166,17 +200,41 @@ function normalizeWorkingSet(items, fallbackAt, now) {
     .slice(0, MAX_WORKING_SET);
 }
 
-function mergeWorkingSets(diskItems, pushItems) {
+function mergeWorkingSets(diskItems, pushItems, project = null) {
   const merged = new Map();
   for (const item of Array.isArray(diskItems) ? diskItems : []) {
     if (!item?.path) continue;
-    merged.set(item.path, item);
+    const canonicalPath = canonicalizePushWorkingSetPath(item.path, project) || item.path;
+    const normalizedItem = canonicalPath === item.path ? item : { ...item, path: canonicalPath };
+    const existing = merged.get(canonicalPath);
+    if (!existing) {
+      merged.set(canonicalPath, normalizedItem);
+    } else {
+      const itemAt = Number(normalizedItem.at) || 0;
+      const existingAt = Number(existing.at) || 0;
+      const mergedOp = existing.op === 'write' || normalizedItem.op === 'write' ? 'write' : normalizedItem.op;
+      const winner = itemAt >= existingAt ? normalizedItem : existing;
+      merged.set(canonicalPath, { ...winner, path: canonicalPath, op: mergedOp, at: Math.max(existingAt, itemAt) });
+    }
   }
   for (const item of Array.isArray(pushItems) ? pushItems : []) {
     if (!item?.path) continue;
-    const existing = merged.get(item.path);
-    if (!existing || (Number(item.at) || 0) >= (Number(existing.at) || 0)) {
-      merged.set(item.path, item);
+    const canonicalPath = canonicalizePushWorkingSetPath(item.path, project) || item.path;
+    const normalizedItem = canonicalPath === item.path ? item : { ...item, path: canonicalPath };
+    const existing = merged.get(canonicalPath);
+    if (!existing) {
+      merged.set(canonicalPath, normalizedItem);
+    } else {
+      const itemAt = Number(normalizedItem.at) || 0;
+      const existingAt = Number(existing.at) || 0;
+      const mergedOp = existing.op === 'write' || normalizedItem.op === 'write' ? 'write' : normalizedItem.op;
+      const winner = itemAt >= existingAt ? normalizedItem : existing;
+      merged.set(canonicalPath, {
+        ...winner,
+        path: canonicalPath,
+        op: mergedOp,
+        at: Math.max(existingAt, itemAt),
+      });
     }
   }
   return [...merged.values()]
@@ -197,6 +255,7 @@ function normalizeTokenUsage(raw) {
   const output = pick('output', 'outputTokens', 'output_tokens', 'completionTokens', 'completion_tokens');
   const cacheRead = pick('cacheRead', 'cachedInputTokens', 'cached_input_tokens', 'cacheReadInputTokens', 'cache_read');
   const cacheCreate = pick('cacheCreate', 'cacheWrite', 'cache_write', 'cacheCreationInputTokens');
+  const contextWindow = pick('contextWindow', 'context_window', 'contextTokens', 'context_tokens');
   if (input === null && output === null && cacheRead === null && cacheCreate === null) {
     return null;
   }
@@ -209,6 +268,7 @@ function normalizeTokenUsage(raw) {
     cacheWrite: cacheCreate ?? 0,
     totalInput: input ?? 0,
     totalOutput: output ?? 0,
+    ...(contextWindow !== null ? { contextWindow } : {}),
   };
 }
 
@@ -427,6 +487,7 @@ function sanitizeAgentEntry(raw, instanceId, now) {
   const recentMessages = normalizeRecentMessages(raw.recentMessages, updatedAtMs, now);
   const hasDetailFields = recentTools !== null || recentMessages !== null;
 
+  const cwd = boundStr(raw.cwd, 512);
   const entry = {
     instanceId,
     key,
@@ -445,12 +506,12 @@ function sanitizeAgentEntry(raw, instanceId, now) {
     model: boundStr(raw.model, 128),
     nativeSessionId: boundStr(raw.nativeSessionId, 256),
     rolloutPath: boundStr(raw.rolloutPath, 512),
-    cwd: boundStr(raw.cwd, 512),
+    cwd,
     projectName: boundStr(raw.projectName, 256),
     activeToolName: boundStr(raw.activeToolName, 128),
     currentActivityLabel: safeRedactBoundStr(raw.currentActivityLabel, 120),
     latestSnippet: safeRedactBoundStr(raw.latestSnippet, 140),
-    workingSet: normalizeWorkingSet(raw.workingSet, updatedAtMs, now),
+    workingSet: normalizeWorkingSet(raw.workingSet, updatedAtMs, now, cwd),
     planProgress: normalizePlanProgress(raw.planProgress),
     tokenUsage: normalizeTokenUsage(raw.tokenUsage),
     startedAtMs,
@@ -1007,10 +1068,12 @@ class HobotnicaPushStore {
             // push overlay and fall back to their disk state.
             if (stale) continue;
 
+            const resolvedProject = disk.project || entry.cwd || null;
             const overlaid = {
               ...disk,
               // Preserve disk gitEvents, dialogue, lastResults, todos, compactions,
               // repoRoot, worktree, sendMessages, permissionMode, script, openQuestion.
+              project: resolvedProject,
               turnState: entry.turnState !== 'unknown' ? entry.turnState : disk.turnState,
               pendingTool: entry.pendingTool ?? (entry.turnState === 'tool_pending' ? disk.pendingTool : null),
               pendingSince: entry.pendingSince ?? (entry.turnState === 'tool_pending' ? disk.pendingSince : null),
@@ -1021,7 +1084,7 @@ class HobotnicaPushStore {
               apiError: entry.apiError || disk.apiError || null,
               sessionEndedAt: entry.sessionEndedAt || disk.sessionEndedAt || null,
               workingSet: entry.workingSet.length > 0
-                ? mergeWorkingSets(disk.workingSet, entry.workingSet)
+                ? mergeWorkingSets(disk.workingSet, entry.workingSet, resolvedProject)
                 : (Array.isArray(disk.workingSet) ? disk.workingSet : []),
               tokenUsage: hasObservedTokens(disk.tokenUsage)
                 ? disk.tokenUsage
@@ -1071,8 +1134,10 @@ class HobotnicaPushStore {
           registerLookup(instanceId, entry, canonicalId);
           if (stale) continue;
 
+          const resolvedProject = disk.project || entry.cwd || null;
           const overlaid = {
             ...disk,
+            project: resolvedProject,
             turnState: entry.turnState !== 'unknown' ? entry.turnState : disk.turnState,
             pendingTool: entry.pendingTool ?? (entry.turnState === 'tool_pending' ? disk.pendingTool : null),
             pendingSince: entry.pendingSince ?? (entry.turnState === 'tool_pending' ? disk.pendingSince : null),
@@ -1083,7 +1148,7 @@ class HobotnicaPushStore {
             apiError: entry.apiError || disk.apiError || null,
             sessionEndedAt: entry.sessionEndedAt || disk.sessionEndedAt || null,
             workingSet: entry.workingSet.length > 0
-              ? mergeWorkingSets(disk.workingSet, entry.workingSet)
+              ? mergeWorkingSets(disk.workingSet, entry.workingSet, resolvedProject)
               : (Array.isArray(disk.workingSet) ? disk.workingSet : []),
             tokenUsage: hasObservedTokens(disk.tokenUsage)
               ? disk.tokenUsage

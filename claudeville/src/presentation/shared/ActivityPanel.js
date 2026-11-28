@@ -1425,7 +1425,9 @@ export class ActivityPanel {
     }
 
     _ensureOpenExternalAction() {
-        if (this._openHobotnicaBtn || !this.closeBtn?.parentNode) return;
+        if (this._openHobotnicaBtn) return;
+        const header = this.panelEl?.querySelector('.activity-panel__header');
+        if (!header) return;
         const button = el('button', {
             className: 'activity-panel__external-btn',
             text: 'Open in Hobotnica ↗',
@@ -1434,8 +1436,7 @@ export class ActivityPanel {
             style: { display: 'none' },
         });
         button.type = 'button';
-        const anchor = this._pinToggleBtn || this.closeBtn;
-        anchor.parentNode.insertBefore(button, anchor);
+        header.appendChild(button);
         this._openHobotnicaBtn = button;
     }
 

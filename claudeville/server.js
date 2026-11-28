@@ -638,12 +638,24 @@ function readBridgeTokenFile() {
     const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
     fd = fs.openSync(filePath, flags);
     const opened = fs.fstatSync(fd);
-    if (!opened.isFile()) return null;
-    if (process.platform !== 'win32') {
-      if ((opened.mode & 0o077) !== 0) return null;
-      if (currentUid !== null && opened.uid !== currentUid) return null;
+    if (!opened.isFile()) {
+      _bridgeTokenCache = { key: null, token: null };
+      return null;
     }
-    if (opened.size <= 0 || opened.size > BRIDGE_TOKEN_MAX_BYTES) return null;
+    if (process.platform !== 'win32') {
+      if ((opened.mode & 0o077) !== 0) {
+        _bridgeTokenCache = { key: null, token: null };
+        return null;
+      }
+      if (currentUid !== null && opened.uid !== currentUid) {
+        _bridgeTokenCache = { key: null, token: null };
+        return null;
+      }
+    }
+    if (opened.size <= 0 || opened.size > BRIDGE_TOKEN_MAX_BYTES) {
+      _bridgeTokenCache = { key: null, token: null };
+      return null;
+    }
     const buffer = Buffer.allocUnsafe(opened.size);
     const bytesRead = fs.readSync(fd, buffer, 0, opened.size, 0);
     const token = buffer.toString('utf8', 0, bytesRead).trim();

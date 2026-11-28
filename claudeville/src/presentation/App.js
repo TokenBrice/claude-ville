@@ -2734,7 +2734,13 @@ export class App {
             this._focusAgentById(sessionId);
         }));
         this._eventUnsubscribers.push(eventBus.on('ws:message', (data) => {
-            if (data?.type === 'focus-external-result' && data.ok === false) {
+            if (data?.type !== 'focus-external-result' || data.ok !== false) return;
+            if (data.reason === 'busy' || data.reason === 'rate_limited') return;
+            if (data.reason === 'unconfigured') {
+                this.toast?.show('Hobotnica bridge is not configured', 'warning');
+            } else if (data.reason === 'unreachable' || data.reason === 'timeout') {
+                this.toast?.show('Could not reach Hobotnica', 'warning');
+            } else {
                 this.toast?.show('Hobotnica cockpit is not open', 'warning');
             }
         }));

@@ -1176,3 +1176,74 @@ test('Fable M1 & Minors: ReDoS payload stays < 200ms, hostile toString object is
   assert.doesNotMatch(detail.messages[0].content, /hunter2/);
   assert.ok(detail.messages[0].ts <= maxAllowedTs);
 });
+
+test('workingSet excludes exec shell commands, canonicalizes in-project absolute paths, deduplicates with disk, and backfills missing project', () => {
+  const now = 1_750_000_000_000;
+  const store = new HobotnicaPushStore({ now: () => now });
+  const { detectCollisions } = require('../../claudeville/services/workingSet.js');
+
+  const diskAgy = normalizeSession({
+    sessionId: 'antigravity-ws-1',
+    provider: 'antigravity',
+    project: null,
+    model: 'gemini-4-neon',
+    lastActivity: now - 2000,
+    turnState: 'working',
+    workingSet: [
+      { path: 'src/bridge.js', op: 'read', at: now - 2000, source: 'transcript' },
+    ],
+  });
+
+  store.ingest(makeSnapshot([
+    makeAgent({
+      key: 'k-agy-ws',
+      owningThreadId: 'th-agy-ws',
+      providerDriver: 'antigravity',
+      nativeSessionId: 'ws-1',
+      cwd: '/work/repo',
+      workingSet: [
+        { path: 'echo "password=supersecret" && ls -la', op: 'exec', at: now - 100 },
+        { path: '/work/repo/src/bridge.js', op: 'read', at: now - 500 },
+        { path: '/work/repo/src/overlap.js', op: 'read', at: now - 300 },
+      ],
+      updatedAtMs: now,
+    }),
+    makeAgent({
+      key: 'k-glm-ws',
+      subagentId: 'sub-glm-ws',
+      owningThreadId: 'th-agy-ws',
+      parentThreadId: 'th-agy-ws',
+      childThreadId: 'th-glm-ws',
+      origin: 'app_owned',
+      providerDriver: 'acp-registry',
+      model: 'glm-5.4',
+      cwd: '/work/repo',
+      workingSet: [
+        { path: 'curl -H "Authorization: Bearer secret" http://localhost', op: 'exec', at: now - 100 },
+        { path: '/work/repo/src/overlap.js', op: 'edit', at: now - 200 },
+      ],
+      updatedAtMs: now,
+    }),
+  ], { serverTimeMs: now }), now);
+
+  const folded = store.fold([diskAgy], now, { normalizeSession });
+  const agy = folded.find(s => s.sessionId === 'antigravity-ws-1');
+  const glm = folded.find(s => s.sessionId === 'zai-hbt-th-glm-ws');
+
+  assert.equal(agy.project, '/work/repo', 'missing disk project backfilled from push cwd');
+  assert.deepEqual(
+    agy.workingSet.map(item => [item.path, item.op]),
+    [['src/overlap.js', 'read'], ['src/bridge.js', 'read']],
+    'exec command dropped and absolute path deduplicated against repo-relative disk path',
+  );
+  assert.deepEqual(
+    glm.workingSet.map(item => [item.path, item.op]),
+    [['src/overlap.js', 'write']],
+    'GLM push workingSet drops exec command and relativizes file path',
+  );
+
+  const collisions = detectCollisions(folded, now);
+  assert.equal(collisions.length, 1, 'canonicalized push paths detect cross-agent file overlap');
+  assert.equal(collisions[0].path, 'src/overlap.js');
+  assert.equal(collisions[0].kind, 'read-write');
+});
