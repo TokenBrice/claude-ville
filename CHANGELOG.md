@@ -2,6 +2,13 @@
 
 ---
 
+## v0.69.4 — *The Limner's Brazier* · Nov 28, 2026
+
+- **Zero-dependency server-side villager portrait renderer and loopback API.** Adds `portraitRenderer.js` — a pure-Node PNG decoder/encoder (with CRC32 chunk verification and bounded dimensions), YAML manifest reader, and sprite portrait renderer matching `ModelVisualIdentity` / `Compositor` / `AgentLayerRecords` / `AvatarCanvas` pixel-for-pixel across all 40 characters (including robe variants and team/agent trim accents) with bounded LRU caches. Exposes loopback `GET`/`HEAD` `/api/portrait/status` and `/api/portrait` with live session resolution, `X-ClaudeVille-Identity` (`matched`/`fallback`), strong `ETag` / `304` revalidation, `nosniff`, path-traversal guards, and `portraitApi` / `assetVersion` metadata on Hobotnica ingest acknowledgements.
+- **Steady firelight on Command Hall and palette-ramp facades.** Eliminates rapid 140 ms facade strobing on Command Hall (and other firelit `paletteRamp` landmarks) when `fireBreath` stepped `rampShare` across the discrete `0.14` / `0.45` course thresholds. Propagates `fireBreath` through `PostFxFeed`, packs a 12-bit breath factor into unused `u_lightData` row-3 flag bits `8..19` in `GpuFrameState`, evaluates discrete ramp courses on steady intensity while modulating lit ramp colours smoothly (`mix(color, rampLit, rampBreath)`) identically in WebGL2 GLSL and WebGPU WGSL, and keeps `GroundRadiance` breath unscaling aligned after `reach` radius scaling.
+
+---
+
 ## v0.69.3 — *The Tollbridge Charter* · Nov 28, 2026
 
 - **Hybrid bridge circulation and deadlock-free crossings.** Adds an allocation-free `BridgeTrafficController` with dedicated two-way lanes on the central river bridge, alternating platoon locks on narrow spans (`west-river-plank`, `command-pond-plank`, `north-farm-bridge`), anti-starvation wave/time draining, stall hold-release escape, and T-junction courtesy/drain at `(18, 22)`. Pairs with continuous non-dock `±0.35`-tile `WalkClearance` bridge ramp boxes, corridor-aware `ORCA_BRIDGE_PASS_RADIUS` in `CrowdOrca`, real terrain `supportHeight` elevation planes, strict total-order bridge zipper ranking, lateral-peel-preserving right-of-way, and capacity-aware span congestion spillover in `VisitTileAllocator` and `Pathfinder`.
