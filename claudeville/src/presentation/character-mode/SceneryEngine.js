@@ -795,6 +795,8 @@ export class SceneryEngine {
             deckProfile: meta.deckProfile || null,
             nearRail: meta.nearRail || null,
             laneOffsetPx: Number.isFinite(meta.laneOffsetPx) ? meta.laneOffsetPx : null,
+            landingLaneOffsetPx: Number.isFinite(meta.landingLaneOffsetPx) ? meta.landingLaneOffsetPx : null,
+            circulationMode: meta.circulationMode || (meta.kind === 'plank' ? 'platoon' : 'two-way'),
             treeExclusion: meta.treeExclusion !== false,
             underDeckShadow: meta.underDeckShadow !== false,
             walkable: meta.walkable !== false,

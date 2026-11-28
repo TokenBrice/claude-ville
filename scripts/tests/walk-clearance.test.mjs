@@ -11,8 +11,9 @@ import { AgentSprite } from '../../claudeville/src/presentation/character-mode/A
 import { getCoastField } from '../../claudeville/src/presentation/character-mode/CoastBake.js';
 import { GATE_ENTRY_LANES, IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { LandmarkActivity } from '../../claudeville/src/presentation/character-mode/LandmarkActivity.js';
+import { bridgeLaneOffsetFor, bridgeLaneShift } from '../../claudeville/src/presentation/character-mode/MovementSteering.js';
 import { Pathfinder } from '../../claudeville/src/presentation/character-mode/Pathfinder.js';
-import { tileToWorld } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { tileToWorld, worldToTile } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 import { standsOnFixture } from '../../claudeville/src/presentation/character-mode/VisitTileAllocator.js';
 import {
@@ -330,4 +331,100 @@ test('Watchtower entrance grounds on its visible tile and frontage skips water c
     assert.equal(keys.includes('26,8'), false, 'water tile (26,8) excluded from Watchtower frontage');
     assert.equal(keys.includes('26,9'), false, 'water tile (26,9) excluded from Watchtower frontage');
     assert.equal(keys.includes('26,13'), true, 'dry entrance corner (26,13) stays in Watchtower frontage');
+});
+
+test('bridge ramp corridors stay continuously clear across stair seams and lane offsets while preserving shore and side-span rejections', () => {
+    const { bridgeTiles, coastField, clearance } = buildWorldFixture();
+
+    assert.ok(clearance.bridgeRampBoxes instanceof Float32Array, 'bridgeRampBoxes is exposed as a Float32Array');
+    assert.ok(clearance.bridgeRampBoxes.length >= 16 && clearance.bridgeRampBoxes.length % 4 === 0);
+
+    // Bridge tile metadata propagates landingLaneOffsetPx and circulationMode.
+    const central = bridgeTiles.get('18,24');
+    const trestle = bridgeTiles.get('7,25');
+    const pondPlank = bridgeTiles.get('17,22');
+    assert.equal(central?.laneOffsetPx, 8);
+    assert.equal(central?.landingLaneOffsetPx, 4);
+    assert.equal(central?.circulationMode, 'two-way');
+    assert.equal(trestle?.laneOffsetPx, 6);
+    assert.equal(trestle?.landingLaneOffsetPx, 0);
+    assert.equal(trestle?.circulationMode, 'platoon');
+    assert.equal(pondPlank?.landingLaneOffsetPx, null);
+    assert.equal(pondPlank?.circulationMode, 'platoon');
+
+    // MovementSteering landing lane offset helper & bridgeLaneShift landing option.
+    assert.equal(bridgeLaneOffsetFor(central, false), 8);
+    assert.equal(bridgeLaneOffsetFor(central, true), 4);
+    assert.equal(bridgeLaneOffsetFor(trestle, true), 0);
+    assert.equal(bridgeLaneOffsetFor(pondPlank, true), 0);
+    const along = tileToWorld(0, 1);
+    const centralLandingShift = bridgeLaneShift(central, along.x, along.y, { landing: true });
+    assert.ok(centralLandingShift && Math.abs(Math.hypot(centralLandingShift.x, centralLandingShift.y) - 4) < 1e-9);
+    assert.equal(bridgeLaneShift(trestle, along.x, along.y, { landing: true }), null);
+    assert.equal(bridgeLaneShift(pondPlank, along.x, along.y, { landing: true }), null);
+
+    // Central bridge (x = 18): continuous clearance at every 0.05-tile step from 21.5 to 26.8,
+    // including stair seams y in [22.35, 22.49] and [25.51, 25.59] where coastSD > -0.15.
+    for (let step = 0; step <= 106; step++) {
+        const y = Number((21.5 + step * 0.05).toFixed(2));
+        assert.equal(
+            clearance.isTileClear(18, y),
+            true,
+            `central bridge sample (18, ${y.toFixed(2)}) must stay clear (coastSD=${coastField.signedDistance(18, y).toFixed(3)})`,
+        );
+    }
+    for (const seamY of [22.35, 22.40, 22.45, 22.49, 25.51, 25.55, 25.59]) {
+        assert.equal(clearance.isTileClear(18, seamY), true, `central bridge seam (18, ${seamY}) must stay clear`);
+        const w = tileToWorld(18, seamY);
+        assert.equal(clearance.isWorldClear(w.x, w.y), true, `central bridge seam world point (18, ${seamY}) must stay clear`);
+    }
+
+    // West river plank / trestle (x = 7): continuous clearance at every 0.05-tile step from 22.0 to 27.0,
+    // including seams around y = 22.45 and y in [26.51, 26.65].
+    for (let step = 0; step <= 100; step++) {
+        const y = Number((22.0 + step * 0.05).toFixed(2));
+        assert.equal(
+            clearance.isTileClear(7, y),
+            true,
+            `west-river-plank sample (7, ${y.toFixed(2)}) must stay clear (coastSD=${coastField.signedDistance(7, y).toFixed(3)})`,
+        );
+    }
+    for (const seamY of [22.45, 26.51, 26.55, 26.60, 26.65]) {
+        assert.equal(clearance.isTileClear(7, seamY), true, `west-river-plank seam (7, ${seamY}) must stay clear`);
+    }
+
+    // Opposing lane files on central bridge: ±8 px on deck y = 23..25 and ±4 px on landings y = 22, 26.
+    for (const [y, landing] of [[22, true], [23, false], [24, false], [25, false], [26, true]]) {
+        const base = tileToWorld(18, y);
+        for (const sign of [-1, 1]) {
+            const shift = bridgeLaneShift(central, sign * along.x, sign * along.y, landing ? { landing: true } : null);
+            assert.ok(shift, `expected non-null shift for central bridge y=${y} sign=${sign}`);
+            const wx = base.x + shift.x;
+            const wy = base.y + shift.y;
+            const tile = worldToTile(wx, wy);
+            assert.equal(
+                clearance.isWorldClear(wx, wy),
+                true,
+                `central bridge lane world point y=${y} sign=${sign} (${tile.tileX.toFixed(3)}, ${tile.tileY.toFixed(3)}) must stay clear`,
+            );
+            assert.equal(
+                clearance.isTileClear(tile.tileX, tile.tileY),
+                true,
+                `central bridge lane tile (${tile.tileX.toFixed(3)}, ${tile.tileY.toFixed(3)}) must stay clear`,
+            );
+        }
+    }
+
+    // Non-bridge shoreline edges, non-walkable bridge side spans, dock water
+    // edges, and bridge corner water past ±0.35 tile remain rejected.
+    assert.ok(coastField.signedDistance(30.25, 29.75) > COAST_CLEARANCE_SD);
+    assert.equal(clearance.isTileClear(30.25, 29.75), false, 'non-bridge shore edge (30.25, 29.75) remains rejected');
+    assert.equal(clearance.isTileClear(17, 24), false, 'west bridge side span (17, 24) remains rejected');
+    assert.equal(clearance.isTileClear(19, 24), false, 'east bridge side span (19, 24) remains rejected');
+    assert.equal(clearance.isTileClear(28.48, 20.48), false, 'dock base open water (28.48, 20.48) must stay rejected');
+    assert.equal(clearance.isTileClear(28.45, 20.45), false, 'dock base water edge (28.45, 20.45) must stay rejected');
+    assert.equal(clearance.isTileClear(17.5, 22.45), false, 'central bridge NW corner water (17.5, 22.45) must stay rejected');
+    assert.equal(clearance.isTileClear(18.5, 22.45), false, 'central bridge NE adjacent-tile edge (18.5, 22.45) must stay rejected');
+    assert.equal(clearance.isTileClear(15.45, 22.45), false, 'pond plank SW corner water (15.45, 22.45) must stay rejected');
+    assert.equal(clearance.isTileClear(6.55, 26.55), false, 'west-river-plank SW corner shore (6.55, 26.55) must stay rejected');
 });

@@ -8,6 +8,7 @@ import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { projectKeyFor, updateHomeDistrictContext } from './HomeDistrict.js';
 import { errandCap, ROUTINE_ROLES, STROLL_CAP } from './CrowdRoutine.js';
 import { restSeatStepBias } from './DayRoutine.js';
+import { bridgeCrossingTiles } from './MovementSteering.js';
 import { BUILDING_SINK_TYPES, buildingSinkTiles, fnv1a32, fnv1aString, SINK_IDS, tileKeyIndex } from './Pathfinder.js';
 import {
     SLOT_FLOW_WEIGHT,
@@ -150,6 +151,7 @@ export class VisitTileAllocator {
         this.buildings = new Map();
         this.agentSprites = [];
         this.pathfinder = null;
+        this.bridgeTiles = null;
         this.reservations = new Map();
         this.agentReservationIds = new Map();
         this.agentMeta = new Map();
@@ -194,11 +196,13 @@ export class VisitTileAllocator {
         buildings = this.buildings,
         agentSprites = this.agentSprites,
         pathfinder = this.pathfinder,
+        bridgeTiles = this.bridgeTiles,
     } = {}) {
         if (this._disposed) return this;
         this.buildings = this._normalizeBuildings(buildings);
         this.agentSprites = this._normalizeAgentSprites(agentSprites);
         this.pathfinder = pathfinder || null;
+        this.bridgeTiles = bridgeTiles || null;
         this._rebuildAgentMeta();
         this._rebuildOccupancyIndex();
         this._syncPathfinderSinks();
@@ -1608,6 +1612,59 @@ export class VisitTileAllocator {
                 if (standing) (offMapStanding ||= []).push(key);
             }
         }
+        if (this.bridgeTiles?.size > 0) {
+            const crossings = bridgeCrossingTiles(this.bridgeTiles);
+            if (crossings.size > 0) {
+                const spanTiles = new Map();
+                const spanTotals = new Map();
+                const spanTwoWay = new Map();
+                for (const [key, entry] of crossings) {
+                    const bridgeId = entry?.info?.bridgeId;
+                    if (!bridgeId) continue;
+                    let list = spanTiles.get(bridgeId);
+                    if (!list) {
+                        list = [];
+                        spanTiles.set(bridgeId, list);
+                        const info = entry.info;
+                        const isTwoWay = info.circulationMode === 'two-way'
+                            || (!info.circulationMode && info.kind === 'landmark' && bridgeId !== 'west-river-plank');
+                        spanTwoWay.set(bridgeId, isTwoWay);
+                    }
+                    list.push(key);
+                    const bucketEntries = this._occupancyBuckets.get(key);
+                    if (bucketEntries?.length) {
+                        let active = 0;
+                        for (let i = 0; i < bucketEntries.length; i++) {
+                            if (!bucketEntries[i]?.pending) active++;
+                        }
+                        if (active > 0) {
+                            spanTotals.set(bridgeId, (spanTotals.get(bridgeId) || 0) + active);
+                        }
+                    }
+                }
+                for (const [bridgeId, spanTotal] of spanTotals) {
+                    // Subtract comfortable span capacity (2 on two-way spans,
+                    // 1 on single-file platoon spans) and quantize to even
+                    // buckets matching non-bridge tiles so a lone pedestrian
+                    // never triggers premature Gaussian-blur diversion or ±1
+                    // congestion fingerprint churn.
+                    const freeCapacity = spanTwoWay.get(bridgeId) ? 2 : 1;
+                    const excess = spanTotal - freeCapacity;
+                    if (excess <= 0) continue;
+                    const capped = Math.min(8, Math.round(excess / 2) * 2);
+                    if (capped <= 0) continue;
+                    for (const key of spanTiles.get(bridgeId)) {
+                        const existing = congestionTiles.get(key) || 0;
+                        const raised = Math.max(existing, capped);
+                        if (raised > existing) {
+                            congestionTiles.set(key, raised);
+                            const index = tileKeyIndex(key);
+                            if (index >= 0) congestionGrid[index] = raised;
+                        }
+                    }
+                }
+            }
+        }
         const congestionFingerprint = (fnv1a32(congestionGrid) ^ offMapSum) >>> 0;
         const occupancyFingerprint = (fnv1a32(standingGrid, congestionGrid) ^ offMapSum ^ offMapXor) >>> 0;
         if (previous && previous.occupancyFingerprint === occupancyFingerprint) {
@@ -1683,6 +1740,7 @@ export class VisitTileAllocator {
         this.buildings.clear();
         this.agentSprites = [];
         this.pathfinder = null;
+        this.bridgeTiles = null;
         this.reservations.clear();
         this.agentReservationIds.clear();
         this.agentMeta.clear();

@@ -3171,11 +3171,13 @@ export class AgentSprite {
         this.targetY = head.y;
     }
 
-    // BR-3 — a route's waypoints on a landmark deck move onto the walker's lane
-    // (the side IsometricRenderer._laneSideForSprite steers it to), while
-    // landing tiles taper back to 0 so bodies pass centred between the narrow
-    // stone lantern pillars. The route's end never moves, nor does a waypoint
-    // whose lane point or adjacent segment would cross unwalkable tiles.
+    // BR-3 — a route's waypoints on a landmark deck or landing move onto the
+    // walker's lane (the side IsometricRenderer._laneSideForSprite steers it
+    // to). Deck tiles use `laneOffsetPx`; landing tiles use
+    // `landingLaneOffsetPx` (e.g. ±4 px on the central bridge to keep opposing
+    // streams split at the stairs, tapering to 0 on bridges without one). The
+    // route's end never moves, nor does a waypoint whose lane point or adjacent
+    // segment would cross unwalkable tiles.
     _keepBridgeLanes(tilePath, fromTile) {
         const crossings = this._crossingTiles();
         if (!crossings.size) return;
@@ -3187,12 +3189,11 @@ export class AgentSprite {
         for (let index = 0; index < points.length - 1; index++) {
             const crossing = crossingAt(index);
             if (crossing?.info.kind !== 'landmark') continue;
-            // Taper landing-tile lane offset to 0 so walkers enter and leave
-            // bridge stairs centred inside the parapet and pillars.
-            if (crossing.landing) continue;
             const prev = index > 0 ? tileToWorld(tilePath[index - 1]) : { x: this.x, y: this.y };
             const next = tileToWorld(tilePath[index + 1]);
-            const shift = bridgeLaneShift(crossing.info, next.x - prev.x, next.y - prev.y);
+            const shift = bridgeLaneShift(crossing.info, next.x - prev.x, next.y - prev.y, {
+                landing: Boolean(crossing.landing),
+            });
             if (!shift) continue;
             const x = points[index].x + shift.x;
             const y = points[index].y + shift.y;
@@ -3511,6 +3512,11 @@ export class AgentSprite {
     // so no knot can lock. Under reduced motion the body just stands on its
     // static frame for the wait.
     _yieldToLeader(dt) {
+        // A bridge traffic lock hold always overrides any post-knot walk-out
+        // window so the walker plants cleanly instead of moonwalking in place.
+        if (this._followYield === 'bridge' && (this._followYieldMs || 0) < 0) {
+            this._followYieldMs = 0;
+        }
         const waited = this._followYieldMs || 0;
         if (waited < 0) {
             this._followYieldMs = Math.min(0, waited + dt);
@@ -3522,7 +3528,14 @@ export class AgentSprite {
             this._followKnotMs = 0;
             return false;
         }
-        this._followKnotMs = this._followYield === 'knot' ? (this._followKnotMs || 0) + dt : 0;
+        if (this._followYield === 'knot') {
+            this._followKnotMs = (this._followKnotMs || 0) + dt;
+        } else if (this._followYield) {
+            // Active non-knot wait ('bridge' or moving file) resets knot timer;
+            // a falsy `_followYield` during the 120 ms `beat` preserves
+            // `_followKnotMs` so oscillating yields can never livelock at 0 ms.
+            this._followKnotMs = 0;
+        }
         if (this._followKnotMs >= FOLLOW_YIELD_MAX_MS) {
             this._followYieldMs = -FOLLOW_YIELD_WALK_OUT_MS;
             this._followKnotMs = 0;

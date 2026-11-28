@@ -60,7 +60,8 @@ import { BehaviorTelemetry } from './BehaviorTelemetry.js';
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
 import { createWalkClearance } from './WalkClearance.js';
-import { bridgeCrossingTiles, constrainSteeringInto, constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
+import { bridgeCrossingTiles, bridgeLaneOffsetFor, constrainSteeringInto, constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
+import { BridgeTrafficController } from './BridgeTrafficController.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { DIRECTIONS, dirFromVelocity } from './SpriteSheet.js';
 import { SkyRenderer } from './SkyRenderer.js';
@@ -99,12 +100,14 @@ import { VisitIntentManager } from './VisitIntentManager.js';
 import VisitTileAllocator, { FIXTURE_FEET, standsOnFixture } from './VisitTileAllocator.js';
 import {
     ORCA_AGENT_RADIUS,
+    ORCA_BRIDGE_PASS_RADIUS,
     ORCA_SWING_RADIUS,
     ORCA_TAU,
     ORCA_TAU_OBST,
     ORCA_Y_SCALE,
     computePreferredVelocity,
     isAgentPlanted,
+    isOpposingTwoWayBridgePair,
     solveOrcaVelocity,
     stepCrowdOrca, sharesAvoidancePlane,
 } from './CrowdOrca.js';
@@ -485,7 +488,7 @@ const LANE_STEERING = Object.freeze({
     plazaOffsetPx: 2.2,
     // A landmark deck (not planks or docks) is walkable on its centre column
     // only; its hint's `laneOffsetPx` (scenery.js BRIDGE_HINTS) sets the two
-    // files from the measured clear deck (the central bridge: 6 px, both
+    // files from the measured clear deck (the central bridge: 8 px, both
     // files on the planks between the rails). This is the fallback for a
     // hint without one.
     bridgeOffsetPx: 10,
@@ -1353,7 +1356,11 @@ export class IsometricRenderer {
             buildings: this.world?.buildings,
             agentSprites: this.agentSprites,
             pathfinder: this.pathfinder,
+            bridgeTiles: this.bridgeTiles,
         });
+        this._bridgeTraffic = new BridgeTrafficController({ bridgeTiles: this.bridgeTiles });
+        this._bridgeTrafficSource = this.bridgeTiles;
+        this._bridgeTrafficSize = this.bridgeTiles?.size || 0;
 
         this._generateCommandCenterAmbience();
         this._laneTiles = this._buildLaneTileIndex();
@@ -7324,9 +7331,9 @@ export class IsometricRenderer {
                 perpX: -vy / length,
                 perpY: vx / length,
                 laneOffset: bridgeLanding
-                    ? 0
+                    ? bridgeLaneOffsetFor(crossing.info, true)
                     : bridge?.kind === 'landmark'
-                    ? bridge.laneOffsetPx ?? LANE_STEERING.bridgeOffsetPx
+                    ? bridgeLaneOffsetFor(bridge, false)
                     : plazaLike
                     ? LANE_STEERING.plazaOffsetPx
                     : material === 'avenue'
@@ -7506,6 +7513,111 @@ export class IsometricRenderer {
         return (this._stableHash(sprite?.agent?.id || sprite?.id || '') % 2) === 0 ? 1 : -1;
     }
 
+    _ensureBridgeTraffic() {
+        if (!this.bridgeTiles?.size) return null;
+        if (!this._bridgeTraffic) {
+            this._bridgeTraffic = new BridgeTrafficController({ bridgeTiles: this.bridgeTiles });
+            this._bridgeTrafficSource = this.bridgeTiles;
+            this._bridgeTrafficSize = this.bridgeTiles.size;
+        } else if (
+            this._bridgeTrafficSource !== this.bridgeTiles
+            || this._bridgeTrafficSize !== this.bridgeTiles.size
+        ) {
+            this._bridgeTraffic.setBridgeTiles(this.bridgeTiles);
+            this._bridgeTrafficSource = this.bridgeTiles;
+            this._bridgeTrafficSize = this.bridgeTiles.size;
+        }
+        return this._bridgeTraffic;
+    }
+
+    // Strict total order for same-direction walkers sharing a bridge span
+    // (deck, landing, or approach). Returns true iff `other` strictly precedes
+    // `desc` in the bridge zipper order using pure per-agent keys with no
+    // pairwise epsilons or zone-dependent offsets:
+    //   1. Unheld walkers strictly precede `bridgeHold` walkers.
+    //   2. Higher quantized along-span tile progress (`Math.floor(along * 16)`).
+    //   3. Closer to the span's canonical directional lane (`bridgeSpanLaneOffset`).
+    //   4. Deterministic stable ID tie-break.
+    // Because every tuple key depends solely on one walker, the order is
+    // irreflexive, antisymmetric, and strictly transitive (a true DAG).
+    _isSameDirBridgeLeader(desc, other) {
+        if (!desc || !other || !desc.bridgeSpanId || desc.bridgeSpanId !== other.bridgeSpanId) return false;
+        if (desc.bridgeDir === 0 || other.bridgeDir !== desc.bridgeDir) return false;
+        const aHeld = desc.bridgeHold === true;
+        const bHeld = other.bridgeHold === true;
+        if (aHeld !== bHeld) return !bHeld;
+        const aBucket = Math.floor((desc.bridgeAlongCoord || 0) * 16);
+        const bBucket = Math.floor((other.bridgeAlongCoord || 0) * 16);
+        if (aBucket !== bBucket) return bBucket > aBucket;
+        const desiredCross = desc.bridgeDir * (desc.bridgeSpanLaneOffset || 0);
+        const distA = Math.abs((desc.bridgeCrossOffset || 0) - desiredCross);
+        const distB = Math.abs((other.bridgeCrossOffset || 0) - desiredCross);
+        if (distA !== distB) return distB < distA;
+        return String(other.id || '') < String(desc.id || '');
+    }
+
+    // Zero-allocation check that a walker's final stop (within the 10 px fan
+    // approach band) AND its proposed stride step clear every same-plane truly
+    // stationary (`planted && !moving`) body box, so `_fanArrivals` spots never
+    // orbit outside ORCA's 23 px disc while never stepping into any body box.
+    _isFinalStopClearOfStationary(desc, blocker, agents, activeCount) {
+        const sprite = desc?.sprite;
+        if (!sprite || (sprite.waypoints?.length > 1)) return false;
+        if (!blocker?.other?.planted || blocker.other.sprite?.moving === true) return false;
+        if (!Number.isFinite(desc.targetX) || !Number.isFinite(desc.targetY)) return false;
+        if (Math.hypot(desc.targetX - desc.x, desc.targetY - desc.y) > PERFORMING_FAN.approachPx) return false;
+        const chatPartner = sprite.chatPartner || null;
+        const ox = desc.hasStep ? desc.origX : desc.x;
+        const oy = desc.hasStep ? desc.origY : desc.y;
+        for (let j = 0; j < activeCount; j++) {
+            const cand = agents[j];
+            if (!cand || cand === desc || !sharesAvoidancePlane(desc, cand)) continue;
+            if (cand.sprite === sprite || cand.sprite === chatPartner) continue;
+            if (!cand.planted || cand.sprite?.moving === true) continue;
+            if (
+                Math.abs(desc.targetX - cand.x) < PERFORMING_FAN.overlapXPx
+                && Math.abs(desc.targetY - cand.y) < PERFORMING_FAN.overlapYPx
+            ) {
+                return false;
+            }
+            if (
+                desc.hasStep
+                && Math.abs(ox - cand.x) < PERFORMING_FAN.overlapXPx
+                && Math.abs(oy - cand.y) < PERFORMING_FAN.overlapYPx
+            ) {
+                const curBox = Math.max(
+                    Math.abs(desc.x - cand.x) / PERFORMING_FAN.overlapXPx,
+                    Math.abs(desc.y - cand.y) / PERFORMING_FAN.overlapYPx,
+                );
+                const nextBox = Math.max(
+                    Math.abs(ox - cand.x) / PERFORMING_FAN.overlapXPx,
+                    Math.abs(oy - cand.y) / PERFORMING_FAN.overlapYPx,
+                );
+                if (nextBox <= curBox) {
+                    return false;
+                }
+            }
+        }
+        return !desc.hasStep || this._isSpritePositionWalkable(sprite, ox, oy);
+    }
+
+    // Asymmetric right-of-way for opposing walkers on a bridge span:
+    // the walker already deeper on the deck (higher progress toward its exit)
+    // keeps advancing so opposing traffic never freezes symmetrically.
+    _hasBridgeRightOfWay(desc, other) {
+        if (!desc || !other) return false;
+        if (other.planted && other.sprite?.moving !== true) return false;
+        const aOnDeck = desc.bridgeZone === 'deck';
+        const bOnDeck = other.bridgeZone === 'deck';
+        if (aOnDeck && !bOnDeck) return true;
+        if (!aOnDeck && bOnDeck) return false;
+        if (desc.bridgeSpanId && desc.bridgeSpanId === other.bridgeSpanId) {
+            const diff = (desc.bridgeProgress || 0) - (other.bridgeProgress || 0);
+            if (Math.abs(diff) > 0.03) return diff > 0;
+        }
+        return String(desc.id || '') < String(other.id || '');
+    }
+
     // Zero-allocation check for a same-tier ORCA neighbor lying ahead of `desc`
     // within combined body radius (used to hold cleanly in narrow corridors /
     // bridge landings instead of passing through).
@@ -7539,6 +7651,39 @@ export class IsometricRenderer {
             const other = agents[j];
             if (!other || other === desc || !sharesAvoidancePlane(desc, other)) continue;
             if (aSprite && (other.sprite === aSprite || other.sprite === chatPartner)) continue;
+            const opposingTwoWay = isOpposingTwoWayBridgePair(desc, other);
+            const minOpposingCross = (desc.bridgeZone === 'landing' || other.bridgeZone === 'landing') ? 7.5 : 9.0;
+            if (
+                opposingTwoWay
+                && (desc.bridgeCrossOffset * other.bridgeCrossOffset) <= 0
+                && Math.abs(desc.bridgeCrossOffset - other.bridgeCrossOffset) >= minOpposingCross
+            ) {
+                // Dedicated two-way bridge lanes: opposing walkers cleanly on
+                // opposite sides of the centerline glide past without blocking.
+                continue;
+            }
+            // Acyclic zipper order for same-direction walkers on a bridge span:
+            // never let a front-most walker yield to a same-direction peer
+            // behind or beside it in the landing funnel.
+            const sameBridgeDir = Boolean(
+                desc.bridgeSpanId
+                && other.bridgeSpanId === desc.bridgeSpanId
+                && desc.bridgeDir !== 0
+                && other.bridgeDir === desc.bridgeDir
+                && other.sprite?.moving === true,
+            );
+            if (sameBridgeDir && !this._isSameDirBridgeLeader(desc, other)) {
+                continue;
+            }
+            const exitingPastHeld = Boolean(
+                desc.bridgeSpanId
+                && other.bridgeSpanId === desc.bridgeSpanId
+                && !desc.bridgeHold
+                && other.bridgeHold === true
+                && desc.bridgeDir !== 0
+                && other.bridgeDir === -desc.bridgeDir
+                && (desc.bridgeZone === 'deck' || (desc.bridgeZone === 'landing' && (desc.bridgeProgress || 0) >= 0.5)),
+            );
             const rx = other.x - ax;
             const ry = other.y - ay;
             const rawDistSq = rx * rx + ry * ry;
@@ -7546,7 +7691,10 @@ export class IsometricRenderer {
             if (rawDistSq < 36) continue;
             const sy = ry * ORCA_Y_SCALE;
             const distSq = rx * rx + sy * sy;
-            const combR = aRad + other.radius;
+            const baseCombR = aRad + other.radius;
+            const combR = (opposingTwoWay || exitingPastHeld)
+                ? Math.min(baseCombR, ORCA_BRIDGE_PASS_RADIUS * 2)
+                : baseCombR;
             // Sustain yield with a 1-stride release margin while holding in
             // `_yieldToLeader` (`wasYielding`) so `_followKnotMs` never resets
             // on the next frame when `_stepStartX` is NaN.
@@ -7574,6 +7722,20 @@ export class IsometricRenderer {
             if (bSpd > 1e-3 && ((bestOther.vx * fx + bestOther.vy * fy) / bSpd) > 0.35) {
                 sameDirection = true;
             }
+        } else if (
+            desc.bridgeSpanId
+            && bestOther.bridgeSpanId === desc.bridgeSpanId
+            && desc.bridgeDir !== 0
+            && bestOther.bridgeDir === desc.bridgeDir
+            && bestOther.sprite?.moving === true
+            && bestOther.sprite?._followYield !== 'knot'
+            && !(desc.bridgeZone === 'deck' && bestOther.bridgeHold === true)
+            && this._isSameDirBridgeLeader(desc, bestOther)
+        ) {
+            // A same-direction leader strictly ahead in the acyclic bridge order
+            // (and not itself knotted or blocking a deck walker while bridge-held)
+            // is a file blocker.
+            sameDirection = true;
         }
         outBlocker.other = bestOther;
         outBlocker.distSq = bestDistSq;
@@ -7703,6 +7865,21 @@ export class IsometricRenderer {
             if (typeof sprite.steeredPosition === 'function') {
                 const blocker = this._findNarrowCorridorBlocker(desc, pools.agents, pools.activeCount, pools.scratchBlocker);
                 const inWalkOut = (sprite._followYieldMs || 0) < 0;
+                const onBridgeDeck = Boolean(desc.bridgeSpanId)
+                    && desc.bridgeZone === 'deck'
+                    && desc.bridgeDir !== 0;
+                const onBridgeEntryLanding = Boolean(desc.bridgeSpanId)
+                    && desc.bridgeZone === 'landing'
+                    && desc.bridgeDir !== 0
+                    && desc.bridgeProgress < 0.5;
+                const onBridgeExitLanding = Boolean(desc.bridgeSpanId)
+                    && desc.bridgeZone === 'landing'
+                    && desc.bridgeDir !== 0
+                    && desc.bridgeProgress >= 0.5;
+                const onTwoWayDeck = onBridgeDeck && desc.bridgeMode === 'two-way';
+                const onTwoWayEntryLanding = onBridgeEntryLanding && desc.bridgeMode === 'two-way';
+                const onTwoWayBridge = onTwoWayDeck || onTwoWayEntryLanding;
+                const onAnyBridgeCorridor = onBridgeDeck || onBridgeEntryLanding;
                 let targetX = proposedX;
                 let targetY = proposedY;
                 let clampedCloseSide = 0;
@@ -7717,13 +7894,183 @@ export class IsometricRenderer {
                         stepFx = stepDx / stepLen;
                         stepFy = stepDy / stepLen;
                     }
-                    // On the final step into a waypoint (or right after turning
-                    // a waypoint corner inside AgentSprite.update), preserve the
-                    // sprite's clean waypoint landing when no neighbor blocks ahead.
+                    const isFinalLeg = !(sprite.waypoints?.length > 1);
                     const distToWp = Number.isFinite(desc.targetX) && Number.isFinite(desc.targetY)
                         ? Math.hypot(desc.targetX - desc.x, desc.targetY - desc.y)
                         : Infinity;
-                    if (!blocker && distToWp <= Math.max(12, stepLen * 2.5)) {
+                    // On the final step into a final destination (even one on
+                    // a bridge deck), preserve clean arrival before two-way
+                    // deck clamping can overshoot it.
+                    if (isFinalLeg && !blocker && distToWp <= Math.max(12, stepLen * 2.5)) {
+                        pools.scratchSteer.x = desc.origX;
+                        pools.scratchSteer.y = desc.origY;
+                        return pools.scratchSteer;
+                    }
+                    // Design C: on a two-way bridge deck (or entering its stair
+                    // mouth), constrain steps monotonically along the bridge
+                    // travel axis and keep each walker inside its own directional
+                    // lane half so ORCA can never induce a backward 4-frame limit
+                    // cycle or push a walker across the centerline into oncoming
+                    // traffic. Exiting walkers on the wide bank landing are left
+                    // unconstrained so they turn freely onto off-axis bank targets.
+                    if (onTwoWayBridge && stepLen > 1e-6) {
+                        const travelX = desc.bridgeDir * desc.bridgeTangentX;
+                        const travelY = desc.bridgeDir * desc.bridgeTangentY;
+                        const perpX = desc.bridgePerpX;
+                        const perpY = desc.bridgePerpY;
+                        const desiredCross = desc.bridgeDir * desc.bridgeLaneOffset;
+                        const maxCross = 12.5;
+                        const minLaneHalf = onTwoWayDeck ? 0.5 : -2.0;
+
+                        if (blocker && blocker.sameDirection) {
+                            // Same-direction bridge queue: hold cleanly single-file
+                            // without swerving into the opposing lane.
+                            sprite._followGap = blocker.other.sprite?._gaitSpeed || true;
+                            if (!inWalkOut && this._isSpritePositionWalkable(sprite, desc.x, desc.y)) {
+                                desc.yieldHold = true;
+                                desc.yieldKind = true;
+                                pools.frameWalkClamps++;
+                                return null;
+                            }
+                        } else if (blocker && !blocker.sameDirection) {
+                            // Opposing conflict on a two-way bridge (e.g. straddler):
+                            // asymmetric right-of-way prevents mutual freeze while
+                            // preserving ORCA's lateral peel component.
+                            const hasPriority = this._hasBridgeRightOfWay(desc, blocker.other);
+                            if (hasPriority) {
+                                const pCrossStep = (proposedX - desc.x) * perpX + (proposedY - desc.y) * perpY;
+                                const crossErr = desiredCross - desc.bridgeCrossOffset;
+                                const blendedCross = pCrossStep * 0.65 + crossErr * 0.35;
+                                const crossDelta = Math.max(-stepLen * 0.65, Math.min(stepLen * 0.65, blendedCross));
+                                const alongDelta = Math.sqrt(Math.max(0.09, stepLen * stepLen - crossDelta * crossDelta));
+                                const gx = desc.x + travelX * alongDelta + perpX * crossDelta;
+                                const gy = desc.y + travelY * alongDelta + perpY * crossDelta;
+                                const keptGuide = sprite.steeredPosition(gx, gy);
+                                if (keptGuide && this._isSpritePositionWalkable(sprite, keptGuide.x, keptGuide.y)) {
+                                    pools.scratchSteer.x = keptGuide.x;
+                                    pools.scratchSteer.y = keptGuide.y;
+                                    return pools.scratchSteer;
+                                }
+                            } else if (!inWalkOut && this._isSpritePositionWalkable(sprite, desc.x, desc.y)) {
+                                desc.yieldHold = true;
+                                desc.yieldKind = 'knot';
+                                pools.frameWalkClamps++;
+                                return null;
+                            }
+                        } else {
+                            // Clear in own directional lane: enforce monotonic
+                            // travel-axis progress and stay within own lane half.
+                            const pDx = proposedX - desc.x;
+                            const pDy = proposedY - desc.y;
+                            const pAlong = pDx * travelX + pDy * travelY;
+                            const pCrossStep = pDx * perpX + pDy * perpY;
+                            const nextCross = desc.bridgeCrossOffset + pCrossStep;
+                            const signedNextCross = nextCross * desc.bridgeDir;
+                            const alignedApproach = stepFx * travelX + stepFy * travelY > 0.5;
+                            const outsideLaneHalf = onTwoWayDeck
+                                ? (signedNextCross < minLaneHalf || Math.abs(nextCross) > maxCross)
+                                : (signedNextCross < minLaneHalf);
+                            const slowAlong = onTwoWayDeck
+                                ? (pAlong < stepLen * 0.45)
+                                : (alignedApproach && pAlong < stepLen * 0.25);
+                            if (slowAlong || outsideLaneHalf) {
+                                const crossErr = desiredCross - desc.bridgeCrossOffset;
+                                const crossDelta = Math.max(-stepLen * 0.5, Math.min(stepLen * 0.5, crossErr));
+                                const alongDelta = Math.sqrt(Math.max(0.25, stepLen * stepLen - crossDelta * crossDelta));
+                                targetX = desc.x + travelX * alongDelta + perpX * crossDelta;
+                                targetY = desc.y + travelY * alongDelta + perpY * crossDelta;
+                                const keptLane = sprite.steeredPosition(targetX, targetY);
+                                if (keptLane && this._isSpritePositionWalkable(sprite, keptLane.x, keptLane.y)) {
+                                    pools.scratchSteer.x = keptLane.x;
+                                    pools.scratchSteer.y = keptLane.y;
+                                    return pools.scratchSteer;
+                                }
+                            }
+                        }
+                    } else if (onAnyBridgeCorridor && blocker && blocker.sameDirection) {
+                        // Platoon / narrow bridge same-direction following: keep
+                        // single-file spacing without trying lateral bypasses.
+                        sprite._followGap = blocker.other.sprite?._gaitSpeed || true;
+                        if (!inWalkOut && this._isSpritePositionWalkable(sprite, desc.x, desc.y)) {
+                            desc.yieldHold = true;
+                            desc.yieldKind = true;
+                            pools.frameWalkClamps++;
+                            return null;
+                        }
+                    } else if (onAnyBridgeCorridor && blocker && !blocker.sameDirection) {
+                        // Opposing contact on a platoon span (e.g. cold spawn on
+                        // deck or exiting past a held approacher): higher-progress
+                        // walker clears out while preserving ORCA's lateral peel.
+                        if (this._hasBridgeRightOfWay(desc, blocker.other) && stepLen > 1e-6) {
+                            const travelX = desc.bridgeDir * desc.bridgeTangentX;
+                            const travelY = desc.bridgeDir * desc.bridgeTangentY;
+                            const perpX = desc.bridgePerpX;
+                            const perpY = desc.bridgePerpY;
+                            const pCrossStep = (proposedX - desc.x) * perpX + (proposedY - desc.y) * perpY;
+                            const crossDelta = Math.max(-stepLen * 0.65, Math.min(stepLen * 0.65, pCrossStep));
+                            const alongDelta = Math.sqrt(Math.max(0.09, stepLen * stepLen - crossDelta * crossDelta));
+                            const gx = desc.x + travelX * alongDelta + perpX * crossDelta;
+                            const gy = desc.y + travelY * alongDelta + perpY * crossDelta;
+                            const keptOut = sprite.steeredPosition(gx, gy);
+                            if (keptOut && this._isSpritePositionWalkable(sprite, keptOut.x, keptOut.y)) {
+                                pools.scratchSteer.x = keptOut.x;
+                                pools.scratchSteer.y = keptOut.y;
+                                return pools.scratchSteer;
+                            }
+                            const straightOut = sprite.steeredPosition(desc.x + travelX * stepLen, desc.y + travelY * stepLen);
+                            if (straightOut && this._isSpritePositionWalkable(sprite, straightOut.x, straightOut.y)) {
+                                pools.scratchSteer.x = straightOut.x;
+                                pools.scratchSteer.y = straightOut.y;
+                                return pools.scratchSteer;
+                            }
+                        } else if (!inWalkOut && this._isSpritePositionWalkable(sprite, desc.x, desc.y)) {
+                            desc.yieldHold = true;
+                            desc.yieldKind = 'knot';
+                            pools.frameWalkClamps++;
+                            return null;
+                        }
+                    } else if (
+                        onBridgeExitLanding
+                        && blocker
+                        && !blocker.sameDirection
+                        && blocker.other?.bridgeSpanId === desc.bridgeSpanId
+                        && blocker.other?.bridgeHold === true
+                        && stepLen > 1e-6
+                    ) {
+                        // Exiting walker blocked at the landing mouth by a
+                        // bridge-held opposing waiter: peel around into open
+                        // bank space or step smoothly off-span so the deck
+                        // always drains and releases the waiting platoon.
+                        const bypassSide = this._hasLateralBypassRoom(desc, blocker, pools.agents, pools.activeCount);
+                        if (bypassSide !== 0) {
+                            const bx = desc.x + (stepFx * MIN_CLOSE_FORWARD_DOT + (-stepFy * bypassSide) * MAX_CLOSE_LATERAL_SIN) * stepLen;
+                            const by = desc.y + (stepFy * MIN_CLOSE_FORWARD_DOT + (stepFx * bypassSide) * MAX_CLOSE_LATERAL_SIN) * stepLen;
+                            const keptExitPeel = sprite.steeredPosition(bx, by);
+                            if (keptExitPeel && this._isSpritePositionWalkable(sprite, keptExitPeel.x, keptExitPeel.y)) {
+                                pools.scratchSteer.x = keptExitPeel.x;
+                                pools.scratchSteer.y = keptExitPeel.y;
+                                return pools.scratchSteer;
+                            }
+                        }
+                        if (this._isSpritePositionWalkable(sprite, desc.origX, desc.origY)) {
+                            pools.scratchSteer.x = desc.origX;
+                            pools.scratchSteer.y = desc.origY;
+                            return pools.scratchSteer;
+                        }
+                    }
+                    // On the final step into a waypoint (or right after turning
+                    // a waypoint corner inside AgentSprite.update), preserve the
+                    // sprite's clean waypoint landing when no neighbor blocks ahead.
+                    // On the last 10 px into a final stop whose target AND stride
+                    // clear every same-plane truly stationary body box, walk
+                    // straight in instead of orbiting outside ORCA's 23 px disc.
+                    const clearFinalPlantedStop = this._isFinalStopClearOfStationary(
+                        desc,
+                        blocker,
+                        pools.agents,
+                        pools.activeCount,
+                    );
+                    if ((!blocker && distToWp <= Math.max(12, stepLen * 2.5)) || clearFinalPlantedStop) {
                         pools.scratchSteer.x = desc.origX;
                         pools.scratchSteer.y = desc.origY;
                         return pools.scratchSteer;
@@ -7736,7 +8083,7 @@ export class IsometricRenderer {
                             // In open plazas/roads, peel laterally around the
                             // blocker instead of stalling; yield only when
                             // neither lateral side is clear (narrow corridor).
-                            const bypassSide = stepLen > 1e-6
+                            const bypassSide = !onAnyBridgeCorridor && stepLen > 1e-6
                                 ? this._hasLateralBypassRoom(desc, blocker, pools.agents, pools.activeCount)
                                 : 0;
                             if (bypassSide !== 0) {
@@ -7795,7 +8142,7 @@ export class IsometricRenderer {
                 }
                 // If a 75° close peel hit a corridor wall, try a 45° peel, or the
                 // opposite clear lateral side in open space, before yielding.
-                if (blocker && stepLen > 1e-6) {
+                if (blocker && stepLen > 1e-6 && !onAnyBridgeCorridor) {
                     if (clampedCloseSide !== 0) {
                         const altX = desc.x + (stepFx * MIN_FORWARD_DOT + (-stepFy * clampedCloseSide) * MAX_LATERAL_SIN) * stepLen;
                         const altY = desc.y + (stepFy * MIN_FORWARD_DOT + (stepFx * clampedCloseSide) * MAX_LATERAL_SIN) * stepLen;
@@ -7945,6 +8292,21 @@ export class IsometricRenderer {
                 wasYielding: false,
                 yieldHold: false,
                 yieldKind: false,
+                supportH: 0,
+                bridgeSpanId: null,
+                bridgeMode: null,
+                bridgeDir: 0,
+                bridgeZone: null,
+                bridgeProgress: 0,
+                bridgeAlongCoord: 0,
+                bridgeTangentX: 0,
+                bridgeTangentY: 0,
+                bridgePerpX: 0,
+                bridgePerpY: 0,
+                bridgeLaneOffset: 0,
+                bridgeSpanLaneOffset: 0,
+                bridgeCrossOffset: 0,
+                bridgeHold: false,
             };
             pools.pool[index] = desc;
             pools.stats.poolCapacity = pools.pool.length;
@@ -8126,7 +8488,12 @@ export class IsometricRenderer {
             ? sprite.orcaRadius
             : (Number.isFinite(sprite.radius) && sprite.radius > 0 ? sprite.radius : ORCA_AGENT_RADIUS);
         desc.planted = planted;
-        desc.supportH = sprite.getBridgeLift?.(worldTileX(baseX, baseY), worldTileY(baseX, baseY), sprite.surfaceId) ?? 0;
+        // True multi-level terrain support height only — never bridge arch visual
+        // lift over water (`getBridgeLift`), which otherwise blinds ORCA between
+        // walkers at different heights on the same sloped bridge stairs.
+        desc.supportH = this.surfaceRegistry
+            ? (supportHeight(worldTileX(baseX, baseY), worldTileY(baseX, baseY), this.surfaceRegistry, sprite.surfaceId) ?? 0)
+            : (Number.isFinite(sprite.supportH) ? sprite.supportH : 0);
         desc.surfaceTier = Number.isFinite(sprite.surfaceTier)
             ? sprite.surfaceTier
             : (Number.isFinite(sprite.agent?.surfaceTier) ? sprite.agent.surfaceTier : 0);
@@ -8151,6 +8518,22 @@ export class IsometricRenderer {
         desc.wasYielding = false;
         desc.yieldHold = false;
         desc.yieldKind = false;
+        // Clear pooled bridge fields so compatibility callers (e.g.
+        // `_steerAroundStanding`) never inherit stale bridge metadata.
+        desc.bridgeSpanId = null;
+        desc.bridgeMode = null;
+        desc.bridgeDir = 0;
+        desc.bridgeZone = null;
+        desc.bridgeProgress = 0;
+        desc.bridgeAlongCoord = 0;
+        desc.bridgeTangentX = 0;
+        desc.bridgeTangentY = 0;
+        desc.bridgePerpX = 0;
+        desc.bridgePerpY = 0;
+        desc.bridgeLaneOffset = 0;
+        desc.bridgeSpanLaneOffset = 0;
+        desc.bridgeCrossOffset = 0;
+        desc.bridgeHold = false;
         return desc;
     }
 
@@ -8241,17 +8624,98 @@ export class IsometricRenderer {
 
         pools.activeCount = activeCount;
 
+        // Design C — update hybrid bridge circulation controller before ORCA so
+        // every descriptor carries its span/mode/lane metadata and platoon /
+        // T-junction holds pause cleanly off the deck.
+        const bridgeTraffic = this._ensureBridgeTraffic();
+        if (bridgeTraffic) {
+            bridgeTraffic.update(agents, activeCount, dtMs);
+            for (let i = 0; i < activeCount; i++) {
+                const desc = agents[i];
+                const sprite = desc.sprite;
+                if (!desc.bridgeHold || !sprite || !sprite.moving) continue;
+                sprite._followYield = 'bridge';
+                if ((sprite._followYieldMs || 0) < 0) sprite._followYieldMs = 0;
+                desc.yieldHold = true;
+                desc.yieldKind = 'bridge';
+                if (!desc.planted) {
+                    sprite.x = desc.startX;
+                    sprite.y = desc.startY;
+                    desc.x = desc.startX;
+                    desc.y = desc.startY;
+                    desc.vx = 0;
+                    desc.vy = 0;
+                    desc.planted = true;
+                    movingCount--;
+                    plantedCount++;
+                }
+                sprite._orcaVx = 0;
+                sprite._orcaVy = 0;
+                if (Number.isFinite(sprite.vx)) sprite.vx = 0;
+                if (Number.isFinite(sprite.vy)) sprite.vy = 0;
+            }
+            // Smooth same-lane headway speed-matching on bridges: match the
+            // nearest forward same-lane leader's gait rung before hard-yielding.
+            const gapReach = ORCA_AGENT_RADIUS * 2.0 + 14;
+            const gapReachSq = gapReach * gapReach;
+            for (let i = 0; i < activeCount; i++) {
+                const desc = agents[i];
+                const sprite = desc.sprite;
+                if (desc.planted || !sprite || !desc.bridgeSpanId || desc.bridgeDir === 0) continue;
+                const tx = desc.bridgeDir * desc.bridgeTangentX;
+                const ty = desc.bridgeDir * desc.bridgeTangentY;
+                let nearestAlong = Infinity;
+                let nearestGapSpeed = false;
+                for (let j = 0; j < activeCount; j++) {
+                    if (j === i) continue;
+                    const other = agents[j];
+                    if (
+                        !other
+                        || other.bridgeSpanId !== desc.bridgeSpanId
+                        || other.bridgeDir !== desc.bridgeDir
+                        || Math.abs(desc.bridgeCrossOffset - other.bridgeCrossOffset) >= 10
+                    ) continue;
+                    const rx = other.x - desc.x;
+                    const ry = other.y - desc.y;
+                    const along = rx * tx + ry * ty;
+                    if (along <= 0 || along >= nearestAlong) continue;
+                    const sy = ry * ORCA_Y_SCALE;
+                    if (rx * rx + sy * sy <= gapReachSq) {
+                        nearestAlong = along;
+                        nearestGapSpeed = other.sprite?._gaitSpeed || true;
+                    }
+                }
+                if (nearestGapSpeed !== false) {
+                    sprite._followGap = nearestGapSpeed;
+                }
+            }
+        }
+
         // Sustain narrow-corridor contact-frame yield for sprites holding in
         // AgentSprite._yieldToLeader ONLY while their blocker remains ahead and
         // no clear perpendicular lateral bypass exists (bounded by _yieldToLeader's knot timeout).
         for (let i = 0; i < activeCount; i++) {
             const desc = agents[i];
             const sprite = desc.sprite;
+            if (desc.bridgeHold) continue;
             if (!desc.wasYielding || !desc.planted || !sprite || !sprite.moving) continue;
             if ((sprite._followYieldMs || 0) < 0) continue;
             const blocker = this._findNarrowCorridorBlocker(desc, agents, activeCount, pools.scratchBlocker);
             if (!blocker) continue;
-            if (this._hasLateralBypassRoom(desc, blocker, agents, activeCount) === 0) {
+            if (this._isFinalStopClearOfStationary(desc, blocker, agents, activeCount)) {
+                continue;
+            }
+            const onBridgeCorridor = Boolean(desc.bridgeSpanId)
+                && (desc.bridgeZone === 'deck' || (desc.bridgeZone === 'landing' && desc.bridgeProgress < 0.5));
+            const exitingPastHeld = Boolean(desc.bridgeSpanId)
+                && desc.bridgeZone === 'landing'
+                && desc.bridgeProgress >= 0.5
+                && blocker.other?.bridgeSpanId === desc.bridgeSpanId
+                && blocker.other?.bridgeHold === true;
+            if (!blocker.sameDirection && (exitingPastHeld || (onBridgeCorridor && this._hasBridgeRightOfWay(desc, blocker.other)))) {
+                continue;
+            }
+            if (onBridgeCorridor || this._hasLateralBypassRoom(desc, blocker, agents, activeCount) === 0) {
                 sprite._followYield = blocker.sameDirection ? true : 'knot';
             }
         }
@@ -8345,7 +8809,15 @@ export class IsometricRenderer {
                             const crossingInts = this._getCrossingIntSet(crossingMap);
                             onCrossing = Boolean(crossingInts?.has(((wtx + 1024) << 12) | (wty + 1024)));
                         }
-                        if (!onCrossing && nextWp && sprite._isScreenSegmentWalkable?.(sprite.x, sprite.y, nextWp.x, nextWp.y)) {
+                        let canAdvanceCrossing = false;
+                        if (onCrossing && nextWp && desc.bridgeDir !== 0 && (desc.bridgeZone === 'deck' || desc.bridgeZone === 'landing')) {
+                            const travelX = desc.bridgeDir * desc.bridgeTangentX;
+                            const travelY = desc.bridgeDir * desc.bridgeTangentY;
+                            const pastPlane = (sprite.x - sprite.targetX) * travelX + (sprite.y - sprite.targetY) * travelY >= -4;
+                            const nextAhead = (nextWp.x - sprite.targetX) * travelX + (nextWp.y - sprite.targetY) * travelY > 4;
+                            canAdvanceCrossing = pastPlane && nextAhead;
+                        }
+                        if ((!onCrossing || canAdvanceCrossing) && nextWp && sprite._isScreenSegmentWalkable?.(sprite.x, sprite.y, nextWp.x, nextWp.y)) {
                             sprite.waypoints.shift();
                             sprite.targetX = nextWp.x;
                             sprite.targetY = nextWp.y;
@@ -8414,6 +8886,10 @@ export class IsometricRenderer {
             };
         }
         return { ...stats };
+    }
+
+    getBridgeTrafficDiagnostics() {
+        return this._bridgeTraffic ? this._bridgeTraffic.getDiagnostics() : null;
     }
 
     // W5-C — thin ORCA-backed compatibility delegate for direct standing-avoidance

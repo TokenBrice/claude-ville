@@ -358,7 +358,7 @@ test('bridge splitting: a congested deck sends routes over the other crossing', 
     const deck = pathfinder.congestionCostAt(8, 11);
     const landing = pathfinder.congestionCostAt(8, 9);
     const far = pathfinder.congestionCostAt(8, 6);
-    assert.ok(Math.abs(deck - 1.2) < 1e-6, 'a jammed deck tile caps at 1.2');
+    assert.ok(Math.abs(deck - 2.6) < 1e-6, 'a jammed bridge deck tile caps at 2.6 (bridgeCongestionMax)');
     assert.ok(landing > 0 && landing <= deck, 'the landing shares the jam');
     assert.equal(far, 0, 'beyond the kernel radius the field is clear');
 });

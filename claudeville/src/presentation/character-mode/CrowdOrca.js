@@ -22,6 +22,7 @@ export const ORCA_Y_SCALE = 0.64;
 export const ORCA_INV_Y_SCALE = 1 / ORCA_Y_SCALE;
 export const ORCA_AGENT_RADIUS = 11.5;
 export const ORCA_SWING_RADIUS = 10.0;
+export const ORCA_BRIDGE_PASS_RADIUS = 5.0;
 
 const ORCA_MAX_STATIC_DISCS = 6;
 const ORCA_MAX_COAST_LINES = 2;
@@ -137,8 +138,9 @@ function hashCell(cx, cy) {
 }
 
 export function sharesAvoidancePlane(a, b) {
-    return (a.surfaceTier ?? 0) === (b.surfaceTier ?? 0)
-        && Math.abs((a.supportH ?? 0) - (b.supportH ?? 0)) < 12;
+    if ((a.surfaceTier ?? 0) !== (b.surfaceTier ?? 0)) return false;
+    if (a.bridgeSpanId && a.bridgeSpanId === b.bridgeSpanId) return true;
+    return Math.abs((a.supportH ?? 0) - (b.supportH ?? 0)) < 12;
 }
 
 /**
@@ -151,6 +153,40 @@ export function isAgentPlanted(agent) {
     if (agent.moving === false) return true;
     if (agent._stopLookActiveMs > 0) return true;
     return false;
+}
+
+/**
+ * True when two unplanted walkers occupy opposing directional lanes on the
+ * same `two-way` bridge span within its deck or landing zones.
+ */
+export function isOpposingTwoWayBridgePair(a, b) {
+    if (!a || !b) return false;
+    if (a.bridgeMode !== 'two-way' || b.bridgeMode !== 'two-way') return false;
+    if (!a.bridgeSpanId || a.bridgeSpanId !== b.bridgeSpanId) return false;
+    const dirA = a.bridgeDir;
+    if (typeof dirA !== 'number' || !Number.isFinite(dirA) || dirA === 0 || b.bridgeDir !== -dirA) return false;
+    if (isAgentPlanted(a) || isAgentPlanted(b)) return false;
+    const zoneA = a.bridgeZone;
+    if (zoneA !== 'deck' && zoneA !== 'landing') return false;
+    const zoneB = b.bridgeZone;
+    if (zoneB !== 'deck' && zoneB !== 'landing') return false;
+    return true;
+}
+
+function isOpposingSeparatedBridgePair(a, b) {
+    const crossA = a.bridgeCrossOffset;
+    const crossB = b.bridgeCrossOffset;
+    return Number.isFinite(crossA)
+        && Number.isFinite(crossB)
+        && (crossA * crossB) <= 0
+        && Math.abs(crossA - crossB) >= 5.0;
+}
+
+function isExitingPastHeldBridgeWaiter(a, b) {
+    if (!a.bridgeSpanId || b.bridgeSpanId !== a.bridgeSpanId) return false;
+    if (b.bridgeHold !== true || a.bridgeHold === true) return false;
+    if (typeof a.bridgeDir !== 'number' || a.bridgeDir === 0 || b.bridgeDir !== -a.bridgeDir) return false;
+    return a.bridgeZone === 'deck' || (a.bridgeZone === 'landing' && (a.bridgeProgress || 0) >= 0.5);
 }
 
 /**
@@ -332,6 +368,7 @@ export function computePreferredVelocity(
         : (neighbors ? neighbors.length : 0);
 
     if (neighbors && neighborLimit > 0) {
+        const agentTwoWayBridge = agent.bridgeMode === 'two-way';
         for (let i = 0; i < neighborLimit; i++) {
             const b = neighbors[i];
             if (!b || b === agent) continue;
@@ -340,7 +377,24 @@ export function computePreferredVelocity(
             const bPlanted = isAgentPlanted(b);
             const bvx = bPlanted ? 0 : (b.vx || 0);
             const bvy = bPlanted ? 0 : (b.vy || 0);
-            accumulateDiscDanger(danger, ax, ay, aRadius, gaitSpeed, b.x, b.y, bvx, bvy, bRadius, bPlanted ? 1.0 : 0.65);
+            let effARadius = aRadius;
+            let effBRadius = bRadius;
+            let weight = bPlanted ? 1.0 : 0.65;
+            if (agentTwoWayBridge && !bPlanted && isOpposingTwoWayBridgePair(agent, b)) {
+                const separated = isOpposingSeparatedBridgePair(agent, b);
+                if (separated) {
+                    if (effARadius > ORCA_BRIDGE_PASS_RADIUS) effARadius = ORCA_BRIDGE_PASS_RADIUS;
+                    if (effBRadius > ORCA_BRIDGE_PASS_RADIUS) effBRadius = ORCA_BRIDGE_PASS_RADIUS;
+                    weight = Math.abs(agent.bridgeCrossOffset - b.bridgeCrossOffset) >= 6 ? 0.3 : 0.45;
+                } else {
+                    weight = 0.65;
+                }
+            } else if (bPlanted && isExitingPastHeldBridgeWaiter(agent, b)) {
+                if (effARadius > ORCA_BRIDGE_PASS_RADIUS) effARadius = ORCA_BRIDGE_PASS_RADIUS;
+                if (effBRadius > ORCA_BRIDGE_PASS_RADIUS) effBRadius = ORCA_BRIDGE_PASS_RADIUS;
+                weight = 0.4;
+            }
+            accumulateDiscDanger(danger, ax, ay, effARadius, gaitSpeed, b.x, b.y, bvx, bvy, effBRadius, weight);
 
             if (isStrikeSwingActive(b)) {
                 resolveStrikeDisc(b, scratch.swingPoint);
@@ -932,6 +986,8 @@ export function solveOrcaVelocity(
     if (neighbors && neighborLimit > 0) {
         const defaultMaxRange = aRadius + ORCA_AGENT_RADIUS + maxSpeed * 2.0 * ORCA_TAU + 12.0;
         const defaultMaxRangeSq = defaultMaxRange * defaultMaxRange;
+        const agentTwoWayBridge = agent.bridgeMode === 'two-way';
+        const maxBridgeCombined = ORCA_BRIDGE_PASS_RADIUS * 2;
         for (let i = 0; i < neighborLimit; i++) {
             const b = neighbors[i];
             if (!b || b === agent) continue;
@@ -941,7 +997,7 @@ export function solveOrcaVelocity(
             const relY = (b.y - ay) * ORCA_Y_SCALE;
             const distSq = relX * relX + relY * relY;
             const bRadius = b.radius > 0 ? b.radius : ORCA_AGENT_RADIUS;
-            const combinedRadius = aRadius + bRadius;
+            let combinedRadius = aRadius + bRadius;
             let inRange = distSq <= defaultMaxRangeSq;
             if (!inRange && bRadius > ORCA_AGENT_RADIUS) {
                 const customRange = combinedRadius + maxSpeed * 2.0 * ORCA_TAU + 12.0;
@@ -949,9 +1005,17 @@ export function solveOrcaVelocity(
             }
             if (inRange) {
                 const bPlanted = isAgentPlanted(b);
+                const opposingBridge = agentTwoWayBridge
+                    && !bPlanted
+                    && isOpposingTwoWayBridgePair(agent, b)
+                    && isOpposingSeparatedBridgePair(agent, b);
+                const exitingPastHeld = bPlanted && isExitingPastHeldBridgeWaiter(agent, b);
+                if ((opposingBridge || exitingPastHeld) && combinedRadius > maxBridgeCombined) {
+                    combinedRadius = maxBridgeCombined;
+                }
                 const bvx = bPlanted ? 0 : (b.vx || 0);
                 const bvy = bPlanted ? 0 : (b.vy || 0) * ORCA_Y_SCALE;
-                const tau = bPlanted ? ORCA_TAU_OBST : ORCA_TAU;
+                const tau = (bPlanted || opposingBridge) ? ORCA_TAU_OBST : ORCA_TAU;
                 const resp = bPlanted ? 1.0 : 0.5;
                 const score = computeUrgencyScore(relX, relY, distSq, refVx - bvx, refVy - bvy, combinedRadius, tau);
                 if (nbCount < ORCA_MAX_NEIGHBORS || score < scratch.nbScore[ORCA_MAX_NEIGHBORS - 1]) {

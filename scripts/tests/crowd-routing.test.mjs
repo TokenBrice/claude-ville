@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { BUILDING_DEFS } from '../../claudeville/src/config/buildings.js';
 import { MAP_SIZE } from '../../claudeville/src/config/constants.js';
+import { VILLAGE_GATE } from '../../claudeville/src/config/townPlan.js';
+import { Building } from '../../claudeville/src/domain/entities/Building.js';
 import { homeDistrictFor, WORK_DISTRICTS, updateHomeDistrictContext } from '../../claudeville/src/presentation/character-mode/HomeDistrict.js';
 import { resolveUpdateRouteBuilding } from '../../claudeville/src/presentation/character-mode/MovementRouting.js';
 import { AgentBehaviorState } from '../../claudeville/src/presentation/character-mode/AgentBehaviorState.js';
@@ -11,6 +14,7 @@ import { Pathfinder, routePersonalityFor, ROUTE_PERSONALITIES } from '../../clau
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 import { bridgeLaneShift } from '../../claudeville/src/presentation/character-mode/MovementSteering.js';
 import { tileToWorld, worldToTile } from '../../claudeville/src/presentation/character-mode/Projection.js';
+import { SceneryEngine } from '../../claudeville/src/presentation/character-mode/SceneryEngine.js';
 
 const fullGrid = () => new Uint8Array(MAP_SIZE * MAP_SIZE).fill(1);
 
@@ -485,4 +489,193 @@ test('_steerAroundStanding bypasses target clamp when an intermediate waypoint s
         'V7 stride length stays locked',
     );
     assert.equal(walker.targetX, 200, 'advances cleanly past the obstructed intermediate waypoint');
+});
+
+test('getCongestionSnapshot with bridgeTiles aggregates distributed bridge-span walkers without altering non-bridge rounding', () => {
+    const bridgeTiles = new Map([
+        ['18,23', { bridgeId: 'central-river-bridge', kind: 'landmark', orientation: 'NS', walkable: true }],
+        ['18,24', { bridgeId: 'central-river-bridge', kind: 'landmark', orientation: 'NS', walkable: true }],
+        ['18,25', { bridgeId: 'central-river-bridge', kind: 'landmark', orientation: 'NS', walkable: true }],
+        ['17,24', { bridgeId: 'central-river-bridge', kind: 'landmark', orientation: 'NS', walkable: false }],
+        ['19,24', { bridgeId: 'central-river-bridge', kind: 'landmark', orientation: 'NS', walkable: false }],
+        ['30,20', { bridgeId: 'harbor-dock', kind: 'dock', orientation: 'EW', walkable: true }],
+        ['31,20', { bridgeId: 'harbor-dock', kind: 'dock', orientation: 'EW', walkable: true }],
+        ['32,20', { bridgeId: 'harbor-dock', kind: 'dock', orientation: 'EW', walkable: true }],
+    ]);
+    const mkWalker = (id, tileX, tileY) => ({
+        agent: { id },
+        ...tileToWorld(tileX, tileY),
+        moving: true,
+        _screenToTile: worldToTile,
+        isArrivalPending: () => false,
+    });
+    const baseSprites = [
+        mkWalker('w1', 18, 23),
+        mkWalker('w2', 18, 24),
+        mkWalker('w3', 18, 25),
+        mkWalker('off-1', 10, 10),
+        mkWalker('off-2a', 12, 12),
+        mkWalker('off-2b', 12, 12),
+        mkWalker('off-2c', 12, 12),
+        mkWalker('dock-1', 30, 20),
+        mkWalker('dock-2', 31, 20),
+        mkWalker('dock-3', 32, 20),
+    ];
+
+    const allocator = new VisitTileAllocator();
+    // 1 or 2 walkers on a two-way span stay within comfortable capacity (no span-wide smear).
+    allocator.updateContext({ agentSprites: [mkWalker('solo', 18, 22)], bridgeTiles });
+    const soloSnap = allocator.getCongestionSnapshot(1000);
+    assert.equal(soloSnap.congestionTiles.get('18,22'), 2, 'single walker keeps its own tile count');
+    assert.equal(soloSnap.congestionTiles.get('18,24') || 0, 0, 'single walker on landing does not smear across two-way deck');
+
+    // 3 walkers on a two-way span exceed free capacity (2) -> quantized even bucket 2 across all 5 crossing tiles.
+    allocator.updateContext({ agentSprites: baseSprites, bridgeTiles });
+    const first = allocator.getCongestionSnapshot(2000);
+
+    for (const [x, y] of [[18, 22], [18, 23], [18, 24], [18, 25], [18, 26]]) {
+        assert.equal(first.congestionTiles.get(`${x},${y}`), 2, `bridge crossing tile (${x},${y}) publishes even bucket 2 at 3 walkers`);
+        assert.equal(first.congestionGrid[y * MAP_SIZE + x], 2, `congestionGrid at (${x},${y}) matches even bucket 2`);
+    }
+    assert.equal(first.congestionTiles.has('17,24'), false, 'unwalkable side span is excluded');
+    assert.equal(first.congestionTiles.has('19,24'), false, 'unwalkable side span is excluded');
+    assert.equal(first.congestionTiles.get('30,20'), 2, 'dock tiles keep non-bridge per-tile rounding (not span-aggregated)');
+    assert.equal(first.congestionTiles.get('10,10'), 2, 'single non-bridge walker keeps existing rounding (Math.round(1/2)*2 = 2)');
+    assert.equal(first.congestionTiles.get('12,12'), 4, 'three non-bridge walkers still round 3 -> 4');
+    assert.equal(first.standingTiles.size, 0, 'moving walkers never enter standingTiles');
+    assert.equal(first.standingGrid.some((v) => v !== 0), false, 'moving walkers never enter standingGrid');
+
+    // Adding a 4th walker holds the same even bucket (2) without ±1 fingerprint churn,
+    // and caches within the 2-second bucket; adding a 5th raises to bucket 4 and invalidates.
+    allocator.updateContext({ agentSprites: [...baseSprites, mkWalker('w4', 18, 22)], bridgeTiles });
+    assert.equal(allocator.getCongestionSnapshot(3999), first, 'two-second bucket cache still holds');
+    const fourSnap = allocator.getCongestionSnapshot(4000);
+    assert.equal(fourSnap.congestionTiles.get('18,24'), 2, '4 walkers hold even bucket 2 without ±1 churn');
+    assert.equal(fourSnap.occupancyFingerprint, first.occupancyFingerprint, 'even bucketing avoids fingerprint churn on 3 -> 4');
+
+    allocator.updateContext({
+        agentSprites: [...baseSprites, mkWalker('w4', 18, 22), mkWalker('w5', 18, 26)],
+        bridgeTiles,
+    });
+    const second = allocator.getCongestionSnapshot(6000);
+    assert.equal(second.congestionTiles.get('18,24'), 4, 'span load rises to even bucket 4 at 5 walkers');
+    assert.notEqual(second.congestionVersion, first.congestionVersion, 'bridge span load change invalidates congestionVersion');
+    assert.notEqual(second.occupancyFingerprint, first.occupancyFingerprint, 'bridge span load change invalidates occupancyFingerprint');
+});
+
+test('Pathfinder diverts heavy central-river-bridge traffic onto west-river-plank while keeping empty-bridge routing and memory budget intact', () => {
+    const renderer = Object.create(IsometricRenderer.prototype);
+    const buildings = new Map(BUILDING_DEFS.map((def) => [def.type, new Building(def)]));
+    renderer.world = { buildings, agents: new Map() };
+    renderer.terrainSeed = [];
+    for (let y = 0; y < MAP_SIZE; y++) for (let x = 0; x < MAP_SIZE; x++) renderer.terrainSeed.push(renderer._tileNoise(x, y));
+    for (const name of ['pathTiles', 'townSquareTiles', 'mainAvenueTiles', 'dirtPathTiles', 'busyWalkTiles', 'commandCenterRoadTiles']) renderer[name] = new Set();
+    renderer._generatePaths();
+    const scenery = new SceneryEngine({
+        world: renderer.world,
+        terrainSeed: renderer.terrainSeed,
+        tileNoise: (x, y) => renderer._tileNoise(x, y),
+        smoothNoise: (x, y, scale) => renderer._smoothNoise(x, y, scale),
+    });
+    scenery.generateBridges();
+    const bridgeTiles = scenery.getBridgeTiles();
+    for (const key of bridgeTiles.keys()) renderer.pathTiles.add(key);
+    renderer.bridgeTiles = bridgeTiles;
+    renderer.scenery = scenery;
+    renderer._laneTiles = new Map();
+    const laneTiles = renderer._buildLaneTileIndex();
+    const grid = scenery.getWalkabilityGrid();
+
+    const makeFinder = () => {
+        const pf = new Pathfinder(grid.slice());
+        pf.keepReachableFrom(VILLAGE_GATE.inside);
+        return pf;
+    };
+
+    const byType = Object.fromEntries(BUILDING_DEFS.map((def) => [def.type, def.visitTiles[0]]));
+    const crossesBridge = (path, bridgeId) => path.some((t) => bridgeTiles.get(`${t.tileX},${t.tileY}`)?.bridgeId === bridgeId);
+    const mkWalker = (id, tileX, tileY) => ({
+        agent: { id },
+        ...tileToWorld(tileX, tileY),
+        moving: true,
+        _screenToTile: worldToTile,
+        isArrivalPending: () => false,
+    });
+
+    const routeWith = (pf, snap, from, to, agentId = 'router-0') => {
+        const sprite = Object.assign(Object.create(AgentSprite.prototype), {
+            agent: { id: agentId },
+            getRoadTiles: () => renderer.pathTiles,
+            bridgeTiles,
+            getRoutingContext: () => ({ laneTiles, ...snap }),
+        });
+        return pf.findPath(from, to, bridgeTiles, sprite._pathOptions(from, to));
+    };
+
+    const pfCalm = makeFinder();
+    assert.ok(pfCalm.getMemoryFootprint() < 140 * 1024, `memory footprint ${pfCalm.getMemoryFootprint()} < 140 KiB`);
+
+    const allocCalm = new VisitTileAllocator();
+    allocCalm.updateContext({ buildings, agentSprites: [], pathfinder: pfCalm, bridgeTiles });
+    const calmSnap = allocCalm.getCongestionSnapshot(2000);
+    const noCrowdSnap = { congestionTiles: new Map(), congestionVersion: '', standingTiles: new Set(), standingVersion: '' };
+
+    const calmCmdMine = routeWith(pfCalm, calmSnap, byType.command, byType.mine);
+    const baseCmdMine = routeWith(makeFinder(), noCrowdSnap, byType.command, byType.mine);
+    assert.deepEqual(calmCmdMine, baseCmdMine, 'empty bridge keeps command -> mine route unchanged');
+    assert.equal(crossesBridge(calmCmdMine, 'central-river-bridge'), true, 'calm command -> mine uses central-river-bridge');
+    assert.equal(crossesBridge(calmCmdMine, 'west-river-plank'), false);
+
+    const calmArcTask = routeWith(pfCalm, calmSnap, byType.archive, byType.taskboard);
+    const baseArcTask = routeWith(makeFinder(), noCrowdSnap, byType.archive, byType.taskboard);
+    assert.deepEqual(calmArcTask, baseArcTask, 'empty bridge keeps archive -> taskboard route unchanged');
+    assert.equal(crossesBridge(calmArcTask, 'central-river-bridge'), true, 'calm archive -> taskboard uses central-river-bridge');
+
+    // Single pedestrian on the central bridge north landing must NOT trigger premature diversion.
+    const pfSingle = makeFinder();
+    const allocSingle = new VisitTileAllocator();
+    allocSingle.updateContext({
+        buildings,
+        agentSprites: [mkWalker('lone', 18, 22)],
+        pathfinder: pfSingle,
+        bridgeTiles,
+    });
+    const singleSnap = allocSingle.getCongestionSnapshot(2000);
+    const singleCmdMine = routeWith(pfSingle, singleSnap, byType.command, byType.mine);
+    assert.equal(crossesBridge(singleCmdMine, 'central-river-bridge'), true, 'lone walker on central landing must not divert command -> mine');
+    assert.equal(crossesBridge(singleCmdMine, 'west-river-plank'), false);
+
+    // Heavy span load: 5 walkers distributed 1 per tile across central-river-bridge (18,22..18,26).
+    const pfHeavy = makeFinder();
+    const allocHeavy = new VisitTileAllocator();
+    allocHeavy.updateContext({
+        buildings,
+        agentSprites: [
+            mkWalker('b1', 18, 22),
+            mkWalker('b2', 18, 23),
+            mkWalker('b3', 18, 24),
+            mkWalker('b4', 18, 25),
+            mkWalker('b5', 18, 26),
+        ],
+        pathfinder: pfHeavy,
+        bridgeTiles,
+    });
+    const heavySnap = allocHeavy.getCongestionSnapshot(4000);
+
+    const heavyCmdMine = routeWith(pfHeavy, heavySnap, byType.command, byType.mine);
+    assert.equal(crossesBridge(heavyCmdMine, 'west-river-plank'), true, 'heavy central bridge diverts command -> mine onto west-river-plank');
+    assert.equal(crossesBridge(heavyCmdMine, 'central-river-bridge'), false);
+
+    const heavyArcTask = routeWith(pfHeavy, heavySnap, byType.archive, byType.taskboard);
+    assert.equal(crossesBridge(heavyArcTask, 'west-river-plank'), true, 'heavy central bridge diverts archive -> taskboard onto west-river-plank');
+    assert.equal(crossesBridge(heavyArcTask, 'central-river-bridge'), false);
+
+    const heavyTavMine = routeWith(pfHeavy, heavySnap, byType.tavern, byType.mine);
+    assert.equal(crossesBridge(heavyTavMine, 'west-river-plank'), true, 'heavy central bridge diverts tavern -> mine onto west-river-plank');
+
+    const heavyTavForge = routeWith(pfHeavy, heavySnap, byType.tavern, byType.forge);
+    assert.equal(crossesBridge(heavyTavForge, 'central-river-bridge'), true, 'close eastern tavern -> forge still crosses central-river-bridge');
+
+    assert.ok(pfHeavy.congestionCostAt(18, 24) > 1.2 && pfHeavy.congestionCostAt(18, 24) <= 2.6, 'bridge tile congestion cost uses elevated bridge cap');
+    assert.ok(pfHeavy.getMemoryFootprint() < 140 * 1024, 'memory footprint stays under 140 KiB after crowd routing');
 });

@@ -49,24 +49,39 @@ export function bridgeCrossingTiles(bridgeTiles) {
 }
 
 /**
- * BR-3 — the world-px shift that puts a route waypoint on a landmark deck tile
- * onto its walker's lane: `info.laneOffsetPx` (10 without one) across the deck
- * axis, on the side IsometricRenderer._laneSideForSprite steers to. The lane
- * tangent runs from a tile toward tile + axis; travel along it is side +1, and
- * the shift is side × offset along the lane's perpendicular (-tangentY,
- * tangentX). `travelX/Y` is the route's course through the waypoint in world
- * px. Null when the course has no component along the deck, or the tile has no
- * lane axis. Landing tiles taper to 0 in AgentSprite._keepBridgeLanes.
+ * Lane offset in world px for a bridge deck or landing tile.
+ * Landings default to 0 (centerline) unless `info.landingLaneOffsetPx` is set;
+ * deck tiles fall back to `BRIDGE_LANE_OFFSET_FALLBACK_PX` (10) when no
+ * `info.laneOffsetPx` is authored.
  */
-export function bridgeLaneShift(info, travelX, travelY) {
+export function bridgeLaneOffsetFor(info, landing = false) {
+    if (landing) {
+        return Number.isFinite(info?.landingLaneOffsetPx) ? info.landingLaneOffsetPx : 0;
+    }
+    return Number.isFinite(info?.laneOffsetPx) ? info.laneOffsetPx : BRIDGE_LANE_OFFSET_FALLBACK_PX;
+}
+
+/**
+ * BR-3 — the world-px shift that puts a route waypoint on a landmark deck or
+ * landing tile onto its walker's lane: `bridgeLaneOffsetFor(info, landing)`
+ * across the deck axis, on the side IsometricRenderer._laneSideForSprite steers
+ * to. The lane tangent runs from a tile toward tile + axis; travel along it is
+ * side +1, and the shift is side × offset along the lane's perpendicular
+ * (-tangentY, tangentX). `travelX/Y` is the route's course through the waypoint
+ * in world px. Null when the course has no component along the deck, the tile
+ * has no lane axis, or a landing's lane offset is `<= 0`.
+ */
+export function bridgeLaneShift(info, travelX, travelY, options = null) {
     const axis = laneAxisForBridgeOrientation(info?.orientation);
     if (!axis) return null;
+    const landing = Boolean(options?.landing);
+    const offset = bridgeLaneOffsetFor(info, landing);
+    if (landing && !(offset > 0)) return null;
     const tangentX = (axis.dx - axis.dy) * TILE_HALF_WIDTH;
     const tangentY = (axis.dx + axis.dy) * TILE_HALF_HEIGHT;
     const length = Math.sqrt(tangentX * tangentX + tangentY * tangentY);
     const along = (Number(travelX) * tangentX + Number(travelY) * tangentY) / length;
     if (!(Math.abs(along) > LANE_SIDE_EPSILON_PX)) return null;
-    const offset = Number.isFinite(info.laneOffsetPx) ? info.laneOffsetPx : BRIDGE_LANE_OFFSET_FALLBACK_PX;
     const scale = (along >= 0 ? offset : -offset) / length;
     return { x: -tangentY * scale, y: tangentX * scale };
 }

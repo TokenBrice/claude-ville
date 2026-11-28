@@ -11,8 +11,11 @@ import {
     ORCA_INV_Y_SCALE,
     ORCA_AGENT_RADIUS,
     ORCA_SWING_RADIUS,
+    ORCA_BRIDGE_PASS_RADIUS,
     DIR_X,
     DIR_Y,
+    sharesAvoidancePlane,
+    isOpposingTwoWayBridgePair,
     computePreferredVelocity,
     linearProgram1,
     linearProgram2,
@@ -802,4 +805,220 @@ test('W5-Fix-C: solveLabelAuction enforces strict priority so lower-priority spe
     assert.equal(placed2, 1);
     assert.equal(assign2[0], 0, 'selected speaker must never be evicted even when lower-priority speaker has no other slot');
     assert.equal(assign2[1], -1, 'lower-priority speaker with only higher-priority overlapping slot must stay unplaced');
+});
+
+// ---------------------------------------------------------------------------
+// 5. Design C — Hybrid Bridge Circulation (Same-Span Plane & Two-Way Lanes)
+// ---------------------------------------------------------------------------
+
+test('Design C: ORCA_BRIDGE_PASS_RADIUS === 5.0, same-span sharesAvoidancePlane ignores arch supportH, and isOpposingTwoWayBridgePair gates strictly', () => {
+    assert.equal(ORCA_BRIDGE_PASS_RADIUS, 5.0);
+
+    // Same bridge span & same surfaceTier => true even with 20 px arch-lift delta.
+    const archLow = { surfaceTier: 2, supportH: 4, bridgeSpanId: 'central-river-bridge' };
+    const archHigh = { surfaceTier: 2, supportH: 24, bridgeSpanId: 'central-river-bridge' };
+    assert.equal(sharesAvoidancePlane(archLow, archHigh), true);
+    assert.equal(sharesAvoidancePlane(archHigh, archLow), true);
+
+    // Same bridge span but different surfaceTier => still isolated (false).
+    const underDeck = { surfaceTier: 0, supportH: 4, bridgeSpanId: 'central-river-bridge' };
+    assert.equal(sharesAvoidancePlane(archLow, underDeck), false);
+
+    // Absent or different bridgeSpanId => preserves strict |supportH_a - supportH_b| < 12 check.
+    const noSpanLow = { surfaceTier: 2, supportH: 4, bridgeSpanId: null };
+    const noSpanHigh = { surfaceTier: 2, supportH: 24, bridgeSpanId: null };
+    const otherSpanHigh = { surfaceTier: 2, supportH: 24, bridgeSpanId: 'west-footbridge' };
+    assert.equal(sharesAvoidancePlane(noSpanLow, noSpanHigh), false);
+    assert.equal(sharesAvoidancePlane(archLow, noSpanHigh), false);
+    assert.equal(sharesAvoidancePlane(archLow, otherSpanHigh), false);
+    assert.equal(sharesAvoidancePlane({ surfaceTier: 0, supportH: 0 }, { surfaceTier: 0, supportH: 20 }), false);
+    assert.equal(sharesAvoidancePlane({ surfaceTier: 0, supportH: 0 }, { surfaceTier: 0, supportH: 11 }), true);
+
+    // isOpposingTwoWayBridgePair gate checks.
+    const north = {
+        bridgeSpanId: 'central-river-bridge',
+        bridgeMode: 'two-way',
+        bridgeDir: 1,
+        bridgeZone: 'deck',
+        planted: false,
+    };
+    const south = {
+        bridgeSpanId: 'central-river-bridge',
+        bridgeMode: 'two-way',
+        bridgeDir: -1,
+        bridgeZone: 'landing',
+        planted: false,
+    };
+    assert.equal(isOpposingTwoWayBridgePair(north, south), true);
+    assert.equal(isOpposingTwoWayBridgePair(south, north), true);
+    assert.equal(isOpposingTwoWayBridgePair(north, { ...south, bridgeZone: 'deck' }), true);
+    assert.equal(isOpposingTwoWayBridgePair({ ...north, bridgeZone: 'landing' }, south), true);
+    assert.equal(isOpposingTwoWayBridgePair(north, { ...south, bridgeDir: 1 }), false);
+    assert.equal(isOpposingTwoWayBridgePair(north, { ...south, bridgeDir: 0 }), false);
+    assert.equal(isOpposingTwoWayBridgePair({ ...north, bridgeDir: null }, { ...south, bridgeDir: 0 }), false);
+    assert.equal(isOpposingTwoWayBridgePair(north, { ...south, bridgeMode: 'platoon' }), false);
+    assert.equal(isOpposingTwoWayBridgePair(north, { ...south, bridgeSpanId: 'other-span' }), false);
+    assert.equal(isOpposingTwoWayBridgePair(north, { ...south, bridgeZone: 'approach' }), false);
+    assert.equal(isOpposingTwoWayBridgePair(north, { ...south, planted: true }), false);
+});
+
+test('Design C: two-way NS bridge opposing lanes (±8 px) pass at full gait speed without lateral blowout, while same-direction walkers keep full 23 px headway', () => {
+    // 2:1 isometric NS bridge axis (along +tileY, perp +tileX):
+    // 16 world px across perp = 11.6227 px in ORCA-scaled space (10.904 px perpendicular to along_s).
+    const invSqrt5 = 1 / Math.sqrt(5);
+    const alongX = -2 * invSqrt5;
+    const alongY = 1 * invSqrt5;
+    const perpX = 1 * invSqrt5;
+    const perpY = 2 * invSqrt5;
+
+    const toWorld = (s, offset) => ({
+        x: s * alongX + offset * perpX,
+        y: s * alongY + offset * perpY,
+    });
+    const crossOffsetOf = (agent) => agent.x * perpX + agent.y * perpY;
+
+    // Verify exact 16 world px -> ~11.62 px ORCA-scaled lane spacing.
+    const laneNeg = toWorld(0, -8);
+    const lanePos = toWorld(0, 8);
+    const laneScaledSep = Math.hypot(lanePos.x - laneNeg.x, (lanePos.y - laneNeg.y) * ORCA_Y_SCALE);
+    assert.ok(Math.abs(laneScaledSep - 11.6227) < 0.01, `expected 11.62 px ORCA-scaled lane separation, got ${laneScaledSep}`);
+
+    // 1. Two opposing walkers in dedicated ±8 px lanes on a two-way NS bridge.
+    const speed = 45;
+    const startA = toWorld(-90, -8);
+    const targetA = toWorld(90, -8);
+    const startB = toWorld(90, 8);
+    const targetB = toWorld(-90, 8);
+
+    const walkerA = {
+        id: 'bridge-southbound',
+        x: startA.x,
+        y: startA.y,
+        vx: alongX * speed,
+        vy: alongY * speed,
+        targetX: targetA.x,
+        targetY: targetA.y,
+        gaitSpeed: speed,
+        surfaceTier: 2,
+        supportH: 6,
+        bridgeSpanId: 'central-river-bridge',
+        bridgeMode: 'two-way',
+        bridgeDir: 1,
+        bridgeZone: 'deck',
+        bridgePerpX: perpX,
+        bridgePerpY: perpY,
+        bridgeCrossOffset: -8,
+    };
+    const walkerB = {
+        id: 'bridge-northbound',
+        x: startB.x,
+        y: startB.y,
+        vx: -alongX * speed,
+        vy: -alongY * speed,
+        targetX: targetB.x,
+        targetY: targetB.y,
+        gaitSpeed: speed,
+        surfaceTier: 2,
+        supportH: 22, // 16 px arch delta still shares avoidance plane on same bridgeSpanId
+        bridgeSpanId: 'central-river-bridge',
+        bridgeMode: 'two-way',
+        bridgeDir: -1,
+        bridgeZone: 'deck',
+        bridgePerpX: perpX,
+        bridgePerpY: perpY,
+        bridgeCrossOffset: 8,
+    };
+
+    const dt = 1 / 30;
+    let minAbsCross = Infinity;
+    let maxAbsCross = -Infinity;
+    let minActiveSpeed = Infinity;
+    let minScaledDist = Infinity;
+
+    for (let step = 0; step < 180; step++) {
+        walkerA.bridgeCrossOffset = crossOffsetOf(walkerA);
+        walkerB.bridgeCrossOffset = crossOffsetOf(walkerB);
+        stepCrowdOrca([walkerA, walkerB], dt);
+
+        const absA = Math.abs(crossOffsetOf(walkerA));
+        const absB = Math.abs(crossOffsetOf(walkerB));
+        if (absA < minAbsCross) minAbsCross = absA;
+        if (absB < minAbsCross) minAbsCross = absB;
+        if (absA > maxAbsCross) maxAbsCross = absA;
+        if (absB > maxAbsCross) maxAbsCross = absB;
+
+        if (Math.hypot(walkerA.targetX - walkerA.x, walkerA.targetY - walkerA.y) > 12) {
+            const spdA = Math.hypot(walkerA.vx, walkerA.vy);
+            if (spdA < minActiveSpeed) minActiveSpeed = spdA;
+        }
+        if (Math.hypot(walkerB.targetX - walkerB.x, walkerB.targetY - walkerB.y) > 12) {
+            const spdB = Math.hypot(walkerB.vx, walkerB.vy);
+            if (spdB < minActiveSpeed) minActiveSpeed = spdB;
+        }
+        const sDist = Math.hypot(walkerA.x - walkerB.x, (walkerA.y - walkerB.y) * ORCA_Y_SCALE);
+        if (sDist < minScaledDist) minScaledDist = sDist;
+    }
+
+    assert.ok(Math.hypot(walkerA.x - targetA.x, walkerA.y - targetA.y) < 4, `walkerA reached far end, got (${walkerA.x.toFixed(1)}, ${walkerA.y.toFixed(1)})`);
+    assert.ok(Math.hypot(walkerB.x - targetB.x, walkerB.y - targetB.y) < 4, `walkerB reached far end, got (${walkerB.x.toFixed(1)}, ${walkerB.y.toFixed(1)})`);
+    assert.ok(minAbsCross >= 6 && maxAbsCross <= 11, `expected |crossOffset| inside [6, 11] px without lateral blowout, got [${minAbsCross.toFixed(2)}, ${maxAbsCross.toFixed(2)}]`);
+    assert.ok(minActiveSpeed >= speed - 2.0, `expected full gait speed passing with zero stall (>= ${speed - 2}), got minSpeed=${minActiveSpeed.toFixed(2)}`);
+    assert.ok(minScaledDist >= ORCA_BRIDGE_PASS_RADIUS * 2 - 0.5, `expected clean scaled passing margin, got minScaledDist=${minScaledDist.toFixed(2)}`);
+
+    // 2. Two same-direction walkers on the same lane keep full 2 * ORCA_AGENT_RADIUS (23 px) headway.
+    const leaderStart = toWorld(-10, -8);
+    const followerStart = toWorld(-50, -8);
+    const sameTarget = toWorld(140, -8);
+    const leader = {
+        id: 'bridge-leader',
+        x: leaderStart.x,
+        y: leaderStart.y,
+        vx: alongX * 18,
+        vy: alongY * 18,
+        targetX: sameTarget.x,
+        targetY: sameTarget.y,
+        gaitSpeed: 18,
+        surfaceTier: 2,
+        supportH: 8,
+        bridgeSpanId: 'central-river-bridge',
+        bridgeMode: 'two-way',
+        bridgeDir: 1,
+        bridgeZone: 'deck',
+        bridgePerpX: perpX,
+        bridgePerpY: perpY,
+        bridgeCrossOffset: -8,
+    };
+    const follower = {
+        id: 'bridge-follower',
+        x: followerStart.x,
+        y: followerStart.y,
+        vx: alongX * speed,
+        vy: alongY * speed,
+        targetX: sameTarget.x,
+        targetY: sameTarget.y,
+        gaitSpeed: speed,
+        surfaceTier: 2,
+        supportH: 20,
+        bridgeSpanId: 'central-river-bridge',
+        bridgeMode: 'two-way',
+        bridgeDir: 1,
+        bridgeZone: 'deck',
+        bridgePerpX: perpX,
+        bridgePerpY: perpY,
+        bridgeCrossOffset: -8,
+    };
+
+    let minSameDirScaledDist = Infinity;
+    for (let step = 0; step < 150; step++) {
+        leader.bridgeCrossOffset = crossOffsetOf(leader);
+        follower.bridgeCrossOffset = crossOffsetOf(follower);
+        stepCrowdOrca([leader, follower], dt, null, { contextSteering: false });
+        const sDist = Math.hypot(leader.x - follower.x, (leader.y - follower.y) * ORCA_Y_SCALE);
+        if (sDist < minSameDirScaledDist) minSameDirScaledDist = sDist;
+    }
+
+    assert.ok(
+        minSameDirScaledDist >= ORCA_AGENT_RADIUS * 2 - 1.0,
+        `expected same-direction bridge walkers to keep full 23 px scaled headway, got minScaledDist=${minSameDirScaledDist.toFixed(2)}`,
+    );
 });

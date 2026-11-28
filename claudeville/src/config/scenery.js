@@ -220,6 +220,11 @@ export const WATER_BASINS = [
 //   only: a plank or post inside it would cover the feet of a body behind it.
 // - `laneOffsetPx`: the two files' offset either side of the walk line
 //   (LANE_STEERING.bridgeOffsetPx, 10, without it).
+// - `landingLaneOffsetPx`: the two files' offset on the landing tiles at each
+//   end of the span (0 without it, tapering to the centerline).
+// - `circulationMode`: traffic discipline for the crossing — `'two-way'` for
+//   simultaneous opposing files on wide decks, or `'platoon'` for alternating
+//   one-way platoons on narrow spans and planks.
 // - `treeExclusion` (default true): keep trees off the span and its ramps.
 // - `underDeckShadow` (default true): bake the multiply shadow under the deck.
 export const BRIDGE_HINTS = [
@@ -227,9 +232,12 @@ export const BRIDGE_HINTS = [
     // column is walkable. Measured on bridge.landmark.civic.ns (BR-2): the
     // planks stand ~25 px over the water (23 at the north end), ramp smoothly
     // down onto (18,22) in the north and down to ~26.7 in the south; the near
-    // rail beam arches ~13 px from mid-span to its south end; the clear deck
-    // holds two files 6 px either side of the walk line, tapering to 0 on the
-    // landings between the narrow stone lantern pillars.
+    // rail beam arches ~13 px from mid-span to its south end; the 38–42 px
+    // clear oak deck runs under `'two-way'` circulation with opposing files
+    // 8 px either side of the walk line (16 world px apart, behind
+    // BridgeParapet), narrowing to `landingLaneOffsetPx: 4` (8 world px apart)
+    // on the (18,22)/(18,26) landings so files stay separated entering/exiting
+    // the stairs while staying inside the narrow stone lantern pillars.
     {
         id: 'central-river-bridge',
         tileX: 18,
@@ -247,7 +255,9 @@ export const BRIDGE_HINTS = [
             bottom: 6,
             lift: [[-1.5, 42.3], [-1, 44.5], [-0.5, 46.1], [-0.1, 46.4], [0.3, 44], [0.65, 40.5], [1, 37.4], [1.5, 32.7]],
         },
-        laneOffsetPx: 6,
+        laneOffsetPx: 8,
+        landingLaneOffsetPx: 4,
+        circulationMode: 'two-way',
     },
     // The Miner's trestle (BR-7), the west crossing beside the Mine: deck
     // tiles (7, 23..26), one walkable column. It meets the north bank
@@ -259,7 +269,9 @@ export const BRIDGE_HINTS = [
     // ramps onto the banks (7,22) and (7,27); the near handrail and mid-rail
     // (31 and 23 px over the water on the near posts, 16.8 px across from the
     // walk line) are the rail band; the clear deck (~29.6 px between the
-    // posts' inner faces) holds two files 6 px either side of the walk line.
+    // posts' inner faces) keeps `laneOffsetPx: 6` with `landingLaneOffsetPx: 0`
+    // and runs under `'platoon'` circulation so opposing traffic alternates
+    // cleanly across the narrow span.
     // The maples south-east of the Mine keep their places, and the piles stand
     // in open water, so no tree exclusion and no under-deck shadow.
     {
@@ -273,6 +285,8 @@ export const BRIDGE_HINTS = [
         deckProfile: [[-2.55, 0], [-2, 16], [2, 16], [2.55, 0]],
         nearRail: { inner: 16.8, outer: 16.8, top: 2, bottom: 10, lift: [[-2.05, 31], [2.05, 31]] },
         laneOffsetPx: 6,
+        landingLaneOffsetPx: 0,
+        circulationMode: 'platoon',
         treeExclusion: false,
         underDeckShadow: false,
     },

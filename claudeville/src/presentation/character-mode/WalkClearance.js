@@ -157,6 +157,7 @@ export function createWalkClearance({
     const paddedBoxes = Float32Array.from(padded);
     const strictBoxes = Float32Array.from(strict);
     const bridgeMask = new Uint8Array(MAP_SIZE * MAP_SIZE);
+    const walkableBridges = [];
     if (bridgeTiles && typeof bridgeTiles.entries === 'function') {
         for (const [key, info] of bridgeTiles.entries()) {
             if (!info || info.walkable === false) continue;
@@ -166,9 +167,48 @@ export function createWalkClearance({
             const by = Number(key.slice(comma + 1));
             if (bx >= 0 && by >= 0 && bx < MAP_SIZE && by < MAP_SIZE) {
                 bridgeMask[by * MAP_SIZE + bx] = 1;
+                walkableBridges.push([bx, by, info]);
             }
         }
     }
+
+    // Continuous ramp corridors connecting each walkable non-dock bridge deck
+    // tile to its adjacent walkable land landing along the span axis so stair
+    // seams (e.g. y in [22.35, 22.49] and [25.51, 25.59]) are exempt from coast
+    // SD without leaking across ±0.5 onto off-bridge neighbor tiles or corner
+    // water (bridge lanes reach at most ±0.28 tile at laneOffsetPx = 8).
+    const BRIDGE_RAMP_HALF_WIDTH = 0.35;
+    const bridgeRamps = [];
+    const seenRampBoxes = new Set();
+    for (const [bx, by, info] of walkableBridges) {
+        if (info.kind === 'dock') continue;
+        const orientation = typeof info.orientation === 'string' ? info.orientation.toUpperCase() : '';
+        let ax = 0;
+        let ay = 0;
+        if (orientation === 'NS') {
+            ay = 1;
+        } else if (orientation === 'EW') {
+            ax = 1;
+        } else {
+            continue;
+        }
+        for (const dir of [-1, 1]) {
+            const lx = bx + ax * dir;
+            const ly = by + ay * dir;
+            if (lx < 0 || ly < 0 || lx >= MAP_SIZE || ly >= MAP_SIZE) continue;
+            if (bridgeMask[ly * MAP_SIZE + lx] === 1) continue;
+            if (pathfinder && !pathfinder.isWalkable(lx, ly)) continue;
+            const x0 = ax === 0 ? bx - BRIDGE_RAMP_HALF_WIDTH : Math.min(bx, lx);
+            const y0 = ax === 0 ? Math.min(by, ly) : by - BRIDGE_RAMP_HALF_WIDTH;
+            const x1 = ax === 0 ? bx + BRIDGE_RAMP_HALF_WIDTH : Math.max(bx, lx);
+            const y1 = ax === 0 ? Math.max(by, ly) : by + BRIDGE_RAMP_HALF_WIDTH;
+            const boxKey = `${x0},${y0},${x1},${y1}`;
+            if (seenRampBoxes.has(boxKey)) continue;
+            seenRampBoxes.add(boxKey);
+            bridgeRamps.push(x0, y0, x1, y1);
+        }
+    }
+    const bridgeRampBoxes = Float32Array.from(bridgeRamps);
 
     function isTileClearOfBuildings(tx, ty) {
         for (let i = 0; i < paddedBoxes.length; i += 4) {
@@ -186,6 +226,16 @@ export function createWalkClearance({
         return true;
     }
 
+    function isInBridgeRamp(tx, ty) {
+        for (let i = 0; i < bridgeRampBoxes.length; i += 4) {
+            if (tx >= bridgeRampBoxes[i] && tx <= bridgeRampBoxes[i + 2]
+                && ty >= bridgeRampBoxes[i + 1] && ty <= bridgeRampBoxes[i + 3]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     function isTileClear(tx, ty) {
         if (!Number.isFinite(tx) || !Number.isFinite(ty)) return false;
         const rx = Math.round(tx);
@@ -193,8 +243,9 @@ export function createWalkClearance({
         if (pathfinder && !pathfinder.isWalkable(rx, ry)) return false;
         if (inVillageMasonry(tx, ty)) return false;
         if (!isTileClearOfBuildings(tx, ty)) return false;
-        const onBridge = rx >= 0 && ry >= 0 && rx < MAP_SIZE && ry < MAP_SIZE
-            && bridgeMask[ry * MAP_SIZE + rx] === 1;
+        const onBridge = (rx >= 0 && ry >= 0 && rx < MAP_SIZE && ry < MAP_SIZE
+            && bridgeMask[ry * MAP_SIZE + rx] === 1)
+            || isInBridgeRamp(tx, ty);
         if (!onBridge && typeof getCoastField === 'function') {
             const coast = getCoastField();
             if (coast && coastExceedsLimit(coast, tx, ty, coastSdLimit)) {
@@ -216,6 +267,7 @@ export function createWalkClearance({
         paddedBoxes,
         strictBoxes,
         bridgeMask,
+        bridgeRampBoxes,
         isTileClearOfBuildings,
         isTileClear,
         isWorldClear,

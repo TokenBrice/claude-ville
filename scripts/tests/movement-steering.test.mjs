@@ -182,9 +182,11 @@ test('BR-3: a route over the central deck keeps both files on their lanes and ne
             return { key, lane: ((point.x - base.x) * southLane.x + (point.y - base.y) * southLane.y) / 10 };
         });
     };
-    // The central hint's laneOffsetPx (6 px, relaxed 2026-11-23; 10 without one).
+    // The central hint's laneOffsetPx (8 px; 10 without one) and landingLaneOffsetPx (4 px; 0 without one).
     const offset = bridgeTiles.get('18,24')?.laneOffsetPx ?? 10;
-    assert.equal(offset, 6, 'the central bridge keeps its files 6 px off its centre line');
+    const landingOffset = bridgeTiles.get('18,24')?.landingLaneOffsetPx ?? 0;
+    assert.equal(offset, 8, 'the central bridge keeps its files 8 px off its centre line');
+    assert.equal(landingOffset, 4, 'the central bridge keeps its landing files 4 px off centre');
     const northbound = route({ tileX: 18, tileY: 28 }, { tileX: 18, tileY: 20 });
     const southbound = route({ tileX: 18, tileY: 20 }, { tileX: 18, tileY: 28 });
     for (const [label, points, side] of [['northbound', northbound, -1], ['southbound', southbound, 1]]) {
@@ -193,7 +195,7 @@ test('BR-3: a route over the central deck keeps both files on their lanes and ne
         for (const point of deck) assert.ok(Math.abs(point.lane - side * offset) < 1e-6, `${label} ${point.key} on lane ${point.lane}`);
         const landings = points.filter((point) => ['18,22', '18,26'].includes(point.key));
         assert.equal(landings.length, 2, `${label} keeps both bridge landing tiles as waypoints`);
-        for (const point of landings) assert.ok(Math.abs(point.lane) < 1e-6, `${label} landing ${point.key} tapers to centre (${point.lane})`);
+        for (const point of landings) assert.ok(Math.abs(point.lane - side * landingOffset) < 1e-6, `${label} landing ${point.key} tapers to ${side * landingOffset} (${point.lane})`);
         assert.ok(Math.abs(points.at(-1).lane) < 1e-9, `${label} ends on its target`);
     }
     // A route that ends on the deck stops on its centre.

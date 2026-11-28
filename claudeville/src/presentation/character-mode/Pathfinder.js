@@ -14,6 +14,8 @@ const TILE_WEIGHTS = Object.freeze({
     standing: 2.5,
     congestionStep: 0.16,
     congestionMax: 1.2,
+    bridgeCongestionStep: 0.34,
+    bridgeCongestionMax: 2.6,
 });
 
 // Four shared profiles, not a unique set of weights per session.
@@ -1263,7 +1265,11 @@ export class Pathfinder {
 
     congestionCostAt(tileX, tileY) {
         const index = this._tileIndex(tileX, tileY);
-        return index < 0 ? 0 : Math.min(TILE_WEIGHTS.congestionMax, this.congestionBlur[index] * TILE_WEIGHTS.congestionStep);
+        if (index < 0) return 0;
+        const isBridge = (this.staticFlags[index] & FLAG_BRIDGE) !== 0;
+        const step = isBridge ? TILE_WEIGHTS.bridgeCongestionStep : TILE_WEIGHTS.congestionStep;
+        const max = isBridge ? TILE_WEIGHTS.bridgeCongestionMax : TILE_WEIGHTS.congestionMax;
+        return Math.min(max, this.congestionBlur[index] * step);
     }
 
     // ---- Personality policy and costs ---------------------------------------
@@ -1328,7 +1334,12 @@ export class Pathfinder {
         if ((crowdMask & CROWD_STANDING) && !goal && this.standingGrid[to]) cost += TILE_WEIGHTS.standing;
         if (crowdMask & CROWD_CONGESTION) {
             const blur = this.congestionBlur[to];
-            if (blur > 0) cost += length * Math.min(TILE_WEIGHTS.congestionMax, blur * TILE_WEIGHTS.congestionStep);
+            if (blur > 0) {
+                const isBridge = (this.staticFlags[to] & staticMask & FLAG_BRIDGE) !== 0;
+                const step = isBridge ? TILE_WEIGHTS.bridgeCongestionStep : TILE_WEIGHTS.congestionStep;
+                const max = isBridge ? TILE_WEIGHTS.bridgeCongestionMax : TILE_WEIGHTS.congestionMax;
+                cost += length * Math.min(max, blur * step);
+            }
         }
         return cost;
     }
@@ -1481,7 +1492,13 @@ export class Pathfinder {
             const weightV = base[tile];
             // Entering v: a standing body there costs unless v is a seed.
             const standingCost = standing && costV !== 0 && standing[tile] ? TILE_WEIGHTS.standing : 0;
-            const crowd = blur && blur[tile] > 0 ? Math.min(TILE_WEIGHTS.congestionMax, blur[tile] * TILE_WEIGHTS.congestionStep) : 0;
+            const isBridge = (flags[tile] & staticMask & FLAG_BRIDGE) !== 0;
+            const crowd = blur && blur[tile] > 0
+                ? Math.min(
+                    isBridge ? TILE_WEIGHTS.bridgeCongestionMax : TILE_WEIGHTS.congestionMax,
+                    blur[tile] * (isBridge ? TILE_WEIGHTS.bridgeCongestionStep : TILE_WEIGHTS.congestionStep),
+                )
+                : 0;
             for (const edge of this._edges(v, true)) {
                 const dir = edge & 7;
                 const u = this._neighbor(v, edge);
@@ -1741,7 +1758,8 @@ export class Pathfinder {
         const key = `${tileX},${tileY}`;
         let weight = 1;
         const weights = pathOptions.weights || TILE_WEIGHTS;
-        if (bridgeTiles?.has(key) || pathOptions.bridgeTiles?.has(key)) {
+        const isBridge = !!(bridgeTiles?.has(key) || pathOptions.bridgeTiles?.has(key));
+        if (isBridge) {
             const info = bridgeTiles?.get?.(key) || pathOptions.bridgeTiles?.get?.(key);
             const preference = pathOptions.preferredBridgeId && info?.bridgeId
                 ? (info.bridgeId === pathOptions.preferredBridgeId ? 0.92 : 1.08)
@@ -1756,7 +1774,9 @@ export class Pathfinder {
         if (pathOptions.avoidTiles?.has(key)) weight += TILE_WEIGHTS.avoid;
         const congestion = Number(pathOptions.congestionTiles?.get?.(key) || 0);
         if (congestion > 0) {
-            weight += Math.min(TILE_WEIGHTS.congestionMax, congestion * TILE_WEIGHTS.congestionStep);
+            const step = isBridge ? TILE_WEIGHTS.bridgeCongestionStep : TILE_WEIGHTS.congestionStep;
+            const max = isBridge ? TILE_WEIGHTS.bridgeCongestionMax : TILE_WEIGHTS.congestionMax;
+            weight += Math.min(max, congestion * step);
         }
         return weight;
     }
