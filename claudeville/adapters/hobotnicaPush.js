@@ -502,6 +502,7 @@ function sanitizeAgentEntry(raw, instanceId, now) {
     supersedes: boundStr(raw.supersedes, 256),
     role: boundStr(raw.role, 120),
     title: boundStr(raw.title, 256),
+    titleRenamed: raw.titleRenamed === true,
     provider,
     model: boundStr(raw.model, 128),
     nativeSessionId: boundStr(raw.nativeSessionId, 256),
@@ -1069,6 +1070,13 @@ class HobotnicaPushStore {
             if (stale) continue;
 
             const resolvedProject = disk.project || entry.cwd || null;
+            const pushRenamedTitle = entry.titleRenamed && entry.title ? entry.title : null;
+            const resolvedAgentName = disk.userNamed
+              ? (pushRenamedTitle || disk.agentName)
+              : (pushRenamedTitle || disk.agentName || entry.title || entry.role || null);
+            const resolvedName = disk.userNamed
+              ? (pushRenamedTitle || disk.name || disk.agentName)
+              : (pushRenamedTitle || disk.name || disk.agentName || entry.title || entry.role || null);
             const overlaid = {
               ...disk,
               // Preserve disk gitEvents, dialogue, lastResults, todos, compactions,
@@ -1096,12 +1104,9 @@ class HobotnicaPushStore {
                 ? entry.promptDetail
                 : (disk.lastToolInput || entry.currentActivityLabel || null),
               lastMessage: disk.lastMessage || entry.latestSnippet || null,
-              agentName: disk.userNamed
-                ? disk.agentName
-                : (disk.agentName || entry.title || entry.role || null),
-              name: disk.userNamed
-                ? (disk.name || disk.agentName)
-                : (disk.name || disk.agentName || entry.title || entry.role || null),
+              agentName: resolvedAgentName,
+              name: resolvedName,
+              userNamed: disk.userNamed === true || Boolean(pushRenamedTitle),
               agentType: isDelegate ? 'sub-agent' : (disk.agentType || 'main'),
               subagentKind: isDelegate ? 'delegate' : (disk.subagentKind || null),
               teamName: null,
@@ -1135,6 +1140,13 @@ class HobotnicaPushStore {
           if (stale) continue;
 
           const resolvedProject = disk.project || entry.cwd || null;
+          const pushRenamedTitle = entry.titleRenamed && entry.title ? entry.title : null;
+          const resolvedAgentName = disk.userNamed
+            ? (pushRenamedTitle || disk.agentName)
+            : (pushRenamedTitle || disk.agentName || entry.title || entry.role || null);
+          const resolvedName = disk.userNamed
+            ? (pushRenamedTitle || disk.name || disk.agentName)
+            : (pushRenamedTitle || disk.name || disk.agentName || entry.title || entry.role || null);
           const overlaid = {
             ...disk,
             project: resolvedProject,
@@ -1160,12 +1172,9 @@ class HobotnicaPushStore {
               ? entry.promptDetail
               : (disk.lastToolInput || entry.currentActivityLabel || null),
             lastMessage: disk.lastMessage || entry.latestSnippet || null,
-            agentName: disk.userNamed
-              ? disk.agentName
-              : (disk.agentName || entry.title || entry.role || null),
-            name: disk.userNamed
-              ? (disk.name || disk.agentName)
-              : (disk.name || disk.agentName || entry.title || entry.role || null),
+            agentName: resolvedAgentName,
+            name: resolvedName,
+            userNamed: disk.userNamed === true || Boolean(pushRenamedTitle),
             agentType: isDelegate ? 'sub-agent' : (disk.agentType || 'main'),
             subagentKind: isDelegate ? 'delegate' : (disk.subagentKind || null),
             teamName: null,
@@ -1196,6 +1205,7 @@ class HobotnicaPushStore {
           subagentKind: isDelegate ? 'delegate' : null,
           agentName: entry.title || entry.role || null,
           name: entry.title || entry.role || null,
+          userNamed: Boolean(entry.titleRenamed && entry.title),
           project: entry.cwd || null,
           model: entry.model || 'glm-5.4',
           status: 'active',

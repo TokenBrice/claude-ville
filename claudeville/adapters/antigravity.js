@@ -243,12 +243,15 @@ function extractUserSettingsModel(content) {
 
 function cleanUserPrompt(content) {
   if (typeof content !== 'string' || !content.trim()) return null;
-  const reqMatches = [...content.matchAll(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/gi)];
+  const reqMatches = [...content.matchAll(/<USER_REQUEST>((?:(?!<USER_REQUEST\b)[\s\S])*?)<\/USER_REQUEST>/gi)];
   let text = reqMatches.length > 0
     ? reqMatches[reqMatches.length - 1][1]
-    : content
-      .replace(/<(?:CONTEXT_SUMMARY|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|SYSTEM_MESSAGE)\b[^>]*>[\s\S]*?<\/(?:CONTEXT_SUMMARY|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|SYSTEM_MESSAGE)>/gi, '')
-      .replace(/^Error:\s*The stream was interrupted\.\s*Please continue the task you were working on\.\s*/i, '');
+    : content;
+  text = text
+    .replace(/<(?:hobotnica_instructions|t3_code_instructions|runtime_info|CONTEXT_SUMMARY|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|SYSTEM_MESSAGE)\b[^>]*>[\s\S]*?<\/(?:hobotnica_instructions|t3_code_instructions|runtime_info|CONTEXT_SUMMARY|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|SYSTEM_MESSAGE)>/gi, '')
+    .replace(/<(?:hobotnica_instructions|t3_code_instructions)\b[^>]*>[\s\S]*$/gi, '')
+    .replace(/<\/?USER_REQUEST\b[^>]*>/gi, '')
+    .replace(/^Error:\s*The stream was interrupted\.\s*Please continue the task you were working on\.\s*/i, '');
   text = text.replace(/\s+/g, ' ').trim();
   return text || null;
 }
@@ -1284,11 +1287,11 @@ class AntigravityAdapter {
           }
         }
       }
-      // T3 Code runs `agy acp` without presence/*.lock files; open conversations
+      // T3 Code and Hobotnica run `agy acp` without presence/*.lock files; open conversations
       // hold SQLite POSIX READ locks on `<rootDir>/conversations/<convId>.db`.
       // Note: `agy acp` never closes `.db` handles of finished native subagents,
       // so callers must restrict `dbLocked` to unsettled non-archived root threads.
-      if (posixLockInodes.size > 0 && isT3AcpRoot(rootDir)) {
+      if (posixLockInodes.size > 0 && (isT3AcpRoot(rootDir) || isHobotnicaAcpRoot(rootDir))) {
         const convDir = path.join(rootDir, 'conversations');
         let dbNames;
         try {
@@ -1396,14 +1399,22 @@ class AntigravityAdapter {
     const { presenceHeld, dbLocked } = activeThresholdMs != null
       ? this._heldConversations()
       : { presenceHeld: new Set(), dbLocked: new Set() };
-    const t3ActiveDelegates = readT3ActiveDelegates();
+    const t3ActiveDelegates = readT3ActiveDelegates({ source: 't3' });
+    const hobotnicaActiveDelegates = readT3ActiveDelegates({ source: 'hobotnica' });
     const t3ActiveDelegateParents = new Set();
     for (const entry of t3ActiveDelegates.values()) {
       if (entry.parentProvider === 'antigravity' && typeof entry.parentNative === 'string' && entry.parentNative) {
         t3ActiveDelegateParents.add(entry.parentNative.toLowerCase());
       }
     }
-    const t3ActiveRunIds = readT3ActiveRunNativeIds('antigravity');
+    const hobotnicaActiveDelegateParents = new Set();
+    for (const entry of hobotnicaActiveDelegates.values()) {
+      if (entry.parentProvider === 'antigravity' && typeof entry.parentNative === 'string' && entry.parentNative) {
+        hobotnicaActiveDelegateParents.add(entry.parentNative.toLowerCase());
+      }
+    }
+    const t3ActiveRunIds = readT3ActiveRunNativeIds('antigravity', { source: 't3' });
+    const hobotnicaActiveRunIds = readT3ActiveRunNativeIds('antigravity', { source: 'hobotnica' });
     const candidates = [];
 
     for (const rootDir of this._surfaceDirs()) {
@@ -1419,6 +1430,13 @@ class AntigravityAdapter {
         noteReadFailure(error);
         continue;
       }
+
+      const rootActiveRunIds = isHobotnicaAcpRoot(rootDir)
+        ? hobotnicaActiveRunIds
+        : (isT3AcpRoot(rootDir) ? t3ActiveRunIds : null);
+      const rootDelegateParents = isHobotnicaAcpRoot(rootDir)
+        ? hobotnicaActiveDelegateParents
+        : (isT3AcpRoot(rootDir) ? t3ActiveDelegateParents : null);
 
       for (const entry of entries) {
         if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
@@ -1446,8 +1464,8 @@ class AntigravityAdapter {
           && now - effectiveMtime > parentGraceMs
           && !presenceHeld.has(lowerId)
           && !dbLocked.has(lowerId)
-          && !t3ActiveRunIds.has(lowerId)
-          && !t3ActiveDelegateParents.has(lowerId)
+          && !(rootActiveRunIds && rootActiveRunIds.has(lowerId))
+          && !(rootDelegateParents && rootDelegateParents.has(lowerId))
         ) continue;
         candidates.push({
           rootDir,
@@ -1462,6 +1480,7 @@ class AntigravityAdapter {
     }
 
     candidates.sort((a, b) => b.effectiveMtime - a.effectiveMtime);
+    const sourceByConvId = new Map();
     for (const candidate of candidates.slice(0, MAX_BRAIN_CONVERSATIONS)) {
       const {
         rootDir,
@@ -1486,6 +1505,10 @@ class AntigravityAdapter {
         const prev = reducedByConvId.get(lowerId);
         if (!prev || reduced.session.lastActivity >= prev.session.lastActivity) {
           reducedByConvId.set(lowerId, reduced);
+          sourceByConvId.set(
+            lowerId,
+            isHobotnicaAcpRoot(rootDir) ? 'hobotnica' : (isT3AcpRoot(rootDir) ? 't3' : null),
+          );
         }
       }
     }
@@ -1502,35 +1525,40 @@ class AntigravityAdapter {
       }
     }
 
-    // A T3 Code delegate's parent is the T3 thread that started it, often on
-    // another provider. A delegate's parent never changes, so a found link is kept.
-    const t3Ids = candidates
-      .filter(c => isT3AcpRoot(c.rootDir) && reducedByConvId.has(c.lowerId))
-      .map(c => c.lowerId);
-    const t3ConvIds = t3Ids.filter(id => !lineageByChild.has(id));
-    for (const [id, link] of readT3Lineage('antigravity', t3ConvIds.filter(id => !this._t3Links.has(id)))) {
-      this._t3Links.set(id, link);
+    // A T3 Code or Hobotnica delegate's parent is the thread that started it,
+    // often on another provider. Each root strictly queries its own state DB so
+    // Hobotnica conversations never read stock `~/.t3/userdata/statev2.sqlite`.
+    const idsBySource = { t3: [], hobotnica: [] };
+    for (const [id, source] of sourceByConvId) {
+      if (source === 't3' || source === 'hobotnica') idsBySource[source].push(id);
+    }
+    for (const source of ['t3', 'hobotnica']) {
+      const sourceConvIds = idsBySource[source].filter(id => !lineageByChild.has(id));
+      const missingIds = sourceConvIds.filter(id => !this._t3Links.has(`${source}:${id}`));
+      for (const [id, link] of readT3Lineage('antigravity', missingIds, { source })) {
+        this._t3Links.set(`${source}:${id}`, link);
+      }
+      for (const id of sourceConvIds) {
+        const link = this._t3Links.get(`${source}:${id}`);
+        if (!link) continue;
+        const parentConvId = link.parentProvider === 'antigravity' && typeof link.parentNative === 'string' && link.parentNative
+          ? link.parentNative.toLowerCase()
+          : null;
+        const parentReduced = parentConvId ? reducedByConvId.get(parentConvId) : null;
+        lineageByChild.set(id, {
+          parentSessionId: link.parentSessionId,
+          ...(parentConvId ? { parentConvId } : {}),
+          ...(parentReduced?.session?.project ? { parentProject: parentReduced.session.project } : {}),
+          agentName: link.title,
+          agentType: 'sub-agent',
+          subagentKind: 'delegate',
+        });
+      }
     }
     trimCache(this._t3Links, 4096);
-    for (const id of t3ConvIds) {
-      const link = this._t3Links.get(id);
-      if (!link) continue;
-      const parentConvId = link.parentProvider === 'antigravity' && typeof link.parentNative === 'string' && link.parentNative
-        ? link.parentNative.toLowerCase()
-        : null;
-      const parentReduced = parentConvId ? reducedByConvId.get(parentConvId) : null;
-      lineageByChild.set(id, {
-        parentSessionId: link.parentSessionId,
-        ...(parentConvId ? { parentConvId } : {}),
-        ...(parentReduced?.session?.project ? { parentProject: parentReduced.session.project } : {}),
-        agentName: link.title,
-        agentType: 'sub-agent',
-        subagentKind: 'delegate',
-      });
-    }
 
     // Compute transitive rootConvId (bounded depth) for both native children
-    // and T3 delegates whose parent is another Antigravity conversation.
+    // and T3/Hobotnica delegates whose parent is another Antigravity conversation.
     for (const [childId, info] of lineageByChild) {
       let root = info.parentConvId || null;
       const visited = new Set([childId]);
@@ -1549,12 +1577,30 @@ class AntigravityAdapter {
     // cached by statev2.sqlite + -wal signature inside t3code.js. Active run
     // native IDs come strictly from `readT3ActiveRunNativeIds` above so a retry
     // on a new native conversation ID never revives an earlier completed attempt.
-    const t3Titles = readT3RenamedTitles('antigravity', t3Ids);
-    const t3RootStates = readT3RootThreadState('antigravity', t3Ids);
+    const t3Titles = new Map([
+      ...readT3RenamedTitles('antigravity', idsBySource.t3, { source: 't3' }),
+      ...readT3RenamedTitles('antigravity', idsBySource.hobotnica, { source: 'hobotnica' }),
+    ]);
+    const t3RootStates = new Map([
+      ...readT3RootThreadState('antigravity', idsBySource.t3, { source: 't3' }),
+      ...readT3RootThreadState('antigravity', idsBySource.hobotnica, { source: 'hobotnica' }),
+    ]);
+    const isActiveOrchestratorRun = (id) => {
+      const source = sourceByConvId.get(id);
+      if (source === 'hobotnica') return hobotnicaActiveRunIds.has(id);
+      if (source === 't3') return t3ActiveRunIds.has(id);
+      return false;
+    };
+    const delegateGroupFor = (id) => {
+      const source = sourceByConvId.get(id);
+      if (source === 'hobotnica') return hobotnicaActiveDelegates.get(sessionIdFor(id)) || null;
+      if (source === 't3') return t3ActiveDelegates.get(sessionIdFor(id)) || null;
+      return null;
+    };
 
     // CRITICAL: `agy acp` never closes `.db` handles of finished native subagents,
     // so a `.db` POSIX lock counts as `held` ONLY for unsettled, non-archived,
-    // non-deleted ROOT threads (never native children and never T3 delegates).
+    // non-deleted ROOT threads (never native children and never delegates).
     const dbRootHeld = new Set();
     for (const id of dbLocked) {
       if (lineageByChild.has(id)) continue;
@@ -1569,17 +1615,17 @@ class AntigravityAdapter {
       // A long think, a long command or a swarm_wait writes no step. A
       // conversation its live agy process holds stays, idle at the prompt too. A
       // crew member of one that is neither killed nor parked stays while its turn
-      // is open or a background task it started still runs; active T3 runs keep
-      // silent `xhigh` thinkers alive even without `/proc/locks`.
+      // is open or a background task it started still runs; active T3/Hobotnica runs
+      // keep silent `xhigh` thinkers alive even without `/proc/locks`.
       const lineage = lineageByChild.get(id);
       const isHeld = presenceHeld.has(id) || dbRootHeld.has(id);
       const rootHeld = Boolean(lineage?.rootConvId && (
         presenceHeld.has(lineage.rootConvId)
         || dbRootHeld.has(lineage.rootConvId)
-        || t3ActiveRunIds.has(lineage.rootConvId)
+        || isActiveOrchestratorRun(lineage.rootConvId)
       ));
-      const isActiveT3Run = t3ActiveRunIds.has(id);
-      const hasT3Delegates = t3ActiveDelegates.has(sessionIdFor(id));
+      const isActiveT3Run = isActiveOrchestratorRun(id);
+      const hasT3Delegates = Boolean(delegateGroupFor(id));
       const live = isHeld || isActiveT3Run || (rootHeld && !lineage.killed && !reduced.parked);
       const taskStarts = live ? reduced.backgroundTasks.filter(at => now - at < BACKGROUND_TASK_MAX_MS) : [];
       if (taskStarts.length > 0) taskStartsById.set(id, taskStarts);
@@ -1607,7 +1653,7 @@ class AntigravityAdapter {
       const childReduced = reducedByConvId.get(childId);
       if (!lineage?.parentConvId || !childReduced || childReduced.session.sessionEndedAt) continue;
       const childTurnState = deriveTurnState(childReduced.turnDescriptor).turnState;
-      if (childTurnState === 'awaiting_input' && !t3ActiveRunIds.has(childId)) continue;
+      if (childTurnState === 'awaiting_input' && !isActiveOrchestratorRun(childId)) continue;
       if (!activeChildrenByParent.has(lineage.parentConvId)) {
         activeChildrenByParent.set(lineage.parentConvId, []);
       }
@@ -1620,7 +1666,7 @@ class AntigravityAdapter {
       if (!reduced) continue;
       const liveChildren = activeChildrenByParent.get(id) || [];
       const localChildSessionIds = new Set(liveChildren.map(c => c.session.sessionId));
-      const t3DelegateGroup = t3ActiveDelegates.get(sessionIdFor(id)) || null;
+      const t3DelegateGroup = delegateGroupFor(id);
       const extraT3Delegates = (t3DelegateGroup?.children || []).filter(
         child => !child.childSessionId || !localChildSessionIds.has(child.childSessionId),
       );
@@ -1700,7 +1746,13 @@ class AntigravityAdapter {
     }, { detail: true });
 
     if (!reduced) return empty();
-    const presented = presentReducedEntry(reduced, { now: this.now() });
+    const detailSource = isHobotnicaAcpRoot(indexed.rootDir)
+      ? 'hobotnica'
+      : (isT3AcpRoot(indexed.rootDir) ? 't3' : null);
+    const t3Title = detailSource
+      ? (readT3RenamedTitles('antigravity', [lowerId], { source: detailSource }).get(lowerId) || null)
+      : null;
+    const presented = presentReducedEntry(reduced, { now: this.now(), t3Title });
     if (project && !presented.detail.project) presented.detail.project = project;
     return presented.detail;
   }

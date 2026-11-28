@@ -1021,7 +1021,11 @@ function projectCodexPrompt(content) {
       : [];
   const text = parts
     .filter(part => !INJECTED_USER_PREFIXES.test(part))
-    .map(part => part.replace(/<(system-reminder|advisory)\b[^>]*>[\s\S]*?<\/\1>/gi, ''))
+    .map((part) => {
+      const reqMatches = [...part.matchAll(/<user_request>((?:(?!<user_request\b)[\s\S])*?)<\/user_request>/gi)];
+      const body = reqMatches.length > 0 ? reqMatches[reqMatches.length - 1][1] : part;
+      return body.replace(/<(system-reminder|advisory|hobotnica_instructions|t3_code_instructions|runtime_info)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
+    })
     .join('\n')
     .trim();
   return text.slice(0, 200) || null;

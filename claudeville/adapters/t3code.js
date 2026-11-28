@@ -1,10 +1,12 @@
 /**
- * T3 Code state database (`~/.t3/userdata/statev2.sqlite`) helpers.
+ * T3 Code & Hobotnica orchestration state database (`statev2.sqlite`) helpers.
  *
- * Opened strictly read-only through `node:sqlite` (unflagged from Node 22.13;
- * graceful no-op when `node:sqlite` is unavailable, or when the database is
- * missing, locked, or uses a reduced schema). Queries are cached per database
- * + `-wal` stat signature so frequent 2s adapter polls cost only stat calls.
+ * Reads `~/.t3/userdata/statev2.sqlite` and `$HOBOTNICA_HOME/userdata/statev2.sqlite`
+ * (default `~/.local/share/hobotnica/userdata/statev2.sqlite`) strictly read-only
+ * through `node:sqlite` (unflagged from Node 22.13; graceful no-op when `node:sqlite`
+ * is unavailable, or when a database is missing, locked, or uses a reduced schema).
+ * Queries are cached per database path + `-wal` stat signature so frequent 2s adapter
+ * polls cost only stat calls.
  */
 const fs = require('fs');
 const os = require('os');
@@ -58,12 +60,42 @@ function t3StateDbPath() {
   return path.join(t3UserDataDir(), 'statev2.sqlite');
 }
 
-function t3StateDbExists() {
+function hobotnicaHomeDir() {
+  const configured = typeof process.env.HOBOTNICA_HOME === 'string'
+    ? process.env.HOBOTNICA_HOME.trim()
+    : '';
+  return configured || path.join(os.homedir(), '.local', 'share', 'hobotnica');
+}
+
+function hobotnicaUserDataDir() {
+  return path.join(hobotnicaHomeDir(), 'userdata');
+}
+
+function hobotnicaStateDbPath() {
+  return path.join(hobotnicaUserDataDir(), 'statev2.sqlite');
+}
+
+function resolveSourceDbPaths(source = 'all') {
+  if (source === 't3') return [t3StateDbPath()];
+  if (source === 'hobotnica') return [hobotnicaStateDbPath()];
+  // Order T3 before Hobotnica so when callers merge maps by key, Hobotnica wins on overlap.
+  return [...new Set([t3StateDbPath(), hobotnicaStateDbPath()])];
+}
+
+function dbPathExists(dbPath) {
   try {
-    return fs.existsSync(t3StateDbPath());
+    return fs.existsSync(dbPath);
   } catch {
     return false;
   }
+}
+
+function t3StateDbExists(source = 'all') {
+  return resolveSourceDbPaths(source).some(dbPathExists);
+}
+
+function hobotnicaStateDbExists() {
+  return dbPathExists(hobotnicaStateDbPath());
 }
 
 let _nodeSqlite;
@@ -88,36 +120,49 @@ function statPart(filePath) {
   }
 }
 
-function t3StateSignature() {
-  const dbPath = t3StateDbPath();
+function stateDbSignature(dbPath) {
   const main = statPart(dbPath);
   if (!main) return null;
   const wal = statPart(`${dbPath}-wal`) || 'none';
   return `${dbPath}|${main}|${wal}`;
 }
 
-let _cache = { sig: null, entries: new Map(), schema: null, glmDiscovery: new Map() };
+function t3StateSignature(source = 't3') {
+  if (source === 'hobotnica') return stateDbSignature(hobotnicaStateDbPath());
+  if (source === 'all') {
+    const sigs = resolveSourceDbPaths('all').map(stateDbSignature).filter(Boolean);
+    return sigs.length > 0 ? sigs.join('||') : null;
+  }
+  return stateDbSignature(t3StateDbPath());
+}
+
+function hobotnicaStateSignature() {
+  return stateDbSignature(hobotnicaStateDbPath());
+}
+
+const _cachesByPath = new Map();
 
 function clearT3Cache() {
-  _cache = { sig: null, entries: new Map(), schema: null, glmDiscovery: new Map() };
+  _cachesByPath.clear();
 }
 
-function syncCacheSignature() {
-  const sig = t3StateSignature();
+function syncCacheForPath(dbPath) {
+  const sig = stateDbSignature(dbPath);
   if (!sig) {
-    if (_cache.sig !== null) clearT3Cache();
+    _cachesByPath.delete(dbPath);
     return null;
   }
-  if (_cache.sig !== sig) {
-    _cache = { sig, entries: new Map(), schema: null, glmDiscovery: new Map() };
+  let cache = _cachesByPath.get(dbPath);
+  if (!cache || cache.sig !== sig) {
+    cache = { sig, entries: new Map(), schema: null, glmDiscovery: new Map() };
+    _cachesByPath.set(dbPath, cache);
   }
-  return sig;
+  return cache;
 }
 
-function withT3Db(fn, fallback = null) {
+function withStateDb(dbPath, fn, fallback = null) {
   const sqlite = loadNodeSqlite();
-  const dbPath = t3StateDbPath();
-  if (!sqlite?.DatabaseSync || !t3StateDbExists()) return fallback;
+  if (!sqlite?.DatabaseSync || !dbPathExists(dbPath)) return fallback;
   let db;
   try {
     db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
@@ -131,21 +176,21 @@ function withT3Db(fn, fallback = null) {
   }
 }
 
-function cachedT3Query(cacheKey, compute, fallback) {
-  const sig = syncCacheSignature();
-  if (!sig) return fallback;
-  if (_cache.entries.has(cacheKey)) return _cache.entries.get(cacheKey);
-  const value = withT3Db(db => {
-    const schema = readSchemaInfo(db);
+function cachedStateQuery(dbPath, cacheKey, compute, fallback) {
+  const cache = syncCacheForPath(dbPath);
+  if (!cache) return fallback;
+  if (cache.entries.has(cacheKey)) return cache.entries.get(cacheKey);
+  const value = withStateDb(dbPath, db => {
+    const schema = readSchemaInfo(db, cache);
     return compute(db, schema);
   }, T3_QUERY_FAILED);
   if (value === T3_QUERY_FAILED) return fallback;
-  _cache.entries.set(cacheKey, value);
+  cache.entries.set(cacheKey, value);
   return value;
 }
 
-function readSchemaInfo(db) {
-  if (_cache.schema) return _cache.schema;
+function readSchemaInfo(db, cache) {
+  if (cache?.schema) return cache.schema;
   const tables = new Set();
   const columns = new Map();
   const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
@@ -172,13 +217,14 @@ function readSchemaInfo(db) {
     } catch { /* ignore */ }
     columns.set(tbl, cols);
   }
-  _cache.schema = { tables, columns };
-  return _cache.schema;
+  const schema = { tables, columns };
+  if (cache) cache.schema = schema;
+  return schema;
 }
 
 function queryT3State(sql, ...params) {
   const key = `raw:${sql}:${JSON.stringify(params)}`;
-  return cachedT3Query(key, (db) => {
+  return cachedStateQuery(t3StateDbPath(), key, (db) => {
     try {
       return db.prepare(sql).all(...params);
     } catch {
@@ -218,9 +264,15 @@ function isSubagentLineage(lineage) {
   return !rel || rel === 'subagent';
 }
 
+const GLM_PROVIDER_HINT_RE = /(?:^|[^a-z0-9])(?:glm|zai)(?:$|[^a-z0-9])/i;
+
 function parentSessionIdFor(provider, nativeId) {
-  const prefix = T3_PARENT_PREFIX[provider];
-  if (prefix === undefined || typeof nativeId !== 'string' || !nativeId.trim()) return null;
+  if (typeof provider !== 'string' || typeof nativeId !== 'string' || !nativeId.trim()) return null;
+  let prefix = T3_PARENT_PREFIX[provider];
+  if (prefix === undefined && GLM_PROVIDER_HINT_RE.test(provider)) {
+    prefix = 'zai-';
+  }
+  if (prefix === undefined) return null;
   return `${prefix}${nativeId.trim()}`;
 }
 
@@ -242,10 +294,17 @@ function canonicalWorkingSetPath(rawPath, project) {
 
 function cleanT3UserPrompt(text) {
   if (typeof text !== 'string' || !text.trim()) return null;
-  const reqMatches = [...text.matchAll(/<user_request>([\s\S]*?)<\/user_request>/gi)];
-  const body = reqMatches.length > 0
+  const reqMatches = [...text.matchAll(/<user_request>((?:(?!<user_request\b)[\s\S])*?)<\/user_request>/gi)];
+  const rawBody = reqMatches.length > 0
     ? reqMatches[reqMatches.length - 1][1]
-    : text.replace(/<t3_code_instructions>[\s\S]*?<\/t3_code_instructions>/gi, '');
+    : text;
+  const body = rawBody
+    .replace(
+      /<(?:t3_code_instructions|hobotnica_instructions|runtime_info)\b[^>]*>[\s\S]*?<\/(?:t3_code_instructions|hobotnica_instructions|runtime_info)>/gi,
+      '',
+    )
+    .replace(/<(?:t3_code_instructions|hobotnica_instructions)\b[^>]*>[\s\S]*$/gi, '')
+    .replace(/<\/?user_request\b[^>]*>/gi, '');
   const cleaned = body.replace(/\s+/g, ' ').trim();
   return cleaned ? cleaned.slice(0, 200) : null;
 }
@@ -310,24 +369,28 @@ WHERE a.provider = ?
   AND lower(json_extract(a.payload_json, '$.nativeThreadId')) IN (SELECT value FROM json_each(?))
 `;
 
-function readT3RenamedTitles(provider, nativeIds) {
+function readT3RenamedTitles(provider, nativeIds, { source = 'all' } = {}) {
   const uniqueIds = normalizedIdsKey(nativeIds);
   if (!provider || uniqueIds.length === 0) return new Map();
   const idsJson = JSON.stringify(uniqueIds);
   const key = `renamed:${provider}:${idsJson}`;
-  const result = cachedT3Query(key, (db, schema) => {
-    const titles = new Map();
-    if (!schema.tables.has('orchestration_v2_projection_run_attempts')
-      || !schema.tables.has('orchestration_v2_projection_threads')) {
+  const merged = new Map();
+  for (const dbPath of resolveSourceDbPaths(source)) {
+    const result = cachedStateQuery(dbPath, key, (db, schema) => {
+      const titles = new Map();
+      if (!schema.tables.has('orchestration_v2_projection_run_attempts')
+        || !schema.tables.has('orchestration_v2_projection_threads')) {
+        return titles;
+      }
+      for (const row of db.prepare(T3_RENAMED_SQL).all(provider, idsJson)) {
+        const title = typeof row.title === 'string' ? row.title.trim().slice(0, 128) : '';
+        if (title && row.native) titles.set(row.native, title);
+      }
       return titles;
-    }
-    for (const row of db.prepare(T3_RENAMED_SQL).all(provider, idsJson)) {
-      const title = typeof row.title === 'string' ? row.title.trim().slice(0, 128) : '';
-      if (title && row.native) titles.set(row.native, title);
-    }
-    return titles;
-  }, new Map());
-  return new Map(result);
+    }, new Map());
+    for (const [native, title] of result) merged.set(native, title);
+  }
+  return merged;
 }
 
 // ─── 2. Lineage ───────────────────────────────────────────
@@ -427,48 +490,52 @@ function sqlEpochMsExpr(expr) {
  * Resolve T3 Code parent thread lineage for subagent threads of `provider`.
  * Returns Map<lowerNativeId, { parentSessionId, parentProvider, parentNative, title, titleRenamed, relationshipToParent }>.
  */
-function readT3Lineage(provider, nativeIds) {
+function readT3Lineage(provider, nativeIds, { source = 'all' } = {}) {
   const uniqueIds = normalizedIdsKey(nativeIds);
   if (!provider || uniqueIds.length === 0) return new Map();
   const idsJson = JSON.stringify(uniqueIds);
   const key = `lineage:${provider}:${idsJson}`;
-  const result = cachedT3Query(key, (db, schema) => {
-    const links = new Map();
-    if (!schema.tables.has('orchestration_v2_projection_run_attempts')
-      || !schema.tables.has('orchestration_v2_projection_threads')) {
+  const merged = new Map();
+  for (const dbPath of resolveSourceDbPaths(source)) {
+    const result = cachedStateQuery(dbPath, key, (db, schema) => {
+      const links = new Map();
+      if (!schema.tables.has('orchestration_v2_projection_run_attempts')
+        || !schema.tables.has('orchestration_v2_projection_threads')) {
+        return links;
+      }
+      const sql = `
+        ${buildAttemptCte(schema)}
+        SELECT lower(child.native) AS native,
+               t.title AS title,
+               json_extract(t.payload_json, '$.titleRenamed') AS titleRenamed,
+               json_extract(t.payload_json, '$.lineage.relationshipToParent') AS relationshipToParent,
+               parent.provider AS parentProvider,
+               parent.native AS parentNative
+        FROM attempt child
+        JOIN orchestration_v2_projection_threads t ON t.thread_id = child.thread_id
+        JOIN attempt parent ON parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId') AND parent.rank = 1
+        WHERE child.provider = ?
+          AND lower(child.native) IN (SELECT value FROM json_each(?))
+      `;
+      for (const row of db.prepare(sql).all(provider, idsJson)) {
+        const rel = typeof row.relationshipToParent === 'string' ? row.relationshipToParent.trim() : null;
+        if (rel && rel.toLowerCase() !== 'subagent') continue;
+        const parentSessionId = parentSessionIdFor(row.parentProvider, row.parentNative);
+        if (!parentSessionId || !row.native) continue;
+        links.set(row.native, {
+          parentSessionId,
+          parentProvider: row.parentProvider,
+          parentNative: row.parentNative,
+          title: typeof row.title === 'string' ? row.title.trim().slice(0, 128) || null : null,
+          titleRenamed: row.titleRenamed === 1 || row.titleRenamed === true,
+          relationshipToParent: rel,
+        });
+      }
       return links;
-    }
-    const sql = `
-      ${buildAttemptCte(schema)}
-      SELECT lower(child.native) AS native,
-             t.title AS title,
-             json_extract(t.payload_json, '$.titleRenamed') AS titleRenamed,
-             json_extract(t.payload_json, '$.lineage.relationshipToParent') AS relationshipToParent,
-             parent.provider AS parentProvider,
-             parent.native AS parentNative
-      FROM attempt child
-      JOIN orchestration_v2_projection_threads t ON t.thread_id = child.thread_id
-      JOIN attempt parent ON parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId') AND parent.rank = 1
-      WHERE child.provider = ?
-        AND lower(child.native) IN (SELECT value FROM json_each(?))
-    `;
-    for (const row of db.prepare(sql).all(provider, idsJson)) {
-      const rel = typeof row.relationshipToParent === 'string' ? row.relationshipToParent.trim() : null;
-      if (rel && rel.toLowerCase() !== 'subagent') continue;
-      const parentSessionId = parentSessionIdFor(row.parentProvider, row.parentNative);
-      if (!parentSessionId || !row.native) continue;
-      links.set(row.native, {
-        parentSessionId,
-        parentProvider: row.parentProvider,
-        parentNative: row.parentNative,
-        title: typeof row.title === 'string' ? row.title.trim().slice(0, 128) || null : null,
-        titleRenamed: row.titleRenamed === 1 || row.titleRenamed === true,
-        relationshipToParent: rel,
-      });
-    }
-    return links;
-  }, new Map());
-  return new Map([...result.entries()].map(([k, v]) => [k, { ...v }]));
+    }, new Map());
+    for (const [k, v] of result) merged.set(k, { ...v });
+  }
+  return merged;
 }
 
 // ─── 3. Active delegates grouped by parent session ID ─────
@@ -481,52 +548,54 @@ function readT3Lineage(provider, nativeIds) {
  *
  * Returns Map<parentSessionId, { count, since, parentProvider, parentNative, children }>.
  */
-function readT3ActiveDelegates() {
+function readT3ActiveDelegates({ source = 'all' } = {}) {
   const key = 'activeDelegates';
-  const result = cachedT3Query(key, (db, schema) => {
-    const byParent = new Map();
-    const runCols = schema.columns.get('orchestration_v2_projection_runs');
-    const threadCols = schema.columns.get('orchestration_v2_projection_threads');
-    if (!runCols || !threadCols
-      || !runCols.has('status')
-      || !schema.tables.has('orchestration_v2_projection_run_attempts')) {
-      return byParent;
-    }
+  const merged = new Map();
+  for (const dbPath of resolveSourceDbPaths(source)) {
+    const result = cachedStateQuery(dbPath, key, (db, schema) => {
+      const byParent = new Map();
+      const runCols = schema.columns.get('orchestration_v2_projection_runs');
+      const threadCols = schema.columns.get('orchestration_v2_projection_threads');
+      if (!runCols || !threadCols
+        || !runCols.has('status')
+        || !schema.tables.has('orchestration_v2_projection_run_attempts')) {
+        return byParent;
+      }
 
-    const startedExpr = runCols.has('payload_json') && runCols.has('requested_at')
-      ? "COALESCE(json_extract(r.payload_json, '$.startedAt'), r.requested_at)"
-      : (runCols.has('requested_at') ? 'r.requested_at' : 'NULL');
-    const childDeletedFilter = threadCols.has('deleted_at') ? 'AND t.deleted_at IS NULL' : '';
-    const hasProviderThreads = schema.tables.has('orchestration_v2_projection_provider_threads');
-    const attemptCols = schema.columns.get('orchestration_v2_projection_run_attempts') || new Set();
-    const hasAttemptRunId = attemptCols.has('run_id');
-    const attemptOrder = attemptCols.has('attempt_ordinal') ? 'a.attempt_ordinal DESC, a.rowid DESC' : 'a.rowid DESC';
-    const ptJoinKey = runCols.has('provider_thread_id') && threadCols.has('active_provider_thread_id')
-      ? 'COALESCE(r.provider_thread_id, t.active_provider_thread_id)'
-      : (runCols.has('provider_thread_id') ? 'r.provider_thread_id' : 't.active_provider_thread_id');
-    const ptJoin = hasProviderThreads
-      ? `LEFT JOIN orchestration_v2_projection_provider_threads pt ON pt.provider_thread_id = ${ptJoinKey}`
-      : '';
-    const ptNativeExpr = hasProviderThreads
-      ? "COALESCE(child.native, json_extract(pt.payload_json, '$.nativeThreadRef.nativeId'))"
-      : 'child.native';
-    const childProviderExpr = runCols.has('provider')
-      ? 'COALESCE(child.provider, r.provider)'
-      : 'child.provider';
-    const runAttemptCte = hasAttemptRunId
-      ? `,
+      const startedExpr = runCols.has('payload_json') && runCols.has('requested_at')
+        ? "COALESCE(json_extract(r.payload_json, '$.startedAt'), r.requested_at)"
+        : (runCols.has('requested_at') ? 'r.requested_at' : 'NULL');
+      const childDeletedFilter = threadCols.has('deleted_at') ? 'AND t.deleted_at IS NULL' : '';
+      const hasProviderThreads = schema.tables.has('orchestration_v2_projection_provider_threads');
+      const attemptCols = schema.columns.get('orchestration_v2_projection_run_attempts') || new Set();
+      const hasAttemptRunId = attemptCols.has('run_id');
+      const attemptOrder = attemptCols.has('attempt_ordinal') ? 'a.attempt_ordinal DESC, a.rowid DESC' : 'a.rowid DESC';
+      const ptJoinKey = runCols.has('provider_thread_id') && threadCols.has('active_provider_thread_id')
+        ? 'COALESCE(r.provider_thread_id, t.active_provider_thread_id)'
+        : (runCols.has('provider_thread_id') ? 'r.provider_thread_id' : 't.active_provider_thread_id');
+      const ptJoin = hasProviderThreads
+        ? `LEFT JOIN orchestration_v2_projection_provider_threads pt ON pt.provider_thread_id = ${ptJoinKey}`
+        : '';
+      const ptNativeExpr = hasProviderThreads
+        ? "COALESCE(child.native, json_extract(pt.payload_json, '$.nativeThreadRef.nativeId'))"
+        : 'child.native';
+      const childProviderExpr = runCols.has('provider')
+        ? 'COALESCE(child.provider, r.provider)'
+        : 'child.provider';
+      const runAttemptCte = hasAttemptRunId
+        ? `,
       run_attempt AS (
         SELECT a.run_id, a.provider, json_extract(a.payload_json, '$.nativeThreadId') AS native,
           ROW_NUMBER() OVER (PARTITION BY a.run_id ORDER BY ${attemptOrder}) AS rank
         FROM orchestration_v2_projection_run_attempts a
         WHERE json_extract(a.payload_json, '$.nativeThreadId') IS NOT NULL
       )`
-      : '';
-    const childAttemptJoin = hasAttemptRunId
-      ? 'LEFT JOIN run_attempt child ON child.run_id = r.run_id AND child.rank = 1'
-      : 'LEFT JOIN attempt child ON child.thread_id = r.thread_id AND child.rank = 1';
+        : '';
+      const childAttemptJoin = hasAttemptRunId
+        ? 'LEFT JOIN run_attempt child ON child.run_id = r.run_id AND child.rank = 1'
+        : 'LEFT JOIN attempt child ON child.thread_id = r.thread_id AND child.rank = 1';
 
-    const sql = `
+      const sql = `
       WITH ${buildAttemptCteBody(schema)}
       ${runAttemptCte}
       SELECT r.thread_id AS childThreadId,
@@ -547,62 +616,83 @@ function readT3ActiveDelegates() {
         ${childDeletedFilter}
     `;
 
-    const seenChildrenByParent = new Map();
-    for (const row of db.prepare(sql).all()) {
-      const rel = typeof row.relationshipToParent === 'string' ? row.relationshipToParent.trim().toLowerCase() : '';
-      if (rel && rel !== 'subagent') continue;
-      const parentSessionId = parentSessionIdFor(row.parentProvider, row.parentNative);
-      if (!parentSessionId) continue;
+      const seenChildrenByParent = new Map();
+      for (const row of db.prepare(sql).all()) {
+        const rel = typeof row.relationshipToParent === 'string' ? row.relationshipToParent.trim().toLowerCase() : '';
+        if (rel && rel !== 'subagent') continue;
+        const parentSessionId = parentSessionIdFor(row.parentProvider, row.parentNative);
+        if (!parentSessionId) continue;
 
-      const startedAt = parseTs(row.startedAt) || null;
-      const childSessionId = parentSessionIdFor(row.childProvider, row.childNative);
+        const startedAt = parseTs(row.startedAt) || null;
+        const childSessionId = parentSessionIdFor(row.childProvider, row.childNative);
 
-      let childrenByThread = seenChildrenByParent.get(parentSessionId);
-      if (!childrenByThread) {
-        childrenByThread = new Map();
-        seenChildrenByParent.set(parentSessionId, childrenByThread);
-      }
-      const existingChild = childrenByThread.get(row.childThreadId);
-      if (existingChild) {
-        if (startedAt && (!existingChild.startedAt || startedAt < existingChild.startedAt)) {
-          existingChild.startedAt = startedAt;
+        let childrenByThread = seenChildrenByParent.get(parentSessionId);
+        if (!childrenByThread) {
+          childrenByThread = new Map();
+          seenChildrenByParent.set(parentSessionId, childrenByThread);
         }
-        continue;
-      }
-      childrenByThread.set(row.childThreadId, {
-        childThreadId: row.childThreadId,
-        childProvider: row.childProvider || null,
-        childNative: row.childNative || null,
-        childSessionId,
-        startedAt,
-      });
+        const existingChild = childrenByThread.get(row.childThreadId);
+        if (existingChild) {
+          if (startedAt && (!existingChild.startedAt || startedAt < existingChild.startedAt)) {
+            existingChild.startedAt = startedAt;
+          }
+          continue;
+        }
+        childrenByThread.set(row.childThreadId, {
+          childThreadId: row.childThreadId,
+          childProvider: row.childProvider || null,
+          childNative: row.childNative || null,
+          childSessionId,
+          startedAt,
+        });
 
-      if (!byParent.has(parentSessionId)) {
-        byParent.set(parentSessionId, {
-          parentProvider: row.parentProvider,
-          parentNative: row.parentNative,
-          count: 0,
-          since: null,
-          children: [],
+        if (!byParent.has(parentSessionId)) {
+          byParent.set(parentSessionId, {
+            parentProvider: row.parentProvider,
+            parentNative: row.parentNative,
+            count: 0,
+            since: null,
+            children: [],
+          });
+        }
+      }
+
+      for (const [parentSessionId, entry] of byParent) {
+        const children = [...(seenChildrenByParent.get(parentSessionId)?.values() || [])];
+        const starts = children.map(c => c.startedAt).filter(ts => Number.isFinite(ts) && ts > 0);
+        entry.children = children;
+        entry.count = children.length;
+        entry.since = starts.length > 0 ? Math.min(...starts) : null;
+      }
+
+      return byParent;
+    }, new Map());
+
+    for (const [parentSessionId, entry] of result) {
+      const existing = merged.get(parentSessionId);
+      if (!existing) {
+        merged.set(parentSessionId, {
+          ...entry,
+          children: entry.children.map(c => ({ ...c })),
+        });
+      } else {
+        const byChildId = new Map(existing.children.map(c => [c.childThreadId, c]));
+        for (const child of entry.children) {
+          byChildId.set(child.childThreadId, { ...child });
+        }
+        const children = [...byChildId.values()];
+        const starts = children.map(c => c.startedAt).filter(ts => Number.isFinite(ts) && ts > 0);
+        merged.set(parentSessionId, {
+          ...entry,
+          children,
+          count: children.length,
+          since: starts.length > 0 ? Math.min(...starts) : null,
         });
       }
     }
+  }
 
-    for (const [parentSessionId, entry] of byParent) {
-      const children = [...(seenChildrenByParent.get(parentSessionId)?.values() || [])];
-      const starts = children.map(c => c.startedAt).filter(ts => Number.isFinite(ts) && ts > 0);
-      entry.children = children;
-      entry.count = children.length;
-      entry.since = starts.length > 0 ? Math.min(...starts) : null;
-    }
-
-    return byParent;
-  }, new Map());
-
-  return new Map([...result.entries()].map(([k, v]) => [
-    k,
-    { ...v, children: v.children.map(c => ({ ...c })) },
-  ]));
+  return merged;
 }
 
 // ─── 4. Root thread state & active run native IDs ─────────
@@ -611,34 +701,36 @@ function readT3ActiveDelegates() {
  * Return per-nativeId `{ settledAt, archivedAt, deletedAt, isSubagent, activeRun }`
  * from `orchestration_v2_projection_threads` + `orchestration_v2_projection_runs`.
  */
-function readT3RootThreadState(provider, nativeIds) {
+function readT3RootThreadState(provider, nativeIds, { source = 'all' } = {}) {
   const uniqueIds = normalizedIdsKey(nativeIds);
   if (!provider || uniqueIds.length === 0) return new Map();
   const idsJson = JSON.stringify(uniqueIds);
   const key = `rootState:${provider}:${idsJson}`;
-  const result = cachedT3Query(key, (db, schema) => {
-    const states = new Map();
-    const threadCols = schema.columns.get('orchestration_v2_projection_threads');
-    if (!threadCols || !schema.tables.has('orchestration_v2_projection_run_attempts')) {
-      return states;
-    }
-    const activeRunCte = buildActiveRunNativeCte(schema);
-    const archivedExpr = threadCols.has('archived_at')
-      ? "COALESCE(t.archived_at, json_extract(t.payload_json, '$.archivedAt'))"
-      : "json_extract(t.payload_json, '$.archivedAt')";
-    const deletedExpr = threadCols.has('deleted_at')
-      ? "COALESCE(t.deleted_at, json_extract(t.payload_json, '$.deletedAt'))"
-      : "json_extract(t.payload_json, '$.deletedAt')";
-    const updatedOrder = threadCols.has('updated_at') ? 'ORDER BY t.updated_at ASC' : '';
-    const activeRunExpr = activeRunCte
-      ? `EXISTS (
+  const merged = new Map();
+  for (const dbPath of resolveSourceDbPaths(source)) {
+    const result = cachedStateQuery(dbPath, key, (db, schema) => {
+      const states = new Map();
+      const threadCols = schema.columns.get('orchestration_v2_projection_threads');
+      if (!threadCols || !schema.tables.has('orchestration_v2_projection_run_attempts')) {
+        return states;
+      }
+      const activeRunCte = buildActiveRunNativeCte(schema);
+      const archivedExpr = threadCols.has('archived_at')
+        ? "COALESCE(t.archived_at, json_extract(t.payload_json, '$.archivedAt'))"
+        : "json_extract(t.payload_json, '$.archivedAt')";
+      const deletedExpr = threadCols.has('deleted_at')
+        ? "COALESCE(t.deleted_at, json_extract(t.payload_json, '$.deletedAt'))"
+        : "json_extract(t.payload_json, '$.deletedAt')";
+      const updatedOrder = threadCols.has('updated_at') ? 'ORDER BY t.updated_at ASC' : '';
+      const activeRunExpr = activeRunCte
+        ? `EXISTS (
           SELECT 1 FROM active_run_native arn
           WHERE arn.provider = a.provider
             AND arn.native = lower(json_extract(a.payload_json, '$.nativeThreadId'))
         )`
-      : '0';
+        : '0';
 
-    const sql = `
+      const sql = `
       ${activeRunCte ? `WITH ${activeRunCte}` : ''}
       SELECT DISTINCT lower(json_extract(a.payload_json, '$.nativeThreadId')) AS native,
              t.thread_id AS threadId,
@@ -657,31 +749,33 @@ function readT3RootThreadState(provider, nativeIds) {
       ${updatedOrder}
     `;
 
-    for (const row of db.prepare(sql).all(provider, idsJson)) {
-      if (!row.native) continue;
-      let settledAt = typeof row.settledAt === 'string' && row.settledAt.trim() ? row.settledAt.trim() : null;
-      const unsettledAt = typeof row.unsettledAt === 'string' && row.unsettledAt.trim() ? row.unsettledAt.trim() : null;
-      if (row.settledOverride === 'unsettled' || (settledAt && unsettledAt && parseTs(unsettledAt) >= parseTs(settledAt))) {
-        settledAt = null;
+      for (const row of db.prepare(sql).all(provider, idsJson)) {
+        if (!row.native) continue;
+        let settledAt = typeof row.settledAt === 'string' && row.settledAt.trim() ? row.settledAt.trim() : null;
+        const unsettledAt = typeof row.unsettledAt === 'string' && row.unsettledAt.trim() ? row.unsettledAt.trim() : null;
+        if (row.settledOverride === 'unsettled' || (settledAt && unsettledAt && parseTs(unsettledAt) >= parseTs(settledAt))) {
+          settledAt = null;
+        }
+        const archivedAt = typeof row.archivedAt === 'string' && row.archivedAt.trim() ? row.archivedAt.trim() : null;
+        const deletedAt = typeof row.deletedAt === 'string' && row.deletedAt.trim() ? row.deletedAt.trim() : null;
+        const isSubagent = isSubagentLineage({
+          parentThreadId: row.parentThreadId,
+          relationshipToParent: row.relationshipToParent,
+        });
+        states.set(row.native, {
+          settledAt,
+          archivedAt,
+          deletedAt,
+          isSubagent,
+          activeRun: Boolean(row.activeRun),
+        });
       }
-      const archivedAt = typeof row.archivedAt === 'string' && row.archivedAt.trim() ? row.archivedAt.trim() : null;
-      const deletedAt = typeof row.deletedAt === 'string' && row.deletedAt.trim() ? row.deletedAt.trim() : null;
-      const isSubagent = isSubagentLineage({
-        parentThreadId: row.parentThreadId,
-        relationshipToParent: row.relationshipToParent,
-      });
-      states.set(row.native, {
-        settledAt,
-        archivedAt,
-        deletedAt,
-        isSubagent,
-        activeRun: Boolean(row.activeRun),
-      });
-    }
-    return states;
-  }, new Map());
+      return states;
+    }, new Map());
+    for (const [k, v] of result) merged.set(k, { ...v });
+  }
 
-  return new Map([...result.entries()].map(([k, v]) => [k, { ...v }]));
+  return merged;
 }
 
 /**
@@ -689,25 +783,29 @@ function readT3RootThreadState(provider, nativeIds) {
  * in `orchestration_v2_projection_runs`. Cheap indexed scan used to keep quiet
  * running turns in candidate discovery even without `/proc/locks`.
  */
-function readT3ActiveRunNativeIds(provider) {
+function readT3ActiveRunNativeIds(provider, { source = 'all' } = {}) {
   if (!provider) return new Set();
   const key = `activeRunNatives:${provider}`;
-  const result = cachedT3Query(key, (db, schema) => {
-    const ids = new Set();
-    const activeRunCte = buildActiveRunNativeCte(schema);
-    if (!activeRunCte) return ids;
-    const sql = `
+  const merged = new Set();
+  for (const dbPath of resolveSourceDbPaths(source)) {
+    const result = cachedStateQuery(dbPath, key, (db, schema) => {
+      const ids = new Set();
+      const activeRunCte = buildActiveRunNativeCte(schema);
+      if (!activeRunCte) return ids;
+      const sql = `
       WITH ${activeRunCte}
       SELECT DISTINCT native
       FROM active_run_native
       WHERE provider = ?
     `;
-    for (const row of db.prepare(sql).all(provider)) {
-      if (row.native) ids.add(row.native);
-    }
-    return ids;
-  }, new Set());
-  return new Set(result);
+      for (const row of db.prepare(sql).all(provider)) {
+        if (row.native) ids.add(row.native);
+      }
+      return ids;
+    }, new Set());
+    for (const id of result) merged.add(id);
+  }
+  return merged;
 }
 
 // ─── 5. ACP GLM-5.4 sessions from T3 SQLite ───────────────
@@ -754,8 +852,10 @@ function queryT3AcpGlmRecords(db, schema, {
     : '';
   const glmFilter = hasProviderThreads && ptCols.has('driver')
     ? `(t.default_provider = 'acpRegistry_glm_agent'
+        OR lower(t.default_provider) LIKE '%glm%'
         OR (pt.driver = 'acpRegistry' AND lower(COALESCE(json_extract(t.payload_json, '$.modelSelection.model'), '')) LIKE '%glm%'))`
     : `(t.default_provider = 'acpRegistry_glm_agent'
+        OR lower(t.default_provider) LIKE '%glm%'
         OR (t.default_provider LIKE 'acpRegistry%' AND lower(COALESCE(json_extract(t.payload_json, '$.modelSelection.model'), '')) LIKE '%glm%'))`;
 
   const baseWhereParts = [glmFilter];
@@ -1556,16 +1656,16 @@ function queryT3AcpGlmRecords(db, schema, {
   return records;
 }
 
-function readCachedT3AcpGlmDiscoveryRecords({ cutoffMs = null, keepNativeIds = [] } = {}) {
-  const sig = syncCacheSignature();
-  if (!sig) return [];
+function readCachedAcpGlmDiscoveryRecordsForPath(dbPath, { cutoffMs = null, keepNativeIds = [] } = {}) {
+  const cache = syncCacheForPath(dbPath);
+  if (!cache) return [];
   const keepKey = JSON.stringify(keepNativeIds);
-  const cached = _cache.glmDiscovery.get(keepKey);
+  const cached = cache.glmDiscovery.get(keepKey);
   if (cached && (cached.cutoffMs === null || (cutoffMs !== null && cutoffMs >= cached.cutoffMs))) {
     return cached.records;
   }
-  const value = withT3Db(db => {
-    const schema = readSchemaInfo(db);
+  const value = withStateDb(dbPath, db => {
+    const schema = readSchemaInfo(db, cache);
     return queryT3AcpGlmRecords(db, schema, {
       cutoffMs,
       keepNativeIds,
@@ -1574,57 +1674,68 @@ function readCachedT3AcpGlmDiscoveryRecords({ cutoffMs = null, keepNativeIds = [
     });
   }, T3_QUERY_FAILED);
   if (value === T3_QUERY_FAILED) return [];
-  if (_cache.glmDiscovery.size >= T3_DISCOVERY_CACHE_MAX) {
-    _cache.glmDiscovery.delete(_cache.glmDiscovery.keys().next().value);
+  if (cache.glmDiscovery.size >= T3_DISCOVERY_CACHE_MAX) {
+    cache.glmDiscovery.delete(cache.glmDiscovery.keys().next().value);
   }
-  _cache.glmDiscovery.set(keepKey, { cutoffMs, records: value });
+  cache.glmDiscovery.set(keepKey, { cutoffMs, records: value });
   return value;
 }
 
-function readT3AcpGlmSessions(activeThresholdMs, { now = Date.now(), keepSessionIds = null } = {}) {
+function readT3AcpGlmSessions(activeThresholdMs, { now = Date.now(), keepSessionIds = null, source = 'all' } = {}) {
   const threshold = activeThresholdMs == null ? null : Math.max(0, Number(activeThresholdMs) || 0);
   const cutoffMs = threshold == null ? null : (now - threshold);
   const keepNativeIds = normalizeKeepGlmNativeIds(keepSessionIds);
-  const records = readCachedT3AcpGlmDiscoveryRecords({ cutoffMs, keepNativeIds });
-  const sessions = [];
-  for (const record of records) {
-    if (record.isArchivedOrDeleted) continue;
-    const keep = record.isLive || Boolean(keepSessionIds?.has(record.session.sessionId));
-    if (!keep && threshold != null && (now - record.lastActivity > threshold)) continue;
-    const dialogue = pickDialogue(record.dialogueCandidates, { now });
-    sessions.push({
-      ...record.session,
-      dialogue: dialogue ? { ...dialogue } : null,
-      observedSources: { ...record.session.observedSources },
-      workingSet: record.session.workingSet.map(item => ({ ...item })),
-      lastResults: record.session.lastResults.map(item => ({ ...item })),
-      gitEvents: record.session.gitEvents.slice(),
-      todos: record.session.todos.map(item => ({ ...item })),
-      tokenUsage: record.session.tokenUsage ? { ...record.session.tokenUsage } : null,
-    });
+  const bySessionId = new Map();
+  for (const dbPath of resolveSourceDbPaths(source)) {
+    const records = readCachedAcpGlmDiscoveryRecordsForPath(dbPath, { cutoffMs, keepNativeIds });
+    for (const record of records) {
+      if (record.isArchivedOrDeleted) continue;
+      const keep = record.isLive || Boolean(keepSessionIds?.has(record.session.sessionId));
+      if (!keep && threshold != null && (now - record.lastActivity > threshold)) continue;
+      const dialogue = pickDialogue(record.dialogueCandidates, { now });
+      const session = {
+        ...record.session,
+        dialogue: dialogue ? { ...dialogue } : null,
+        observedSources: { ...record.session.observedSources },
+        workingSet: record.session.workingSet.map(item => ({ ...item })),
+        lastResults: record.session.lastResults.map(item => ({ ...item })),
+        gitEvents: record.session.gitEvents.slice(),
+        todos: record.session.todos.map(item => ({ ...item })),
+        tokenUsage: record.session.tokenUsage ? { ...record.session.tokenUsage } : null,
+      };
+      const prev = bySessionId.get(session.sessionId);
+      if (!prev || (session.lastActivity || 0) >= (prev.lastActivity || 0)) {
+        bySessionId.set(session.sessionId, session);
+      }
+    }
   }
-  return sessions.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+  return [...bySessionId.values()].sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
 }
 
-function readT3AcpGlmSessionDetail(nativeId, project = null) {
+function readT3AcpGlmSessionDetail(nativeId, project = null, { source = 'all' } = {}) {
   const target = String(nativeId || '').trim().toLowerCase();
   if (!target) return null;
-  const records = cachedT3Query(`acpGlmDetail:${target}`, (db, schema) => queryT3AcpGlmRecords(db, schema, {
-    cutoffMs: null,
-    keepNativeIds: [],
-    includeArchived: true,
-    detailTarget: target,
-  }), []);
-  const match = records.find(r => r.nativeId.toLowerCase() === target || r.threadId.toLowerCase() === target);
-  if (!match) return null;
-  return {
-    ...match.detail,
-    project: match.detail.project || project || '',
-    toolHistory: match.detail.toolHistory.map(item => ({ ...item })),
-    messages: match.detail.messages.map(item => ({ ...item })),
-    gitEvents: match.detail.gitEvents.slice(),
-    tokenUsage: match.detail.tokenUsage ? { ...match.detail.tokenUsage } : null,
-  };
+  // Prefer Hobotnica over T3 when both exist so the active harness wins.
+  const paths = resolveSourceDbPaths(source).slice().reverse();
+  for (const dbPath of paths) {
+    const records = cachedStateQuery(dbPath, `acpGlmDetail:${target}`, (db, schema) => queryT3AcpGlmRecords(db, schema, {
+      cutoffMs: null,
+      keepNativeIds: [],
+      includeArchived: true,
+      detailTarget: target,
+    }), []);
+    const match = records.find(r => r.nativeId.toLowerCase() === target || r.threadId.toLowerCase() === target);
+    if (!match) continue;
+    return {
+      ...match.detail,
+      project: match.detail.project || project || '',
+      toolHistory: match.detail.toolHistory.map(item => ({ ...item })),
+      messages: match.detail.messages.map(item => ({ ...item })),
+      gitEvents: match.detail.gitEvents.slice(),
+      tokenUsage: match.detail.tokenUsage ? { ...match.detail.tokenUsage } : null,
+    };
+  }
+  return null;
 }
 
 module.exports = {
@@ -1632,6 +1743,11 @@ module.exports = {
   T3_PARENT_PREFIX,
   clearT3Cache,
   cleanT3UserPrompt,
+  hobotnicaHomeDir,
+  hobotnicaStateDbExists,
+  hobotnicaStateDbPath,
+  hobotnicaStateSignature,
+  hobotnicaUserDataDir,
   projectT3Todos,
   queryT3State,
   readT3AcpGlmSessionDetail,

@@ -21,6 +21,7 @@ const ISOLATED_ENV_KEYS = [
   'GLM_QUOTA_URL',
   'ACP_GLM_BASE_URL',
   'CLAUDEVILLE_T3_DIR',
+  'HOBOTNICA_HOME',
   'XDG_CONFIG_HOME',
 ];
 const home = makeTempDir('claudeville-usage-quota-');

@@ -1190,10 +1190,13 @@ test('[P0 #1] T3 query failures (SQLite disabled or incompatible schema) never c
       process.stdout.write(JSON.stringify({ first, second }));
     `;
 
+    const isolatedChildEnv = { ...process.env, HOME: tmp, USERPROFILE: tmp, CLAUDEVILLE_GLM_STATE_DIR: path.join(tmp, 'no-mcp') };
+    delete isolatedChildEnv.HOBOTNICA_HOME;
+
     // Case A: node:sqlite disabled while statev2.sqlite exists on disk.
     const disabledOut = JSON.parse(execFileSync(process.execPath, ['-e', probeScript(true)], {
       cwd: REPO_ROOT,
-      env: { ...process.env, HOME: tmp, USERPROFILE: tmp, CLAUDEVILLE_GLM_STATE_DIR: path.join(tmp, 'no-mcp') },
+      env: isolatedChildEnv,
       encoding: 'utf8',
     }));
     for (const pass of [disabledOut.first, disabledOut.second]) {
@@ -1220,7 +1223,7 @@ test('[P0 #1] T3 query failures (SQLite disabled or incompatible schema) never c
 
       const incompatOut = JSON.parse(execFileSync(process.execPath, ['-e', probeScript(false)], {
         cwd: REPO_ROOT,
-        env: { ...process.env, HOME: tmp, USERPROFILE: tmp, CLAUDEVILLE_GLM_STATE_DIR: path.join(tmp, 'no-mcp') },
+        env: isolatedChildEnv,
         encoding: 'utf8',
       }));
       for (const pass of [incompatOut.first, incompatOut.second]) {

@@ -1060,8 +1060,14 @@ function readRegistryFile(file, stat, filename, now) {
   if (!sessionId || sessionId.length > 256) return null;
   const name = typeof meta.name === 'string' ? meta.name.trim() : '';
   // `nameSource: 'user'` marks a `/rename`; other names are derived from the project,
-  // or, for a session T3 Code runs, its thread title at launch (`'auto'`).
-  const record = { sessionId, name, userNamed: Boolean(name) && meta.nameSource === 'user', t3: meta.entrypoint === 't3-code' };
+  // or, for a session T3 Code / Hobotnica runs, its thread title at launch (`'auto'`).
+  const record = {
+    sessionId,
+    name,
+    userNamed: Boolean(name) && meta.nameSource === 'user',
+    t3: meta.entrypoint === 't3-code',
+    hobotnica: meta.entrypoint === 'hobotnica',
+  };
   const { pid, procStart, status, statusUpdatedAt: at } = meta;
   const waitReason = registryWaitReason(meta.waitingFor);
   if (!Number.isSafeInteger(pid) || pid <= 0 || filename !== `${pid}.json`
@@ -3570,7 +3576,10 @@ class ClaudeAdapter {
     const { files, byId: registry } = readSessionRegistry(this.registryFiles, this.registry, this.readProcess, now, now - activeThresholdMs);
     this.registryFiles = files;
     this.registry = registry;
-    const t3Titles = readT3RenamedTitles('claudeAgent', [...registry.values()].filter(r => r.t3).map(r => r.sessionId));
+    const t3Titles = new Map([
+      ...readT3RenamedTitles('claudeAgent', [...registry.values()].filter(r => r.t3).map(r => r.sessionId), { source: 't3' }),
+      ...readT3RenamedTitles('claudeAgent', [...registry.values()].filter(r => r.hobotnica).map(r => r.sessionId), { source: 'hobotnica' }),
+    ]);
     const t3ActiveDelegates = readT3ActiveDelegates();
     const teamMembership = readClaudeTeamMembership();
     this.processLeads = new Map(_teamMembershipCache.leads);

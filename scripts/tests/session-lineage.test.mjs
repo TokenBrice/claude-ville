@@ -10,6 +10,7 @@ import { resolveObservation } from '../../claudeville/src/presentation/character
 
 const home = makeTempDir('claudeville-lineage-');
 process.env.HOME = home;
+delete process.env.HOBOTNICA_HOME;
 process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT = '1';
 const state = name => path.join(home, '.local', 'state', name + '-cc-mcp');
 for (const name of ['codex', 'glm', 'deepseek']) process.env['CLAUDEVILLE_' + name.toUpperCase() + '_STATE_DIR'] = state(name);
@@ -455,5 +456,48 @@ test('a T3 Code thread the operator renamed names its Claude session like /renam
     assert.deepEqual(named('cli-match'), { name: 'fixture-4g', userNamed: false }, 'only sessions T3 Code runs read its titles');
   } finally {
     fs.rmSync(t3Dir, { recursive: true, force: true });
+  }
+});
+
+test('a Hobotnica thread the operator renamed names its Claude session like /rename', { skip: !nodeSqlite?.DatabaseSync && 'node:sqlite unavailable' }, () => {
+  const hbtDir = path.join(home, '.local', 'share', 'hobotnica');
+  const savedHobotnicaHome = process.env.HOBOTNICA_HOME;
+  try {
+    process.env.HOBOTNICA_HOME = hbtDir;
+    fs.mkdirSync(path.join(hbtDir, 'userdata'), { recursive: true });
+    const db = new nodeSqlite.DatabaseSync(path.join(hbtDir, 'userdata', 'statev2.sqlite'));
+    db.exec(`
+      CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, payload_json TEXT NOT NULL);
+      CREATE TABLE orchestration_v2_projection_run_attempts (attempt_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, provider TEXT NOT NULL, payload_json TEXT NOT NULL);
+    `);
+    const thread = db.prepare('INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?)');
+    const attempt = db.prepare('INSERT INTO orchestration_v2_projection_run_attempts VALUES (?, ?, ?, ?)');
+    const cases = [
+      { id: 'hbt-renamed', pid: 4160, history: true, launch: 'Old Launch Title', title: 'Hobotnica-Custom', renamed: true, hbt: true },
+      { id: 'hbt-auto', pid: 4161, history: true, launch: 'Auto Generated', title: 'Auto Generated', renamed: false, hbt: true },
+      { id: 'hbt-cli-match', pid: 4162, history: true, launch: 'fixture-hbt', title: 'NOT-THIS-ONE', renamed: true, hbt: false },
+    ];
+    const historyFile = path.join(home, '.claude', 'history.jsonl');
+    for (const c of cases) {
+      thread.run('thread-' + c.id, c.title, JSON.stringify({ titleRenamed: c.renamed }));
+      attempt.run('attempt-' + c.id, 'thread-' + c.id, 'claudeAgent', JSON.stringify({ nativeThreadId: c.id }));
+      if (c.history) fs.appendFileSync(historyFile, JSON.stringify({ sessionId: c.id, project, timestamp: old }) + '\n');
+      const rec = { sessionId: c.id, pid: c.pid, procStart: String(c.pid), status: 'busy', statusUpdatedAt: now,
+        name: c.launch, nameSource: c.hbt ? 'auto' : 'derived', ...(c.hbt ? { entrypoint: 'hobotnica' } : {}) };
+      write(transcript(c.id), [source[0]]);
+      proc.set(c.pid, { start: rec.procStart });
+      write(registry(c.pid), [rec]);
+    }
+    db.close();
+
+    const all = scan();
+    const named = id => ({ name: find(all, id)?.name, userNamed: find(all, id)?.userNamed });
+    assert.deepEqual(named('hbt-renamed'), { name: 'Hobotnica-Custom', userNamed: true }, 'Hobotnica renamed title overrides launch name');
+    assert.deepEqual(named('hbt-auto'), { name: 'Auto Generated', userNamed: false }, 'auto Hobotnica title keeps userNamed: false');
+    assert.deepEqual(named('hbt-cli-match'), { name: 'fixture-hbt', userNamed: false }, 'only sessions Hobotnica runs read its titles');
+  } finally {
+    if (savedHobotnicaHome === undefined) delete process.env.HOBOTNICA_HOME;
+    else process.env.HOBOTNICA_HOME = savedHobotnicaHome;
+    fs.rmSync(hbtDir, { recursive: true, force: true });
   }
 });

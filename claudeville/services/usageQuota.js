@@ -531,6 +531,13 @@ function t3RootDir() {
   return path.join(activeHomeDir(), '.t3');
 }
 
+function hobotnicaRootDir() {
+  const env = activeEnv();
+  const explicit = typeof env.HOBOTNICA_HOME === 'string' ? env.HOBOTNICA_HOME.trim() : '';
+  if (explicit) return explicit;
+  return path.join(activeHomeDir(), '.local', 'share', 'hobotnica');
+}
+
 function secretFingerprint(secret) {
   if (typeof secret !== 'string' || !secret) return null;
   return crypto.createHash('sha256').update(secret).digest('hex');
@@ -1036,14 +1043,20 @@ function defaultAntigravityTokenPaths() {
   const candidates = [
     path.join(activeHomeDir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
   ];
-  const providersDir = path.join(t3RootDir(), 'userdata', 'providers', 'antigravity');
-  try {
-    for (const dirent of fs.readdirSync(providersDir, { withFileTypes: true })) {
-      if (!dirent.isDirectory()) continue;
-      candidates.push(path.join(providersDir, dirent.name, 'antigravity-acp', 'antigravity-oauth-token'));
-    }
-  } catch { /* directory absent */ }
-  return candidates;
+  const providerDirs = [
+    path.join(hobotnicaRootDir(), 'userdata', 'providers', 'antigravity'),
+    path.join(hobotnicaRootDir(), 'providers', 'antigravity'),
+    path.join(t3RootDir(), 'userdata', 'providers', 'antigravity'),
+  ];
+  for (const providersDir of providerDirs) {
+    try {
+      for (const dirent of fs.readdirSync(providersDir, { withFileTypes: true })) {
+        if (!dirent.isDirectory()) continue;
+        candidates.push(path.join(providersDir, dirent.name, 'antigravity-acp', 'antigravity-oauth-token'));
+      }
+    } catch { /* directory absent */ }
+  }
+  return [...new Set(candidates)];
 }
 
 function readAntigravityOauthToken(now = Date.now()) {

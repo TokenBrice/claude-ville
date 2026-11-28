@@ -1247,3 +1247,246 @@ test('workingSet excludes exec shell commands, canonicalizes in-project absolute
   assert.equal(collisions[0].path, 'src/overlap.js');
   assert.equal(collisions[0].kind, 'read-write');
 });
+
+test('Hobotnica statev2.sqlite supplies renamed titles, delegate lineage, and glm-acp sessions while keeping stock ~/.t3 isolated', {
+  skip: !nodeSqlite?.DatabaseSync && 'node:sqlite unavailable',
+}, () => {
+  const tmp = makeTempDir('cv-hobotnica-sqlite-');
+  const savedHome = process.env.HOME;
+  const savedHobotnicaHome = process.env.HOBOTNICA_HOME;
+  const savedRoot = process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+  const { cleanUserPrompt } = require('../../claudeville/adapters/antigravity.js');
+  try {
+    process.env.HOME = tmp;
+    const hobotnicaHome = path.join(tmp, 'hbt-home');
+    process.env.HOBOTNICA_HOME = hobotnicaHome;
+    delete process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+    t3code.clearT3Cache();
+
+    // Put colliding bogus data in stock ~/.t3/userdata/statev2.sqlite
+    const t3DbPath = path.join(tmp, '.t3', 'userdata', 'statev2.sqlite');
+    fs.mkdirSync(path.dirname(t3DbPath), { recursive: true });
+    const t3Db = new nodeSqlite.DatabaseSync(t3DbPath);
+    t3Db.exec(`
+      CREATE TABLE orchestration_v2_projection_threads (
+        thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, default_provider TEXT NOT NULL DEFAULT 'antigravity',
+        updated_at TEXT, created_at TEXT, archived_at TEXT, deleted_at TEXT, payload_json TEXT NOT NULL
+      );
+      CREATE TABLE orchestration_v2_projection_run_attempts (
+        attempt_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, provider TEXT NOT NULL, payload_json TEXT NOT NULL
+      );
+    `);
+    t3Db.prepare('INSERT INTO orchestration_v2_projection_threads (thread_id, title, payload_json) VALUES (?, ?, ?)').run(
+      'th-t3-bogus', 'WRONG-T3-TITLE', JSON.stringify({ titleRenamed: true }),
+    );
+    t3Db.prepare('INSERT INTO orchestration_v2_projection_run_attempts VALUES (?, ?, ?, ?)').run(
+      'att-t3-bogus', 'th-t3-bogus', 'antigravity', JSON.stringify({ nativeThreadId: 'conv-hbt-root' }),
+    );
+    t3Db.close();
+
+    // Populate Hobotnica's own statev2.sqlite with renamed root, auto-named child delegate, and glm-acp thread
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    const hbtDbPath = path.join(hobotnicaHome, 'userdata', 'statev2.sqlite');
+    fs.mkdirSync(path.dirname(hbtDbPath), { recursive: true });
+    const hbtDb = new nodeSqlite.DatabaseSync(hbtDbPath);
+    hbtDb.exec(`
+      CREATE TABLE projection_projects (project_id TEXT PRIMARY KEY, title TEXT NOT NULL, workspace_root TEXT NOT NULL);
+      CREATE TABLE orchestration_v2_projection_threads (
+        thread_id TEXT PRIMARY KEY, project_id TEXT, title TEXT NOT NULL, default_provider TEXT NOT NULL,
+        active_provider_thread_id TEXT, created_at TEXT, updated_at TEXT, archived_at TEXT, deleted_at TEXT,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE orchestration_v2_projection_runs (
+        run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, ordinal INTEGER NOT NULL, provider TEXT NOT NULL,
+        provider_thread_id TEXT, status TEXT NOT NULL, requested_at TEXT NOT NULL, completed_at TEXT, payload_json TEXT NOT NULL
+      );
+      CREATE TABLE orchestration_v2_projection_run_attempts (
+        attempt_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT, attempt_ordinal INTEGER DEFAULT 1,
+        provider TEXT NOT NULL, payload_json TEXT NOT NULL
+      );
+      CREATE TABLE orchestration_v2_projection_provider_threads (
+        provider_thread_id TEXT PRIMARY KEY, thread_id TEXT, provider TEXT NOT NULL, status TEXT NOT NULL,
+        updated_at TEXT NOT NULL, payload_json TEXT NOT NULL, driver TEXT
+      );
+    `);
+    hbtDb.prepare('INSERT INTO projection_projects VALUES (?, ?, ?)').run('proj-1', 'claude-ville', '/work/claude-ville');
+    hbtDb.prepare('INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'th-hbt-root', 'proj-1', 'Hobotnica-Native-App', 'antigravity', 'pt-root', nowIso, nowIso, null, null,
+      JSON.stringify({ titleRenamed: true, lineage: { parentThreadId: null, relationshipToParent: null } }),
+    );
+    hbtDb.prepare('INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'th-hbt-child', 'proj-1', 'Audit CI workflow', 'antigravity', 'pt-child', nowIso, nowIso, null, null,
+      JSON.stringify({ titleRenamed: false, lineage: { parentThreadId: 'th-hbt-root', relationshipToParent: 'subagent' } }),
+    );
+    hbtDb.prepare('INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'th-hbt-glm', 'proj-1', 'GLM Renamed Scout', 'glm-acp', 'pt-glm', nowIso, nowIso, null, null,
+      JSON.stringify({
+        titleRenamed: true,
+        modelSelection: { instanceId: 'glm-acp', model: 'glm-5.4', options: [{ id: 'thought_level', value: 'high' }] },
+        lineage: { parentThreadId: 'th-hbt-root', relationshipToParent: 'subagent' },
+      }),
+    );
+    hbtDb.prepare('INSERT INTO orchestration_v2_projection_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'run-root', 'th-hbt-root', 1, 'antigravity', 'pt-root', 'completed', nowIso, nowIso, JSON.stringify({ startedAt: nowIso }),
+    );
+    hbtDb.prepare('INSERT INTO orchestration_v2_projection_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'run-child', 'th-hbt-child', 1, 'antigravity', 'pt-child', 'running', nowIso, null, JSON.stringify({ startedAt: nowIso }),
+    );
+    hbtDb.prepare('INSERT INTO orchestration_v2_projection_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'run-glm', 'th-hbt-glm', 1, 'glm-acp', 'pt-glm', 'running', nowIso, null, JSON.stringify({ startedAt: nowIso }),
+    );
+    hbtDb.prepare('INSERT INTO orchestration_v2_projection_run_attempts VALUES (?, ?, ?, ?, ?, ?)').run(
+      'att-root', 'th-hbt-root', 'run-root', 1, 'antigravity', JSON.stringify({ nativeThreadId: 'conv-hbt-root' }),
+    );
+    hbtDb.prepare('INSERT INTO orchestration_v2_projection_run_attempts VALUES (?, ?, ?, ?, ?, ?)').run(
+      'att-child', 'th-hbt-child', 'run-child', 1, 'antigravity', JSON.stringify({ nativeThreadId: 'conv-hbt-child' }),
+    );
+    hbtDb.prepare('INSERT INTO orchestration_v2_projection_run_attempts VALUES (?, ?, ?, ?, ?, ?)').run(
+      'att-glm', 'th-hbt-glm', 'run-glm', 1, 'glm-acp', JSON.stringify({ nativeThreadId: 'glm-native-99' }),
+    );
+    hbtDb.prepare('INSERT INTO orchestration_v2_projection_provider_threads VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      'pt-glm', 'th-hbt-glm', 'glm-acp', 'active', nowIso,
+      JSON.stringify({ nativeThreadRef: { driver: 'acpRegistry', nativeId: 'glm-native-99' } }),
+      'acpRegistry',
+    );
+    hbtDb.close();
+
+    // Create Antigravity transcripts inside Hobotnica userdata
+    const hbtAcpRoot = path.join(hobotnicaHome, 'userdata', 'providers', 'antigravity', 'hbt-inst', 'antigravity-acp');
+    const writeTranscript = (convId, prompt) => {
+      const p = path.join(hbtAcpRoot, 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl');
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, [
+        JSON.stringify({
+          type: 'USER_INPUT',
+          created_at: new Date(now - 2000).toISOString(),
+          content: prompt,
+          workspace_uris: ['file:///work/claude-ville'],
+        }),
+        JSON.stringify({
+          type: 'PLANNER_RESPONSE',
+          created_at: new Date(now - 1000).toISOString(),
+          model: 'gemini-4-neon',
+          response: 'Working.',
+        }),
+      ].join('\n') + '\n');
+    };
+    const wrappedPrompt = '<USER_REQUEST>\n<hobotnica_instructions>\n## Hobotnica interaction mode: Default\n</hobotnica_instructions>\n\n<user_request>\nCheck session renaming\n</user_request><runtime_info>runtime</runtime_info>\n</USER_REQUEST>';
+    writeTranscript('conv-hbt-root', wrappedPrompt);
+    writeTranscript('conv-hbt-child', 'Run CI audit');
+
+    const adapter = new AntigravityAdapter();
+    const sessions = adapter.getActiveSessions(60_000);
+    const root = sessions.find(s => s.sessionId === 'antigravity-conv-hbt-root');
+    const child = sessions.find(s => s.sessionId === 'antigravity-conv-hbt-child');
+
+    assert.ok(root, 'root conversation discovered');
+    assert.equal(root.agentName, 'Hobotnica-Native-App', 'reads renamed title from Hobotnica statev2.sqlite');
+    assert.equal(root.userNamed, true, 'renamed Hobotnica thread sets userNamed: true');
+    assert.equal(root.lastPrompt, 'Check session renaming', 'nested <USER_REQUEST>/<hobotnica_instructions> stripped cleanly');
+    assert.ok(root.backgroundPending && root.backgroundPending.count >= 2, 'root tracks active Hobotnica delegates');
+
+    const rootDetail = adapter.getSessionDetail('antigravity-conv-hbt-root', '/work/claude-ville');
+    assert.equal(rootDetail.agentName, 'Hobotnica-Native-App', 'session detail carries renamed Hobotnica title');
+
+    assert.ok(child, 'child delegate discovered');
+    assert.equal(child.parentSessionId, 'antigravity-conv-hbt-root', 'child links to Hobotnica parent');
+    assert.equal(child.agentType, 'sub-agent');
+    assert.equal(child.subagentKind, 'delegate');
+    assert.equal(child.agentName, 'Audit CI workflow');
+    assert.equal(child.userNamed, false, 'auto-generated child title stays userNamed: false');
+
+    // GLM-ACP session in Hobotnica DB (`glm-acp` default_provider + `acpRegistry` driver)
+    const glmSessions = t3code.readT3AcpGlmSessions(60_000, { now });
+    const glm = glmSessions.find(s => s.sessionId === 'zai-glm-native-99');
+    assert.ok(glm, 'discovers Hobotnica glm-acp session from statev2.sqlite');
+    assert.equal(glm.agentName, 'GLM Renamed Scout');
+    assert.equal(glm.userNamed, true);
+    assert.equal(glm.parentSessionId, 'antigravity-conv-hbt-root');
+    assert.equal(glm.agentType, 'sub-agent');
+    assert.equal(glm.subagentKind, 'delegate');
+
+    // Prompt helper unit checks
+    assert.equal(cleanUserPrompt(wrappedPrompt), 'Check session renaming');
+    assert.equal(t3code.cleanT3UserPrompt(wrappedPrompt), 'Check session renaming');
+    assert.equal(cleanUserPrompt('<USER_REQUEST>\n<hobotnica_instructions>\n## Truncated instruction block without closing tag'), null);
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedHobotnicaHome === undefined) delete process.env.HOBOTNICA_HOME;
+    else process.env.HOBOTNICA_HOME = savedHobotnicaHome;
+    if (savedRoot !== undefined) process.env.CLAUDEVILLE_ANTIGRAVITY_DIR = savedRoot;
+    t3code.clearT3Cache();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('hobotnicaPush preserves disk userNamed titles and promotes explicit push titleRenamed', () => {
+  const now = 1_750_000_000_000;
+  const store = new HobotnicaPushStore({ now: () => now });
+
+  const diskSessions = [
+    normalizeSession({
+      sessionId: 'antigravity-conv-disk-renamed',
+      provider: 'antigravity',
+      agentName: 'Hobotnica-Native-App',
+      userNamed: true,
+      project: '/work/repo',
+      model: 'gemini-4-neon',
+      lastActivity: now - 2000,
+      turnState: 'working',
+    }),
+    normalizeSession({
+      sessionId: 'claude-push-renamed',
+      provider: 'claude',
+      agentName: 'auto-session-slug',
+      userNamed: false,
+      project: '/work/repo',
+      model: 'claude-sonnet-4-6',
+      lastActivity: now - 2000,
+      turnState: 'working',
+    }),
+  ];
+
+  store.ingest(makeSnapshot([
+    makeAgent({
+      key: 'k-agy-renamed',
+      owningThreadId: 'th-agy-renamed',
+      providerDriver: 'antigravity',
+      nativeSessionId: 'conv-disk-renamed',
+      title: 'Hobotnica-Native-App',
+      updatedAtMs: now,
+    }),
+    makeAgent({
+      key: 'k-claude-push-renamed',
+      owningThreadId: 'th-claude-push-renamed',
+      providerDriver: 'claudeAgent',
+      nativeSessionId: 'claude-push-renamed',
+      title: 'Live Renamed Session',
+      titleRenamed: true,
+      updatedAtMs: now,
+    }),
+    makeAgent({
+      key: 'k-glm-synth-renamed',
+      owningThreadId: 'th-glm-synth-renamed',
+      providerDriver: 'acp-registry',
+      model: 'glm-5.4',
+      title: 'Named GLM',
+      titleRenamed: true,
+      updatedAtMs: now,
+    }),
+  ], { serverTimeMs: now }), now);
+
+  const folded = store.fold(diskSessions, now, { normalizeSession });
+  const agy = folded.find(s => s.sessionId === 'antigravity-conv-disk-renamed');
+  const claude = folded.find(s => s.sessionId === 'claude-push-renamed');
+  const glm = folded.find(s => s.sessionId === 'zai-hbt-th-glm-synth-renamed');
+
+  assert.equal(agy.agentName, 'Hobotnica-Native-App');
+  assert.equal(agy.userNamed, true, 'disk userNamed: true preserved across push overlay');
+  assert.equal(claude.agentName, 'Live Renamed Session');
+  assert.equal(claude.userNamed, true, 'push titleRenamed: true overrides non-userNamed disk auto slug');
+  assert.equal(glm.agentName, 'Named GLM');
+  assert.equal(glm.userNamed, true, 'push titleRenamed: true sets userNamed on synthetic GLM');
+});
