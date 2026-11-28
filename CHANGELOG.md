@@ -2,6 +2,15 @@
 
 ---
 
+## v0.69.1 — *The Lamplighter’s Round* · Nov 28, 2026
+
+- **Smoother night overviews.** Lamp pools reuse identical rasters and water updates only the areas that change. In three warmed desktop Chrome runs with 17 working villagers, the Canvas overview rose from 5.53 to 52.79 paints per second. The 95th-percentile gap between paints fell from 214.2 to 32.1 ms, and close zoom held at about 60 paints per second.
+- **Villagers stay visible at survey zoom.** WebGPU and WebGL2 draw villagers, hats and ground marks at their current positions through zoom changes. A dropped GPU frame can fall back to a complete Canvas village. The active forge now holds a steady glow, and neighboring lamps no longer pick up stray bloom.
+- **Less graphics memory and upload traffic.** Buildings and props can use the village atlas without loading two unused character sheets onto the GPU. The fully lit high-DPR survey stayed within the 160 MiB GPU budget. Stormy harbors also draw reflections in fewer passes.
+- **Faster session updates.** Codex scans long turn histories once on startup. In a 32 MiB test the scan fell from about six seconds to 94 ms. The Dashboard and closed connection and spending panels skip duplicate updates and show current data when opened.
+
+---
+
 ## v0.69.0.1 · Nov 27, 2026 — Hotfix
 
 - **Building shadows and ground decals stay rock-solid while zooming on WebGPU.** Eliminates frame-to-frame shadow jumping, flickering bands, and raised-terrace shadow drop-outs in the WebGPU Frontier `surfaceDepth` pass (`SURFACE_DEPTH_WGSL`). Ground-layer decals (`ground:shade`, building/tree/villager casts, cues, rings, reflections, haze, fog, and terrain-baked cache overlays with `footY == -1` and `writesDepth == false`) now pass cleanly without writing to `depth32float`, preserving terrain terrace depths intact while preventing cross-quad depth fighting at fractional zooms and depth rejection on raised terraces.
