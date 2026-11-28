@@ -90,6 +90,8 @@ function setLightGeometry(slot, src, footX, footY, radiusWorld, scale) {
     slot.landmarkId = Math.max(0, Math.round(finite(src?.landmarkId, 0)));
     slot.waterOnly = src?.waterOnly === true;
     slot.columnReach = Math.max(1, finite(src?.columnReach, 1));
+    const breath = Number(src?.fireBreath);
+    slot.fireBreath = Number.isFinite(breath) && breath > 0 && breath < 1 ? breath : 1;
 }
 
 function emptyFeed(nowMs) {
@@ -177,6 +179,7 @@ export function createPostFxFeed() {
                 g: 255,
                 b: 255,
                 intensity: 1,
+                fireBreath: 1,
                 kind: 'point',
                 night: false,
             };

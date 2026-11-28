@@ -1,6 +1,9 @@
 import { preferAgentModelCells } from '../AgentLayerRecords.js';
 import {
     buildStableGpuBatches,
+    LIGHT_BREATH_MASK,
+    LIGHT_BREATH_SCALE,
+    LIGHT_BREATH_SHIFT,
     LIGHT_RECORD_FLAGS,
     LIGHT_RECORD_ROWS,
     LIGHT_ROLE_CODES,
@@ -2854,6 +2857,7 @@ void main() {
     // NL-1 — whether the strongest ramp light is one of the landmark's own
     // low lights (the tuned ramp's first-course floor).
     bool rampOwn = false;
+    float rampBreath = 1.0;
     // 1.2 — ambient light pools: each light is stepped on its own falloff
     // (poolSteps), accumulated, and lands once after the loop. Distances are
     // measured from the art-pixel centre so course edges sit on the world
@@ -3303,7 +3307,13 @@ void main() {
             // course edges sit where the pool's do: a door light standing
             // on its steps lays its core on the middle of the flight and its
             // mid course round it, not one flat band.
-            float rampShare = steps * 0.15 * light.w * lightColor.a;
+            // 2.6 — course selection reads the steady unbreathed intensity so
+            // 140 ms fire-breath dips never strobe a ramp wall across the
+            // step(0.14) / step(0.45) cliffs; the breath modulates the landed
+            // course smoothly below.
+            uint breathQ = (lightFlags >> ${LIGHT_BREATH_SHIFT}u) & ${LIGHT_BREATH_MASK}u;
+            float lightBreath = breathQ > 0u ? float(breathQ) / ${LIGHT_BREATH_SCALE.toFixed(1)} : 1.0;
+            float rampShare = steps * 0.15 * (light.w / lightBreath) * lightColor.a;
             // NL-1 — only the landmark's own low lights (its fire, a door, a
             // hearth: at most 40 px up) earn the first-course floor; the
             // street's lamps keep the pilot response. (Summing several
@@ -3315,6 +3325,7 @@ void main() {
                 rampHue = lightColor.rgb;
                 rampSteps = steps;
                 rampOwn = rampOwnLight;
+                rampBreath = lightBreath;
             }
         } else {
             vec3 contrib = lightColor.rgb * ambientPoolWeight(steps) * light.w * lightColor.a;
@@ -3460,6 +3471,7 @@ void main() {
             float y = dot(rampLit, GRADE_LUMA);
             float share = rampSteps < 1.5 ? LAND_SHARE.x : (rampSteps < 2.5 ? LAND_SHARE.y : LAND_SHARE.z);
             rampLit = okCeiling(mix(rampLit, onStop(stop, y), share), color, RECEIVER_OKL_CEILING);
+            if (rampBreath < 1.0) rampLit = mix(color, rampLit, rampBreath);
         }
         color = rampLit;
         reflectionLight = vec3(0.0);

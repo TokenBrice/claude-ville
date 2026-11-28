@@ -3,11 +3,23 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { FIRELIGHT_DARK_SHARE, FIRELIGHT_PILOT_LANDMARK, resolveFirelight } from '../../claudeville/src/presentation/character-mode/gpu/Firelight.js';
+import { resolveLights } from '../../claudeville/src/presentation/character-mode/gpu/GpuFrameState.js';
 import { GPU_LANDMARK_IDS } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
+import {
+    LIGHT_BREATH_MASK,
+    LIGHT_BREATH_SCALE,
+    LIGHT_BREATH_SHIFT,
+    LIGHT_ROLE_CODES,
+    MAX_LIGHT_RECORDS,
+} from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 import { FRAME_UNIFORM_LAYOUT } from '../../claudeville/src/presentation/character-mode/gpu/wgsl/common.js';
 import { resetLookStrengths, setLookStrength } from '../../claudeville/src/presentation/character-mode/LookStrengths.js';
 import { evaluateGrade } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
 import { buildEmitterCut, emitterNightCarry } from '../../claudeville/src/presentation/character-mode/CanvasGrade.js';
+import { SOURCE_ENERGY_BUCKETS } from '../../claudeville/src/presentation/character-mode/AtmosphereState.js';
+import { FIRE_BREATH_QUANTA, fireBreathDepth } from '../../claudeville/src/presentation/character-mode/LightSourceRegistry.js';
+import { createPostFxFeed } from '../../claudeville/src/presentation/character-mode/postfx/PostFxFeed.js';
+import { buildRadianceEmitters, RADIANCE_MAX_EMITTERS } from '../../claudeville/src/presentation/character-mode/gpu/GroundRadiance.js';
 
 const read = path => readFileSync(new URL(`../../claudeville/src/presentation/character-mode/${path}`, import.meta.url), 'utf8');
 const squash = text => text.replace(/\s+/g, ' ');
@@ -94,6 +106,12 @@ const TWINS = [
     ['NE P3.4: villager moonlight rim colour mix and 0.50 luma cap',
         'vec3 moonRimColor = mix(color, vec3(0.70, 0.82, 1.0), 0.34 * nightCarry); float rimY = dot(moonRimColor, GRADE_LUMA); if (rimY > 0.50) moonRimColor *= 0.50 / rimY; if (dot(moonRimColor, GRADE_LUMA) > dot(color, GRADE_LUMA)) color = moonRimColor;',
         'var moonRimColor = mix(color, vec3f(0.70, 0.82, 1.0), 0.34 * nightCarry); let rimY = dot(moonRimColor, GRADE_LUMA); if (rimY > 0.50) { moonRimColor *= 0.50 / rimY; } if (dot(moonRimColor, GRADE_LUMA) > dot(color, GRADE_LUMA)) { color = moonRimColor; }'],
+    ['2.6 / 3.5: ramp course selection decodes steady intensity before step cliffs',
+        'uint breathQ = (lightFlags >> ${LIGHT_BREATH_SHIFT}u) & ${LIGHT_BREATH_MASK}u; float lightBreath = breathQ > 0u ? float(breathQ) / ${LIGHT_BREATH_SCALE.toFixed(1)} : 1.0; float rampShare = steps * 0.15 * (light.w / lightBreath) * lightColor.a;',
+        'let breathQ = (lightFlags >> ${LIGHT_BREATH_SHIFT}u) & ${LIGHT_BREATH_MASK}u; let lightBreath = select(1.0, f32(breathQ) / ${LIGHT_BREATH_SCALE.toFixed(1)}, breathQ > 0u); let rampShare = steps * 0.15 * (light.w / lightBreath) * lightColor.a;'],
+    ['2.6 / 3.5: fire breath modulates landed ramp colour smoothly without flipping course',
+        'if (rampBreath < 1.0) rampLit = mix(color, rampLit, rampBreath);',
+        'if (rampBreath < 1.0) { rampLit = mix(color, rampLit, rampBreath); }'],
 ];
 
 test('NL-2 / NL-1: every GLSL change has its WGSL twin', () => {
@@ -251,4 +269,131 @@ test('NE P1.3 / P1.5: Canvas buildEmitterCut matches the GPU formula at day and 
     } finally {
         globalThis.document = previousDocument;
     }
+});
+
+test('Command Hall fire-breath regression: palette-ramp course stays invariant across all 140 ms fireBreath quanta', () => {
+    const rowStride = MAX_LIGHT_RECORDS * 4;
+    const camera = { zoom: 1, x: 0, y: 0, renderOffsetX: 0, renderOffsetY: 0, renderOffsetGpuX: 0, renderOffsetGpuY: 0, _dpr: () => 1 };
+    const typeResponse = 0.62 + 0.38 * 0.85; // Command beaconBase 0.85
+
+    for (const [bucketName, windowWarmth, steps] of [
+        ['lamplight', 0.82, 1],
+        ['deep-night', 1.0, 2],
+    ]) {
+        const energy = SOURCE_ENERGY_BUCKETS[bucketName];
+        const rBase = Math.min(42 * energy.halo, 76);
+        const depth = fireBreathDepth(rBase);
+        const steadyIntensity = (1 + windowWarmth * 0.16) * typeResponse * energy.core * energy.gain;
+        const courses = [];
+        const rawBreathedCourses = [];
+
+        for (const q of FIRE_BREATH_QUANTA) {
+            const breath = 1 - (1 - q) * depth;
+            const light = {
+                id: 'building.command.point.94.180',
+                x: 400,
+                y: 300,
+                footX: 400,
+                footY: 300,
+                radiusWorld: rBase * energy.reach,
+                intensity: steadyIntensity * breath,
+                fireBreath: breath,
+                height: 0,
+                role: LIGHT_ROLE_CODES.fixture,
+                landmarkId: GPU_LANDMARK_IDS.command,
+                r: 255,
+                g: 188,
+                b: 98,
+                night: false,
+                priority: 0,
+            };
+            const frame = resolveLights(
+                { wetness: 0, lighting: { ambientLight: 0.15, beaconIntensity: 0.85, sourceEnergy: energy }, lights: [light] },
+                camera,
+                0,
+                { width: 1280, height: 720 },
+            );
+            assert.equal(frame.count, 1);
+            const lightW = frame.records[3];
+            const spill = frame.records[2 * rowStride + 3];
+            const flags = Math.round(frame.records[3 * rowStride + 2]);
+            const breathQ = (flags >>> LIGHT_BREATH_SHIFT) & LIGHT_BREATH_MASK;
+            const decodedBreath = breathQ > 0 ? breathQ / LIGHT_BREATH_SCALE : 1;
+
+            if (q === 1) {
+                assert.equal(breathQ, 0, `${bucketName}: peak beat keeps flags unchanged (breathQ === 0)`);
+            } else {
+                assert.ok(breathQ > 0 && breathQ < LIGHT_BREATH_SCALE, `${bucketName}: dipped beat packs 12-bit breathQ`);
+                assert.ok(Math.abs(decodedBreath - breath) <= 1 / LIGHT_BREATH_SCALE, `${bucketName}: packed breath within 1 LSB`);
+            }
+
+            // Steady intensity recovery must stay exact across all breath steps.
+            const recoveredSteady = lightW / decodedBreath;
+            assert.ok(Math.abs(recoveredSteady - steadyIntensity) < 1e-5,
+                `${bucketName} q=${q}: recovered ${recoveredSteady} vs steady ${steadyIntensity}`);
+
+            const steadyShare = steps * 0.15 * recoveredSteady * spill;
+            const course = (steadyShare >= 0.14 ? 1 : 0) + (steadyShare >= 0.45 ? 1 : 0);
+            courses.push(course);
+
+            // Sanity-check that the old uncompensated formula actually straddled the cliff.
+            const oldShare = steps * 0.15 * lightW * spill;
+            rawBreathedCourses.push((oldShare >= 0.14 ? 1 : 0) + (oldShare >= 0.45 ? 1 : 0));
+        }
+
+        assert.notEqual(rawBreathedCourses[0], rawBreathedCourses[rawBreathedCourses.length - 1],
+            `${bucketName} steps=${steps}: regression case would have flipped course under uncompensated fireBreath`);
+        assert.deepEqual(courses, [courses[0], courses[0], courses[0]],
+            `${bucketName} steps=${steps}: steady course stays locked across all fireBreath quanta (${courses.join(',')})`);
+    }
+});
+
+test('PostFxFeed forwards fireBreath for fire sources and resets reused slots to 1 for non-fire lights', () => {
+    const feedBuilder = createPostFxFeed();
+    const baseRenderer = {
+        canvas: { width: 1280, height: 720, _claudeVilleDpr: 1, _claudeVilleCssWidth: 1280, _claudeVilleCssHeight: 720 },
+        camera: { zoom: 1, x: 0, y: 0, renderOffsetX: 0, renderOffsetY: 0, worldToScreen: (x, y) => ({ x, y }) },
+        motionScale: 1,
+        motionTimeMs: 0,
+        _frameLightSources: {
+            ambient: [
+                { id: 'cmd.torch', kind: 'point', role: 'fixture', x: 100, y: 100, ground: { x: 100, y: 100 }, radius: 48, intensity: 0.95, fire: true, fireBreath: 0.901, color: '#ffbc62' },
+            ],
+        },
+    };
+    const first = feedBuilder.build({ renderer: baseRenderer, atmosphere: { phase: 'night', lighting: { ambientLight: 0.1 } }, gpuWorldActive: true });
+    assert.equal(first.lights.length, 1);
+    assert.equal(first.lights[0].fireBreath, 0.901);
+
+    // Next frame reuses lightSlotPool[0] for a non-fire lamp; fireBreath must reset to 1.
+    baseRenderer._frameLightSources.ambient = [
+        { id: 'lamp.0', kind: 'point', role: 'fixture', x: 100, y: 100, ground: { x: 100, y: 100 }, radius: 66, intensity: 0.82, fire: false, color: '#ffc95e' },
+    ];
+    const second = feedBuilder.build({ renderer: baseRenderer, atmosphere: { phase: 'night', lighting: { ambientLight: 0.1 } }, gpuWorldActive: true });
+    assert.equal(second.lights.length, 1);
+    assert.equal(second.lights[0].fireBreath, 1);
+});
+
+test('GroundRadiance divides out stored fireBreath cleanly even after reach scales radius', () => {
+    const out = new Float32Array(RADIANCE_MAX_EMITTERS * 4 * 4);
+    const breath = 0.901;
+    const steady = 1.05;
+    const res = buildRadianceEmitters({
+        sources: [{
+            id: 'building.command.point.94.180',
+            role: 'fixture',
+            x: 100,
+            y: 100,
+            ground: { x: 100, y: 100 },
+            radius: 75, // post-reach radius differs from pre-reach radius
+            intensity: steady * breath,
+            fire: true,
+            fireBreath: breath,
+            color: '#ffbc62',
+        }],
+        motionTimeMs: 140,
+        motionScale: 1,
+    }, 1, out);
+    assert.equal(res.count, 1);
+    assert.ok(Math.abs(out[3] - steady) < 0.02, `radiance emitter recovers steady ${steady}, got ${out[3]}`);
 });

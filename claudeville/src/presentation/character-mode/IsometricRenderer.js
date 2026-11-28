@@ -14615,7 +14615,9 @@ export class IsometricRenderer {
         for (const light of ambient) {
             if (light.attention) continue;
             if (light.fire) {
-                light.intensity *= fireBreath(motionTimeMs, light.fireGroup || light.id, this.motionScale, fireBreathDepth(light.radius));
+                const breath = fireBreath(motionTimeMs, light.fireGroup || light.id, this.motionScale, fireBreathDepth(light.radius));
+                light.fireBreath = breath;
+                light.intensity *= breath;
             }
             if (reach !== 1 && Number.isFinite(light.radius)) light.radius *= reach;
             if (gain !== 1 && Number.isFinite(light.intensity)) light.intensity *= gain;

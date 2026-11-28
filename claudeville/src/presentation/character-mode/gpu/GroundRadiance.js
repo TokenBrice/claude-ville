@@ -208,7 +208,9 @@ export function buildRadianceEmitters({ sources = null, spans = null, motionTime
         if (!Number.isFinite(footX) || !Number.isFinite(footY)) continue;
         let intensity = Math.max(0, finite(light.intensity, 1));
         if (light.fire) {
-            const breath = fireBreath(motionTimeMs, light.fireGroup || light.id, motionScale, fireBreathDepth(light.radius));
+            const breath = Number.isFinite(light.fireBreath) && light.fireBreath > 0
+                ? light.fireBreath
+                : fireBreath(motionTimeMs, light.fireGroup || light.id, motionScale, fireBreathDepth(light.radius));
             if (breath > 0) intensity /= breath;
         }
         intensity = Math.round(Math.min(3, intensity * Math.max(0, spill)) * KEY_INTENSITY_STEPS) / KEY_INTENSITY_STEPS;

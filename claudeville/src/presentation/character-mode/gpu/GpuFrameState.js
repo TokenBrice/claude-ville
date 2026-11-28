@@ -26,6 +26,8 @@ import {
     effectBudgetMode,
     gpuLightColorForShader,
     isAttentionLight,
+    LIGHT_BREATH_SCALE,
+    LIGHT_BREATH_SHIFT,
     LIGHT_RECORD_FLAGS,
     LIGHT_RECORD_ROWS,
     LIGHT_ROLE_CODES,
@@ -993,10 +995,20 @@ export function resolveLights(feed, camera, level, {
         const color = gpuLightColorForShader(light, DEFAULT_LIGHT_COLOR, state.colorScratch);
         const offset = index * 4;
         const attention = isAttentionLight(light);
+        const rawBreath = Number(light.fireBreath);
+        const breathQ = !attention && Number.isFinite(rawBreath) && rawBreath > 0 && rawBreath < 1
+            ? Math.min(LIGHT_BREATH_SCALE - 1, Math.max(1, Math.round(rawBreath * LIGHT_BREATH_SCALE)))
+            : 0;
+        const rawIntensity = finite(light.intensity, 1);
         records[offset] = finite(light.footX);
         records[offset + 1] = finite(light.footY);
         records[offset + 2] = Math.max(1, finite(light.radiusWorld, 64));
-        records[offset + 3] = clamp(finite(light.intensity, 1), 0, 3);
+        // Align the transmitted breathing intensity to the packed 12-bit breath
+        // step so `light.w / lightBreath` in the shaders recovers the steady
+        // unbreathed intensity without rounding jitter across ramp thresholds.
+        records[offset + 3] = breathQ > 0
+            ? clamp((rawIntensity / rawBreath) * (breathQ / LIGHT_BREATH_SCALE), 0, 3)
+            : clamp(rawIntensity, 0, 3);
         records[rowStride + offset] = Math.max(0, finite(light.height, 0));
         records[rowStride + offset + 1] = finite(light.nx, 0);
         records[rowStride + offset + 2] = finite(light.ng, 0);
@@ -1024,6 +1036,7 @@ export function resolveLights(feed, camera, level, {
         }
         if (light.waterOnly === true) flags |= LIGHT_RECORD_FLAGS.waterOnly | LIGHT_RECORD_FLAGS.waterColumn;
         else if (lightLaysColumn(light)) flags |= LIGHT_RECORD_FLAGS.waterColumn;
+        if (breathQ > 0) flags |= breathQ << LIGHT_BREATH_SHIFT;
         records[3 * rowStride + offset] = Math.max(0, Math.round(finite(light.ownerSlot, 0)));
         records[3 * rowStride + offset + 1] = Math.max(0, Math.round(finite(light.landmarkId, 0)));
         records[3 * rowStride + offset + 2] = flags;

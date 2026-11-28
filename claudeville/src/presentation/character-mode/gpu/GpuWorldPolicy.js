@@ -2140,6 +2140,13 @@ export const LIGHT_RECORD_FLAGS = Object.freeze({
     // lantern or an attention light; GpuFrameState.resolveLights).
     groundMirror: 8,
 });
+// 2.6 / 3.5 — fire-breath factor packed into bits 8..19 of row-3 flags
+// (0 = steady / 1.0, 1..4094 = breath / 4095) so palette-ramp course
+// selection reads the steady unbreathed intensity instead of strobing across
+// step(0.14) / step(0.45) on 140 ms fire-breath beats.
+export const LIGHT_BREATH_SHIFT = 8;
+export const LIGHT_BREATH_MASK = 0xfff;
+export const LIGHT_BREATH_SCALE = 4095;
 // 2.9 — a column runs this many ground radii toward the camera from the foot.
 export const WATER_COLUMN_REACH = 1.8;
 // The tallest body (hat included) above its foot, in world px.

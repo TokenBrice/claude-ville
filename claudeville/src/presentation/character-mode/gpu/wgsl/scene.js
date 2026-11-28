@@ -39,6 +39,9 @@
 // - Depth: GL writes z_ndc = key*2-1 over [-1, 1]; WebGPU's NDC z is the
 //   window depth itself, so the vertex writes 1 - key/65535 directly.
 import {
+    LIGHT_BREATH_MASK,
+    LIGHT_BREATH_SCALE,
+    LIGHT_BREATH_SHIFT,
     LIGHT_RECORD_FLAGS,
     LIGHT_ROLE_CODES,
     LIGHT_TILE_PX,
@@ -888,6 +891,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
   var rampSteps = 0.0;
   // NL-1 — whether the strongest ramp light is the landmark's own low light.
   var rampOwn = false;
+  var rampBreath = 1.0;
   // 1.2 — ambient light pools, accumulated and landed once after the loop.
   var poolLight = vec3f(0.0);
   var poolDepth = 0.0;
@@ -1218,7 +1222,11 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
     let steps = select(ambientPoolSteps(shape, poolOrder), poolSteps(shape, poolOrder), rampLight);
     if (rampLight) {
       // 3.5 / 2.1 — a ramp pixel takes the strongest light's stepped course.
-      let rampShare = steps * 0.15 * light.w * lightColor.a;
+      // 2.6 — course selection reads the steady unbreathed intensity so 140 ms
+      // fire-breath dips never strobe a ramp wall across step cliffs.
+      let breathQ = (lightFlags >> ${LIGHT_BREATH_SHIFT}u) & ${LIGHT_BREATH_MASK}u;
+      let lightBreath = select(1.0, f32(breathQ) / ${LIGHT_BREATH_SCALE.toFixed(1)}, breathQ > 0u);
+      let rampShare = steps * 0.15 * (light.w / lightBreath) * lightColor.a;
       // NL-1 — only the landmark's own low lights earn the floor.
       let rampOwnLight = u32(lightMeta.y + 0.5) == ownLandmark && lightH <= 40.0;
       if (rampShare > admitted) {
@@ -1226,6 +1234,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
         rampHue = lightColor.rgb;
         rampSteps = steps;
         rampOwn = rampOwnLight;
+        rampBreath = lightBreath;
       }
     } else {
       let contrib = lightColor.rgb * ambientPoolWeight(steps) * light.w * lightColor.a;
@@ -1338,6 +1347,7 @@ fn sceneLight(surf: ptr<function, SurfaceSample>) -> vec3f {
       let y = dot(rampLit, GRADE_LUMA);
       let share = select(select(LAND_SHARE.z, LAND_SHARE.y, rampSteps < 2.5), LAND_SHARE.x, rampSteps < 1.5);
       rampLit = okCeiling(mix(rampLit, onStop(stop, y), share), color, RECEIVER_OKL_CEILING);
+      if (rampBreath < 1.0) { rampLit = mix(color, rampLit, rampBreath); }
     }
     color = rampLit;
     reflectionLight = vec3f(0.0);
