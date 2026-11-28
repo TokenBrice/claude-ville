@@ -33,6 +33,7 @@ const {
 // ─── Usage quota service ──────────────────────────────
 const usageQuota = require('./services/usageQuota');
 const villageWeather = require('./services/villageWeather');
+const portraitRenderer = require('./services/portraitRenderer');
 const { SessionResidency } = require('./services/sessionResidency');
 const { detectCollisions } = require('./services/workingSet');
 const { hookOverlay } = require('./adapters/hooks');
@@ -728,10 +729,22 @@ function handlePostIngestHobotnica(req, res) {
         }, null, { coalesce: false });
       }
       scheduleHobotnicaPushExpiry();
+      let portraitAck = { portraitApi: true, assetVersion: null };
+      try {
+        const portraitStatus = portraitRenderer.getPortraitStatus();
+        portraitAck = {
+          portraitApi: portraitStatus?.portraitApi !== false,
+          assetVersion: sanitizeAssetVersionHeader(portraitStatus?.assetVersion),
+        };
+      } catch {
+        portraitAck = { portraitApi: true, assetVersion: null };
+      }
       return sendJson(res, 200, {
         ok: true,
         claudevilleBootId: SERVER_IDENTITY.bootId,
         wsClients: wsClients.size,
+        portraitApi: portraitAck.portraitApi,
+        assetVersion: portraitAck.assetVersion,
       });
     } catch (ingestError) {
       const message = typeof ingestError?.code === 'string' && ingestError.code.startsWith('INVALID_')
@@ -995,6 +1008,375 @@ function handleGetChangelog(req, res) {
     res.end(content);
   } catch (err) {
     sendError(res, 404, 'Changelog not found');
+  }
+}
+
+function boundedQueryParam(searchParams, name, maxLen) {
+  const raw = searchParams.get(name);
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return trimmed.length <= maxLen ? trimmed : trimmed.slice(0, maxLen);
+}
+
+const SAFE_ASSET_VERSION_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+function sanitizeAssetVersionHeader(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return SAFE_ASSET_VERSION_RE.test(trimmed) ? trimmed : null;
+}
+
+function normalizePortraitProviderKey(value) {
+  if (typeof value !== 'string') return null;
+  const lower = value.trim().toLowerCase();
+  if (!lower) return null;
+  if (lower.includes('claude')) return 'claude';
+  if (lower.includes('codex') || lower.includes('openai')) return 'codex';
+  if (lower.includes('antigravity') || lower === 'agy') return 'antigravity';
+  if (lower.includes('zai') || lower.includes('zhipu') || lower === 'glm') return 'zai';
+  if (lower.includes('gemini')) return 'gemini';
+  if (lower.includes('deepseek')) return 'deepseek';
+  if (lower.includes('kimi')) return 'kimi';
+  if (lower.includes('grok')) return 'grok';
+  if (lower.includes('opencode')) return 'opencode';
+  if (lower === 'omp') return 'omp';
+  return lower;
+}
+
+function getLiveSessionsForPortrait() {
+  const snapshot = collectSessionSnapshot({ reason: 'portrait' });
+  if (snapshot && Array.isArray(snapshot.sessions)) return snapshot.sessions;
+  if (sessionCollectionSnapshot) {
+    const overlaid = getCachedSessionsWithOverlays(ACTIVE_THRESHOLD_MS);
+    if (Array.isArray(overlaid)) return sessionResidency.merge(overlaid);
+    if (Array.isArray(sessionCollectionSnapshot.sessions)) return sessionCollectionSnapshot.sessions;
+  }
+  if (Array.isArray(lastBroadcastState?.sessions)) return lastBroadcastState.sessions;
+  return [];
+}
+
+function findTeamMemberInfoForPortrait(agentId) {
+  if (!agentId) return null;
+  const teams = Array.isArray(teamsCache?.teams) ? teamsCache.teams : [];
+  for (const team of teams) {
+    if (!Array.isArray(team?.members)) continue;
+    for (const member of team.members) {
+      if (member && member.agentId === agentId) {
+        return {
+          teamName: typeof team.name === 'string' && team.name.trim() ? team.name.trim() : null,
+          model: typeof member.model === 'string' && member.model.trim() ? member.model.trim() : null,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function findMatchedHobotnicaPushEntry({
+  agentId,
+  sessionId,
+  nativeSessionId,
+  threadId,
+  subagentId,
+  provider,
+}) {
+  hobotnicaPush.prune(Date.now());
+  const normProvider = normalizePortraitProviderKey(provider);
+  const lookup = hobotnicaPush._canonicalByLookup;
+  const byNative = hobotnicaPush._canonicalByNative;
+  const entryRefs = hobotnicaPush._canonicalToEntryRef;
+  const instances = hobotnicaPush._instances;
+
+  const lookupEntryByCanonical = (canonicalId) => {
+    if (!canonicalId) return null;
+    const ref = entryRefs?.get(canonicalId);
+    const entry = ref ? instances?.get(ref.instanceId)?.entries?.get(ref.entryKey) || null : null;
+    return { canonicalId, entry };
+  };
+
+  if (lookup) {
+    if (threadId && subagentId) {
+      const both = lookup.get(`thread+subagent::${threadId}::${subagentId}`);
+      if (both) return lookupEntryByCanonical(both);
+    }
+    if (subagentId) {
+      const bySub = lookup.get(`subagent::${subagentId}`);
+      if (bySub) return lookupEntryByCanonical(bySub);
+    }
+    if (threadId) {
+      const byThread = lookup.get(`thread::${threadId}`) || lookup.get(`key::${threadId}`);
+      if (byThread) return lookupEntryByCanonical(byThread);
+    }
+    if (nativeSessionId) {
+      if (normProvider && byNative) {
+        const byProvNative = byNative.get(`${normProvider}::${nativeSessionId}`)
+          || byNative.get(`${normProvider}::${nativeSessionId.toLowerCase()}`);
+        if (byProvNative) return lookupEntryByCanonical(byProvNative);
+      }
+      const matchedNative = lookup.get(`native::${nativeSessionId}`);
+      if (matchedNative) return lookupEntryByCanonical(matchedNative);
+    }
+    for (const directId of [sessionId, agentId]) {
+      if (!directId) continue;
+      const byDirect = lookup.get(`session::${directId}`)
+        || lookup.get(`thread::${directId}`)
+        || lookup.get(`native::${directId}`);
+      if (byDirect) return lookupEntryByCanonical(byDirect);
+    }
+  }
+
+  if (instances) {
+    for (const instance of instances.values()) {
+      for (const entry of instance.entries.values()) {
+        const expectedDisk = hobotnicaPush._expectedDiskCanonicalId(entry);
+        const syntheticGlm = entry.provider === 'zai' ? hobotnicaPush._syntheticGlmCanonicalId(entry) : null;
+        const matchesPair = Boolean(
+          threadId
+          && subagentId
+          && (entry.owningThreadId === threadId || entry.childThreadId === threadId || entry.agentThreadId === threadId)
+          && entry.subagentId === subagentId,
+        );
+        const matchesSub = Boolean(subagentId && !threadId && entry.subagentId === subagentId);
+        const matchesThread = Boolean(
+          threadId
+          && !subagentId
+          && (entry.agentThreadId === threadId || entry.key === threadId || (entry.origin === 'root' && entry.owningThreadId === threadId)),
+        );
+        const matchesNative = Boolean(
+          nativeSessionId
+          && entry.nativeSessionId
+          && entry.nativeSessionId.toLowerCase() === nativeSessionId.toLowerCase()
+          && (!normProvider || entry.provider === normProvider),
+        );
+        const matchesDirect = [sessionId, agentId].some((id) => Boolean(
+          id
+          && (
+            entry.key === id
+            || entry.agentThreadId === id
+            || (expectedDisk && expectedDisk === id)
+            || (syntheticGlm && syntheticGlm === id)
+            || (entry.nativeSessionId && entry.nativeSessionId.toLowerCase() === id.toLowerCase() && (!normProvider || entry.provider === normProvider))
+          ),
+        ));
+        if (matchesPair || matchesSub || matchesThread || matchesNative || matchesDirect) {
+          return {
+            canonicalId: expectedDisk || syntheticGlm || null,
+            entry,
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function findLiveSessionForPortrait(sessions, {
+  canonicalId,
+  agentId,
+  sessionId,
+  nativeSessionId,
+  threadId,
+  subagentId,
+  provider,
+}) {
+  if (!Array.isArray(sessions) || sessions.length === 0) return null;
+  if (canonicalId) {
+    const exact = sessions.find((s) => s?.sessionId === canonicalId);
+    if (exact) return exact;
+  }
+
+  const normProvider = normalizePortraitProviderKey(provider);
+  const directCandidates = new Set();
+  const directLower = new Set();
+  const addCandidate = (value) => {
+    if (!value) return;
+    directCandidates.add(value);
+    directLower.add(value.toLowerCase());
+  };
+  addCandidate(sessionId);
+  addCandidate(agentId);
+  addCandidate(nativeSessionId);
+  if (nativeSessionId && normProvider && normProvider !== 'claude') {
+    const prefix = `${normProvider}-`;
+    if (!nativeSessionId.startsWith(prefix)) {
+      addCandidate(`${prefix}${nativeSessionId}`);
+    }
+  }
+
+  let fallbackMatch = null;
+  for (const session of sessions) {
+    if (!session || typeof session !== 'object') continue;
+    const sProvider = normalizePortraitProviderKey(session.provider);
+    const providerMatches = !normProvider || !sProvider || sProvider === normProvider;
+
+    const hbt = session.hobotnica;
+    if (hbt && typeof hbt === 'object') {
+      const pairMatch = Boolean(
+        threadId
+        && subagentId
+        && (hbt.threadId === threadId || hbt.childThreadId === threadId)
+        && hbt.subagentId === subagentId,
+      );
+      const subMatch = Boolean(subagentId && !threadId && hbt.subagentId === subagentId);
+      const threadMatch = Boolean(
+        threadId
+        && !subagentId
+        && (hbt.childThreadId === threadId || (!hbt.childThreadId && hbt.threadId === threadId)),
+      );
+      if (pairMatch || subMatch || threadMatch) return session;
+    }
+
+    if (directCandidates.size > 0) {
+      const sId = typeof session.sessionId === 'string' ? session.sessionId : null;
+      const prefix = sProvider ? `${sProvider}-` : '';
+      const unprefixed = sId && prefix && sId.startsWith(prefix) ? sId.slice(prefix.length) : sId;
+      const aliases = [sId, session.sourceSessionId, session.agentId, unprefixed].filter(
+        (v) => typeof v === 'string' && v.length > 0,
+      );
+      const exactHit = aliases.some((alias) => directCandidates.has(alias));
+      const lowerHit = !exactHit && Boolean(nativeSessionId) && aliases.some((alias) => directLower.has(alias.toLowerCase()));
+      if (exactHit || lowerHit) {
+        if (providerMatches) return session;
+        if (!fallbackMatch && sId && directCandidates.has(sId)) fallbackMatch = session;
+      }
+    }
+  }
+
+  return fallbackMatch;
+}
+
+/**
+ * GET /api/portrait/status
+ * Report portrait renderer availability and sprite manifest assetVersion.
+ */
+function handleGetPortraitStatus(req, res) {
+  try {
+    const status = portraitRenderer.getPortraitStatus();
+    gzipResponse(req, res, 200, JSON.stringify({
+      ok: true,
+      portraitApi: true,
+      assetVersion: sanitizeAssetVersionHeader(status.assetVersion),
+      spriteCount: status.spriteCount,
+      claudevilleBootId: SERVER_IDENTITY.bootId,
+    }), {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
+  } catch (err) {
+    console.error('Failed to build portrait status:', err.message);
+    sendError(res, 500, 'Unable to load portrait status.');
+  }
+}
+
+/**
+ * GET /api/portrait
+ * Render a 32x32 or 64x64 RGBA PNG portrait matching ClaudeVille's live UI.
+ */
+function handleGetPortrait(req, res, parsedUrl) {
+  try {
+    const params = parsedUrl.searchParams;
+    const queryModel = boundedQueryParam(params, 'model', 128);
+    const queryProvider = boundedQueryParam(params, 'provider', 64);
+    const queryEffort = boundedQueryParam(params, 'effort', 32);
+    const queryTeamName = boundedQueryParam(params, 'teamName', 128);
+    const queryAgentColor = boundedQueryParam(params, 'agentColor', 32);
+    const agentId = boundedQueryParam(params, 'agentId', 256);
+    const sessionId = boundedQueryParam(params, 'sessionId', 256);
+    const nativeSessionId = boundedQueryParam(params, 'nativeSessionId', 256);
+    const threadId = boundedQueryParam(params, 'threadId', 256);
+    const subagentId = boundedQueryParam(params, 'subagentId', 256);
+    const rawSize = boundedQueryParam(params, 'size', 16);
+    const size = portraitRenderer.normalizePortraitSize(rawSize);
+
+    const hasIdentityHint = Boolean(agentId || sessionId || nativeSessionId || threadId || subagentId);
+    const liveSessions = hasIdentityHint ? getLiveSessionsForPortrait() : [];
+    const pushMatch = hasIdentityHint
+      ? findMatchedHobotnicaPushEntry({
+        agentId,
+        sessionId,
+        nativeSessionId,
+        threadId,
+        subagentId,
+        provider: queryProvider,
+      })
+      : null;
+    const liveSession = hasIdentityHint
+      ? findLiveSessionForPortrait(liveSessions, {
+        canonicalId: pushMatch?.canonicalId || null,
+        agentId,
+        sessionId,
+        nativeSessionId,
+        threadId,
+        subagentId,
+        provider: queryProvider,
+      })
+      : null;
+
+    const matched = Boolean(liveSession || pushMatch);
+    const identityHeader = matched ? 'matched' : 'fallback';
+    const canonicalId = liveSession?.sessionId
+      || pushMatch?.canonicalId
+      || hobotnicaPush.resolveCanonicalId({
+        sessionId,
+        nativeSessionId,
+        threadId,
+        subagentId,
+        provider: queryProvider,
+      })
+      || agentId
+      || nativeSessionId
+      || sessionId
+      || threadId
+      || subagentId
+      || null;
+
+    const teamInfo = liveSession?.agentId ? findTeamMemberInfoForPortrait(liveSession.agentId) : null;
+    const liveModel = (teamInfo?.model && teamInfo.model !== 'unknown')
+      ? teamInfo.model
+      : ((liveSession?.model && liveSession.model !== 'unknown') ? liveSession.model : (pushMatch?.entry?.model || null));
+    const model = liveModel || queryModel;
+    const provider = liveSession?.provider || pushMatch?.entry?.provider || queryProvider;
+    const effort = liveSession?.reasoningEffort || liveSession?.effort || queryEffort;
+    const teamName = teamInfo?.teamName || liveSession?.teamName || pushMatch?.entry?.teamName || queryTeamName;
+    const agentColor = liveSession?.agentColor || queryAgentColor;
+
+    const result = portraitRenderer.renderAgentPortrait({
+      model,
+      provider,
+      effort,
+      agentId: canonicalId,
+      teamName,
+      agentColor,
+      size,
+    });
+    if (!result) {
+      return sendError(res, 404, 'portrait_not_found');
+    }
+
+    const safeAssetVersion = sanitizeAssetVersionHeader(result.assetVersion);
+    const headers = {
+      'Content-Type': 'image/png',
+      ETag: result.etag,
+      'Cache-Control': matched ? 'private, max-age=60' : 'private, no-cache',
+      'X-Content-Type-Options': 'nosniff',
+      'X-ClaudeVille-Identity': identityHeader,
+      ...(safeAssetVersion ? { 'X-ClaudeVille-Asset-Version': safeAssetVersion } : {}),
+      'X-ClaudeVille-Sprite-Id': result.spriteId,
+      'X-ClaudeVille-Variant': String(result.variant),
+    };
+    if (ifNoneMatchMatches(req.headers['if-none-match'], result.etag)) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+
+    headers['Content-Length'] = result.png.length;
+    res.writeHead(200, headers);
+    res.end(req.method === 'HEAD' ? undefined : result.png);
+  } catch (err) {
+    console.error('Failed to render portrait:', err.message);
+    sendError(res, 500, 'Unable to render portrait.');
   }
 }
 
@@ -3356,6 +3738,12 @@ const API_ROUTES = {
     ['/api/weather', handleGetWeather],
     ['/api/perf', handleGetPerf],
     ['/api/changelog', handleGetChangelog],
+    ['/api/portrait', handleGetPortrait],
+    ['/api/portrait/status', handleGetPortraitStatus],
+  ]),
+  HEAD: new Map([
+    ['/api/portrait', handleGetPortrait],
+    ['/api/portrait/status', handleGetPortraitStatus],
   ]),
   POST: new Map([
     ['/api/session-details', handlePostSessionDetails],
@@ -3369,6 +3757,11 @@ const POST_ONLY_API_ROUTES = new Set([
   '/api/ingest/hook',
   '/api/ingest/hobotnica',
   '/api/focus',
+]);
+
+const GET_ONLY_API_ROUTES = new Set([
+  '/api/portrait',
+  '/api/portrait/status',
 ]);
 
 const server = http.createServer((req, res) => {
@@ -3393,7 +3786,7 @@ const server = http.createServer((req, res) => {
   if (routeHandler) {
     return routeHandler(req, res, parsedUrl);
   }
-  if (POST_ONLY_API_ROUTES.has(pathname)) {
+  if (POST_ONLY_API_ROUTES.has(pathname) || GET_ONLY_API_ROUTES.has(pathname)) {
     return sendError(res, 405, 'Method Not Allowed');
   }
 
@@ -3535,6 +3928,7 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
   recentDirtyMarks.clear();
   staticEtagCache.clear();
   staticEtagCacheBytes = 0;
+  portraitRenderer.clearPortraitCache?.();
   selectedWatchDescriptors.clear();
   activeProbeDescriptors.clear();
   setAdapterDataReadyCallback(null);
