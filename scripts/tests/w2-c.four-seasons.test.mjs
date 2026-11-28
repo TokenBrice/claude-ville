@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { checkGroundBakeTiming } from './support/ground-bake-timing.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { PNG } from 'pngjs';
@@ -6,8 +7,8 @@ import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../claudeville/src/config/constants.js';
 import {
     AUTUMN_DRY_PATCH_ON, DEW_SITE_CAP, GRASS_GUST_RAMPS, GRASS_GUST_STOPS, GROUND_STOP_FLAGS, GROUND_TURF, TERRAIN_HAZE_COURSES,
-    bakeGround, bakeWinterGround, captureGroundArtifact, groundBakeSlices, groundTurfFor, restoreGroundArtifact, snowRankLumas,
-    validGroundArtifact, GROUND_BAKE_BUDGET,
+    bakeGround, bakeWinterGround, captureGroundArtifact, groundTurfFor, restoreGroundArtifact, snowRankLumas,
+    validGroundArtifact,
 } from '../../claudeville/src/presentation/character-mode/GroundBake.js';
 import {
     COLUMNAR_KEEP, COLUMNAR_SPECIES, MARCESCENT_EROSION_PASSES, MARCESCENT_FROM, MARCESCENT_RADIAL, TREE_SPRITES, WORLD_ASH_AUTUMN_LINE,
@@ -1092,23 +1093,8 @@ test('W1 bake slices stay within the 9 ms cap in every season', (t) => {
             world: { buildings: new Map([['archive', { type: 'archive', position: { tileX: 3, tileY: 15 }, width: 5, height: 3 }]]) },
             scenery: { getTreeProps: () => trees },
         });
-        let best = Infinity;
-        let accounted = Infinity;
-        for (let run = 0; run < 3 && best > GROUND_BAKE_BUDGET.sliceCapMs; run++) {
-            const gen = groundBakeSlices(renderer, true);
-            let worst = 0;
-            let step;
-            do {
-                const started = performance.now();
-                step = gen.next();
-                worst = Math.max(worst, performance.now() - started);
-            } while (!step.done);
-            best = Math.min(best, worst);
-            accounted = Math.min(accounted, step.value.stats.maxSliceMs);
-        }
-        report.push(`${id} ${best.toFixed(2)} ms`);
-        assert.ok(best <= GROUND_BAKE_BUDGET.sliceCapMs, `${id}: longest measured slice ${best.toFixed(2)} ms`);
-        assert.ok(accounted <= GROUND_BAKE_BUDGET.sliceCapMs, `${id}: longest accounted slice ${accounted.toFixed(2)} ms`);
+        const longest = checkGroundBakeTiming(renderer, id);
+        report.push(`${id} ${longest.toFixed(2)} ms`);
     }
     t.diagnostic(`longest slice: ${report.join(', ')}`);
     void MAP_SIZE;

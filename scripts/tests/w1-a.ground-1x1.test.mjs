@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { checkGroundBakeTiming } from './support/ground-bake-timing.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { ART_RAMPS } from '../../claudeville/src/config/artPalette.js';
@@ -201,26 +202,7 @@ test('X-5: the measured longest slice stays within the 9 ms cap, stepping off th
         world: { buildings: new Map([['archive', { type: 'archive', position: { tileX: 3, tileY: 15 }, width: 5, height: 3 }]]) },
         scenery: { getTreeProps: () => trees },
     });
-    // The wall-clock length of each `next()` (what an idle slot pays),
-    // not just the bake's own accounting; the best of five runs, so a
-    // stray collector pause or parallel test-worker preemption on a busy
-    // host does not count as a slice.
-    let best = Infinity;
-    let accounted = Infinity;
-    for (let run = 0; run < 5 && (best > GROUND_BAKE_BUDGET.sliceCapMs || accounted > GROUND_BAKE_BUDGET.sliceCapMs); run++) {
-        const gen = groundBakeSlices(renderer, true);
-        let worst = 0;
-        let step;
-        do {
-            const started = performance.now();
-            step = gen.next();
-            worst = Math.max(worst, performance.now() - started);
-        } while (!step.done);
-        best = Math.min(best, worst);
-        accounted = Math.min(accounted, step.value.stats.maxSliceMs);
-    }
-    assert.ok(best <= GROUND_BAKE_BUDGET.sliceCapMs, `longest measured slice ${best.toFixed(2)} ms`);
-    assert.ok(accounted <= GROUND_BAKE_BUDGET.sliceCapMs, `longest accounted slice ${accounted.toFixed(2)} ms`);
+    checkGroundBakeTiming(renderer);
 });
 
 test('2.2: the stone lattice, its roles and its key-light faces', () => {
