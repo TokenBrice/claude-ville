@@ -2,6 +2,15 @@
 
 ---
 
+## v0.69.2 — *The Bridgewarden's Bell* · Nov 28, 2026
+
+- **Hobotnica push bridge (`hobotnica-telemetry.v1`).** Adds an instance-scoped, in-memory helper-plus-fold (`hobotnicaPush.js`) fed by `POST /api/ingest/hobotnica` with fail-closed `0600` bridge-token authentication (`userdata/secrets/claudeville-bridge-token`, checking owner UID and non-symlink parent/file paths). Overlays live telemetry onto disk-backed Claude, Codex, Antigravity, and GLM sessions by canonical ID (preserving disk artifacts and holding pre-native sessions without phantom villagers), resolves cross-provider wave lineage (`parentSessionId`, `rootSessionId`, `waveId`, `teamName: null`), handles two-delta `supersedes` handoffs via bounded tombstones, gates Bell Lane alerts on `waitAudience: "operator"`, canonicalizes in-project `workingSet` file paths (dropping `exec` shell commands and backfilling missing project paths), and expires stale/dropped overlays at 30 s / 60 s while keeping overlaid disk approvals resident.
+- **Diskless GLM villagers and Hobotnica Antigravity discovery.** Synthesizes diskless GLM ACP sessions as `zai-hbt-<id>` villagers with `agent.zai.glm` sprites and bounded push-backed session details (`/api/session-detail` and `/api/session-details`), and discovers Hobotnica `antigravity-acp` roots under `$HOBOTNICA_HOME` without querying stock `~/.t3` SQLite lineage.
+- **Bidirectional Hobotnica focus.** Adds `POST /api/focus` (pushing outbound WebSocket `focus` frames and `#agent=` deep-link / `hashchange` framing), inbound WebSocket `focus-external` loopback relay to Hobotnica's `/api/cockpit/focus` (with 500 ms rate-limiting, single in-flight guard, and accurate cockpit/bridge error toasts), and `"Open in Hobotnica ↗"` actions in the Activity Panel header, Dashboard cards, and Bell Lane call cards.
+- **Reproducible CI timing and test isolation.** Runs unit test files serially (`--test-concurrency=1`), uses deterministic clocks in frame-timing and sunset color-script tests, measures worst terrain-bake slices per phase across replays, and strips host Hobotnica environment overrides in isolated test harnesses.
+
+---
+
 ## v0.69.1 — *The Lamplighter’s Round* · Nov 28, 2026
 
 - **Smoother night overviews.** Lamp pools reuse identical rasters and water updates only the areas that change. In three warmed desktop Chrome runs with 17 working villagers, the Canvas overview rose from 5.53 to 52.79 paints per second. The 95th-percentile gap between paints fell from 214.2 to 32.1 ms, and close zoom held at about 60 paints per second.
