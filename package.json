@@ -45,7 +45,7 @@
     "check:git-events": "node scripts/check-git-events.cjs",
     "check:adapter-fixtures": "node scripts/adapters/validate-fixtures.cjs",
     "check:theme-tokens": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke/theme-tokens.mjs",
-    "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"scripts/tests/*.test.mjs\"",
+    "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-concurrency=1 \"scripts/tests/*.test.mjs\"",
     "test:integration": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"scripts/tests/integration/*.test.mjs\"",
     "test:e2e:replay": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke/r1-18.e2e-replay.mjs",
     "check:artifacts": "node scripts/agents/check-artifacts.mjs",

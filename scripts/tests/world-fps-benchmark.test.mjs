@@ -559,13 +559,14 @@ test('measureIncidentWindow captures synchronous start/end snapshots inside one 
   globalThis.document = { getElementById: () => null };
 
   let rafStep = 0;
-  const startNow = performance.now();
+  t.mock.method(performance, 'now', () => rafStep * 16);
   globalThis.requestAnimationFrame = (cb) => {
     rafStep += 1;
     // Simulate renderer loop firing on each frame BEFORE the benchmark tick,
     // plus one extra frame AFTER the window resolves (must not skew deltas).
-    renderer._loop(startNow + rafStep * 16);
-    setTimeout(() => cb(startNow + rafStep * 16), 0);
+    const timestamp = performance.now();
+    renderer._loop(timestamp);
+    queueMicrotask(() => cb(timestamp));
     return rafStep;
   };
 
@@ -586,7 +587,7 @@ test('measureIncidentWindow captures synchronous start/end snapshots inside one 
   });
 
   // Extra frame after window end must not affect captured deltas.
-  renderer._loop(startNow + 500);
+  renderer._loop(performance.now() + 500);
 
   assert.equal(evaluateCalls, 1, 'start and end snapshots must be captured inside the single measured evaluate call');
   assert.equal(result.successfulPaints, 2);

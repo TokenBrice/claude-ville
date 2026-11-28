@@ -381,9 +381,8 @@ test('Canvas coast, tiled ocean and water marks agree across every Fresnel bound
 });
 
 test('all seven peak Afterglow sea beds land at 316–323 degrees', () => {
-    const { shift } = solarStateForDate(new Date(2026, 6, 15, 12));
     const weather = { type: 'clear', cloudCover: 0.08 };
-    const grade = evaluateGrade({ minuteOfDay: gradeKeyMinute('golden-hour', shift) + 30, weather, ...shift });
+    const grade = evaluateGrade({ minuteOfDay: gradeKeyMinute('golden-hour') + 30, weather });
     const mood = waterMoodFor({ lightGrade: grade, weather });
     assert.equal(grade.afterglow, 1);
     const hue = ([r, g, b]) => 360 + 60 * (g - b) / (r - g);

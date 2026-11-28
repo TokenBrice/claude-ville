@@ -73,6 +73,7 @@ Set `CLAUDEVILLE_TEST_TMPDIR` to a writable directory when the normal temporary 
 ## Conventions
 
 - Name tests as the behavior they prove and keep fixtures deterministic.
+- The unit suite runs one test file at a time so terrain-bake and shadow timing tests have the CPU to themselves within the suite.
 - Inject a fixed clock for exact boundaries. Some tests use `Date.now()` for unique import/IndexedDB names, fresh filesystem timestamps, or relative-time fixtures; wall-clock use is allowed when assertions do not depend on an exact instant.
 - CommonJS adapter/service modules load via `createRequire`; browser ES modules import directly.
 - Transcript fixtures are documented in `scripts/adapters/fixtures/README.md`; browser pixels and live lifecycle behavior belong to smoke and visual checks.
