@@ -73,15 +73,39 @@ export const agentPaletteLut = new AgentPaletteLutTable();
 // A record can still sample an evicted canvas until this frame is submitted.
 let frameEpoch = 0;
 const activeCellModels = new Map();
+// Retain cell preference across brief pauses, pose-group switches, and pan
+// away/back so a demoted model does not immediately re-upload a multi-MiB full
+// sheet only to be evicted again.
+const CELL_PREFERENCE_TTL_FRAMES = 300;
+const MAX_ACTIVE_CELL_MODELS = 256;
+// While GPU texture trims have recently demoted full sheets under byte
+// pressure, admit newly encountered models directly as cells instead of
+// uploading full sheets that will be evicted post-submit on frame 1.
+const SHEET_PRESSURE_HOLD_FRAMES = 240;
+let sheetPressureUntil = -1;
+
+function markImmutable(canvas) {
+    if (canvas) canvas.__cvImmutable = true;
+    return canvas;
+}
 
 // A sheet reclaimed after submission would otherwise be uploaded in full on
 // every frame. Keep sampling cells until this pose leaves the working set.
-export function preferAgentModelCells(textureKey) {
+export function preferAgentModelCells(textureKey, { pressure = false } = {}) {
     const key = textureKey.replace(/^(?:material:|emissive:|occluder:)?(?:agent-model:)?/, '');
-    if (key.startsWith('agent.') && key.includes('|') && !key.includes('|cell:')) activeCellModels.set(key, frameEpoch);
+    if (key.startsWith('agent.') && key.includes('|') && !key.includes('|cell:')) {
+        if (activeCellModels.has(key)) activeCellModels.delete(key);
+        else if (activeCellModels.size >= MAX_ACTIVE_CELL_MODELS) {
+            activeCellModels.delete(activeCellModels.keys().next().value);
+        }
+        activeCellModels.set(key, frameEpoch);
+        if (pressure) sheetPressureUntil = Math.max(sheetPressureUntil, frameEpoch + SHEET_PRESSURE_HOLD_FRAMES);
+    }
 }
 export function finishAgentLayerFrame() {
-    for (const [key, seen] of activeCellModels) if (seen < frameEpoch - 1) activeCellModels.delete(key);
+    for (const [key, seen] of activeCellModels) {
+        if (seen < frameEpoch - CELL_PREFERENCE_TTL_FRAMES) activeCellModels.delete(key);
+    }
     frameEpoch++;
 }
 
@@ -202,9 +226,9 @@ export function modelLayerSheet(assets, model, strip, group, scrub, pack, active
     const planes = lod ? 0.5 : (emission && strip ? 3 : 2);
     // A crowded frame cannot keep 40 full pairs inside the byte cap. Keep
     // active cold cells shared by model and pose instead of evicting live sheets.
-    const gpuCell = activeCell && activeCellModels.has(key);
+    const gpuCell = activeCell && (activeCellModels.has(key) || frameEpoch <= sheetPressureUntil);
     if (gpuCell || !admitModelSheet(cache, key, width * height * planes, activeCell)) {
-        if (gpuCell) activeCellModels.set(key, frameEpoch);
+        if (gpuCell && activeCellModels.has(key)) activeCellModels.set(key, frameEpoch);
         if (!activeCell) return null;
         x = activeCell.sx;
         y = activeCell.sy;
@@ -242,13 +266,13 @@ export function modelLayerSheet(assets, model, strip, group, scrub, pack, active
             half.putImageData(color, 0, 0);
             geo.putImageData(codes, 0, 0);
             bakeSpriteOutline(half, width / 2, height / 2, cell / 2, LOD_OUTLINE_ALPHA);
-            return { source: half.canvas, geometry: geo.canvas, emission: null, key, x, y };
+            return { source: markImmutable(half.canvas), geometry: markImmutable(geo.canvas), emission: null, key, x, y };
         }
         const geo = surface(width, height);
         geo.putImageData(new ImageData(packed, width, height), 0, 0);
         bakeSpriteOutline(ctx, width, height, cell);
-        return { source: ctx.canvas, geometry: geo.canvas, key, x, y,
-            emission: emission && cropped ? slice(emission, y, width, height, x).canvas : emission || null };
+        return { source: markImmutable(ctx.canvas), geometry: markImmutable(geo.canvas), key, x, y,
+            emission: emission && cropped ? markImmutable(slice(emission, y, width, height, x).canvas) : emission || null };
     });
 }
 
@@ -281,7 +305,7 @@ export function canvasBodyCell(sheet, cell, identity, day = true) {
         recolorCellBytes(image.data, packed, row, day);
         const ctx = surface(sw, sh);
         ctx.putImageData(image, 0, 0);
-        return ctx.canvas;
+        return markImmutable(ctx.canvas);
     });
 }
 
@@ -319,7 +343,7 @@ export function canvasPoseCell(assets, identity, source, cell, strip = null, scr
         writePaletteRow(row, identity);
         recolorCellBytes(image.data, null, row, true, codes, model);
         ctx.putImageData(image, 0, 0);
-        return ctx.canvas;
+        return markImmutable(ctx.canvas);
     });
 }
 
@@ -381,7 +405,7 @@ function lampCoverage(image, width, height, x = 0, y = 0) {
     if (!soft) return null;
     const ctx = surface(width, height);
     ctx.putImageData(image, -x, -y);
-    return ctx.canvas;
+    return markImmutable(ctx.canvas);
 }
 
 export function headLayer(compositor, model, accessory, palette, group, frame, dir, scale = 1, day = false) {
@@ -408,7 +432,7 @@ export function headLayer(compositor, model, accessory, palette, group, frame, d
         outlineHat(pixels.data, width, height, day ? DAY_RIM_ALPHA : scale === 1 ? OUTLINE_ALPHA : LOD_OUTLINE_ALPHA);
         ctx.putImageData(pixels, 0, 0);
         if (!day) ctx.canvas.__cvLampCoverage = lampCoverage(pixels, width, height);
-        return ctx.canvas;
+        return markImmutable(ctx.canvas);
     });
     const size = DEFAULT_CELL * scale;
     let x = Math.round((apex[0] - stamp.anchor[0]) * scale) - 1;
@@ -439,7 +463,7 @@ function halfWeaponStamp(full, wrist, key) {
     downsampleMajorityWithChannels(pixels, 2 * w, dst.data, w, h, 2 * Math.max(w, h));
     ctx.putImageData(dst, 0, 0);
     ctx.canvas.__cvLampCoverage = lampCoverage(dst, w, h);
-    return { source: ctx.canvas, key, x: Math.round(wx / 2) + left, y: Math.round(wy / 2) + top };
+    return { source: markImmutable(ctx.canvas), key, x: Math.round(wx / 2) + left, y: Math.round(wy / 2) + top };
 }
 
 export function equipmentLayer(sprite, identity, geometry, layer) {
@@ -470,7 +494,7 @@ export function equipmentLayer(sprite, identity, geometry, layer) {
         const height = bounds.bottom - bounds.top + 1;
         const cropped = slice(ctx.canvas, bounds.top, width, height, bounds.left);
         cropped.canvas.__cvLampCoverage = lampCoverage(pixels, width, height, bounds.left, bounds.top);
-        return { source: cropped.canvas, key, x: bounds.left - pad, y: bounds.top - pad };
+        return { source: markImmutable(cropped.canvas), key, x: bounds.left - pad, y: bounds.top - pad };
     });
 }
 
@@ -521,11 +545,14 @@ export function layerCacheStats() {
         modelBaseBytes: (MODEL_BASE_CACHE.pixels + MODEL_TILE_CACHE.pixels) * 4,
         layerCacheBytes: [MODEL_BASE_CACHE, MODEL_TILE_CACHE, MODEL_GROUP_STRIP_CACHE, MODEL_LOD_CACHE, CANVAS_CELL_CACHE, HAT_CACHE, GEAR_CACHE]
             .reduce((sum, store) => sum + store.pixels * 4, 0),
+        activeCellModels: activeCellModels.size,
+        sheetPressureActive: frameEpoch <= sheetPressureUntil,
     };
 }
 
 export function clearLayerCaches() {
     activeCellModels.clear();
+    sheetPressureUntil = -1;
     for (const store of [MODEL_BASE_CACHE, MODEL_TILE_CACHE, MODEL_GROUP_STRIP_CACHE, MODEL_LOD_CACHE, CANVAS_CELL_CACHE, HAT_CACHE, GEAR_CACHE]) {
         store.entries.clear();
         store.pixels = 0;
@@ -549,7 +576,7 @@ export function bodyWithHead(body, hat) {
         const ctx = surface(body.width, body.height);
         ctx.drawImage(body,0,0);
         ctx.drawImage(hat.source, hat.sx, hat.sy, hat.sw, hat.sh, hat.x, hat.y, hat.sw, hat.sh);
-        return ctx.canvas;
+        return markImmutable(ctx.canvas);
     });
 }
 
@@ -565,7 +592,7 @@ export function canvasOverflowRecord(record) {
         const image = ctx.getImageData(0, 0, sw, sh);
         for (let i = 2; i < image.data.length; i += 4) image.data[i] = (image.data[i] & 1) * 255;
         ctx.putImageData(image, 0, 0);
-        return { materialSource: ctx.canvas, emissiveSource: emissiveSource && slice(emissiveSource, sy, sw, sh, sx).canvas };
+        return { materialSource: markImmutable(ctx.canvas), emissiveSource: emissiveSource && markImmutable(slice(emissiveSource, sy, sw, sh, sx).canvas) };
     });
     Object.assign(record, channels, { sx: 0, sy: 0, sourceWidth: sw, sourceHeight: sh,
         textureKey: key + '|' + paletteIdentity.key, sidecarKey: key });

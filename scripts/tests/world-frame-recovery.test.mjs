@@ -281,6 +281,46 @@ test('failed or overdue fallback preparation terminates its hold and presents Ca
     }
 });
 
+test('async WebGPU fallback stages build/bake/swap in next tasks outside hot rAF and cancels cleanly', t => {
+    const clock = scheduler(t);
+    const idleCallbacks = [];
+    const idleDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'requestIdleCallback');
+    Object.defineProperty(globalThis, 'requestIdleCallback', {
+        configurable: true,
+        value(cb) { idleCallbacks.push(cb); return idleCallbacks.length; },
+    });
+    t.after(() => {
+        if (idleDescriptor) Object.defineProperty(globalThis, 'requestIdleCallback', idleDescriptor);
+        else delete globalThis.requestIdleCallback;
+    });
+
+    const r = renderer();
+    const failedGpu = { failure: { summary: 'device: destroyed' }, isActive: () => false, dispose() {} };
+    r.gpuWorld = failedGpu;
+    r.worldRendererMode = 'webgpu';
+    r.fxCanvas = { cloneNode: () => ({ style: {} }) };
+    r._startLoop();
+
+    // Hot rAF frame detects WebGPU failure, schedules next-task step (NOT idle),
+    // and returns without drawing so the last good FX frame stays visible.
+    clock.frame();
+    assert.equal(r.presented.length, 0, 'hot rAF must hold last good frame while fallback prepares');
+    assert.equal(idleCallbacks.length, 0, 'fallback recovery must not wait on low-priority requestIdleCallback');
+    assert.equal(clock.retries.size, 1, 'fallback step schedules on next macrotask');
+    assert.equal(clock.retries.values().next().value.delay, 0);
+    assert.equal(r._fallbackPrep?.stage, 'build');
+
+    // A second rAF tick while build is pending still holds the last good frame.
+    clock.frame();
+    assert.equal(r.presented.length, 0);
+
+    // Cancelling fallback prep clears the pending timer so stale steps never fire.
+    r._cancelFallbackPrep();
+    assert.equal(r._fallbackPrep, null);
+    assert.equal(clock.retries.size, 0, 'cancel must clear pending fallback step timer');
+    r._stopLoop();
+});
+
 test('a World failure notice survives elapsed retries and other notices until recovery', async t => {
     const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
     Object.defineProperty(globalThis, 'window', {

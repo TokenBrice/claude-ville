@@ -25,9 +25,14 @@ export function departedTableau(host) {
     return Boolean(host?.agent?.isDeparted) && !host?.leaving;
 }
 
+const EMPTY_RECORDS = Object.freeze([]);
+
 export class AgentGpuOverlayRenderer {
     constructor(host) {
         this.host = host;
+        this._liveRecords = null;
+        this._liveFrameRecord = null;
+        this._liveWalkStripRef = null;
     }
 
     setEnabled(enabled) {
@@ -36,8 +41,20 @@ export class AgentGpuOverlayRenderer {
         if (!next) this.host._gpuFrameRecord = null;
     }
 
+    releaseRenderResources() {
+        this._liveRecords = null;
+        this._liveFrameRecord = null;
+        this._liveWalkStripRef = null;
+        this._walkStrip = null;
+        this._groundRecords = null;
+    }
+
     getRecords() {
-        return this.host._gpuFrameRecord ? [this.host._gpuFrameRecord] : [];
+        const record = this.host._gpuFrameRecord;
+        if (!record) return EMPTY_RECORDS;
+        const list = this._liveRecords || (this._liveRecords = [record]);
+        list[0] = record;
+        return list;
     }
 
     draw(ctx, zoom = 1, annotationMode = 'full') {
@@ -228,66 +245,81 @@ export class AgentGpuOverlayRenderer {
         };
         const materialSource = layer ? layer.sheet.geometry : host._packedGeometrySource?.(channel('material'), channel('occluder')) || null;
         const emissiveSource = host._authoredEmissionSource?.(layer ? layer.sheet.emission : channel('emissive')) || null;
-        host._gpuFrameRecord = {
-            id: `agent:${host.agent?.id || profileKey}`,
-            stableKey: host.agent?.id || profileKey,
-            textureKey: layer ? 'agent-model:' + layer.sheet.key :
-                pose ? `agent-strip:${profileKey}:${pose.group}` : `agent-sheet${lodSheet ? '-lod' : ''}:${profileKey}`,
-            sidecarKey: layer?.sheet.key || (materialSource || emissiveSource ? `${spriteId}:${pose ? 'strip' : 'channels'}` : ''),
-            source,
-            materialSource,
-            emissiveSource,
-            packedGeometry: Boolean(materialSource),
-            channelRect: null,
-            channelRevision: resolved?.revision || host.assets?.assetVersion || null,
-            sourceWidth: source.width,
-            sourceHeight: source.height,
-            sx: bodyCell.sx * sourceScale,
-            sy: bodyCell.sy * sourceScale,
-            sw: bodyCell.sw * sourceScale,
-            sh: bodyCell.sh * sourceScale,
-            x: dx, y: dy,
-            width: original.sw * drawScale,
-            height: original.sh * drawScale,
-            alpha: departedTableau(host) ? alpha * 0.58 : alpha,
-            material: gpuMaterialNameForProvider(host.agent?.provider),
-            elevation: 0.52,
-            occluder: 0.58,
-            emissive: departedTableau(host)
-                ? 0
-                : status === AgentStatus.WAITING_ON_USER
-                    ? 0.42
-                    : status === AgentStatus.COMPLETED
-                        ? 0.20
-                        : status === AgentStatus.WORKING
-                            ? 0.08
-                            : 0,
-            textureRevision: layer?.sheet.key || (pose ? `strip:${profileKey}:${pose.group}` : `${lodSheet ? 'lod:' : ''}${profileKey}`),
-            sidecarRevision: layer?.sheet.key || resolved?.revision || host.assets?.assetVersion || null,
-            contentTopY,
-            poseKey: `${pose ? `${pose.group}:${bodyCell.sy}` : host.animState}:${host.direction}:${host.agent?.currentTool || ''}`,
-            urgentPose: host.selected || host.hovered
-                || [AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(status),
-            // SD-2 — attention loses nothing in the sun's shade (V9 flag
-            // `shadeExempt`, gpu/SunShade.js).
-            shadeExempt: isAttentionStatus(status) && !departedTableau(host),
-            frameGeometry,
-        };
+        const rec = stripProbe ? {} : (this._liveFrameRecord || (this._liveFrameRecord = {}));
+        rec.id = `agent:${host.agent?.id || profileKey}`;
+        rec.stableKey = host.agent?.id || profileKey;
+        rec.textureKey = layer ? 'agent-model:' + layer.sheet.key :
+            pose ? `agent-strip:${profileKey}:${pose.group}` : `agent-sheet${lodSheet ? '-lod' : ''}:${profileKey}`;
+        rec.sidecarKey = layer?.sheet.key || (materialSource || emissiveSource ? `${spriteId}:${pose ? 'strip' : 'channels'}` : '');
+        rec.source = source;
+        rec.materialSource = materialSource;
+        rec.emissiveSource = emissiveSource;
+        rec.packedGeometry = Boolean(materialSource);
+        rec.channelRect = null;
+        rec.channelRevision = resolved?.revision || host.assets?.assetVersion || null;
+        rec.sourceWidth = source.width;
+        rec.sourceHeight = source.height;
+        rec.sx = bodyCell.sx * sourceScale;
+        rec.sy = bodyCell.sy * sourceScale;
+        rec.sw = bodyCell.sw * sourceScale;
+        rec.sh = bodyCell.sh * sourceScale;
+        rec.x = dx;
+        rec.y = dy;
+        rec.width = original.sw * drawScale;
+        rec.height = original.sh * drawScale;
+        rec.alpha = departedTableau(host) ? alpha * 0.58 : alpha;
+        rec.material = gpuMaterialNameForProvider(host.agent?.provider);
+        rec.elevation = 0.52;
+        rec.occluder = 0.58;
+        rec.emissive = departedTableau(host)
+            ? 0
+            : status === AgentStatus.WAITING_ON_USER
+                ? 0.42
+                : status === AgentStatus.COMPLETED
+                    ? 0.20
+                    : status === AgentStatus.WORKING
+                        ? 0.08
+                        : 0;
+        rec.textureRevision = layer?.sheet.key || (pose ? `strip:${profileKey}:${pose.group}` : `${lodSheet ? 'lod:' : ''}${profileKey}`);
+        rec.sidecarRevision = layer?.sheet.key || resolved?.revision || host.assets?.assetVersion || null;
+        rec.contentTopY = contentTopY;
+        rec.poseKey = `${pose ? `${pose.group}:${bodyCell.sy}` : host.animState}:${host.direction}:${host.agent?.currentTool || ''}`;
+        rec.urgentPose = host.selected || host.hovered
+            || status === AgentStatus.WAITING_ON_USER
+            || status === AgentStatus.ERRORED
+            || status === AgentStatus.RATE_LIMITED;
+        // SD-2 — attention loses nothing in the sun's shade (V9 flag
+        // `shadeExempt`, gpu/SunShade.js).
+        rec.shadeExempt = isAttentionStatus(status) && !departedTableau(host);
+        rec.frameGeometry = frameGeometry;
+        rec.walkStrip = undefined;
+        host._gpuFrameRecord = rec;
         if (layer) {
-            Object.assign(host._gpuFrameRecord, {
-                sharedLayer: true, pageable: false, paletteIdentity: layer.palette, variant: layer.palette.variant,
-            });
+            rec.sharedLayer = true;
+            rec.pageable = false;
+            rec.paletteIdentity = layer.palette;
+            rec.variant = layer.palette.variant;
             return;
         }
+        rec.sharedLayer = false;
+        rec.pageable = undefined;
+        rec.paletteIdentity = undefined;
+        rec.variant = undefined;
         if (stripProbe) return;
         const walkFrame = !pose && !lodSheet && host.animState === 'walk' && host.motionScale > 0
             ? walkFrameOfCell(host.spriteSheet, host.direction, cell)
             : -1;
         if (walkFrame < 0) return;
-        const strip = this._walkStripFor(host._gpuFrameRecord, {
+        const strip = this._walkStripFor(rec, {
             dx, dy, drawScale, profileKey, spriteId, alpha, contentTopY, frameGeometry,
         });
-        if (strip) host._gpuFrameRecord.walkStrip = { key: strip.key, cells: strip.cells, frame: walkFrame };
+        if (strip) {
+            const ws = this._liveWalkStripRef || (this._liveWalkStripRef = { key: '', cells: null, frame: 0 });
+            ws.key = strip.key;
+            ws.cells = strip.cells;
+            ws.frame = walkFrame;
+            rec.walkStrip = ws;
+        }
     }
 
     // 4.7 — the six cells of the current facing's walk row, each resolved by

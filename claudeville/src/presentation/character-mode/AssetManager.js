@@ -660,13 +660,26 @@ export class AssetManager {
 
     async _loadCharacterEntry(entry, { signal, generation }) {
         const path = this._pathFor(entry);
-        const { img, ok, reason } = await this._loadOptionalImage(path, { signal });
+        // Overlap optional action-strip fetch/decode with the base sheet so
+        // first-action parity stays intact without a serial round trip.
+        const stripPromise = this._launchOptionalStrip(entry, { signal, generation });
+        let img;
+        let ok;
+        let reason;
+        try {
+            ({ img, ok, reason } = await this._loadOptionalImage(path, { signal }));
+        } catch (error) {
+            this._discardActionStripPromise(stripPromise);
+            throw error;
+        }
         if (!this._canCommitLoad(signal, generation)) {
             this._releaseImage(img);
+            this._discardActionStripPromise(stripPromise);
             return false;
         }
         if (!ok || !img) {
             this._recordCharacterFailure(entry.id, path, reason || 'load failed');
+            this._discardActionStripPromise(stripPromise);
             return false;
         }
         this.missing.delete(entry.id);
@@ -681,10 +694,12 @@ export class AssetManager {
                 });
             } catch (error) {
                 this._releaseImage(img);
+                this._discardActionStripPromise(stripPromise);
                 throw error;
             }
             if (!this._canCommitLoad(signal, generation)) {
                 this._releaseImage(img);
+                this._discardActionStripPromise(stripPromise);
                 return false;
             }
         }
@@ -692,33 +707,57 @@ export class AssetManager {
             anchor: entry.anchor || null,
             generation,
         });
-        // C2: the optional action strip is a separate PNG loaded after the base
-        // sheet is drawable, so a body never waits on it and never widens.
-        await this._loadActionStrip(entry, { signal, generation });
+        if (stripPromise) {
+            const fetched = await stripPromise;
+            this._commitActionStrip(fetched, { signal, generation });
+        }
         return true;
     }
 
-    // Lazily resident per demanded character. A missing, malformed, or
-    // mis-sized strip leaves the character strip-less and rendering identical.
-    async _loadActionStrip(entry, { signal, generation }) {
+    // Launch optional strip fetch and observe any rejection from launch so a
+    // failure before await or on a failed/aborted base never surfaces as an
+    // unhandled rejection, while awaiting the returned promise directly on a
+    // successful base path still retains errors.
+    _launchOptionalStrip(entry, { signal, generation }) {
+        if (!entry?.actionStrip || this.actionStrips.has(entry.id)) return null;
+        const promise = this._fetchActionStrip(entry, { signal, generation });
+        promise.catch(() => {});
+        return promise;
+    }
+
+    _discardActionStripPromise(stripPromise) {
+        if (!stripPromise) return;
+        stripPromise.then(
+            (fetched) => this._discardFetchedActionStrip(fetched),
+            () => {},
+        );
+    }
+
+    // Fetch and validate one optional action strip without mutating resident
+    // state so callers can overlap it with the base sheet and discard cleanly
+    // if the base sheet fails or the generation is superseded.
+    async _fetchActionStrip(entry, { signal, generation }) {
         const meta = entry?.actionStrip;
         const path = actionStripPathFor(meta);
-        if (!path) return;
-        if (this.actionStrips.has(entry.id)) return;
+        if (!path || this.actionStrips.has(entry.id)) return null;
         const { img, ok, reason } = await this._loadOptionalImage(path, { signal });
         if (!this._canCommitLoad(signal, generation)) {
             if (img) this._releaseImage(img);
-            return;
+            return null;
         }
         const invalid = !ok || !img ? (reason || 'load failed') : actionStripMismatch(meta, img);
         if (invalid) {
             if (img) this._releaseImage(img);
-            this._optionalLoadMisses.push({ id: entry.id, channel: 'actionStrip', path, reason: invalid });
-            return;
+            return {
+                id: entry.id,
+                strip: null,
+                misses: [{ id: entry.id, channel: 'actionStrip', path, reason: invalid }],
+            };
         }
         const channels = { albedo: img, material: null, emissive: null, occluder: null };
+        const misses = [];
         if (this._materialDecodedLoaded) {
-            await Promise.all(MATERIAL_CHANNELS
+            const companions = await Promise.allSettled(MATERIAL_CHANNELS
                 .filter((channel) => channel !== 'albedo')
                 .map(async (channel) => {
                     // Strip companions follow the existing sidecar declaration
@@ -729,7 +768,7 @@ export class AssetManager {
                     if (!this._canCommitLoad(signal, generation) || !loaded.ok || !loaded.img) {
                         if (loaded.img) this._releaseImage(loaded.img);
                         if (!loaded.ok) {
-                            this._optionalLoadMisses.push({
+                            misses.push({
                                 id: entry.id,
                                 channel: `actionStrip:${channel}`,
                                 path: companionPath,
@@ -740,7 +779,7 @@ export class AssetManager {
                     }
                     if (loaded.img.width !== img.width || loaded.img.height !== img.height) {
                         this._releaseImage(loaded.img);
-                        this._optionalLoadMisses.push({
+                        misses.push({
                             id: entry.id,
                             channel: `actionStrip:${channel}`,
                             path: companionPath,
@@ -750,13 +789,50 @@ export class AssetManager {
                     }
                     channels[channel] = loaded.img;
                 }));
+            const failed = companions.find(result => result.status === 'rejected');
+            if (failed) {
+                for (const image of Object.values(channels)) if (image) this._releaseImage(image);
+                throw failed.reason;
+            }
         }
         if (!this._canCommitLoad(signal, generation)) {
             for (const image of Object.values(channels)) if (image) this._releaseImage(image);
+            return null;
+        }
+        return {
+            id: entry.id,
+            strip: { image: img, meta, path, channels },
+            misses,
+        };
+    }
+
+    _discardFetchedActionStrip(fetched) {
+        if (!fetched?.strip) return;
+        for (const image of Object.values(fetched.strip.channels || {})) {
+            if (image) this._releaseImage(image);
+        }
+    }
+
+    _commitActionStrip(fetched, { signal, generation }) {
+        if (!fetched) return;
+        if (!this._canCommitLoad(signal, generation)) {
+            this._discardFetchedActionStrip(fetched);
             return;
         }
-        this._releaseActionStrip(entry.id);
-        this.actionStrips.set(entry.id, { image: img, meta, path, channels });
+        if (fetched.misses?.length) this._optionalLoadMisses.push(...fetched.misses);
+        if (!fetched.strip) return;
+        if (this.actionStrips.has(fetched.id)) {
+            this._discardFetchedActionStrip(fetched);
+            return;
+        }
+        this.actionStrips.set(fetched.id, fetched.strip);
+    }
+
+    // Lazily resident per demanded character. A missing, malformed, or
+    // mis-sized strip leaves the character strip-less and rendering identical.
+    async _loadActionStrip(entry, { signal, generation }) {
+        const fetched = await this._fetchActionStrip(entry, { signal, generation });
+        this._commitActionStrip(fetched, { signal, generation });
     }
 
     _releaseActionStrip(id) {
@@ -857,11 +933,41 @@ export class AssetManager {
             return;
         }
         const resident = this.get(entry.id, { request: false });
-        const { img: loadedImg, ok } = resident && !this.missing.has(entry.id)
-            ? { img: resident, ok: true }
-            : await this._loadImage(path, { signal });
+        // Overlap optional action-strip and overlay-layer fetches with the base
+        // image so cold boot avoids serial round trips while keeping full
+        // first-action and layer readiness before load() resolves.
+        const stripPromise = this._isCharacterEntry(entry)
+            ? this._launchOptionalStrip(entry, { signal, generation })
+            : null;
+        const layersPromise = entry.layers
+            ? Promise.all(Object.entries(entry.layers).map(([name, layer]) => {
+                if (name === 'base') return null;
+                const layerId = `${entry.id}.${name}`;
+                // Building overlay layers (e.g. watchfire, beacon) live beside the
+                // base PNG at buildings/<id>/<name>.png — same convention the
+                // composed-building loader uses. Without this, single-image
+                // buildings with layers would misroute through _pathFor.
+                const layerPath = entry.id.startsWith('building.')
+                    ? `assets/sprites/buildings/${entry.id}/${name}.png`
+                    : this._pathFor({ id: layerId, ...layer });
+                return this._loadLayer(layerId, layer, layerPath, { signal, generation });
+            }))
+            : null;
+        if (layersPromise) layersPromise.catch(() => {});
+        let loadedImg;
+        let ok;
+        try {
+            ({ img: loadedImg, ok } = resident && !this.missing.has(entry.id)
+                ? { img: resident, ok: true }
+                : await this._loadImage(path, { signal }));
+        } catch (error) {
+            this._discardActionStripPromise(stripPromise);
+            throw error;
+        }
         if (!this._canCommitLoad(signal, generation)) {
             if (loadedImg !== resident) this._releaseImage(loadedImg);
+            this._discardActionStripPromise(stripPromise);
+            if (layersPromise) await layersPromise.catch(() => {});
             return;
         }
         if (!ok) {
@@ -895,24 +1001,15 @@ export class AssetManager {
         });
         // C2: characters loaded through the eager pass get their optional strip
         // as well, so residency does not depend on which path demanded them.
-        if (this._isCharacterEntry(entry) && ok) {
-            await this._loadActionStrip(entry, { signal, generation });
+        if (stripPromise) {
+            if (ok) {
+                const fetched = await stripPromise;
+                this._commitActionStrip(fetched, { signal, generation });
+            } else {
+                this._discardActionStripPromise(stripPromise);
+            }
         }
-        // Recurse for layered entries (overlays).
-        if (entry.layers) {
-            await Promise.all(Object.entries(entry.layers).map(([name, layer]) => {
-                if (name === 'base') return null;
-                const layerId = `${entry.id}.${name}`;
-                // Building overlay layers (e.g. watchfire, beacon) live beside the
-                // base PNG at buildings/<id>/<name>.png — same convention the
-                // composed-building loader uses. Without this, single-image
-                // buildings with layers would misroute through _pathFor.
-                const layerPath = entry.id.startsWith('building.')
-                    ? `assets/sprites/buildings/${entry.id}/${name}.png`
-                    : this._pathFor({ id: layerId, ...layer });
-                return this._loadLayer(layerId, layer, layerPath, { signal, generation });
-            }));
-        }
+        if (layersPromise) await layersPromise;
     }
 
     _storeBitmap(id, img, {
@@ -929,7 +1026,8 @@ export class AssetManager {
         if (!buildMask) return;
         const alphaMask = mask || this._buildAlphaMask(img);
         this.alphaMasks.set(id, alphaMask);
-        this.outlines.set(id, this._bakeOutline(img.width, img.height, alphaMask));
+        // Hover outlines stay lazy and are baked on first getOutline(id) via
+        // _ensureInteractionArt(), saving boot CPU and derived canvas memory.
     }
 
     async _loadLayer(
@@ -1346,24 +1444,63 @@ export class AssetManager {
         return mask;
     }
 
-    // Pre-bake a 1-px gold outline as a transparent canvas the same size as the
-    // sprite. Edge = pixel where the mask is empty AND any 4-neighbour is filled.
-    // Done once at load so per-frame outline draw is a single ctx.drawImage.
+    // Bake a 1-px gold (#f2d36b) outline as a transparent canvas the same size
+    // as the sprite. Edge = pixel where the mask is empty AND any 4-neighbour
+    // is filled. Baked lazily on first hover so per-frame outline draw is a
+    // single ctx.drawImage while boot avoids upfront outline canvases.
     _bakeOutline(w, h, mask) {
         const canvas = document.createElement('canvas');
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
+        if (typeof ctx.createImageData === 'function' && typeof ctx.putImageData === 'function') {
+            const imageData = ctx.createImageData(w, h);
+            const data = imageData.data;
+            for (let y = 0; y < h; y++) {
+                const row = y * w;
+                const hasUp = y > 0;
+                const hasDown = y < h - 1;
+                for (let x = 0; x < w; x++) {
+                    const idx = row + x;
+                    if (mask[idx]) continue;
+                    const n = (hasUp && mask[idx - w])
+                           || (hasDown && mask[idx + w])
+                           || (x > 0 && mask[idx - 1])
+                           || (x < w - 1 && mask[idx + 1]);
+                    if (n) {
+                        const off = idx * 4;
+                        data[off] = 0xf2;
+                        data[off + 1] = 0xd3;
+                        data[off + 2] = 0x6b;
+                        data[off + 3] = 0xff;
+                    }
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+            return canvas;
+        }
         ctx.fillStyle = OUTLINE_COLOR;
         for (let y = 0; y < h; y++) {
+            const row = y * w;
+            const hasUp = y > 0;
+            const hasDown = y < h - 1;
+            let runStart = -1;
             for (let x = 0; x < w; x++) {
-                if (mask[y * w + x]) continue;
-                const n = (y > 0 && mask[(y - 1) * w + x])
-                       || (y < h - 1 && mask[(y + 1) * w + x])
-                       || (x > 0 && mask[y * w + (x - 1)])
-                       || (x < w - 1 && mask[y * w + (x + 1)]);
-                if (n) ctx.fillRect(x, y, 1, 1);
+                const idx = row + x;
+                const edge = !mask[idx] && (
+                    (hasUp && mask[idx - w])
+                    || (hasDown && mask[idx + w])
+                    || (x > 0 && mask[idx - 1])
+                    || (x < w - 1 && mask[idx + 1])
+                );
+                if (edge) {
+                    if (runStart < 0) runStart = x;
+                } else if (runStart >= 0) {
+                    ctx.fillRect(runStart, y, x - runStart, 1);
+                    runStart = -1;
+                }
             }
+            if (runStart >= 0) ctx.fillRect(runStart, y, w - runStart, 1);
         }
         return canvas;
     }

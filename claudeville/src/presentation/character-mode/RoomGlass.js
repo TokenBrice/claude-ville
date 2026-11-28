@@ -385,6 +385,7 @@ export class RoomGlass {
                     material: this._crop(this.assets.getCompanion?.(id, 'material'), map),
                     occluder: this._crop(this.assets.getCompanion?.(id, 'occluder'), map),
                 };
+                if (map.channels.occluder) map.channels.occluder.__cvImmutable = true;
                 const material = map.channels.material;
                 if (material) map.materialPixels = material.getContext('2d').getImageData(0, 0, map.w, map.h);
             }

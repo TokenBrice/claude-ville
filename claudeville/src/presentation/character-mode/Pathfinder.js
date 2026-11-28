@@ -1943,27 +1943,65 @@ export class Pathfinder {
     }
 
     _simplify(tiles, bridgeTiles) {
-        if (tiles.length <= 1) return tiles;
+        const len = tiles.length;
+        if (len <= 1) return tiles;
         const out = [];
-        let prevDir = null;
-        for (let i = 0; i < tiles.length; i++) {
+        const hasBridges = !!(bridgeTiles && bridgeTiles.size);
+        let prevDir = -1;
+        let prevCrossing = false;
+        let curOnBridge = false;
+        let curCrossing = false;
+        let nextOnBridge = false;
+        let nextCrossing = false;
+        if (hasBridges) {
+            const k0 = `${tiles[0].tileX},${tiles[0].tileY}`;
+            curOnBridge = bridgeTiles.has(k0);
+            if (curOnBridge) {
+                const info = bridgeTiles.get?.(k0);
+                curCrossing = !info || info.kind !== 'dock';
+            }
+            const k1 = `${tiles[1].tileX},${tiles[1].tileY}`;
+            nextOnBridge = bridgeTiles.has(k1);
+            if (nextOnBridge) {
+                const info = bridgeTiles.get?.(k1);
+                nextCrossing = !info || info.kind !== 'dock';
+            }
+        }
+        for (let i = 0; i < len; i++) {
             const t = tiles[i];
-            const prev = tiles[i - 1];
-            const next = tiles[i + 1];
-            const onBridge = bridgeTiles?.has(`${t.tileX},${t.tileY}`);
-            const bridgeLanding = !onBridge && (
-                this._isBridgeCrossingTile(prev, bridgeTiles)
-                || this._isBridgeCrossingTile(next, bridgeTiles)
-            );
+            const prev = i > 0 ? tiles[i - 1] : undefined;
+            const next = i + 1 < len ? tiles[i + 1] : undefined;
             if (!next) {
                 out.push(t); // always include final destination
                 break;
             }
-            const dir = `${Math.sign(next.tileX - t.tileX)},${Math.sign(next.tileY - t.tileY)}`;
-            if (onBridge || bridgeLanding || t.surfaceId !== prev?.surfaceId || t.surfaceId !== next.surfaceId || dir !== prevDir) {
+            const bridgeLanding = hasBridges && !curOnBridge && (prevCrossing || nextCrossing);
+            const dx = next.tileX - t.tileX;
+            const dy = next.tileY - t.tileY;
+            const dir = ((dx > 0 ? 2 : dx < 0 ? 0 : 1) * 3) + (dy > 0 ? 2 : dy < 0 ? 0 : 1);
+            if (curOnBridge || bridgeLanding || t.surfaceId !== prev?.surfaceId || t.surfaceId !== next.surfaceId || dir !== prevDir) {
                 out.push(t);
             }
             prevDir = dir;
+            if (hasBridges) {
+                prevCrossing = curCrossing;
+                curOnBridge = nextOnBridge;
+                curCrossing = nextCrossing;
+                if (i + 2 < len) {
+                    const t2 = tiles[i + 2];
+                    const k2 = `${t2.tileX},${t2.tileY}`;
+                    nextOnBridge = bridgeTiles.has(k2);
+                    if (nextOnBridge) {
+                        const info = bridgeTiles.get?.(k2);
+                        nextCrossing = !info || info.kind !== 'dock';
+                    } else {
+                        nextCrossing = false;
+                    }
+                } else {
+                    nextOnBridge = false;
+                    nextCrossing = false;
+                }
+            }
         }
         return out;
     }

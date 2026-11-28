@@ -136,12 +136,14 @@ test('typed uploads restore the binding directly only when storage holds', () =>
     };
 
     calls.length = 0;
+    renderer.frames++;
     assert.equal(upload(1, 2), first);
     assert.ok(calls.some(call => call.name === 'texSubImage2D'));
     assert.ok(!calls.some(call => call.name === 'isTexture'));
     assert.equal(calls.filter(call => call.name === 'bindTexture').at(-1).args[1], first);
 
     calls.length = 0;
+    renderer.frames++;
     assert.notEqual(upload(2, 3), first);
     assert.ok(calls.some(call => call.name === 'deleteTexture' && call.args[0] === first));
     assert.ok(calls.some(call => call.name === 'isTexture' && call.args[0] === first));

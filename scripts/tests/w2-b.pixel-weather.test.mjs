@@ -825,6 +825,12 @@ test('W2-Fix-B §4.12: puddle rings follow the ground history — none on dry gr
     assert.ok(full >= shallow, `puddles 0.9: rings on every site (${full} >= ${shallow})`);
 });
 
+test('pure Canvas capture selects the CPU grading path explicitly', () => {
+    assert.equal(parseCaptureArgs(['--postfx=0', '--backend=canvas']).disablePostFx, true);
+    assert.throws(() => parseCaptureArgs(['--postfx=0']), /requires --backend=canvas/);
+    assert.throws(() => parseCaptureArgs(['--postfx=invalid']), /accepts only 0/);
+});
+
 test('W2-Fix-B harness: bench weather presets, strict capture weather, snow cover, authored solar and backend fail-fast', () => {
     assert.deepEqual(BENCH_WEATHER.overcast, { type: 'overcast', intensity: 0, precipitation: 0, fog: 0.08, cloudCover: 0.96, windX: -0.15 });
     assert.deepEqual(BENCH_WEATHER.fog, { type: 'fog', intensity: 0.85, precipitation: 0, fog: 0.82, cloudCover: 0.72, windX: -0.05 });

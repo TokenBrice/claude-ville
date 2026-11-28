@@ -209,6 +209,7 @@ test('GPU textures use slot uploads after allocating atlas storage', () => {
     const slot = fakeCanvas(8, 8);
 
     renderer._textureFor('agent-frame-atlas', atlas, 1);
+    renderer.frames++;
     renderer._textureFor('agent-frame-atlas', atlas, 2, [{
         x: 8,
         y: 16,
@@ -216,6 +217,7 @@ test('GPU textures use slot uploads after allocating atlas storage', () => {
         height: 8,
         source: slot,
     }]);
+    renderer.frames++;
     renderer._textureFor('agent-frame-atlas', atlas, 3, [{
         x: 60,
         y: 60,

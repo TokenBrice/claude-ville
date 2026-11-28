@@ -356,7 +356,13 @@ test('Canvas coast, tiled ocean and water marks agree across every Fresnel bound
     overlay.getTransform = () => ({ a: 1, d: 1, e: -2400, f: -450 });
     renderer.motionScale = 0;
     Object.assign(renderer._coastBake.waterFields, { x: 0, y: 0, cols: 1, rows: 400, cycleOffset: new Uint8Array(400) });
-    drawCanvasWaterState(overlay, renderer, atmosphere);
+    for (let step = 0; step < 32; step++) {
+        drawCanvasWaterState(overlay, renderer, atmosphere);
+        const w = renderer._canvasWater;
+        if (w && !w.capWork && !w.nextCaps && w.stats.capsPending === 0) break;
+    }
+    assert.equal(renderer._canvasWater.capWork, null);
+    assert.equal(renderer._canvasWater.stats.capsPending, 0);
     let painted = 0;
     for (const [id, chunk] of renderer._canvasWater.caps) {
         if (!chunk.bodyCanvas) continue;

@@ -1860,7 +1860,7 @@ export function normalizeGpuRecord(record = {}, sequence = 0, target = null) {
     const textureKey = String(record.textureKey || record.stableKey || record.id || `texture:${sequence}`);
     const sidecarKey = String(record.sidecarKey || record.materialSidecarKey || '');
     const normalized = target || { ...record };
-    if (target) Object.assign(normalized, record);
+    if (target && target !== record) Object.assign(normalized, record);
     normalized.source = source;
     normalized.materialSource = record.materialSource || record.sidecar || null;
     normalized.emissiveSource = record.emissiveSource || null;
@@ -1950,9 +1950,10 @@ export function gpuRecordPageable(record, limit) {
 // `pageX`, `pageY` onto it, or returns null; paged records batch by page (any
 // texture on it), everything else by texture and sidecars as before.
 // Prenormalized records are never paged.
-export function buildStableGpuBatches(records = [], batches = [], normalizedRecords = [], pager = null) {
+export function buildStableGpuBatches(records = [], batches = [], normalizedRecords = [], pager = null, pageInPlace = false) {
     let batchCount = 0;
     let current = null;
+    let first = null;
     for (let index = 0; index < records.length; index++) {
         const raw = records[index];
         let record;
@@ -1961,20 +1962,29 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
             if (!raw.source) continue;
             record = raw;
         } else {
-            const normalized = normalizedRecords[index] || (normalizedRecords[index] = {});
-            record = normalizeGpuRecord(raw, index, normalized);
-            if (!validGpuRecord(record)) continue;
+            if (pageInPlace && raw?.pageableNormalized === true) {
+                record = raw;
+                if (!record.source) continue;
+            } else {
+                const normalized = normalizedRecords[index] || (normalizedRecords[index] = {});
+                record = normalizeGpuRecord(raw, index, normalized);
+                if (!validGpuRecord(record)) continue;
+            }
             record.pageLayer = -1;
             if (pager) page = pager(record);
         }
         if (!current || current.page !== page
-            || (!page && (current.textureKey !== record.textureKey || current.source !== record.source))
+            || (!page && (current.textureKey !== record.textureKey || current.source !== record.source
+                || first.textureRevision !== record.textureRevision))
+            || (record.materialSource && (first.materialRevision ?? first.sidecarRevision) !== (record.materialRevision ?? record.sidecarRevision))
+            || (record.emissiveSource && (first.emissiveRevision ?? first.sidecarRevision) !== (record.emissiveRevision ?? record.sidecarRevision))
+            || (record.occluderSource && first.sidecarRevision !== record.sidecarRevision)
             || current.sidecarKey !== record.sidecarKey
-            || current.records[0]?.surfaceSource !== record.surfaceSource
-            || current.records[0].sublayerRank !== record.sublayerRank
-            || current.records[0].supportH !== record.supportH
-            || (record.surfaceSource && (current.records[0].surfaceOffset?.[0] !== record.surfaceOffset?.[0]
-                || current.records[0].surfaceOffset?.[1] !== record.surfaceOffset?.[1]))
+            || first.surfaceSource !== record.surfaceSource
+            || first.sublayerRank !== record.sublayerRank
+            || first.supportH !== record.supportH
+            || (record.surfaceSource && (first.surfaceOffset?.[0] !== record.surfaceOffset?.[0]
+                || first.surfaceOffset?.[1] !== record.surfaceOffset?.[1]))
             || current.blend !== record.blend
             || current.writesDepth !== record.writesDepth
             || current.materialSource !== record.materialSource
@@ -2005,6 +2015,8 @@ export function buildStableGpuBatches(records = [], batches = [], normalizedReco
             current.first = 0;
             current.count = 0;
             current.occluderMax = 0;
+            current.albedoSize = null;
+            first = record;
             batchCount++;
         }
         current.records.push(record);

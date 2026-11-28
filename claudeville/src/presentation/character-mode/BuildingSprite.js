@@ -4222,13 +4222,13 @@ export class BuildingSprite {
             target = Math.max(target, 0.62 + fade * 0.34);
         }
 
-        if (target > this._forgeGlow) {
+        if (target >= this._forgeGlow) {
             this._forgeGlow = target;
             return;
         }
 
         const decay = (Math.max(0, Number(dt) || 0) / 1000) * FORGE_GLOW_DECAY_PER_SECOND;
-        this._forgeGlow = Math.max(floor, this._forgeGlow - decay);
+        this._forgeGlow = Math.max(target, this._forgeGlow - decay);
     }
 
     _syncTaskboardPapers(now) {

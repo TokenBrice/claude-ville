@@ -937,8 +937,12 @@ export class DashboardRenderer {
         this._cardRenderSignatures = new Map();
         this._executionChildIdsByParent = new Map();
         this._selectedAgentId = null;
+        this._renderedSelectedAgentId = null;
+        this._selectionDirty = false;
         this._focusedAgentId = null;
         this._attentionCursor = 0;
+        this._dirtyHoursProjects = new Set();
+        this._quotaRailPaused = false;
         this._statusFilters = new Set();
         this._providerFilters = new Set();
         this._searchQuery = '';
@@ -984,10 +988,14 @@ export class DashboardRenderer {
             notifyOnRepeat: true,
             onChange: (nextId, previousId) => {
                 this._selectedAgentId = nextId;
+                if (!this.active) {
+                    this._selectionDirty = true;
+                    return;
+                }
                 // UI-16 — selecting a folded subagent unfolds its row.
-                if (this.active && [nextId, previousId].some(id => leadIdFor(this.world.agents.get(id)))) this._queueFlush({ render: true });
+                if ([nextId, previousId].some(id => leadIdFor(this.world.agents.get(id)))) this._queueFlush({ render: true });
                 this._syncSelectionControls(nextId, previousId);
-                if (this.active) void this._fetchAllDetails();
+                void this._fetchAllDetails();
             },
         });
 
@@ -998,17 +1006,18 @@ export class DashboardRenderer {
         };
         this._onAgentUpdated = (agent) => {
             this._tapes?.observe(agent);
-            if (this._hours?.observeAgent(this._projectKeyFor(agent), agent) && this.active) {
-                const project = this._projectKeyFor(agent);
-                const sectionEl = this._sectionEls.get(project);
-                if (sectionEl) this._paintSectionHours(sectionEl, project);
+            const project = this._projectKeyFor(agent);
+            if (this._hours?.observeAgent(project, agent) && this.active) {
+                this._dirtyHoursProjects.add(project);
             }
             if (this.active) {
-                this._renderAgentUpdate(agent);
-                const parentId = String(agent?.parentSessionId || '');
-                const parent = parentId ? this.world.agents.get(parentId) : null;
-                const parentCard = parentId ? this.cards.get(parentId) : null;
-                if (parent && parentCard) this._updateChildProgress(parentCard, parent);
+                if (!this._flushRender) {
+                    this._renderAgentUpdate(agent);
+                    const parentId = String(agent?.parentSessionId || '');
+                    const parent = parentId ? this.world.agents.get(parentId) : null;
+                    const parentCard = parentId ? this.cards.get(parentId) : null;
+                    if (parent && parentCard) this._updateChildProgress(parentCard, parent);
+                }
                 this._queueFlush();
             }
         };
@@ -1038,10 +1047,23 @@ export class DashboardRenderer {
         this._onModeChanged = (mode) => {
             this.active = mode === 'dashboard';
             if (this.active) {
+                if (this._quotaRailPaused) {
+                    this._quotaRailPaused = false;
+                    this._quotaRailSignature = '';
+                }
                 this.render();
+                this._resumeCardElapsedSubscriptions();
+                if (this._selectionDirty || this._selectedAgentId !== this._renderedSelectedAgentId) {
+                    this._selectionDirty = false;
+                    this._syncSelectionControls(this._selectedAgentId, this._renderedSelectedAgentId);
+                }
                 this._startDetailFetching();
                 this._startTapeClock();
             } else {
+                this._dirtyHoursProjects.clear();
+                this._pauseCardElapsedSubscriptions();
+                this._clearQuotaRailSubscriptions();
+                this._quotaRailPaused = true;
                 this._stopDetailFetching();
                 this._stopTapeClock();
             }
@@ -1084,6 +1106,7 @@ export class DashboardRenderer {
         this._harborRepos = [];
         this._onHarborUpdated = (repos = []) => {
             this._harborRepos = Array.isArray(repos) ? repos : [];
+            if (!this.active) return;
             for (const [projectPath, sectionEl] of this._sectionEls) {
                 this._updateSectionHarbor(sectionEl, projectPath, sectionEl._harborAgents || []);
             }
@@ -1104,6 +1127,7 @@ export class DashboardRenderer {
         // grid's, so toggling the roomy tier cannot re-trigger it.
         this._viewObserver = typeof ResizeObserver === 'function' && this.gridEl?.parentElement
             ? new ResizeObserver(() => {
+                if (!this.active) return;
                 this._syncAttentionLayout();
                 this._syncUltrawide();
             })
@@ -1661,34 +1685,50 @@ export class DashboardRenderer {
         this._filteredEmptyEl.hidden = !visible;
     }
 
-    _renderAgentUpdate(agent) {
+    _needsFullRenderForAgent(agent) {
         const cardEl = this.cards.get(agent.id);
         const projectPath = this._projectKeyFor(agent);
         const status = normalizeStatus(agent.status);
-        if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status
-            || cardEl._exceptionRank !== rowExceptionRank(agent) || cardEl._hasWork !== rowHasWork(agent)) {
+        return !cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status
+            || cardEl._exceptionRank !== rowExceptionRank(agent) || cardEl._hasWork !== rowHasWork(agent);
+    }
+
+    _renderAgentUpdate(agent) {
+        if (this._needsFullRenderForAgent(agent)) {
             this._queueFlush({ render: true });
             return;
         }
+        const cardEl = this.cards.get(agent.id);
         this._updateCard(cardEl, agent);
     }
 
     // UI-3 — one render per message. A WebSocket message upserts every
     // changed agent synchronously, so the work queued here runs once, after
     // the last of them: a full render when a card must move, else only the
-    // fleet-wide controls (the attention queue and ANSWER FIRST).
+    // changed cards, dirty hours strips, and fleet-wide controls.
     _queueFlush({ render = false } = {}) {
-        if (render) this._flushRender = true;
+        if (render) {
+            this._flushRender = true;
+            this._dirtyHoursProjects.clear();
+        }
         if (this._flushQueued) return;
         this._flushQueued = true;
         queueMicrotask(() => {
             const full = this._flushRender;
+            const dirtyHours = full ? null : [...this._dirtyHoursProjects];
             this._flushQueued = false;
             this._flushRender = false;
+            this._dirtyHoursProjects.clear();
             if (!this.active || this._destroyed) return;
             if (full) {
                 this.render();
                 return;
+            }
+            if (dirtyHours?.length) {
+                for (const project of dirtyHours) {
+                    const sectionEl = this._sectionEls.get(project);
+                    if (sectionEl) this._paintSectionHours(sectionEl, project);
+                }
             }
             this._renderAttentionQueue(Array.from(this.world.agents.values()));
             this._syncAnswerFirst();
@@ -2169,24 +2209,65 @@ export class DashboardRenderer {
             stripCanvas: null,
             call: null,
         };
-        card._elapsedUnsubscribe = subscribeElapsedText(card._elements.forCell, (now) => {
-            const current = this.world.agents.get(card.dataset.agentId);
-            const ms = statusSinceMs(current, now);
-            return ms == null ? '—' : formatElapsed(ms);
-        });
-        // UI-5 — `silent 18m` rides in NOW on the shared 1 Hz tick, so a hung
-        // tool is raised even when no message arrives to re-render the row.
-        const silentEl = card._elements.silent;
-        card._silentUnsubscribe = subscribeElapsedText(silentEl, (now) => {
-            const signal = silentSignal(this.world.agents.get(card.dataset.agentId), now);
-            silentEl.hidden = !signal;
-            if (signal) silentEl.dataset.tier = String(signal.tier);
-            else delete silentEl.dataset.tier;
-            return signal?.text || '';
-        });
+        this._bindCardElapsedSubscriptions(card);
         this._paintCardTape(card);
 
         return card;
+    }
+
+    _bindCardElapsedSubscriptions(card) {
+        if (!card || !this.active) return;
+        if (!card._elapsedUnsubscribe && card._elements?.forCell) {
+            card._elapsedUnsubscribe = subscribeElapsedText(card._elements.forCell, (now) => {
+                const current = this.world.agents.get(card.dataset.agentId);
+                const ms = statusSinceMs(current, now);
+                return ms == null ? '—' : formatElapsed(ms);
+            });
+        }
+        // UI-5 — `silent 18m` rides in NOW on the shared 1 Hz tick, so a hung
+        // tool is raised even when no message arrives to re-render the row.
+        const silentEl = card._elements?.silent;
+        if (!card._silentUnsubscribe && silentEl) {
+            card._silentUnsubscribe = subscribeElapsedText(silentEl, (now) => {
+                const signal = silentSignal(this.world.agents.get(card.dataset.agentId), now);
+                silentEl.hidden = !signal;
+                if (signal) silentEl.dataset.tier = String(signal.tier);
+                else delete silentEl.dataset.tier;
+                return signal?.text || '';
+            });
+        }
+        this._bindCallElapsedSubscription(card);
+    }
+
+    _bindCallElapsedSubscription(cardEl) {
+        const refs = cardEl?._elements?.call;
+        if (!refs?.elapsed || !this.active || cardEl._callElapsedUnsubscribe) return;
+        // 9.10 — the age tier comes from the same elapsed time the clock
+        // prints, so the plate can never disagree with its numeral.
+        cardEl._callElapsedUnsubscribe = subscribeElapsedText(refs.elapsed, (now) => {
+            const ms = statusSinceMs(this.world.agents.get(cardEl.dataset.agentId), now);
+            const age = ms == null || ms < AGE_RIM_MS ? '0' : (ms < AGE_FILL_MS ? '1' : '2');
+            if (cardEl.dataset.age !== age) cardEl.dataset.age = age;
+            return ms == null ? '—' : formatClock(ms);
+        });
+    }
+
+    _unbindCardElapsedSubscriptions(cardEl) {
+        if (!cardEl) return;
+        cardEl._elapsedUnsubscribe?.();
+        cardEl._elapsedUnsubscribe = null;
+        cardEl._callElapsedUnsubscribe?.();
+        cardEl._callElapsedUnsubscribe = null;
+        cardEl._silentUnsubscribe?.();
+        cardEl._silentUnsubscribe = null;
+    }
+
+    _pauseCardElapsedSubscriptions() {
+        for (const cardEl of this.cards.values()) this._unbindCardElapsedSubscriptions(cardEl);
+    }
+
+    _resumeCardElapsedSubscriptions() {
+        for (const cardEl of this.cards.values()) this._bindCardElapsedSubscriptions(cardEl);
     }
 
     // 7.8 — the 96 px hero portrait is created on demand: for the selected
@@ -2301,14 +2382,7 @@ export class DashboardRenderer {
             first: call.querySelector('.dash-card__call-first'),
         };
         cardEl._elements.call = refs;
-        // 9.10 — the age tier comes from the same elapsed time the clock
-        // prints, so the plate can never disagree with its numeral.
-        cardEl._callElapsedUnsubscribe = subscribeElapsedText(refs.elapsed, (now) => {
-            const ms = statusSinceMs(this.world.agents.get(cardEl.dataset.agentId), now);
-            const age = ms == null || ms < AGE_RIM_MS ? '0' : (ms < AGE_FILL_MS ? '1' : '2');
-            if (cardEl.dataset.age !== age) cardEl.dataset.age = age;
-            return ms == null ? '—' : formatClock(ms);
-        });
+        this._bindCallElapsedSubscription(cardEl);
         return refs;
     }
 
@@ -3351,6 +3425,7 @@ export class DashboardRenderer {
     }
 
     _syncSelectionControls(nextId, previousId) {
+        this._renderedSelectedAgentId = nextId ?? null;
         for (const id of new Set([nextId, previousId].filter(Boolean))) {
             const selected = id === nextId;
             this.cards.get(id)?._elements?.select

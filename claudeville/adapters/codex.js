@@ -553,6 +553,16 @@ function rememberRolloutBoundary(filePath, entries) {
 const TURN_TRACKER_CACHE_MAX = 256;
 const ASYNC_QUESTION_TOOLS = new Set(['request_user_input_async', 'functions.request_user_input_async']);
 const _turnTrackerCache = new Map();
+const BUF_TASK_STARTED = Buffer.from('"task_started"');
+const BUF_TASK_COMPLETE = Buffer.from('"task_complete"');
+const BUF_TURN_COMPLETE = Buffer.from('"turn_complete"');
+const BUF_TURN_ABORTED = Buffer.from('"turn_aborted"');
+const BUF_ASYNC_QUESTION = Buffer.from('request_user_input_async');
+const BUF_ROLE_USER = Buffer.from('"user"');
+const BUF_TYPE_MESSAGE = Buffer.from('"message"');
+// Any JSON unicode escape (`\uXXXX`) could spell a boundary/question/user token;
+// fall through to JSON.parse so raw byte prefiltering never drops escaped spellings.
+const BUF_UNICODE_ESCAPE = Buffer.from('\\u');
 
 function codexMessageText(content) {
   if (typeof content === 'string') return content;
@@ -588,36 +598,77 @@ function foldTurnTrackerLines(state, text) {
   return next;
 }
 
-function isTaskStartedLine(line) {
-  if (!line.includes('"task_started"')) return false;
+function lineCouldAffectTurnTracker(buf) {
+  if (buf.length === 0) return false;
+  return buf.includes(BUF_TASK_STARTED)
+    || buf.includes(BUF_TASK_COMPLETE)
+    || buf.includes(BUF_TURN_COMPLETE)
+    || buf.includes(BUF_TURN_ABORTED)
+    || buf.includes(BUF_ASYNC_QUESTION)
+    || (buf.includes(BUF_ROLE_USER) && buf.includes(BUF_TYPE_MESSAGE))
+    || buf.includes(BUF_UNICODE_ESCAPE);
+}
+
+function joinReversedCarryLine(prefix, carryParts) {
+  if (carryParts.length === 0) return prefix;
+  const parts = new Array(carryParts.length + 1);
+  parts[0] = prefix;
+  for (let i = 0; i < carryParts.length; i++) {
+    parts[i + 1] = carryParts[carryParts.length - 1 - i];
+  }
+  return Buffer.concat(parts);
+}
+
+function parseTurnTrackerEntry(buf) {
+  if (!lineCouldAffectTurnTracker(buf)) return null;
+  const text = buf.toString('utf-8');
+  if (!text.trim()) return null;
   try {
-    const entry = JSON.parse(line);
-    return entry?.type === 'event_msg' && entry.payload?.type === 'task_started';
+    return JSON.parse(text);
   } catch {
-    return false;
+    return null;
   }
 }
 
+function isTaskStartedEntry(entry) {
+  return entry?.type === 'event_msg' && entry.payload?.type === 'task_started';
+}
+
+function clearTurnTrackerCache() {
+  _turnTrackerCache.clear();
+}
+
 function readTurnTracker(filePath) {
-  const identity = earlyMetadataIdentity(filePath);
-  if (!identity) {
+  const initialIdentity = earlyMetadataIdentity(filePath);
+  if (!initialIdentity) {
     _turnTrackerCache.delete(filePath);
     return null;
   }
   const cached = _turnTrackerCache.get(filePath);
-  if (sameEarlyMetadataIdentity(cached, identity)) return cached.state;
-  const appended = cached && cached.ino === identity.ino && identity.size > cached.size;
+  if (sameEarlyMetadataIdentity(cached, initialIdentity)) return cached.state;
 
   let fd = null;
+  let identity = initialIdentity;
   let state = { boundary: null, question: null };
   let scannedTo = 0;
   try {
     fd = fs.openSync(filePath, 'r');
+    const fstat = fs.fstatSync(fd);
+    identity = {
+      size: fstat.size,
+      mtimeMs: fstat.mtimeMs,
+      ino: fstat.ino || 0,
+      dev: fstat.dev || 0,
+    };
+    if (sameEarlyMetadataIdentity(cached, identity)) return cached.state;
+    const appended = cached && cached.ino === identity.ino && identity.size > cached.size && cached.scannedTo <= identity.size;
+
     if (appended) {
       const length = identity.size - cached.scannedTo;
       const buffer = Buffer.allocUnsafe(length);
       const bytesRead = fs.readSync(fd, buffer, 0, length, cached.scannedTo);
-      const lastNewline = buffer.lastIndexOf(10, bytesRead - 1);
+      if (bytesRead !== length) return cached.state;
+      const lastNewline = buffer.lastIndexOf(10);
       state = cached.state;
       scannedTo = cached.scannedTo;
       if (lastNewline >= 0) {
@@ -625,33 +676,73 @@ function readTurnTracker(filePath) {
         scannedTo += lastNewline + 1;
       }
     } else {
-      const chunks = [];
+      // Single-pass backward scan on raw bytes: 0x0A never appears inside a
+      // multi-byte UTF-8 sequence, so carrying raw slices preserves split
+      // UTF-8 characters across 64 KiB boundaries without O(N^2) re-decoding.
       let position = identity.size;
       let bytesScanned = 0;
-      let found = false;
-      while (position > 0 && bytesScanned < MAX_METADATA_BACKSCAN_BYTES && !found) {
+      let seenNewline = false;
+      let foundTaskStarted = false;
+      const carryParts = [];
+      const relevantEntries = [];
+
+      const consumeCompleteLine = (lineBuf) => {
+        const entry = parseTurnTrackerEntry(lineBuf);
+        if (!entry) return false;
+        relevantEntries.push(entry);
+        return isTaskStartedEntry(entry);
+      };
+
+      while (position > 0 && bytesScanned < MAX_METADATA_BACKSCAN_BYTES && !foundTaskStarted) {
         const bytesToRead = Math.min(METADATA_BACKSCAN_CHUNK_BYTES, position, MAX_METADATA_BACKSCAN_BYTES - bytesScanned);
         position -= bytesToRead;
         const buffer = Buffer.allocUnsafe(bytesToRead);
         const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
-        if (bytesRead <= 0) break;
-        bytesScanned += bytesRead;
-        chunks.unshift(buffer.subarray(0, bytesRead));
-        // Lines wholly inside what is read: the first may be a fragment.
-        const lines = Buffer.concat(chunks).toString('utf-8').split('\n');
-        found = lines.slice(position > 0 ? 1 : 0).some(isTaskStartedLine);
-      }
-      const all = Buffer.concat(chunks);
-      const lastNewline = all.lastIndexOf(10);
-      if (lastNewline >= 0) {
-        const lines = all.toString('utf-8', 0, lastNewline + 1).split('\n');
-        if (position > 0) lines.shift();
-        let start = 0;
-        for (let i = lines.length - 1; i >= 0; i--) {
-          if (isTaskStartedLine(lines[i])) { start = i; break; }
+        if (bytesRead !== bytesToRead) {
+          // Concurrent truncate/rotation shrank the file mid-scan; retry cleanly next poll.
+          return cached?.state ?? null;
         }
-        state = foldTurnTrackerLines(state, lines.slice(start).join('\n'));
-        scannedTo = position + lastNewline + 1;
+        bytesScanned += bytesRead;
+        const chunk = buffer.subarray(0, bytesRead);
+        let end = bytesRead;
+
+        if (!seenNewline) {
+          const lastNl = chunk.lastIndexOf(10, end - 1);
+          if (lastNl < 0) continue;
+          seenNewline = true;
+          scannedTo = position + lastNl + 1;
+          end = lastNl;
+        }
+
+        while (end > 0) {
+          const nl = chunk.lastIndexOf(10, end - 1);
+          if (nl >= 0) {
+            const lineBuf = joinReversedCarryLine(chunk.subarray(nl + 1, end), carryParts);
+            carryParts.length = 0;
+            if (consumeCompleteLine(lineBuf)) {
+              foundTaskStarted = true;
+              break;
+            }
+            end = nl;
+          } else {
+            if (position === 0) {
+              const lineBuf = joinReversedCarryLine(chunk.subarray(0, end), carryParts);
+              carryParts.length = 0;
+              if (consumeCompleteLine(lineBuf)) {
+                foundTaskStarted = true;
+              }
+            } else {
+              carryParts.push(chunk.subarray(0, end));
+            }
+            break;
+          }
+        }
+      }
+
+      if (seenNewline) {
+        for (let i = relevantEntries.length - 1; i >= 0; i--) {
+          state = foldTurnTracker(state, relevantEntries[i]);
+        }
       }
     }
   } catch {
@@ -2556,4 +2647,15 @@ class CodexAdapter {
   }
 }
 
-module.exports = { CodexAdapter, _test: { getGitEvents, deriveCodexTurnState } };
+module.exports = {
+  CodexAdapter,
+  _test: {
+    getGitEvents,
+    deriveCodexTurnState,
+    readTurnTracker,
+    clearTurnTrackerCache,
+    foldTurnTracker,
+    METADATA_BACKSCAN_CHUNK_BYTES,
+    MAX_METADATA_BACKSCAN_BYTES,
+  },
+};

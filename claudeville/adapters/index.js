@@ -667,6 +667,8 @@ function getAllSessions(activeThresholdMs, { force = false, overlayOnly = false 
     }
   }
   const allSessions = adapters.flatMap((adapter) => _sessionsByProvider.get(adapter.provider) || []);
+  // Enrichment and overlay folding copy changed sessions. Provider cache entries stay read-only.
+  const alreadyNormalized = new Set(allSessions);
   const sessionIds = new Set(allSessions.map((session) => session?.sessionId).filter(Boolean));
   const codexByNativeParent = new Map();
   for (const session of allSessions) {
@@ -690,7 +692,10 @@ function getAllSessions(activeThresholdMs, { force = false, overlayOnly = false 
   const repositoryScanProjects = isGitEnrichmentDisabled() ? [] : getRepositoryScanProjects();
   const normalizedSessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(resolvedSessions, {
     projects: repositoryScanProjects,
-  })).map(session => normalizeSession(linkMcpSession(session)));
+  })).map((session) => {
+    const linked = linkMcpSession(session);
+    return alreadyNormalized.has(linked) ? linked : normalizeSession(linked);
+  });
   const sessions = foldSessionOverlays(normalizedSessions, now, activeThresholdMs);
 
   _sessionListCache.at = Date.now();

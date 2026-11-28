@@ -2,7 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GpuWorldRendererWebGPU } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRendererWebGPU.js';
 import { NEUTRAL_GRADE } from '../../claudeville/src/presentation/character-mode/GradeEvaluator.js';
-import { GPU_RECORD_FLAGS } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
+import {
+    buildStableGpuBatches,
+    GPU_RECORD_FLAGS,
+    normalizeGpuRecord,
+} from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
+import { ALBEDO_PAGE_SIZE } from '../../claudeville/src/presentation/character-mode/gpu/GpuAlbedoPage.js';
+import { captureRecordWords } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
+import {
+    BATCH_UNIFORM_STRIDE,
+    createUniformViews,
+    writeBatchUniforms,
+} from '../../claudeville/src/presentation/character-mode/gpu/wgsl/index.js';
 
 function fixture(t, { timers = false } = {}) {
     for (const [name, value] of Object.entries({
@@ -124,12 +135,257 @@ test('WebGPU query readiness is exposed without leaking backend timer state', as
     const first = f.renderer.getDiagnostics().frames;
     assert.equal(f.renderer.render(f.input), true);
     assert.equal(f.renderer.getDiagnostics().frames, first + 1, 'pending timing work vetoes identical-output reuse');
+    assert.equal(f.renderer._reuseStagedBytes, 0, 'bypassed pending-query frame stages zero reuse bytes');
     f.completeQueries();
     await Promise.resolve();
     assert.equal(f.renderer.hasPendingGpuQueries(), false);
     const completed = f.renderer.getDiagnostics();
+    // Invalidated baseline on bypass means the first eligible frame genuinely
+    // presents and re-primes reuse, and the next identical frame reuses output.
+    assert.equal(f.renderer.render(f.input), true);
+    assert.equal(f.renderer.getDiagnostics().frames, completed.frames + 1, 'first eligible frame after bypass presents');
+    assert.equal(f.renderer.getDiagnostics().skippedFrames, completed.skippedFrames);
+    assert.equal(f.renderer.lastFrameReused, false);
+    assert.ok(f.renderer._reuseStagedBytes > 0, 're-priming frame stages reuse bytes');
     assert.equal(f.renderer.render(f.input), true);
     assert.equal(f.renderer.getDiagnostics().skippedFrames, completed.skippedFrames + 1);
+    assert.equal(f.renderer.lastFrameReused, true);
+});
+
+test('fresh-required WebGPU frames skip GpuFrameReuse bookkeeping and stage zero bytes', t => {
+    const cases = [
+        ['forceFreshOutput', f => { f.input.forceFreshOutput = true; }],
+        ['advancing clock', f => { f.input.feed.timeMs++; }],
+        ['pending readback', f => { f.renderer._readbackPending = 1; }],
+        ['debug load', f => { f.renderer._debugLoad = { passes: 1, levels: 'all' }; }],
+        ['pass sampling', f => { f.renderer.passSamplingEnabled = true; }],
+    ];
+    for (const [label, trigger] of cases) {
+        const f = fixture(t);
+        baseline(f);
+        const begin = t.mock.method(f.renderer._frameReuse, 'begin');
+        const bytes = t.mock.method(f.renderer._frameReuse, 'bytes');
+        const commit = t.mock.method(f.renderer._frameReuse, 'commit');
+        const submits = f.work.submits;
+        trigger(f);
+        assert.equal(f.renderer.render(f.input), true, `${label}: ${f.renderer.failure?.message}`);
+        assert.ok(f.work.submits > submits, `${label} must submit`);
+        assert.equal(f.renderer._reuseStagedBytes, 0, `${label} must stage zero reuse bytes`);
+        assert.equal(begin.mock.callCount(), 0, `${label} must skip reuse.begin()`);
+        assert.equal(bytes.mock.callCount(), 0, `${label} must skip reuse.bytes()`);
+        assert.equal(commit.mock.callCount(), 0, `${label} must skip reuse.commit()`);
+        assert.equal(f.renderer.lastFrameReused, false, `${label} must not report reuse`);
+    }
+});
+
+test('returning to scene A after a bypassed scene B genuinely presents A before reusing', t => {
+    const f = fixture(t);
+    baseline(f);
+    const submitsAfterA = f.work.submits;
+    // Render scene B while bypassing reuse via forceFreshOutput (invalidates baseline A).
+    f.input.records[0].x = 42;
+    f.input.forceFreshOutput = true;
+    assert.equal(f.renderer.render(f.input), true);
+    assert.equal(f.work.submits, submitsAfterA + 1);
+    assert.equal(f.renderer._reuseStagedBytes, 0);
+    // Return to scene A and allow reuse again: must NOT skip against stale baseline A!
+    f.input.records[0].x = 0;
+    f.input.forceFreshOutput = false;
+    assert.equal(f.renderer.render(f.input), true);
+    assert.equal(f.work.submits, submitsAfterA + 2, 'first eligible frame after bypass must present A');
+    assert.equal(f.renderer.lastFrameReused, false);
+    // Next identical A frame re-engages reuse.
+    const skippedBefore = f.renderer.getDiagnostics().skippedFrames;
+    assert.equal(f.renderer.render(f.input), true);
+    assert.equal(f.work.submits, submitsAfterA + 2, 'second identical frame reuses presented A');
+    assert.equal(f.renderer.getDiagnostics().skippedFrames, skippedBefore + 1);
+    assert.equal(f.renderer.lastFrameReused, true);
+});
+
+test('camera transition presents while moving and re-engages reuse after settling', t => {
+    const f = fixture(t);
+    baseline(f);
+    let submits = f.work.submits;
+    for (let step = 1; step <= 3; step++) {
+        f.input.camera.x = step * 16;
+        assert.equal(f.renderer.render(f.input), true);
+        assert.equal(f.work.submits, ++submits, `camera pan step ${step} must present`);
+        assert.equal(f.renderer.lastFrameReused, false);
+    }
+    // Next frame at the settled camera matches the committed pan baseline and skips.
+    assert.equal(f.renderer.render(f.input), true);
+    assert.equal(f.work.submits, submits, 'settled camera must reuse');
+    assert.equal(f.renderer.lastFrameReused, true);
+});
+
+test('device loss and resource abandon reset reuse state so post-recovery frames present', t => {
+    const f = fixture(t);
+    baseline(f);
+    const submitsBefore = f.work.submits;
+    f.renderer._abandonGpuResources();
+    assert.equal(f.renderer._stagedShaderTimeMs, undefined);
+    f.renderer._initResources();
+    f.renderer._albedoPage = null;
+    assert.equal(f.renderer.render(f.input), true, f.renderer.failure?.message);
+    assert.ok(f.work.submits > submitsBefore, 'first frame after resource rebuild must present');
+    assert.equal(f.renderer.lastFrameReused, false);
+    const submitsAfter = f.work.submits;
+    assert.equal(f.renderer.render(f.input), true);
+    assert.equal(f.work.submits, submitsAfter, 'subsequent identical frame reuses again');
+    assert.equal(f.renderer.lastFrameReused, true);
+});
+
+test('_writeBatchSlot writes bit-for-bit identical uniforms to writeBatchUniforms', t => {
+    const f = fixture(t);
+    const r = f.renderer;
+    r._textureEntries.set('tex:hero', { width: 128, height: 64 });
+    r._textureEntries.set('tex:terrain', { width: 2048, height: 1024 });
+    const dummyTex = {};
+    const scenarios = [
+        {
+            fat: true, puddle: true, mark: false,
+            batch: {
+                textureKey: 'tex:terrain', albedoTexture: dummyTex, page: null,
+                blend: 'over', writesDepth: true, cueRuns: false,
+                materialTexture: dummyTex, emissiveTexture: null, occluderTexture: dummyTex,
+                records: [{ id: 'terrain:static', flags: 0, supportH: 0, surfaceOffset: null, sublayerRank: 0 }],
+            },
+            expectedSize: [2048, 1024],
+        },
+        {
+            fat: true, puddle: false, mark: false,
+            batch: {
+                textureKey: 'albedo-page', albedoTexture: dummyTex, page: { key: 'albedo-page' },
+                blend: 'add', writesDepth: false, cueRuns: false,
+                materialTexture: null, emissiveTexture: dummyTex, occluderTexture: null,
+                records: [{ id: 'prop.lamp', flags: GPU_RECORD_FLAGS.fatOptOut, supportH: 14.5, surfaceOffset: [-12.9, 34.7], sublayerRank: 3 }],
+            },
+            expectedSize: [ALBEDO_PAGE_SIZE, ALBEDO_PAGE_SIZE],
+        },
+        {
+            fat: false, puddle: false, mark: true,
+            batch: {
+                textureKey: 'tex:hero', albedoTexture: dummyTex, page: null,
+                blend: 'add', writesDepth: false, cueRuns: true,
+                materialTexture: null, emissiveTexture: null, occluderTexture: null,
+                records: [{ id: 'terrain:static', flags: 0, supportH: 2, surfaceOffset: [5, -7], sublayerRank: 1 }],
+            },
+            expectedSize: [128, 64],
+        },
+        {
+            fat: true, puddle: false, mark: false,
+            batch: {
+                textureKey: 'cue:atlas', albedoTexture: dummyTex, page: null, albedoSize: [256, 512],
+                blend: 'over', writesDepth: false, cueRuns: true,
+                materialTexture: null, emissiveTexture: null, occluderTexture: null,
+                records: [{ id: 'ground:cue-atlas', flags: 0, supportH: NaN, surfaceOffset: [NaN, 8], sublayerRank: 2.9 }],
+            },
+            expectedSize: [256, 512],
+        },
+    ];
+    r._ensureBatchSlots(scenarios.length);
+    const refViews = createUniformViews(scenarios.length * BATCH_UNIFORM_STRIDE);
+    for (let slot = 0; slot < scenarios.length; slot++) {
+        const s = scenarios[slot];
+        r.fatPixelsFrame = s.fat;
+        r._puddleActive = s.puddle;
+        r._writeBatchSlot(slot, s.batch, { mark: s.mark });
+        const first = s.batch.records[0];
+        const terrain = !s.mark && first?.id === 'terrain:static';
+        const optOut = Boolean((first?.flags || 0) & GPU_RECORD_FLAGS.fatOptOut);
+        writeBatchUniforms(refViews, slot, {
+            albedoSize: s.expectedSize,
+            albedoPaged: Boolean(s.batch.page),
+            fatPixels: !s.mark && s.fat && !optOut,
+            additive: !s.mark && s.batch.blend === 'add',
+            terrainBatch: terrain,
+            puddleGround: s.puddle && terrain,
+            hasMaterialMap: Boolean(s.batch.materialTexture),
+            hasEmissiveMap: Boolean(s.batch.emissiveTexture),
+            hasOccluderMap: Boolean(s.batch.occluderTexture),
+            cueRuns: !s.mark && Boolean(s.batch.cueRuns),
+            writesDepth: s.batch.writesDepth === true,
+            trimColumn: -1,
+            supportH: Number.isFinite(first?.supportH) ? first.supportH : 0,
+            surfaceOffset: first?.surfaceOffset || [0, 0],
+            sublayerRank: Number.isFinite(first?.sublayerRank) ? first.sublayerRank : 0,
+        });
+        const actual = new Uint32Array(r._batchViews.buffer, slot * BATCH_UNIFORM_STRIDE, BATCH_UNIFORM_STRIDE / 4);
+        const expected = new Uint32Array(refViews.buffer, slot * BATCH_UNIFORM_STRIDE, BATCH_UNIFORM_STRIDE / 4);
+        assert.deepEqual(actual, expected, `batch slot ${slot} uniforms must match writeBatchUniforms bit-for-bit`);
+    }
+});
+
+test('_buildSceneBatches matches buildStableGpuBatches across prenormalized, pageableNormalized, and raw records', t => {
+    const f = fixture(t);
+    const r = f.renderer;
+    const srcA = { width: 32, height: 32 };
+    const srcB = { width: 64, height: 64 };
+    const srcC = { width: 48, height: 48 };
+    const pageObj = { key: 'albedo-page' };
+    const pager = record => {
+        if (record.source === srcA || record.source === srcB) {
+            record.pageLayer = 0;
+            record.pageX = record.source === srcA ? 4 : 40;
+            record.pageY = 4;
+            return pageObj;
+        }
+        return null;
+    };
+    r._pageRecord = pager;
+
+    const rawPre = normalizeGpuRecord({
+        id: 'ground:cue-atlas', textureKey: 'cue:atlas', source: srcC, textureRevision: 1,
+        x: 0, y: 0, width: 48, height: 48, sx: 0, sy: 0, sw: 48, sh: 48, writesDepth: false, cueRuns: true,
+    }, 0);
+    const preRecord = { ...rawPre, prenormalized: true };
+
+    const rawPageableA = normalizeGpuRecord({
+        id: 'prop.a', textureKey: 'prop:a', source: srcA, textureRevision: 1,
+        x: 10, y: 20, width: 32, height: 32, sx: 0, sy: 0, sw: 32, sh: 32,
+    }, 1);
+    const pageableRecordA = { ...rawPageableA, pageableNormalized: true };
+
+    const rawPlainB = {
+        id: 'prop.b', textureKey: 'prop:b', source: srcB, textureRevision: 2,
+        x: 50, y: 20, width: 64, height: 64, sx: 0, sy: 0, sw: 64, sh: 64,
+    };
+
+    const rawUnpaged = {
+        id: 'building.forge', textureKey: 'building:forge', source: srcC, textureRevision: 3,
+        x: 100, y: 100, width: 48, height: 48, sx: 0, sy: 0, sw: 48, sh: 48,
+    };
+
+    const webgpuInputs = [preRecord, pageableRecordA, rawPlainB, rawUnpaged];
+    const refInputs = [
+        { ...rawPre, prenormalized: true },
+        { ...rawPageableA },
+        { ...rawPlainB },
+        { ...rawUnpaged },
+    ];
+
+    const actualBatches = r._buildSceneBatches(webgpuInputs);
+    const refNormalized = [];
+    const expectedBatches = buildStableGpuBatches(refInputs, [], refNormalized, pager);
+
+    assert.equal(actualBatches.length, expectedBatches.length, 'batch count must match');
+    assert.equal(actualBatches.length, 3, 'adjacent paged records A and B must merge into one batch');
+    for (let i = 0; i < expectedBatches.length; i++) {
+        assert.equal(actualBatches[i].key, expectedBatches[i].key);
+        assert.equal(actualBatches[i].page, expectedBatches[i].page);
+        assert.equal(actualBatches[i].records.length, expectedBatches[i].records.length);
+        for (let j = 0; j < expectedBatches[i].records.length; j++) {
+            const a = actualBatches[i].records[j];
+            const e = expectedBatches[i].records[j];
+            assert.equal(a.id, e.id);
+            assert.equal(a.pageLayer, e.pageLayer);
+            assert.equal(a.pageX, e.pageX);
+            assert.equal(a.pageY, e.pageY);
+        }
+    }
+    const actualWords = captureRecordWords(webgpuInputs, r._normalizedRecordScratch, actualBatches);
+    const expectedWords = captureRecordWords(refInputs, refNormalized, expectedBatches);
+    assert.deepEqual(actualWords, expectedWords, 'attribution captureRecordWords must match');
 });
 
 test('WebGPU rescue repaint preserves the primary pacing and timing sample', t => {

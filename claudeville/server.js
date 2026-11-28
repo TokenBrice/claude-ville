@@ -1521,14 +1521,14 @@ function wsSend(socket, data) {
   }
 }
 
-function wsBroadcast(fullMessage, deltaMessage = null) {
+function wsBroadcast(fullMessage, serializedDelta = null) {
   // Frames are built lazily: a fleet of delta-capable clients never pays for
   // serializing the full payload, and vice versa.
   let fullFrame = null;
   let deltaFrame = null;
   for (const socket of wsClients) {
-    if (deltaMessage && socket._cvDeltaVersion === 2) {
-      if (!deltaFrame) deltaFrame = createWebSocketFrame(JSON.stringify(deltaMessage));
+    if (serializedDelta && socket._cvDeltaVersion === 2) {
+      if (!deltaFrame) deltaFrame = createWebSocketFrame(serializedDelta);
       writeWebSocketFrame(socket, deltaFrame, { queueLatest: true });
     } else {
       if (!fullFrame) fullFrame = createWebSocketFrame(JSON.stringify(fullMessage));
@@ -2375,18 +2375,12 @@ function broadcastUpdate({ force = false, overlayOnly = false, reason = 'poll' }
       return;
     }
 
-    let deltaMessage = null;
+    let serializedDelta = null;
     if (patch && patch.length <= DELTA_MAX_PATCH_OPS) {
       const serializedPatch = JSON.stringify(patch);
       if (serializedState !== null && serializedPatch.length < serializedState.length) {
-        deltaMessage = {
-          type: 'update-delta',
-          deltaVersion: 2,
-          baseSeq: broadcastSeq,
-          seq: broadcastSeq + 1,
-          patch,
-          timestamp: payload.timestamp,
-        };
+        const nextSeq = broadcastSeq + 1;
+        serializedDelta = `{"type":"update-delta","deltaVersion":2,"baseSeq":${broadcastSeq},"seq":${nextSeq},"patch":${serializedPatch},"timestamp":${payload.timestamp}}`;
       }
     }
 
@@ -2396,13 +2390,13 @@ function broadcastUpdate({ force = false, overlayOnly = false, reason = 'poll' }
     lastBroadcastStamp = payload.scanning ? -1 : stampAtCollect;
     lastBroadcastState = nextState;
     lastBroadcastKeyedState = nextKeyedState;
-    if (!deltaMessage) lastDeltaSnapshotAt = now;
-    wsBroadcast(payload, deltaMessage);
+    if (!serializedDelta) lastDeltaSnapshotAt = now;
+    wsBroadcast(payload, serializedDelta);
     if (!payload.scanning) provisionalInitPending = false;
     if (generation === sessionDirtyGeneration && !providerSessionsDirty) providerDataDirty = false;
     lastFullBroadcastAt = now;
     const elapsed = Date.now() - collectStart;
-    serverPerf.lastBroadcast = { elapsed, stages, reason, sessions: payload.sessions.length, clients: wsClients.size, mode: deltaMessage ? 'delta' : 'full', deltaOps: patch ? patch.length : null, ts: now };
+    serverPerf.lastBroadcast = { elapsed, stages, reason, sessions: payload.sessions.length, clients: wsClients.size, mode: serializedDelta ? 'delta' : 'full', deltaOps: patch ? patch.length : null, ts: now };
     serverPerf.broadcasts.push(serverPerf.lastBroadcast);
     while (serverPerf.broadcasts.length > 25) serverPerf.broadcasts.shift();
     for (const [stage, ms] of Object.entries(stages)) {
@@ -2951,9 +2945,11 @@ function refreshWatchPaths(initialWatchPaths = null, { sessions = null } = {}) {
     }
   }
 
+  let removed = 0;
   for (const key of activeWatchers.keys()) {
     if (nextKeys.has(key)) continue;
     closeWatcherEntry(key);
+    removed++;
   }
 
   for (const key of recursiveWatchFallbacks.keys()) {
@@ -2982,7 +2978,8 @@ function refreshWatchPaths(initialWatchPaths = null, { sessions = null } = {}) {
   serverPerf.probeWatchPaths = probes.length;
   serverPerf.recursiveWatchFallbacks = recursiveWatchFallbacks.size;
   lastFullDiscoveryAt = Date.now();
-  sampleLinuxWatcherCount(Date.now(), { force: true });
+  // Use the diagnostic TTL when the watcher set did not change.
+  sampleLinuxWatcherCount(Date.now(), { force: added > 0 || removed > 0 });
   return true;
 }
 
@@ -3619,10 +3616,14 @@ module.exports = {
     onFirstWebSocketClient,
     onLastWebSocketClient,
     refreshWatchPaths,
+    sampleLinuxWatcherCount,
+    getLinuxWatchers: () => ({ ...perfDiagnostics.linuxWatchers }),
+    resetLinuxWatchSampleAt: (value = 0) => { lastLinuxWatchSampleAt = value; },
     selectProbeDescriptors,
     selectWatchDescriptors,
     watcherTopologySnapshot,
     constants: {
+      LINUX_WATCH_SAMPLE_INTERVAL_MS,
       WATCH_DYNAMIC_CAP,
       WATCH_ACTIVE_PROBE_CAP,
       WATCH_FALLBACK_MAX_ENTRIES,

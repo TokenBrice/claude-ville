@@ -374,8 +374,8 @@ export class DebugOverlay {
         if (!timings.length) return [];
         const total = renderStats.timings.totalMs;
         const rows = [`frame: ${formatMs(total)}ms total`];
-        for (const timing of timings.slice(0, 5)) {
-            rows.push(`${timing.label}: ${formatMs(timing.ms)} p95 ${formatMs(timing.p95)}`);
+        for (const timing of [...timings].sort((a, b) => b.ms - a.ms).slice(0, 5)) {
+            rows.push(`${timing.label}: ${formatMs(timing.ms)}ms`);
         }
         return rows;
     }

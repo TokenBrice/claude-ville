@@ -361,7 +361,7 @@ export function recordFrameEnvelope(envelope, updateMs, renderMs, totalMs, frame
 }
 
 export function snapshotFrameEnvelope(envelope, extras) {
-    const gpuMs = extras && Number.isFinite(Number(extras.gpuMs)) ? Number(extras.gpuMs) : null;
+    const gpuMs = extras?.gpuMs != null && Number.isFinite(Number(extras.gpuMs)) ? Number(extras.gpuMs) : null;
     const qualityLevel = extras && extras.qualityLevel != null && Number.isFinite(Number(extras.qualityLevel))
         ? Number(extras.qualityLevel)
         : null;

@@ -606,6 +606,7 @@ test('AssetManager retains exact sources and resumes warm Worlds with sprite rou
         const prop = manager.get('prop.test');
         const material = manager.getCompanion(baseId, 'material');
         const strip = manager.getActionStrip(baseId);
+        assert.ok(strip, 'optional action strip stays ready for first-action parity');
         const atlas = manager.getAtlas('test');
         const atlasMaterial = manager.getAtlas('test', 'material');
         const atlasMetadata = manager.getAtlasMetadata('test');
@@ -613,8 +614,11 @@ test('AssetManager retains exact sources and resumes warm Worlds with sprite rou
         manager._derivedArtQueue.tick();
         const crop = manager.resolveMaterialChannels('prop.test', null, { crop: true });
         assert.equal(crop.ready, true);
+        assert.equal(manager.cacheStats().outlines, 0, 'hover outlines stay lazy at boot');
         const mask = manager.getMask('building.test').slice();
         const outline = manager.getOutline('building.test');
+        assert.equal(manager.cacheStats().outlines, 1, 'first hover lazily bakes and caches outline');
+        assert.equal(manager.getOutline('building.test'), outline, 'subsequent hover reuses cached outline');
         const sourceBytes = manager.cacheStats().retainedSourceEstimateBytes;
         requests.length = 0;
         holdRoutes = true;
@@ -846,4 +850,243 @@ test('World resume waits for decoded assets and ignores stale completion', async
     assert.equal(renderer._worldResourcesSuspended, true);
     assert.equal(compositorReleaseCalls, 1);
     assert.ok(assets.suspendCalls >= 2);
+});
+
+test('AssetManager lazy outline ImageData and fillRect builders match 4-neighbour pixels and discard strips on sheet failure', async () => {
+    const previousDocument = globalThis.document;
+    const previousImage = globalThis.Image;
+    const w = 6;
+    const h = 6;
+    const mask = new Uint8Array(w * h);
+    // Solid 2x2 center block at (2..3, 2..3) plus edge pixel at (0, 0)
+    mask[0] = 1;
+    mask[2 * w + 2] = 1;
+    mask[2 * w + 3] = 1;
+    mask[3 * w + 2] = 1;
+    mask[3 * w + 3] = 1;
+
+    const expectedPixels = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            if (mask[y * w + x]) continue;
+            const n = (y > 0 && mask[(y - 1) * w + x])
+                || (y < h - 1 && mask[(y + 1) * w + x])
+                || (x > 0 && mask[y * w + (x - 1)])
+                || (x < w - 1 && mask[y * w + (x + 1)]);
+            if (n) {
+                const o = (y * w + x) * 4;
+                expectedPixels[o] = 0xf2;
+                expectedPixels[o + 1] = 0xd3;
+                expectedPixels[o + 2] = 0x6b;
+                expectedPixels[o + 3] = 0xff;
+            }
+        }
+    }
+
+    const manager = new AssetManager();
+    try {
+        // 1. ImageData path produces exact RGBA bytes
+        let capturedImageData = null;
+        globalThis.document = {
+            createElement() {
+                return {
+                    width: 0,
+                    height: 0,
+                    getContext() {
+                        return {
+                            createImageData: (cw, ch) => ({ data: new Uint8ClampedArray(cw * ch * 4), width: cw, height: ch }),
+                            putImageData: (imgData) => { capturedImageData = imgData.data; },
+                        };
+                    },
+                };
+            },
+        };
+        manager._bakeOutline(w, h, mask);
+        assert.deepEqual(capturedImageData, expectedPixels, 'ImageData outline must match exact 4-neighbour gold pixels');
+
+        // 2. Fallback fillRect path produces identical pixel coverage
+        const filled = new Uint8ClampedArray(w * h * 4);
+        globalThis.document = {
+            createElement() {
+                return {
+                    width: 0,
+                    height: 0,
+                    getContext() {
+                        return {
+                            fillStyle: '',
+                            fillRect(rx, ry, rw, rh) {
+                                for (let y = ry; y < ry + rh; y++) {
+                                    for (let x = rx; x < rx + rw; x++) {
+                                        const o = (y * w + x) * 4;
+                                        filled[o] = 0xf2;
+                                        filled[o + 1] = 0xd3;
+                                        filled[o + 2] = 0x6b;
+                                        filled[o + 3] = 0xff;
+                                    }
+                                }
+                            },
+                        };
+                    },
+                };
+            },
+        };
+        manager._bakeOutline(w, h, mask);
+        assert.deepEqual(filled, expectedPixels, 'fallback fillRect outline must match exact 4-neighbour gold pixels');
+
+        // 3. Concurrent action-strip fetch is discarded cleanly when base character sheet fails
+        let stripClosed = 0;
+        globalThis.Image = class {
+            width = 8;
+            height = 2;
+            close() { stripClosed++; }
+            set src(path) {
+                if (!path) return;
+                queueMicrotask(() => {
+                    if (path.includes('actions.png')) this.onload?.();
+                    else this.onerror?.();
+                });
+            }
+        };
+        const id = 'agent.test.broken';
+        const entry = {
+            id,
+            actionStrip: { path: 'characters/test/actions.png', cell: 1, groups: { read: { rows: [0, 1] } } },
+        };
+        manager.manifest = {};
+        manager.palettes = {};
+        manager._entriesCache = [entry];
+        manager._entryById.set(id, entry);
+        const origWarn = console.warn;
+        console.warn = () => {};
+        try {
+            assert.equal(await manager.requestCharacterAssets(id), false);
+            await new Promise(resolve => setImmediate(resolve));
+        } finally {
+            console.warn = origWarn;
+        }
+        assert.equal(manager.getActionStrip(id, { request: false }), null, 'failed base sheet must not retain an orphaned strip');
+        assert.equal(stripClosed, 1, 'discarded concurrent action strip must be released');
+    } finally {
+        manager.dispose();
+        globalThis.document = previousDocument;
+        globalThis.Image = previousImage;
+    }
+});
+
+test('AssetManager observes optional strip rejections from launch on both load paths while retaining normal-path errors and cleanup', async () => {
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    const origWarn = console.warn;
+    console.warn = () => {};
+    const entry = {
+        id: 'agent.test.reject',
+        materialSidecar: true,
+        actionStrip: { path: 'characters/test/actions.png', cell: 1, groups: { read: { rows: [0, 1] } } },
+    };
+
+    try {
+        // 1. _loadCharacterEntry: base fails AND strip rejects before base settles -> zero unhandledRejection
+        {
+            const mgr = new AssetManager();
+            mgr._loadOptionalImage = async () => {
+                await new Promise(resolve => setImmediate(resolve));
+                return { img: null, ok: false, reason: 'base failed' };
+            };
+            mgr._fetchActionStrip = async () => { throw new Error('synthetic strip boom (char failed base)'); };
+            try {
+                assert.equal(await mgr._loadCharacterEntry(entry, { signal: null, generation: mgr._loadGeneration }), false);
+                await new Promise(resolve => setImmediate(resolve));
+            } finally {
+                mgr.dispose();
+            }
+        }
+
+        // 2. _loadEntry: base fails (!ok) AND strip rejects -> zero unhandledRejection, base fallback preserved
+        {
+            const mgr = new AssetManager();
+            mgr._loadImage = async () => {
+                await new Promise(resolve => setImmediate(resolve));
+                return { img: { width: 8, height: 8 }, ok: false };
+            };
+            mgr._fetchActionStrip = async () => { throw new Error('synthetic strip boom (entry failed base)'); };
+            try {
+                await mgr._loadEntry(entry, { signal: null, generation: mgr._loadGeneration });
+                assert.equal(mgr.missing.has(entry.id), true);
+                assert.equal(mgr.getActionStrip(entry.id, { request: false }), null);
+                await new Promise(resolve => setImmediate(resolve));
+            } finally {
+                mgr.dispose();
+            }
+        }
+
+        // 3. _loadEntry: base rejects (abort) AND strip rejects -> base error rethrows, zero unhandledRejection
+        {
+            const mgr = new AssetManager();
+            mgr._loadImage = async () => {
+                await new Promise(resolve => setImmediate(resolve));
+                throw new DOMException('Asset load aborted', 'AbortError');
+            };
+            mgr._fetchActionStrip = async () => { throw new Error('synthetic strip boom (entry aborted)'); };
+            try {
+                await assert.rejects(
+                    mgr._loadEntry(entry, { signal: null, generation: mgr._loadGeneration }),
+                    { name: 'AbortError' },
+                );
+                await new Promise(resolve => setImmediate(resolve));
+            } finally {
+                mgr.dispose();
+            }
+        }
+
+        // 4. Normal successful base path retains strip rejection on BOTH _loadCharacterEntry and _loadEntry
+        for (const mode of ['character', 'entry']) {
+            const mgr = new AssetManager();
+            mgr._loadOptionalImage = async () => ({ img: { width: 8, height: 8 }, ok: true, reason: null });
+            mgr._loadImage = async () => ({ img: { width: 8, height: 8 }, ok: true });
+            mgr._fetchActionStrip = async () => { throw new Error(`strip error retained (${mode})`); };
+            try {
+                const call = mode === 'character'
+                    ? mgr._loadCharacterEntry(entry, { signal: null, generation: mgr._loadGeneration })
+                    : mgr._loadEntry(entry, { signal: null, generation: mgr._loadGeneration });
+                await assert.rejects(call, new RegExp(`strip error retained \\(${mode}\\)`));
+            } finally {
+                mgr.dispose();
+            }
+        }
+
+        // 5. Companion rejection inside _fetchActionStrip releases already-loaded strip albedo
+        {
+            const mgr = new AssetManager();
+            mgr._materialDecodedLoaded = true;
+            let closedAlbedo = 0;
+            let closedEmissive = 0;
+            mgr._loadOptionalImage = async (path) => {
+                if (path.endsWith('actions.png')) {
+                    return { img: { width: 8, height: 2, close() { closedAlbedo++; } }, ok: true, reason: null };
+                }
+                if (path.endsWith('.emissive.png')) {
+                    await new Promise(resolve => setImmediate(resolve));
+                    return { img: { width: 8, height: 2, close() { closedEmissive++; } }, ok: true };
+                }
+                throw new Error('synthetic companion failure');
+            };
+            try {
+                await assert.rejects(
+                    mgr._fetchActionStrip({ ...entry, emissiveSidecar: true }, { signal: null, generation: mgr._loadGeneration }),
+                    /synthetic companion failure/,
+                );
+                assert.equal(closedEmissive, 1, 'release a companion that arrived after its sibling failed');
+                assert.equal(closedAlbedo, 1, 'strip albedo must be released when companion load throws');
+            } finally {
+                mgr.dispose();
+            }
+        }
+
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(unhandled, [], 'no unhandledRejection may escape optional strip background paths');
+    } finally {
+        process.off('unhandledRejection', onUnhandled);
+        console.warn = origWarn;
+    }
 });

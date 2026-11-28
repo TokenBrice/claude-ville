@@ -300,10 +300,10 @@ Material metadata is optional and must not change Canvas rendering. Read
 [`docs/material-channel-contract.md`](../../docs/material-channel-contract.md)
 before authoring a companion channel.
 
-The committed `world-pilot` atlas uses a reviewed manifest ID list. It includes
-all nine landmarks, representative light/water assets, and one Claude/Codex
-class. Character sheets retain their 8-direction × 10-row frame tags; terrain
-retains all 16 Wang masks. Building overlay layers follow their parent.
+The committed `world-pilot` atlas holds all nine landmarks, their overlay
+layers and the reviewed light and water assets. Terrain retains all 16 Wang
+masks. The two pilot character sheets live in `world-pilot-characters`, with
+the same eight directions and ten animation rows.
 
 ```bash
 # Deterministic dry-run; no files written.
@@ -311,6 +311,7 @@ npm run sprites:atlas-plan -- --atlas=world-pilot
 
 # Bake albedo + default/authored material, emissive, and occluder channels.
 npm run sprites:atlas-bake -- --atlas=world-pilot
+npm run sprites:atlas-bake -- --atlas=world-pilot-characters
 
 # Schema, source hash, dimensions, alpha bounds, matching rectangles, frame
 # tags, nearest sampling, padding extrusion, and orphan checks.

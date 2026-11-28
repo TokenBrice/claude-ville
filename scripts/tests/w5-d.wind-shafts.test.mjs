@@ -5,6 +5,7 @@ import {
     WIND_COMPUTE_BINDINGS,
     WIND_EMBER_BINDINGS,
     WIND_EMBER_COMPUTE_WGSL,
+    WIND_EMBER_COOLDOWN_DISPATCHES,
     WIND_EMBER_DEFAULT_BYTES,
     WIND_EMBER_DEFAULT_CAPACITY,
     WIND_EMBER_MAX_BYTES,
@@ -755,4 +756,77 @@ test('every partial wind and shaft allocation is released on preparation failure
             assert.deepEqual(device.log.destroyed.sort(), allocated.sort());
         }
     }
+});
+
+test('WindFieldCompute embers:auto suspends only after the last live ember expires and recovers cleanly', async () => {
+    const device = createMockWebGpuDevice();
+    const pass = new WindFieldCompute({ emberCapacity: 256 });
+    await pass.prepare(device);
+
+    // 1. Freshly zeroed buffer with no hearth emitter: 0 ember passes dispatched
+    pass.setWindForcing({
+        baseWindX: 0.4,
+        emitters: [{ cellX: 16, cellY: 64, radiusCells: 4, gustStrength: 0.7, flags: WIND_EMITTER_FLAGS.gust }],
+    });
+    const encIdle = createMockEncoder();
+    const idleRes = pass.encode(encIdle, { dtSeconds: 0.05, embers: 'auto' });
+    assert.equal(idleRes.dispatchedSteps, 1);
+    assert.equal(idleRes.hasLiveEmbers, false);
+    assert.equal(idleRes.emberDispatched, false);
+    assert.equal(encIdle.passes.filter(p => p.label === 'w5d-wind-embers').length, 0);
+
+    // 2. Hearth emitter activates: ember pass runs and seeds exact cooldown
+    const hearth = [{ cellX: 60, cellY: 60, radiusCells: 4, gustStrength: 0.8, flags: WIND_EMITTER_FLAGS.hearth }];
+    pass.setWindForcing({ emitters: hearth });
+    const encActive = createMockEncoder();
+    const activeRes = pass.encode(encActive, { dtSeconds: 0.05, embers: 'auto' });
+    assert.equal(activeRes.hasLiveEmbers, true);
+    assert.equal(activeRes.emberDispatched, true);
+    assert.equal(encActive.passes.filter(p => p.label === 'w5d-wind-embers').length, 1);
+    assert.equal(pass.getDiagnostics().emberCooldownDispatches, WIND_EMBER_COOLDOWN_DISPATCHES);
+
+    // 3. Cross-check against CPU ember stepper: after spawning for 10 steps then
+    // extinguishing the hearth, every spawned ember has heat <= 0.01 by the time
+    // WIND_EMBER_COOLDOWN_DISPATCHES elapses.
+    const cpuEmbers = new Float32Array(256 * 8);
+    const emptyWind = new Float32Array(WIND_FIELD_SIZE * WIND_FIELD_SIZE * 4);
+    for (let s = 0; s < 10; s++) {
+        stepEmbersCpu(cpuEmbers, emptyWind, { stepIndex: s, dt: WIND_FIXED_DT_S }, hearth);
+    }
+    let cpuAfterCooldown = null;
+    for (let s = 0; s < WIND_EMBER_COOLDOWN_DISPATCHES; s++) {
+        cpuAfterCooldown = stepEmbersCpu(cpuEmbers, emptyWind, { stepIndex: 10 + s, dt: WIND_FIXED_DT_S }, []);
+    }
+    assert.equal(cpuAfterCooldown.activeCount, 0, 'CPU stepper must have zero live embers after cooldown');
+
+    // 4. Extinguish hearth on GPU pass: ember pass MUST keep running for the full cooldown
+    pass.setWindForcing({ emitters: [] });
+    for (let d = 0; d < WIND_EMBER_COOLDOWN_DISPATCHES; d++) {
+        const enc = createMockEncoder();
+        const res = pass.encode(enc, { dtSeconds: 0.05, embers: 'auto' });
+        assert.equal(res.emberDispatched, true, `cooldown dispatch ${d + 1}/${WIND_EMBER_COOLDOWN_DISPATCHES} must still run`);
+        assert.equal(enc.passes.filter(p => p.label === 'w5d-wind-embers').length, 1);
+    }
+
+    // 5. After cooldown completes, last live ember has expired -> suspends cleanly
+    assert.equal(pass.hasLiveEmbers(), false);
+    const encSuspended = createMockEncoder();
+    const suspRes = pass.encode(encSuspended, { dtSeconds: 0.05, embers: 'auto' });
+    assert.equal(suspRes.hasLiveEmbers, false);
+    assert.equal(suspRes.emberDispatched, false);
+    assert.equal(encSuspended.passes.filter(p => p.label === 'w5d-wind-embers').length, 0);
+
+    // 6. Re-ignition resumes immediately, and release/prepare resets cooldown cleanly
+    pass.setWindForcing({ emitters: hearth });
+    const encResume = createMockEncoder();
+    const resumeRes = pass.encode(encResume, { dtSeconds: 0.05, embers: 'auto' });
+    assert.equal(resumeRes.hasLiveEmbers, true);
+    assert.equal(resumeRes.emberDispatched, true);
+
+    pass.release();
+    assert.equal(pass.getDiagnostics().emberCooldownDispatches, 0);
+    await pass.prepare(device);
+    pass.setWindForcing({ emitters: [] });
+    assert.equal(pass.hasLiveEmbers(), false);
+    pass.release();
 });

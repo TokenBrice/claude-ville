@@ -89,7 +89,8 @@ float hash21(vec2 p) {
 }
 
 vec4 sourceAt(vec2 uv) {
-    return texture(u_source, clamp(uv, vec2(0.0), vec2(1.0)));
+    vec2 c = clamp(uv, vec2(0.0), vec2(1.0));
+    return texture(u_source, vec2(c.x, 1.0 - c.y));
 }
 
 // Offsets are in art pixels (texels, the contract's +/-2 / +/-1 envelopes):
@@ -101,7 +102,9 @@ vec2 quantizedPixels(vec2 px) {
 }
 
 float waterAt(vec2 uv) {
-    return u_waterEnabled ? texture(u_waterMask, clamp(uv, vec2(0.0), vec2(1.0))).r : 0.0;
+    if (!u_waterEnabled) return 0.0;
+    vec2 c = clamp(uv, vec2(0.0), vec2(1.0));
+    return texture(u_waterMask, vec2(c.x, 1.0 - c.y)).r;
 }
 
 vec2 scenePixels() {
@@ -187,8 +190,8 @@ float poolReceiver(vec2 cellPx) {
     if (u_poolMaskSize.x < 1.0 || u_poolMaskSize.y < 1.0) return 1.0;
     vec2 local = (cellPx - u_poolMaskOrigin) / u_poolMaskSize;
     if (local.x < 0.0 || local.y < 0.0 || local.x >= 1.0 || local.y >= 1.0) return 1.0;
-    // Uploaded with UNPACK_FLIP_Y: the canvas's top row sits at v = 1.
-    return texture(u_poolMask, vec2(local.x, 1.0 - local.y)).a;
+    // Uploaded top-down (UNPACK_FLIP_Y = false): local.y matches canvas row order.
+    return texture(u_poolMask, local).a;
 }
 
 vec3 applyPools(vec3 graded, vec3 albedo) {
@@ -295,7 +298,8 @@ uniform bool u_extract;
 
 vec3 sampleAt(vec2 uv) { return texture(u_input, clamp(uv, vec2(0.0), vec2(1.0))).rgb; }
 vec3 emissionAt(vec2 uv) {
-    vec4 e = texture(u_input, clamp(uv, vec2(0.0), vec2(1.0)));
+    vec2 c = clamp(uv, vec2(0.0), vec2(1.0));
+    vec4 e = texture(u_input, vec2(c.x, 1.0 - c.y));
     return e.rgb * e.a * 2.0;
 }
 
@@ -399,6 +403,9 @@ class PostFxInstance {
         this.lightCount = 0;
         this.uploadMs = null;
         this.maskUploadMs = null;
+        this.waterMaskUploadMs = null;
+        this.poolMaskUploadMs = null;
+        this.emissionUploadMs = null;
         this.setupCpuMs = null;
         this.shaderCpuMs = null;
         // Backward-compatible alias for diagnostics consumers. It now means
@@ -412,6 +419,17 @@ class PostFxInstance {
         this.sourceCanvasPixels = 0;
         this.unifiedResources = unifiedRendererResourceAccounting();
         this._frameMaskUploadMs = 0;
+        this.uploadCounters = {
+            source: 0,
+            waterMaskFull: 0,
+            waterMaskSkipped: 0,
+            poolMaskFull: 0,
+            poolMaskPartial: 0,
+            poolMaskSkipped: 0,
+            emissionFull: 0,
+            emissionPartial: 0,
+            emissionSkipped: 0,
+        };
         this.pendingGpuQueries = [];
         this.timerExtension = null;
         this.ladder = createPostFxLadder();
@@ -419,11 +437,15 @@ class PostFxInstance {
         this.waterMaskTexture = null;
         this.poolMaskTexture = null;
         this.poolMaskCanvas = null;
+        this.poolMaskWidth = 0;
+        this.poolMaskHeight = 0;
         this.poolMaskRevision = null;
         this.poolMaskSize = [0, 0];
         this.emissionTexture = null;
+        this.emissionCanvas = null;
         this.emissionWidth = 0;
         this.emissionHeight = 0;
+        this.emissionRevision = null;
         this.sceneTarget = null;
         this.bloomA = null;
         this.bloomB = null;
@@ -493,7 +515,7 @@ class PostFxInstance {
         this.vao = gl.createVertexArray();
         gl.bindVertexArray(this.vao);
         gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
         gl.disable(gl.DEPTH_TEST);
         gl.disable(gl.CULL_FACE);
         gl.disable(gl.BLEND);
@@ -507,10 +529,14 @@ class PostFxInstance {
         this.poolMaskOrigin = [0, 0];
         this.poolMaskSize = [0, 0];
         this.poolMaskCanvas = null;
+        this.poolMaskWidth = 0;
+        this.poolMaskHeight = 0;
         this.poolMaskRevision = null;
         this.emissionTexture = this._createTexture(1, 1);
+        this.emissionCanvas = null;
         this.emissionWidth = 1;
         this.emissionHeight = 1;
+        this.emissionRevision = null;
         this.maskCanvas = null;
         this.maskWidth = 1;
         this.maskHeight = 1;
@@ -594,8 +620,14 @@ class PostFxInstance {
         this.waterMaskTexture = null;
         this.poolMaskTexture = null;
         this.poolMaskCanvas = null;
+        this.poolMaskWidth = 0;
+        this.poolMaskHeight = 0;
         this.poolMaskRevision = null;
         this.emissionTexture = null;
+        this.emissionCanvas = null;
+        this.emissionWidth = 0;
+        this.emissionHeight = 0;
+        this.emissionRevision = null;
         if (this.mainProgram) gl.deleteProgram(this.mainProgram);
         if (this.bloomProgram) gl.deleteProgram(this.bloomProgram);
         if (this.compositeProgram) gl.deleteProgram(this.compositeProgram);
@@ -614,8 +646,14 @@ class PostFxInstance {
         this.waterMaskTexture = null;
         this.poolMaskTexture = null;
         this.poolMaskCanvas = null;
+        this.poolMaskWidth = 0;
+        this.poolMaskHeight = 0;
         this.poolMaskRevision = null;
         this.emissionTexture = null;
+        this.emissionCanvas = null;
+        this.emissionWidth = 0;
+        this.emissionHeight = 0;
+        this.emissionRevision = null;
         this.mainProgram = null;
         this.bloomProgram = null;
         this.compositeProgram = null;
@@ -757,17 +795,86 @@ class PostFxInstance {
         return level;
     }
 
+    _canSubRectUpload(gl) {
+        return typeof gl.UNPACK_ROW_LENGTH === 'number'
+            && typeof gl.UNPACK_SKIP_PIXELS === 'number'
+            && typeof gl.UNPACK_SKIP_ROWS === 'number';
+    }
+
+    _uploadCanvasRects(gl, canvas, width, height, rects) {
+        if (!Array.isArray(rects) || !rects.length || !this._canSubRectUpload(gl)) {
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            return 'full';
+        }
+        const MAX_SUBRECT_CALLS = 6;
+        const clamped = [];
+        let dirtyPixels = 0;
+        let ux0 = width;
+        let uy0 = height;
+        let ux1 = 0;
+        let uy1 = 0;
+        for (let i = 0; i < rects.length; i++) {
+            const r = rects[i];
+            if (!r) continue;
+            const x = Math.max(0, Math.min(width, Math.floor(r.x)));
+            const y = Math.max(0, Math.min(height, Math.floor(r.y)));
+            const rw = Math.max(0, Math.min(width - x, Math.ceil(r.w)));
+            const rh = Math.max(0, Math.min(height - y, Math.ceil(r.h)));
+            if (rw <= 0 || rh <= 0) continue;
+            clamped.push({ x, y, w: rw, h: rh });
+            dirtyPixels += rw * rh;
+            if (x < ux0) ux0 = x;
+            if (y < uy0) uy0 = y;
+            if (x + rw > ux1) ux1 = x + rw;
+            if (y + rh > uy1) uy1 = y + rh;
+        }
+        if (dirtyPixels <= 0) return 'skipped';
+        const fullArea = width * height;
+        if (dirtyPixels >= fullArea * 0.5) {
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            return 'full';
+        }
+        // When many scattered dirty rects would incur excessive per-call
+        // texSubImage2D overhead, collapse to their tight union rect if it
+        // still covers under half the texture; otherwise do one full upload.
+        let uploadList = clamped;
+        if (clamped.length > MAX_SUBRECT_CALLS) {
+            const uw = ux1 - ux0;
+            const uh = uy1 - uy0;
+            if (uw * uh >= fullArea * 0.5) {
+                gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+                return 'full';
+            }
+            uploadList = [{ x: ux0, y: uy0, w: uw, h: uh }];
+        }
+        gl.pixelStorei(gl.UNPACK_ROW_LENGTH, width);
+        try {
+            for (let i = 0; i < uploadList.length; i++) {
+                const r = uploadList[i];
+                gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, r.x);
+                gl.pixelStorei(gl.UNPACK_SKIP_ROWS, r.y);
+                gl.texSubImage2D(gl.TEXTURE_2D, 0, r.x, r.y, r.w, r.h, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            }
+        } finally {
+            gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+            gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+            gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+        }
+        return 'partial';
+    }
+
     _uploadSource(sourceCanvas) {
         const gl = this.gl;
         if (!sourceCanvas || !this.sourceTexture) return false;
         const started = timingNow();
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
         gl.bindTexture(gl.TEXTURE_2D, null);
         const ended = timingNow();
         this.uploadMs = setEma(this.uploadMs, ended - started);
+        this.uploadCounters.source++;
         return true;
     }
 
@@ -783,11 +890,15 @@ class PostFxInstance {
         // moves, so identity alone would freeze the GPU copy at its first
         // pose; the revision counter marks in-place repaints.
         const contentChanged = revision !== null && revision !== this.maskRevision;
-        if (!storageChanged && !contentChanged) return true;
+        if (!storageChanged && !contentChanged) {
+            this.uploadCounters.waterMaskSkipped++;
+            this.waterMaskUploadMs = setEma(this.waterMaskUploadMs, 0);
+            return true;
+        }
         const started = timingNow();
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, this.waterMaskTexture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
         if (storageChanged) {
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
             this.maskCanvas = maskCanvas;
@@ -799,13 +910,18 @@ class PostFxInstance {
         }
         this.maskRevision = revision;
         gl.bindTexture(gl.TEXTURE_2D, null);
-        this._frameMaskUploadMs += Math.max(0, timingNow() - started);
+        const dt = Math.max(0, timingNow() - started);
+        this.waterMaskUploadMs = setEma(this.waterMaskUploadMs, dt);
+        this._frameMaskUploadMs += dt;
+        this.uploadCounters.waterMaskFull++;
         return true;
     }
 
-    // V5 — the pools' receiver mask (world px, one texel each). Same reuse
-    // rule as the water mask: identity plus a revision counter, since the
-    // producer redraws one canvas in place.
+    // V5 — the pools' receiver mask (world px, one texel each). Reuses the
+    // GPU copy when revision is unchanged, patches only the changed body
+    // sub-rectangles when prevRevision matches the GPU copy, and falls back to
+    // a full refresh on resize, pan, static rebuild, skipped frames, or
+    // context restore.
     _uploadPoolMask(mask) {
         const gl = this.gl;
         if (!mask?.canvas || !this.poolMaskTexture) return false;
@@ -819,43 +935,91 @@ class PostFxInstance {
             || this.poolMaskWidth !== width
             || this.poolMaskHeight !== height;
         const contentChanged = mask.revision !== this.poolMaskRevision;
-        if (!storageChanged && !contentChanged) return true;
+        if (!storageChanged && !contentChanged) {
+            this.uploadCounters.poolMaskSkipped++;
+            this.poolMaskUploadMs = setEma(this.poolMaskUploadMs, 0);
+            return true;
+        }
+        const started = timingNow();
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, this.poolMaskTexture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
         if (storageChanged) {
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, mask.canvas);
             this.poolMaskCanvas = mask.canvas;
             this.poolMaskWidth = width;
             this.poolMaskHeight = height;
             this._updateTextureBytes();
+            this.uploadCounters.poolMaskFull++;
+        } else if (mask.fullRefresh !== true
+            && this.poolMaskRevision !== null
+            && mask.prevRevision === this.poolMaskRevision
+            && Array.isArray(mask.dirtyRects)
+            && mask.dirtyRects.length > 0) {
+            const mode = this._uploadCanvasRects(gl, mask.canvas, width, height, mask.dirtyRects);
+            if (mode === 'partial') this.uploadCounters.poolMaskPartial++;
+            else if (mode === 'skipped') this.uploadCounters.poolMaskSkipped++;
+            else this.uploadCounters.poolMaskFull++;
         } else {
             gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, mask.canvas);
+            this.uploadCounters.poolMaskFull++;
         }
         this.poolMaskRevision = mask.revision;
         gl.bindTexture(gl.TEXTURE_2D, null);
+        const dt = Math.max(0, timingNow() - started);
+        this.poolMaskUploadMs = setEma(this.poolMaskUploadMs, dt);
+        this._frameMaskUploadMs += dt;
         return true;
     }
 
-    // 1.3 — the bloom source (EmitterCuts' emission layer), redrawn every
-    // frame, so uploaded every frame; timed with the auxiliary uploads.
+    // 1.3 — the bloom source (EmitterCuts' emission layer). Reuses the GPU
+    // copy when EmitterCuts marks the emission revision unchanged, patches its
+    // dirty bounding box when only a sub-region changed, and performs a full
+    // upload on resize, context restore, or skipped revisions.
     _uploadEmission(canvas) {
         const gl = this.gl;
         if (!canvas?.width || !canvas?.height || !this.emissionTexture) return false;
+        const width = canvas.width;
+        const height = canvas.height;
+        const meta = canvas._cvEmissionMeta || null;
+        const hasRevision = meta !== null && meta.revision !== undefined && meta.revision !== null;
+        const storageChanged = this.emissionCanvas !== canvas
+            || this.emissionWidth !== width
+            || this.emissionHeight !== height;
+        if (!storageChanged && hasRevision && meta.revision === this.emissionRevision) {
+            this.uploadCounters.emissionSkipped++;
+            this.emissionUploadMs = setEma(this.emissionUploadMs, 0);
+            return true;
+        }
         const started = timingNow();
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.emissionTexture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-        if (this.emissionWidth !== canvas.width || this.emissionHeight !== canvas.height) {
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        if (storageChanged) {
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-            this.emissionWidth = canvas.width;
-            this.emissionHeight = canvas.height;
+            this.emissionCanvas = canvas;
+            this.emissionWidth = width;
+            this.emissionHeight = height;
             this._updateTextureBytes();
+            this.uploadCounters.emissionFull++;
+        } else if (hasRevision
+            && meta.fullRefresh !== true
+            && this.emissionRevision !== null
+            && meta.prevRevision === this.emissionRevision
+            && meta.dirtyRect) {
+            const mode = this._uploadCanvasRects(gl, canvas, width, height, [meta.dirtyRect]);
+            if (mode === 'partial') this.uploadCounters.emissionPartial++;
+            else if (mode === 'skipped') this.uploadCounters.emissionSkipped++;
+            else this.uploadCounters.emissionFull++;
         } else {
             gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+            this.uploadCounters.emissionFull++;
         }
+        this.emissionRevision = hasRevision ? meta.revision : null;
         gl.bindTexture(gl.TEXTURE_2D, null);
-        this._frameMaskUploadMs += Math.max(0, timingNow() - started);
+        const dt = Math.max(0, timingNow() - started);
+        this.emissionUploadMs = setEma(this.emissionUploadMs, dt);
+        this._frameMaskUploadMs += dt;
         return true;
     }
 
@@ -1035,10 +1199,20 @@ class PostFxInstance {
             }
             if (level <= POST_FX_LEVELS.REDUCED && feed?.poolMask) {
                 this._uploadPoolMask(feed.poolMask);
+            } else {
+                // Discontinuity: any skipped/empty poolMask frame invalidates
+                // the cached GPU revision so partial patches never target stale state.
+                this.poolMaskRevision = null;
             }
             const emission = level <= POST_FX_LEVELS.REDUCED && feed?.emission
                 ? this._uploadEmission(feed.emission)
                 : false;
+            if (!emission) {
+                // Discontinuity: consuming no emission invalidates the stored
+                // GPU emission revision so a subsequent disjoint emitter forces
+                // a full upload instead of patching over stale pixels.
+                this.emissionRevision = null;
+            }
             const setupSample = Math.max(0, timingNow() - setupStart - this._frameMaskUploadMs);
             this.setupCpuMs = setEma(this.setupCpuMs, setupSample);
             this.maskUploadMs = setEma(this.maskUploadMs, this._frameMaskUploadMs);
@@ -1172,13 +1346,17 @@ class PostFxInstance {
             level: this.ladder.getLevel(),
             uploadMs: this.uploadMs ?? 0,
             maskUploadMs: this.maskUploadMs ?? 0,
+            waterMaskUploadMs: this.waterMaskUploadMs ?? 0,
+            poolMaskUploadMs: this.poolMaskUploadMs ?? 0,
+            emissionUploadMs: this.emissionUploadMs ?? 0,
             setupCpuMs: this.setupCpuMs ?? 0,
             shaderCpuMs: this.shaderCpuMs ?? 0,
-            gpuMs: this.timerExtension ? (this.gpuMs ?? 0) : null,
+            gpuMs: this.timerExtension ? this.gpuMs : null,
             // Compatibility for existing diagnostics readers.
             cpuMs: this.cpuMs ?? 0,
             renderTotalCpuMs: this.renderTotalCpuMs ?? 0,
             frameGapMs: this.frameGapMs,
+            uploadCounters: { ...this.uploadCounters },
             textureBytes: this.textureBytes,
             resources: this.getResourceAccounting(),
             unifiedResources: {

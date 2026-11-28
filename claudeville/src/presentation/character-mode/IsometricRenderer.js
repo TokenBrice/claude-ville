@@ -125,7 +125,7 @@ import { CouncilRibbon } from './CouncilRibbon.js';
 import { getBuildingApertureProfile } from './BuildingVisualRegistry.js';
 import { InspectionGlass, GLASS_EVENT, readGlassSetting } from './InspectionGlass.js';
 import { postcardFrame, strikePostcard } from './Postcard.js';
-import { fireBreath, fireBreathDepth, fixturePoolReach, groundCourseHeight, HEARTH_FIXTURES, HEARTH_TONE, hearthLightSources, lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
+import { fireBreath, fireBreathDepth, fixturePoolReach, groundCourseHeight, HEARTH_FIXTURES, HEARTH_TONE, hearthLightSources, lightStampCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import { lampRoundFor } from './LamplighterRound.js';
 import { applyTeamPlazaPreferences, getCouncilRingDiagnostics, releaseCouncilRingState } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
@@ -203,7 +203,8 @@ import {
     webGpuOutcomeSkipsProbe,
 } from './gpu/GpuWorldPolicy.js';
 import { NEUTRAL_GRADE } from './GradeEvaluator.js';
-import { poolReceiverMask } from './CanvasPoolMask.js';
+import { poolReceiverMask, poolReceiverMaskPixels, releasePoolReceiverMask } from './CanvasPoolMask.js';
+import { emitterCutsVolatilePixels, releaseEmitterCutsBacking } from './EmitterCuts.js';
 import {
     buildPoolDodgeStamp,
     canvasGradeMultiply,
@@ -417,6 +418,14 @@ const TERRAIN_STAGED_FIELDS = Object.freeze(['groundField', 'groundPuddleMask', 
 function whenIdle(callback) {
     if (typeof requestIdleCallback === 'function') requestIdleCallback(() => callback(), { timeout: 100 });
     else setTimeout(callback, 0);
+}
+
+// Staged WebGPU fallback recovery runs outside the hot rAF frame so the last
+// good frame stays visible on screen, while using a next-task timer instead of
+// low-priority `requestIdleCallback` (which can defer up to its 100 ms timeout
+// per stage under host or GPU-process contention).
+function scheduleFallbackStep(callback) {
+    return setTimeout(callback, 0);
 }
 
 const MAX_LIGHT_GRADIENT_CACHE_PIXELS = CANVAS_BUDGET.maxLightCachePixels;
@@ -708,6 +717,11 @@ class FountainWaterSprite extends StaticPropSprite {
         });
         this.renderer = renderer;
         this._frames = [];
+        this.poolMaskStaticBaseId = 'prop.plazaFountain';
+    }
+
+    poolMaskFrameGroup(cached) {
+        return this._frames.length === 4 && this._frames.includes(cached) ? this._frames : null;
     }
 
     _getCachedCanvas(zoom) {
@@ -717,17 +731,20 @@ class FountainWaterSprite extends StaticPropSprite {
         }
         if (!this._frames.length) {
             if (!this.renderer.assets.get(this.id) || typeof document === 'undefined') return null;
+            const frames = [];
             for (let frame = 0; frame < 4; frame++) {
                 this._paintFrame = frame;
                 this._cacheCanvas = null;
                 const cached = super._getCachedCanvas(zoom);
                 if (!cached) {
+                    this._frames = frames;
                     this.releaseCache();
                     return null;
                 }
                 cached.textureKey = `${this.id}:frame${frame}`;
-                this._frames.push(cached);
+                frames.push(cached);
             }
+            this._frames = frames;
         }
         const frame = this.renderer.motionScale > 0 ? Math.floor((this.renderer.motionTimeMs || 0) / 250) % 4 : 0;
         this._cacheCanvas = this._frames[frame];
@@ -741,7 +758,7 @@ class FountainWaterSprite extends StaticPropSprite {
 
     releaseCache() {
         for (const cached of this._frames) releaseCanvasBackingStore(cached.canvas);
-        this._frames.length = 0;
+        this._frames = [];
         this._cacheCanvas = null;
         this._alphaMask = null;
     }
@@ -1340,6 +1357,10 @@ export class IsometricRenderer {
 
         this._generateCommandCenterAmbience();
         this._laneTiles = this._buildLaneTileIndex();
+        this._plazaTiles = new Set();
+        for (const [key, info] of this._laneTiles.entries()) {
+            if (info?.plazaLike) this._plazaTiles.add(key);
+        }
         this.ambientEmitters = [];
         this._generateAmbientEmitters();
         // 6.7 — occupancy-gated chimney smoke from the registry's chimney
@@ -2126,17 +2147,21 @@ export class IsometricRenderer {
             startedAt: performance.now(),
             canvas: null,
             next: null,
+            timerId: null,
         };
         this._fallbackPrep = prep;
         try {
             if (inFrame) this._stepFallbackPrep({ now: true });
-            else whenIdle(() => this._stepFallbackPrep({ prep }));
+            else prep.timerId = scheduleFallbackStep(() => {
+                prep.timerId = null;
+                this._stepFallbackPrep({ prep });
+            });
         } catch (error) {
             this._failFallbackPrep(prep, error);
         }
     }
 
-    // One idle step of the pending fallback: build the WebGL2 world; re-bake
+    // One staged task of the pending fallback: build the WebGL2 world; re-bake
     // the terrain canvas it uploads; arm the swap and draw it (`renderNow`).
     // `now` (a frame exception, or `renderNow` drawing during the hold) builds
     // and arms in this task and leaves the bake to the frame about to draw.
@@ -2144,6 +2169,10 @@ export class IsometricRenderer {
     // drops the pending fallback; the next frame starts it again.
     _stepFallbackPrep({ now = false, prep = this._fallbackPrep } = {}) {
         if (!prep || prep !== this._fallbackPrep) return;
+        if (prep.timerId != null) {
+            clearTimeout(prep.timerId);
+            prep.timerId = null;
+        }
         try {
             if (
                 !this.running
@@ -2165,13 +2194,19 @@ export class IsometricRenderer {
                 prep.next = createGpuWorldRenderer({ canvas: prep.canvas, enabled: true });
                 prep.stage = 'bake';
                 if (!now) {
-                    whenIdle(() => this._stepFallbackPrep({ prep }));
+                    prep.timerId = scheduleFallbackStep(() => {
+                        prep.timerId = null;
+                        this._stepFallbackPrep({ prep });
+                    });
                     return;
                 }
             } else if (prep.stage === 'bake' && !now) {
                 this._getTerrainCache();
                 prep.stage = 'swap';
-                whenIdle(() => this._stepFallbackPrep({ prep }));
+                prep.timerId = scheduleFallbackStep(() => {
+                    prep.timerId = null;
+                    this._stepFallbackPrep({ prep });
+                });
                 return;
             }
             if (prep.next?.isActive?.()) {
@@ -2192,6 +2227,10 @@ export class IsometricRenderer {
     }
 
     _failFallbackPrep(prep, error) {
+        if (prep?.timerId != null) {
+            clearTimeout(prep.timerId);
+            prep.timerId = null;
+        }
         if (this._fallbackPrep === prep) this._fallbackPrep = null;
         if (this._worldSwap?.gpuWorld === prep.next) this._worldSwap = null;
         try {
@@ -2215,6 +2254,10 @@ export class IsometricRenderer {
     _cancelFallbackPrep() {
         const prep = this._fallbackPrep;
         this._fallbackPrep = null;
+        if (prep?.timerId != null) {
+            clearTimeout(prep.timerId);
+            prep.timerId = null;
+        }
         const next = prep?.next;
         if (prep) prep.next = null;
         next?.dispose?.();
@@ -2226,6 +2269,10 @@ export class IsometricRenderer {
         const swap = this._worldSwap;
         const previous = this.gpuWorld;
         this._fallbackPrep = null;
+        if (prep?.timerId != null) {
+            clearTimeout(prep.timerId);
+            prep.timerId = null;
+        }
         this._worldSwap = null;
         this.gpuWorld = null;
         this.worldRendererMode = 'canvas';
@@ -3241,6 +3288,10 @@ export class IsometricRenderer {
         this._poolLayer = null;
         this._poolShadeLayer = null;
         this._poolLayerRect = null;
+        releasePoolReceiverMask(this);
+        releaseEmitterCutsBacking(this);
+        const idleWaterCanvases = this._canvasWater?.canvasPool;
+        while (idleWaterCanvases?.length) releaseCanvasBackingStore(idleWaterCanvases.pop());
         releaseCanvasMap(this.lightGradientCache);
         this.lightFadeColorCache?.clear?.();
         this.lightColorRgbCache?.clear?.();
@@ -4165,14 +4216,13 @@ export class IsometricRenderer {
         const previousFreshOutput = this._forceFreshGpuOutput;
         this._forceFreshGpuOutput = true;
         try {
-            this._stepFallbackPrep({ now: true });
-            const swap = this._worldSwap?.fallback ? this._beginWorldSwap() : null;
-            let painted;
-            try {
-                painted = this._render(0);
-            } finally {
-                if (swap) this._endWorldSwap(swap);
+            if (!this._fallbackPrep && !this._worldSwap && this.worldRendererMode === 'webgpu' && this.gpuWorld?.failure) {
+                this._fallBackFromWebGpu({ inFrame: true });
+            } else {
+                this._stepFallbackPrep({ now: true });
             }
+            const swap = this._worldSwap?.fallback ? this._beginWorldSwap() : null;
+            const painted = this._renderWithFallback(0, false, swap);
             if (painted === false) {
                 this._recordFrameSuccess();
                 return false;
@@ -4951,6 +5001,7 @@ export class IsometricRenderer {
                 getRoadTiles: () => this.pathTiles,
                 getRoutingContext: () => ({
                     laneTiles: this.laneTiles,
+                    plazaTiles: this._plazaTiles,
                     ...this.visitTileAllocator.getCongestionSnapshot(),
                 }),
                 getTileType: (tileX, tileY) => this._surfaceMaterialAt(tileX, tileY),
@@ -6453,33 +6504,10 @@ export class IsometricRenderer {
             // WebGL2 mount takes over at this frame when it draws it; a
             // failed WebGPU world hands over to its WebGL2 fallback the same way.
             const worldSwap = this._beginWorldSwap();
-            let painted;
-            try {
-                const allowTerrainArtifactWait = !this._worldFramePresented
-                    && this._worldResourceGeneration === 0
-                    && (this._firstFrameReason === 'boot' || this._firstFrameReason === 'boot-pending');
-                painted = this._render(dt, allowTerrainArtifactWait);
-            } finally {
-                if (worldSwap) this._endWorldSwap(worldSwap);
-            }
-            // A WebGPU frame that failed mid-render left only the Canvas
-            // atmosphere under the overlay (its records were the GPU's): the
-            // same frame renders again on the WebGL2 fallback (or, without
-            // WebGL2, on the Canvas world) in this task, so the page never
-            // presents the broken one.
-            if (painted !== false && !worldSwap && this.worldRendererMode === 'webgpu' && this.gpuWorld?.failure) {
-                this._fallBackFromWebGpu({ inFrame: true });
-                const fallbackSwap = this._beginWorldSwap();
-                if (fallbackSwap) {
-                    try {
-                        painted = this._render(0);
-                    } finally {
-                        this._endWorldSwap(fallbackSwap);
-                    }
-                } else if (this.worldRendererMode === 'canvas') {
-                    painted = this._render(0);
-                }
-            }
+            const allowTerrainArtifactWait = !this._worldFramePresented
+                && this._worldResourceGeneration === 0
+                && (this._firstFrameReason === 'boot' || this._firstFrameReason === 'boot-pending');
+            const painted = this._renderWithFallback(dt, allowTerrainArtifactWait, worldSwap);
             const afterRender = performance.now();
             renderMs = afterRender - renderStart;
             if (painted !== false) {
@@ -6675,17 +6703,15 @@ export class IsometricRenderer {
     }
 
     frameHealth() {
-        const gpu = this.gpuWorld?.getDiagnostics?.() || null;
-        const postFx = this.postFx?.getDiagnostics?.() || null;
-        const gpuMs = Number.isFinite(gpu?.gpuMs)
-            ? gpu.gpuMs
-            : (Number.isFinite(postFx?.gpuMs) ? postFx.gpuMs : null);
-        const qualityLevel = gpu?.qualityLevel ?? postFx?.ladder?.effectiveLevel ?? null;
-        const qualityReason = gpu?.qualityReason ?? postFx?.ladder?.lastDecisionReason ?? null;
+        // The pressure governor reads this during rendering. Full backend
+        // diagnostics also snapshot textures, passes and staging buffers.
+        const gpu = this.gpuWorld;
+        const postFx = this.postFx;
+        const ladder = (gpu?.qualityLadder ?? postFx?.ladder)?.getState();
         return snapshotFrameEnvelope(this._frameEnvelope, {
-            gpuMs,
-            qualityLevel,
-            qualityReason,
+            gpuMs: gpu?.gpuMs ?? (postFx?.timerExtension ? postFx.gpuMs : null),
+            qualityLevel: ladder?.effectiveLevel,
+            qualityReason: ladder?.lastDecisionReason,
         });
     }
 
@@ -8047,10 +8073,10 @@ export class IsometricRenderer {
                         this._markLaneDiscipline(sprite, lane.tileKey, side, desiredOffset);
                     }
                 } else {
-                    delete sprite._laneDiscipline;
+                    sprite._laneDiscipline = null;
                 }
             } else {
-                delete sprite._laneDiscipline;
+                sprite._laneDiscipline = null;
             }
         }
 
@@ -9049,7 +9075,44 @@ export class IsometricRenderer {
         return 0.65;
     }
 
-    _render(dt = 16, allowTerrainArtifactWait = false) {
+    _renderWithFallback(dt, allowTerrainArtifactWait, worldSwap) {
+        const deferWebGpuFailureFallback = !worldSwap
+            && this.worldRendererMode === 'webgpu'
+            && !this._fallbackPrep
+            && Boolean(this.fxCanvas);
+        let painted;
+        try {
+            painted = this._render(
+                dt,
+                allowTerrainArtifactWait,
+                deferWebGpuFailureFallback ? { deferWebGpuFailureFallback: true } : null,
+            );
+        } finally {
+            if (worldSwap) this._endWorldSwap(worldSwap);
+        }
+        // A WebGPU frame that failed mid-render left no presented resident
+        // output: resolve its WebGL2 (or Canvas) fallback in this task and
+        // render again without deferring Canvas rescue, so even a failing
+        // WebGL2 fallback still lands a complete Canvas frame.
+        if (painted !== false && !worldSwap && this.worldRendererMode === 'webgpu' && this.gpuWorld?.failure) {
+            this._fallBackFromWebGpu({ inFrame: true });
+            const fallbackSwap = this._beginWorldSwap();
+            if (fallbackSwap) {
+                try {
+                    painted = this._render(0);
+                } finally {
+                    this._endWorldSwap(fallbackSwap);
+                }
+            } else if (this.worldRendererMode === 'canvas') {
+                painted = this._render(0);
+            } else if (deferWebGpuFailureFallback) {
+                painted = this._render(0, false, { forceCanvas: true });
+            }
+        }
+        return painted;
+    }
+
+    _render(dt = 16, allowTerrainArtifactWait = false, options = null) {
         // #2 — reset the mark governor once per frame before any draw pass runs.
         // Region size scales with zoom so a "screen region" stays roughly fixed
         // in screen pixels regardless of the integer zoom level.
@@ -9062,16 +9125,24 @@ export class IsometricRenderer {
         const glassCut = buildings?.getApertureModel?.();
         if (postcardFrame() && glassCut?.source === 'glass') {
             buildings._apertureModel = null;
-            try { return renderWorldFrame(this, dt, allowTerrainArtifactWait); }
+            try { return renderWorldFrame(this, dt, allowTerrainArtifactWait, options); }
             finally { buildings._apertureModel = glassCut; }
         }
-        return renderWorldFrame(this, dt, allowTerrainArtifactWait);
+        return renderWorldFrame(this, dt, allowTerrainArtifactWait, options);
     }
 
     _syncSemanticSummary() {
-        const el = document.getElementById('worldSemanticSummary');
+        let el = this._semanticSummaryEl;
+        if (!el || !el.isConnected) {
+            el = typeof document !== 'undefined' ? document.getElementById('worldSemanticSummary') : null;
+            this._semanticSummaryEl = el;
+        }
         if (!el) return;
-        const agents = Array.from(this.agentSprites.values()).map(sprite => sprite.agent).filter(Boolean);
+        const agents = this._semanticSummaryAgents || (this._semanticSummaryAgents = []);
+        agents.length = 0;
+        for (const sprite of this.agentSprites.values()) {
+            if (sprite?.agent) agents.push(sprite.agent);
+        }
         const counts = bucketCounts(agents);
         const selected = this.selectedAgent?.name ? ` Selected ${this.selectedAgent.name}.` : '';
         const text = `Village: ${agents.length} agents. ${counts.needsYou} need you, ${counts.errors} errored, ${counts.quota} quota-limited, ${counts.watchlist} waiting, ${counts.working} working.${selected}`;
@@ -9782,26 +9853,6 @@ export class IsometricRenderer {
         const viewport = typeof this._screenViewport === 'function' ? this._screenViewport() : null;
         const hasView = Boolean(viewport?.width > 0 && viewport?.height > 0
             && this.camera?.worldToScreen && this.camera?.screenToWorld);
-        let viewWorld = null;
-        let reservedWorld = null;
-        if (hasView) {
-            const topLeft = this.camera.screenToWorld(THOUGHT_EDGE_MARGIN, THOUGHT_EDGE_MARGIN);
-            const bottomRight = this.camera.screenToWorld(viewport.width - THOUGHT_EDGE_MARGIN, viewport.height - THOUGHT_EDGE_MARGIN);
-            viewWorld = {
-                left: topLeft.x,
-                top: topLeft.y,
-                right: bottomRight.x,
-                bottom: bottomRight.y,
-            };
-            const reserved = getReservedRects();
-            if (reserved?.length) {
-                reservedWorld = [];
-                for (const rect of reserved) {
-                    const worldRect = this._screenRectToWorld(rect);
-                    if (worldRect && worldRect.w > 0 && worldRect.h > 0) reservedWorld.push(worldRect);
-                }
-            }
-        }
 
         const order = this._overlayBubbleOrder || (this._overlayBubbleOrder = []);
         order.length = 0;
@@ -9830,6 +9881,100 @@ export class IsometricRenderer {
             if (fresh !== 0) return fresh;
             return String(a.agent.id) < String(b.agent.id) ? -1 : 1;
         });
+
+        // Fast path when thought bubbles are hidden (wide overview scribe mode,
+        // Theatre mode, or Spoken mode) and InspectionGlass is inactive: no
+        // above-agent bubble columns are painted or exported to hit rects, so
+        // bypass full 24x30 ε-auction placement and prepare only the single
+        // highest-priority scribe speaker needed for the SPOKEN caption + pip.
+        // Fall through to the full path if close-zoom crowd name-folding still
+        // needs cluster detection on visible routine names.
+        if (speechPlan?.drawBubbles === false && !this.inspectionGlass?.isActive?.()) {
+            let hasFoldableRoutineNames = false;
+            if (
+                this._annotationMode
+                && this._annotationMode !== 'full'
+                && (this.restZoom ?? zoom) >= ROUTINE_NAME_MIN_ZOOM
+                && !this.theatreMode
+            ) {
+                for (let i = 0; i < order.length; i++) {
+                    const sp = order[i];
+                    if (sp.overlaySlot != null && !sp.selected && !sp.hovered && !sp.agent?.userNamed) {
+                        hasFoldableRoutineNames = true;
+                        break;
+                    }
+                }
+            }
+            if (!hasFoldableRoutineNames) {
+                let scribe = null;
+                if (speechPlan.useScribe !== false) {
+                    for (let i = 0; i < order.length; i++) {
+                        const sp = order[i];
+                        if (sp._shouldUseLongWaitClock?.()) continue;
+                        const thread = typeof sp._activityThread === 'function' ? sp._activityThread() : THOUGHT_NO_THREAD;
+                        if (!thread?.length || !thread[0]?.text) continue;
+                        sp._statusThread = thread;
+                        sp._statusClock = false;
+                        sp._thoughtAnchorX = sp.x;
+                        sp.bubbleOccluded = Boolean((sp._occludedByWorld || sp._behindBuilding) && !sp.selected);
+                        if (!sp.bubbleOccluded || !this._thoughtOccluderBase(sp, s)) {
+                            sp.bubbleBaseY = typeof sp._headTopY === 'function'
+                                ? (typeof sp._labelTopY === 'function' ? sp._labelTopY(sp._headTopY()) : sp._headTopY())
+                                : sp.y;
+                            sp.bubbleAnchorDy = THOUGHT_LEADER_TIP;
+                        }
+                        sp.bubbleSlot = 0;
+                        sp.bubbleLateral = 0;
+                        sp.bubbleClampX = 0;
+                        sp._bubbleClamped = false;
+                        sp.bubbleMergedCount = 1;
+                        sp.bubbleMergedInto = null;
+                        sp._thoughtFiltered = false;
+                        if (!sp._thoughtSeatedAt) sp._thoughtSeatedAt = now;
+                        scribe = sp;
+                        break;
+                    }
+                }
+                for (let i = 0; i < order.length; i++) {
+                    if (order[i] !== scribe) this._clearThoughtPlacement(order[i]);
+                }
+                const stats = occ.stats;
+                stats.frames++;
+                stats.speakers = order.length;
+                stats.placed = scribe ? 1 : 0;
+                stats.filtered = 0;
+                stats.iterations = 0;
+                stats.totalPlaced += stats.placed;
+                const seated = this._thoughtSeated || (this._thoughtSeated = []);
+                for (const sp of seated) {
+                    if (sp._thoughtFrame !== frame) this._clearThoughtPlacement(sp);
+                }
+                seated.length = 0;
+                if (scribe) seated.push(scribe);
+                return;
+            }
+        }
+
+        let viewWorld = null;
+        let reservedWorld = null;
+        if (hasView) {
+            const topLeft = this.camera.screenToWorld(THOUGHT_EDGE_MARGIN, THOUGHT_EDGE_MARGIN);
+            const bottomRight = this.camera.screenToWorld(viewport.width - THOUGHT_EDGE_MARGIN, viewport.height - THOUGHT_EDGE_MARGIN);
+            viewWorld = this._thoughtViewWorld || (this._thoughtViewWorld = { left: 0, top: 0, right: 0, bottom: 0 });
+            viewWorld.left = topLeft.x;
+            viewWorld.top = topLeft.y;
+            viewWorld.right = bottomRight.x;
+            viewWorld.bottom = bottomRight.y;
+            const reserved = getReservedRects();
+            if (reserved?.length) {
+                reservedWorld = this._thoughtReservedWorld || (this._thoughtReservedWorld = []);
+                reservedWorld.length = 0;
+                for (const rect of reserved) {
+                    const worldRect = this._screenRectToWorld(rect);
+                    if (worldRect && worldRect.w > 0 && worldRect.h > 0) reservedWorld.push(worldRect);
+                }
+            }
+        }
 
         const calm = order.length <= THOUGHT_CALM_SPEAKERS;
         let prepared = 0;
@@ -10445,12 +10590,11 @@ export class IsometricRenderer {
     _thoughtBoundsViolationArea(body, viewWorld, reservedWorld) {
         let penalty = 0;
         if (viewWorld) {
-            const viewRect = {
-                x: viewWorld.left,
-                y: viewWorld.top,
-                w: Math.max(0, viewWorld.right - viewWorld.left),
-                h: Math.max(0, viewWorld.bottom - viewWorld.top),
-            };
+            const viewRect = this._thoughtViewRectScratch || (this._thoughtViewRectScratch = { x: 0, y: 0, w: 0, h: 0 });
+            viewRect.x = viewWorld.left;
+            viewRect.y = viewWorld.top;
+            viewRect.w = Math.max(0, viewWorld.right - viewWorld.left);
+            viewRect.h = Math.max(0, viewWorld.bottom - viewWorld.top);
             const inside = rectIntersectionArea(body, viewRect);
             const total = Math.max(0, body.w * body.h);
             if (inside < total) penalty += total - inside;
@@ -13732,6 +13876,30 @@ export class IsometricRenderer {
         }
         if (Number(zoom) < ARTIFACT_MIN_ZOOM || !sortedSprites?.length) return [];
 
+        const returnedByParent = this.relationshipState?._returnedByParent;
+        const rollupRows = this.relationshipState?.getSquadRollups?.()
+            || this.relationshipState?.getSnapshot?.()?.squads
+            || [];
+        let hasSquadInput = Boolean(
+            (returnedByParent && returnedByParent.size > 0)
+            || rollupRows.length > 0,
+        );
+        if (!hasSquadInput) {
+            for (const agent of this.world?.agents?.values?.() || []) {
+                if (agent?.parentSessionId || agent?.parentId) { hasSquadInput = true; break; }
+            }
+        }
+        if (!hasSquadInput) {
+            for (const sprite of sortedSprites) {
+                const agent = sprite?.agent;
+                if (agent?.parentSessionId || agent?.parentId) { hasSquadInput = true; break; }
+            }
+        }
+        if (!hasSquadInput) {
+            this._childTrimById?.clear?.();
+            return [];
+        }
+
         const childTrims = this._childTrimById ||= new Map();
         const spriteById = new Map();
         for (const sprite of this.agentSprites?.values?.() || []) {
@@ -13794,9 +13962,9 @@ export class IsometricRenderer {
             }
         }
 
-        const returnedByParent = this.relationshipState?._returnedByParent;
-        if (returnedByParent && typeof returnedByParent.entries === 'function') {
-            for (const [parentId, childIds] of returnedByParent.entries()) {
+        const returnedByParentMap = returnedByParent;
+        if (returnedByParentMap && typeof returnedByParentMap.entries === 'function') {
+            for (const [parentId, childIds] of returnedByParentMap.entries()) {
                 const entry = ensureSquad(parentId);
                 for (const childId of childIds || []) {
                     retainedChildIds.add(childId);
@@ -13807,9 +13975,6 @@ export class IsometricRenderer {
             }
         }
 
-        const rollupRows = this.relationshipState?.getSquadRollups?.()
-            || this.relationshipState?.getSnapshot?.()?.squads
-            || [];
         const rollupByParent = new Map();
         for (const row of rollupRows) {
             if (row?.parentId) rollupByParent.set(row.parentId, row);
@@ -13940,7 +14105,7 @@ export class IsometricRenderer {
         return out;
     }
 
-    _computeFrameLightSources(atmosphere = null, now = performance.now()) {
+    _computeFrameLightSources(atmosphere = null, now = performance.now(), { planWetReflections = true } = {}) {
         const lighting = atmosphere?.lighting || null;
         const energy = sourceEnergyFor(lighting);
         const reach = Number.isFinite(Number(energy.reach)) ? Number(energy.reach) : 1;
@@ -13979,11 +14144,27 @@ export class IsometricRenderer {
             if (reach !== 1 && Number.isFinite(light.radius)) light.radius *= reach;
             if (gain !== 1 && Number.isFinite(light.intensity)) light.intensity *= gain;
         }
-        // 3.2 — plan the wet source reflections here, before any ground pass
-        // draws, so the neutral damp marks can stand aside for them in the
-        // same frame instead of one frame later.
-        this._wetReflectionPlan = this._planWetSourceReflections(ambient);
+        // 3.2 — plan the Canvas-only wet source reflections eagerly on Canvas
+        // and hybrid PostFx frames so damp marks step aside on the same frame;
+        // defer on resident GPU frames and compute lazily only if a fallback
+        // Canvas atmosphere pass runs.
+        this._wetReflectionSources = ambient;
+        if (planWetReflections) {
+            this._wetReflectionPlan = this._planWetSourceReflections(ambient);
+            this._wetReflectionPlanReady = true;
+        } else {
+            this._wetReflectionPlan = null;
+            this._wetReflectionPlanReady = false;
+        }
         return { building, ambient };
+    }
+
+    _ensureWetReflectionPlan() {
+        if (this._wetReflectionPlanReady === false) {
+            this._wetReflectionPlanReady = true;
+            this._wetReflectionPlan = this._planWetSourceReflections(this._wetReflectionSources);
+        }
+        return this._wetReflectionPlan;
     }
 
     // 3.2 (Canvas/hybrid half) — at most CANVAS_WET_REFLECTION_CAP admitted
@@ -14041,7 +14222,7 @@ export class IsometricRenderer {
     // already carry this patch of wet ground? Half a tile of slack keeps a
     // fleck from sitting on the reflection's own stepped edge.
     _wetReflectionCovers(worldX, worldY) {
-        const plan = this._wetReflectionPlan;
+        const plan = this._ensureWetReflectionPlan();
         if (!plan) return false;
         for (const entry of plan.entries) {
             const light = entry.light;
@@ -14058,7 +14239,7 @@ export class IsometricRenderer {
     // consume the same exposure envelope. The reflection is always dimmer than
     // the core it comes from and is clipped to the wet tiles it belongs to.
     _drawWetSourceReflections(ctx, canvas, atmosphere = null) {
-        const plan = this._wetReflectionPlan;
+        const plan = this._ensureWetReflectionPlan();
         if (!plan) return;
         const core = sourceEnergyFor(atmosphere?.lighting).core;
         if (core <= 0.2) return;
@@ -14260,7 +14441,9 @@ export class IsometricRenderer {
     // course wins, so overlapping lamps never compound into a bleached white
     // disc) and its multiply block, when it has one, into a white shade
     // layer with `darken`. The shade lands with `multiply`, then the pools
-    // with `color-dodge`. Only the stamped rectangle is reset and composited.
+    // with `color-dodge`. Stamped integer rectangles are decomposed into
+    // pairwise-disjoint rects so clearing, masking, and landing never scan
+    // empty space inside the union bounding box or touch an unused shade layer.
     _poolLayerCanvas(key, canvas, fill) {
         let layer = this[key];
         if (layer && layer.width === canvas.width && layer.height === canvas.height) return layer;
@@ -14274,33 +14457,93 @@ export class IsometricRenderer {
             layerCtx.fillRect(0, 0, layer.width, layer.height);
         }
         this[key] = layer;
-        this._poolLayerRect = null;
+        if (key === '_poolLayer') {
+            this._poolLayerRect = null;
+            this._poolDirtyDodgeRects = null;
+        } else if (key === '_poolShadeLayer') {
+            this._poolShadeRect = null;
+            this._poolDirtyShadeRects = null;
+        } else {
+            this._poolLayerRect = null;
+        }
         return layer;
     }
 
     _beginPoolLayer(ctx, canvas) {
-        const dodge = this._poolLayerCanvas('_poolLayer', canvas, null).getContext('2d');
-        const shade = this._poolLayerCanvas('_poolShadeLayer', canvas, '#ffffff').getContext('2d');
-        const stale = this._poolLayerRect;
+        const prevDodgeRects = this._poolDirtyDodgeRects;
+        const prevShadeRects = this._poolDirtyShadeRects;
+        const prevDodgeBbox = this._poolLayerRect;
+        const prevShadeBbox = this._poolShadeRect;
+        const prevShadeUsed = this._poolShadeUsed;
+        const prevDodgeCanvas = this._poolLayer;
+        const dodgeCanvas = this._poolLayerCanvas('_poolLayer', canvas, null);
+        const dodge = dodgeCanvas.getContext('2d');
         const transform = ctx.getTransform();
-        for (const layerCtx of [dodge, shade]) {
-            layerCtx.setTransform(1, 0, 0, 1, 0, 0);
-            layerCtx.globalCompositeOperation = 'source-over';
-            if (stale) {
-                if (layerCtx === shade) {
-                    layerCtx.fillStyle = '#ffffff';
-                    layerCtx.fillRect(stale.x0, stale.y0, stale.x1 - stale.x0, stale.y1 - stale.y0);
-                } else {
-                    layerCtx.clearRect(stale.x0, stale.y0, stale.x1 - stale.x0, stale.y1 - stale.y0);
+
+        dodge.setTransform(1, 0, 0, 1, 0, 0);
+        dodge.globalCompositeOperation = 'source-over';
+        if (dodgeCanvas === prevDodgeCanvas) {
+            if (prevDodgeRects && prevDodgeRects.length) {
+                for (let i = 0; i < prevDodgeRects.length; i++) {
+                    const r = prevDodgeRects[i];
+                    dodge.clearRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+                }
+            } else if (prevDodgeBbox) {
+                dodge.clearRect(
+                    prevDodgeBbox.x0,
+                    prevDodgeBbox.y0,
+                    prevDodgeBbox.x1 - prevDodgeBbox.x0,
+                    prevDodgeBbox.y1 - prevDodgeBbox.y0,
+                );
+            }
+        }
+        dodge.setTransform(transform);
+        dodge.imageSmoothingEnabled = false;
+        dodge.globalCompositeOperation = 'lighten';
+
+        let shade = null;
+        const existingShade = this._poolShadeLayer;
+        if (existingShade) {
+            if (existingShade.width !== canvas.width || existingShade.height !== canvas.height) {
+                releaseCanvasBackingStore(existingShade);
+                this._poolShadeLayer = null;
+            } else {
+                shade = existingShade.getContext('2d');
+                if (prevShadeRects && prevShadeRects.length) {
+                    shade.setTransform(1, 0, 0, 1, 0, 0);
+                    shade.globalCompositeOperation = 'source-over';
+                    shade.fillStyle = '#ffffff';
+                    for (let i = 0; i < prevShadeRects.length; i++) {
+                        const r = prevShadeRects[i];
+                        shade.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+                    }
+                } else if (prevShadeUsed && (prevShadeBbox || prevDodgeBbox)) {
+                    const s = prevShadeBbox || prevDodgeBbox;
+                    shade.setTransform(1, 0, 0, 1, 0, 0);
+                    shade.globalCompositeOperation = 'source-over';
+                    shade.fillStyle = '#ffffff';
+                    shade.fillRect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
                 }
             }
-            layerCtx.setTransform(transform);
-            layerCtx.imageSmoothingEnabled = false;
         }
-        dodge.globalCompositeOperation = 'lighten';
-        shade.globalCompositeOperation = 'darken';
+
         this._poolLayerRect = null;
+        this._poolShadeRect = null;
+        this._poolDirtyDodgeRects = null;
+        this._poolDirtyShadeRects = null;
         this._poolShadeUsed = false;
+        this._poolShadeReady = false;
+        this._poolTransform = transform;
+        this._poolDodgeOp = 'lighten';
+        this._poolShadeOp = 'darken';
+        if (this._poolDodgeStamps) this._poolDodgeStamps.length = 0;
+        else this._poolDodgeStamps = [];
+        if (this._poolShadeStamps) this._poolShadeStamps.length = 0;
+        else this._poolShadeStamps = [];
+        this._lightStampFrame = (this._lightStampFrame || 0) + 1;
+        this._frameUncachedPoolKeys?.clear?.();
+        this._poolFrameGrade = null;
+        this._poolFrameReceiver = null;
         const pools = this._poolLayerContexts || (this._poolLayerContexts = {});
         pools.dodge = dodge;
         pools.shade = shade;
@@ -14314,38 +14557,187 @@ export class IsometricRenderer {
         const height = rows * stamp._poolCellPx;
         const left = Math.round(x - width / 2);
         const top = Math.round(y - height / 2);
-        pools.dodge.drawImage(stamp, 0, 0, cells, rows, left, top, width, height);
-        if (stamp._poolShade) {
-            pools.shade.drawImage(stamp, cells, 0, cells, rows, left, top, width, height);
-            this._poolShadeUsed = true;
-        }
-        const m = pools.dodge.getTransform();
+        const m = this._poolTransform || pools.dodge.getTransform();
         const x0 = Math.max(0, Math.floor(left * m.a + m.e));
         const y0 = Math.max(0, Math.floor(top * m.d + m.f));
         const x1 = Math.min(pools.dodge.canvas.width, Math.ceil((left + width) * m.a + m.e));
         const y1 = Math.min(pools.dodge.canvas.height, Math.ceil((top + height) * m.d + m.f));
         if (x1 <= x0 || y1 <= y0) return;
+
+        // On transparent dodge or opaque-white shade, `source-over` is
+        // algebraically identical to `lighten`/`darken` when no earlier stamp
+        // touched the rect, avoiding blend math on isolated lamps.
+        const axisAligned = m.a > 0 && m.d > 0 && !m.b && !m.c;
+        const dodgeStamps = this._poolDodgeStamps || (this._poolDodgeStamps = []);
+        let dodgeOp = 'lighten';
+        if (axisAligned) {
+            let overlaps = false;
+            for (let i = 0; i < dodgeStamps.length; i++) {
+                const prev = dodgeStamps[i];
+                if (x0 < prev.x1 && x1 > prev.x0 && y0 < prev.y1 && y1 > prev.y0) {
+                    overlaps = true;
+                    break;
+                }
+            }
+            dodgeOp = overlaps ? 'lighten' : 'source-over';
+        }
+        if (this._poolDodgeOp !== dodgeOp) {
+            pools.dodge.globalCompositeOperation = dodgeOp;
+            this._poolDodgeOp = dodgeOp;
+        }
+        pools.dodge.drawImage(stamp, 0, 0, cells, rows, left, top, width, height);
+
+        const bounds = { x0, y0, x1, y1 };
+        dodgeStamps.push(bounds);
         const rect = this._poolLayerRect;
         this._poolLayerRect = rect
             ? { x0: Math.min(rect.x0, x0), y0: Math.min(rect.y0, y0), x1: Math.max(rect.x1, x1), y1: Math.max(rect.y1, y1) }
             : { x0, y0, x1, y1 };
+
+        if (stamp._poolShade) {
+            if (!this._poolShadeReady) {
+                const shade = pools.shade || this._poolLayerCanvas(
+                    '_poolShadeLayer',
+                    this._poolLayer || pools.dodge.canvas,
+                    '#ffffff',
+                ).getContext('2d');
+                shade.setTransform(m);
+                shade.imageSmoothingEnabled = false;
+                shade.globalCompositeOperation = 'darken';
+                this._poolShadeOp = 'darken';
+                pools.shade = shade;
+                this._poolShadeReady = true;
+            }
+            const shadeStamps = this._poolShadeStamps || (this._poolShadeStamps = []);
+            let shadeOp = 'darken';
+            if (axisAligned) {
+                let overlaps = false;
+                for (let i = 0; i < shadeStamps.length; i++) {
+                    const prev = shadeStamps[i];
+                    if (x0 < prev.x1 && x1 > prev.x0 && y0 < prev.y1 && y1 > prev.y0) {
+                        overlaps = true;
+                        break;
+                    }
+                }
+                shadeOp = overlaps ? 'darken' : 'source-over';
+            }
+            if (this._poolShadeOp !== shadeOp) {
+                pools.shade.globalCompositeOperation = shadeOp;
+                this._poolShadeOp = shadeOp;
+            }
+            pools.shade.drawImage(stamp, cells, 0, cells, rows, left, top, width, height);
+            this._poolShadeUsed = true;
+            shadeStamps.push(bounds);
+            const shadeRect = this._poolShadeRect;
+            this._poolShadeRect = shadeRect
+                ? { x0: Math.min(shadeRect.x0, x0), y0: Math.min(shadeRect.y0, y0), x1: Math.max(shadeRect.x1, x1), y1: Math.max(shadeRect.y1, y1) }
+                : { x0, y0, x1, y1 };
+        }
+    }
+
+    // Partition the stamped area so blended pixels are landed exactly once.
+    _disjointPoolRects(stamps, fallbackRect) {
+        if (!stamps || !stamps.length) return fallbackRect ? [fallbackRect] : [];
+        const n = stamps.length;
+        if (n === 1) {
+            const r = stamps[0];
+            return [{ x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1 }];
+        }
+        let ys = this._poolSweepYs;
+        if (!ys || ys.length < n * 2) {
+            ys = new Int32Array(Math.max(64, n * 2));
+            this._poolSweepYs = ys;
+        }
+        const ySlice = ys.subarray(0, n * 2);
+        for (let i = 0; i < n; i++) {
+            ySlice[i * 2] = stamps[i].y0;
+            ySlice[i * 2 + 1] = stamps[i].y1;
+        }
+        ySlice.sort();
+        let yLen = 0;
+        for (let i = 0; i < n * 2; i++) {
+            if (i === 0 || ySlice[i] !== ySlice[i - 1]) ySlice[yLen++] = ySlice[i];
+        }
+        const sorted = stamps.slice().sort((a, b) => a.x0 - b.x0);
+        const out = [];
+        let prevBand = [];
+        for (let yi = 0; yi + 1 < yLen; yi++) {
+            const y0 = ySlice[yi];
+            const y1 = ySlice[yi + 1];
+            if (y1 <= y0) continue;
+            const curBand = [];
+            let cx0 = 0;
+            let cx1 = -1;
+            for (let i = 0; i < n; i++) {
+                const r = sorted[i];
+                if (r.y0 > y0 || r.y1 <= y0) continue;
+                if (cx1 < 0) {
+                    cx0 = r.x0;
+                    cx1 = r.x1;
+                } else if (r.x0 <= cx1) {
+                    if (r.x1 > cx1) cx1 = r.x1;
+                } else {
+                    curBand.push({ x0: cx0, y0, x1: cx1, y1 });
+                    cx0 = r.x0;
+                    cx1 = r.x1;
+                }
+            }
+            if (cx1 >= 0) curBand.push({ x0: cx0, y0, x1: cx1, y1 });
+            let pIdx = 0;
+            const nextPrev = [];
+            for (let cIdx = 0; cIdx < curBand.length; cIdx++) {
+                const cur = curBand[cIdx];
+                while (pIdx < prevBand.length && prevBand[pIdx].x0 < cur.x0) pIdx++;
+                if (
+                    pIdx < prevBand.length
+                    && prevBand[pIdx].x0 === cur.x0
+                    && prevBand[pIdx].x1 === cur.x1
+                    && prevBand[pIdx].y1 === cur.y0
+                ) {
+                    prevBand[pIdx].y1 = cur.y1;
+                    nextPrev.push(prevBand[pIdx]);
+                    pIdx++;
+                } else {
+                    out.push(cur);
+                    nextPrev.push(cur);
+                }
+            }
+            prevBand = nextPrev;
+        }
+        return out;
     }
 
     _landPoolLayer(ctx) {
         const rect = this._poolLayerRect;
         if (!rect || !this._poolLayer) return;
-        const w = rect.x1 - rect.x0;
-        const h = rect.y1 - rect.y0;
-        this._maskPoolLayers(rect);
+
+        const dodgeRects = this._disjointPoolRects(this._poolDodgeStamps, rect);
+        const shadeRects = this._poolShadeUsed
+            ? this._disjointPoolRects(this._poolShadeStamps, this._poolShadeRect || rect)
+            : null;
+        this._poolDirtyDodgeRects = dodgeRects;
+        this._poolDirtyShadeRects = shadeRects;
+
+        this._maskPoolLayers(rect, dodgeRects, shadeRects);
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.imageSmoothingEnabled = false;
-        if (this._poolShadeUsed) {
+        if (this._poolShadeUsed && this._poolShadeLayer && shadeRects && shadeRects.length) {
             ctx.globalCompositeOperation = 'multiply';
-            ctx.drawImage(this._poolShadeLayer, rect.x0, rect.y0, w, h, rect.x0, rect.y0, w, h);
+            for (let i = 0; i < shadeRects.length; i++) {
+                const r = shadeRects[i];
+                const rw = r.x1 - r.x0;
+                const rh = r.y1 - r.y0;
+                ctx.drawImage(this._poolShadeLayer, r.x0, r.y0, rw, rh, r.x0, r.y0, rw, rh);
+            }
         }
         ctx.globalCompositeOperation = 'color-dodge';
-        ctx.drawImage(this._poolLayer, rect.x0, rect.y0, w, h, rect.x0, rect.y0, w, h);
+        for (let i = 0; i < dodgeRects.length; i++) {
+            const r = dodgeRects[i];
+            const rw = r.x1 - r.x0;
+            const rh = r.y1 - r.y0;
+            ctx.drawImage(this._poolLayer, r.x0, r.y0, rw, rh, r.x0, r.y0, rw, rh);
+        }
         ctx.restore();
     }
 
@@ -14353,8 +14745,10 @@ export class IsometricRenderer {
     // (`poolReceiverMask`: open water, wall faces, roofs and static props
     // drop out; villagers lay their own bodies back in), as the resident
     // light loop's receivers do. The mask is one texel per world px — the
-    // pools' own art-pixel grid.
-    _maskPoolLayers(rect) {
+    // pools' own art-pixel grid. Each disjoint stamped integer rectangle is
+    // clipped individually so `destination-in` only touches stamped pixels and
+    // never scans the full viewport or an unused shade layer.
+    _maskPoolLayers(rect, dodgeRects = null, shadeRects = null) {
         const pools = this._poolLayerContexts;
         if (!pools?.dodge) return;
         const dpr = this._screenDpr?.() || 1;
@@ -14367,15 +14761,27 @@ export class IsometricRenderer {
             y1: Math.max(topLeft.y, bottomRight.y),
         });
         if (!mask) return;
-        for (const layerCtx of [pools.dodge, pools.shade]) {
-            if (!layerCtx) continue;
+        const maskLayer = (layerCtx, rects) => {
+            if (!layerCtx || !rects || !rects.length) return;
             layerCtx.save();
             layerCtx.setTransform(1, 0, 0, 1, 0, 0);
             layerCtx.imageSmoothingEnabled = false;
             layerCtx.globalCompositeOperation = 'destination-in';
-            this.camera.applyTransform(layerCtx);
-            layerCtx.drawImage(mask.canvas, mask.x, mask.y);
+            for (let i = 0; i < rects.length; i++) {
+                const r = rects[i];
+                layerCtx.save();
+                layerCtx.beginPath();
+                layerCtx.rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+                layerCtx.clip();
+                this.camera.applyTransform(layerCtx);
+                layerCtx.drawImage(mask.canvas, mask.x, mask.y);
+                layerCtx.restore();
+            }
             layerCtx.restore();
+        };
+        maskLayer(pools.dodge, dodgeRects || [rect]);
+        if (this._poolShadeUsed && pools.shade) {
+            maskLayer(pools.shade, shadeRects || [rect]);
         }
     }
 
@@ -14572,68 +14978,151 @@ export class IsometricRenderer {
         this._landPoolLayer(ctx);
     }
 
-    // 1.2 — one cached stepped `color-dodge` pool stamp per light, zoom (the
-    // art-pixel cell), energy and grade bucket. The stamp is one texel per art
-    // pixel and is drawn nearest-neighbour at `cell` CSS px per texel.
+    // 1.2 — one cached stepped `color-dodge` pool stamp per distinct raster
+    // signature (colour, radius, art-pixel cell, energy, grade, receiver,
+    // ground-course height, aperture normal and attention mode), shared across
+    // lamps regardless of source id or world position. The stamp is one texel
+    // per art pixel and is drawn nearest-neighbour at `cell` CSS px per texel.
     _getLightGlowStamp(light, radius, energy = 1, atmosphere = null) {
-        const { grade } = canvasGradeFor(atmosphere);
-        const cell = Math.max(1, Math.round(this.camera?.zoom || 1));
+        const grade = atmosphere?.lightGrade || NEUTRAL_GRADE;
+        const zoom = this.camera?.zoom || 1;
+        const cell = Math.max(1, Math.round(zoom));
+        const rgb = this._parseLightColor(light.color);
+        const quantizedEnergy = this._quantizedAlpha(energy);
         const ambientTint = grade.ambientTint || [1, 1, 1];
+        const poolGain = grade.poolGain ?? 1;
+        let frame = this._lightStampFrame || 0;
+        if (frame > 0 && (this._poolReceiverFrame !== frame || this._poolFrameGrade !== grade || this._poolPrevZoom !== zoom)) {
+            // If the grade or zoom changed since the prior frame, advance the
+            // frame stamp once more so prior-frame entries become immediately
+            // evictable rather than waiting one frame.
+            if ((this._poolPrevGrade && this._poolPrevGrade !== grade)
+                || (this._poolPrevZoom && this._poolPrevZoom !== zoom)) {
+                this._lightStampFrame = ++frame;
+            }
+            this._poolPrevGrade = grade;
+            this._poolPrevZoom = zoom;
+            this._poolReceiverFrame = frame;
+            this._poolFrameGrade = grade;
+            this._poolFrameReceiver = gradedPoolReceiver(grade);
+        }
         // V5 — each course clamps the graded plaza under the receiver ceiling.
-        const receiver = gradedPoolReceiver(grade);
+        const receiver = frame > 0 ? this._poolFrameReceiver : gradedPoolReceiver(grade);
         // V5 — the ground course of a raised light (its height beyond the
         // resident 24 px band, a facade aperture's at its spill) and of a
         // facade aperture (its face's half-space lobe), as on the GPU.
-        const height = groundCourseHeight(light) * (this.camera?.zoom || 1);
-        const normal = Array.isArray(light.normal) ? light.normal : null;
-        const key = [
-            lightSourceCacheKey(light, 'pool'),
-            Math.round(radius),
+        const height = groundCourseHeight(light) * zoom;
+        const normal = Array.isArray(light.normal) && light.normal.length >= 2 ? light.normal : null;
+        const attention = light.attention === true || light.role === 'attention';
+        const key = lightStampCacheKey({
+            rgb,
+            radius,
             cell,
-            this._quantizedAlpha(energy),
-            ambientTint.map(channel => Math.round(channel * 32)).join(','),
-            Math.round((grade.poolGain ?? 1) * 32),
-            receiver ? receiver.map(channel => Math.round(channel * 64)).join(',') : '',
-            Math.round(height),
-            normal ? normal.map(value => Math.round(value * 8)).join(',') : '',
-            light.attention || light.role === 'attention' ? 'attention' : 'ambient',
-        ].join('|');
+            energy: quantizedEnergy,
+            ambientTint,
+            poolGain,
+            receiver,
+            height,
+            normal,
+            attention,
+        });
         const cached = this.lightGradientCache.get(key);
         if (cached) {
             this.lightGradientCache.delete(key);
             this.lightGradientCache.set(key, cached);
+            if (frame > 0) {
+                if (cached._poolLastFrame === frame) {
+                    cached._poolLastFrameUses = (cached._poolLastFrameUses || 0) + 1;
+                } else {
+                    cached._poolPrevFrameUses = cached._poolLastFrame === frame - 1
+                        ? (cached._poolLastFrameUses || 0)
+                        : 0;
+                    cached._poolLastFrameUses = 1;
+                    cached._poolLastFrame = frame;
+                }
+            }
             return cached;
         }
 
         const stamp = buildPoolDodgeStamp({
-            rgb: this._parseLightColor(light.color),
+            rgb,
             radius,
             cell,
-            energy: this._quantizedAlpha(energy),
+            energy: quantizedEnergy,
             ambientTint,
-            poolGain: grade.poolGain ?? 1,
+            poolGain,
             receiver,
             height,
             normal,
-            attention: light.attention === true || light.role === 'attention',
+            attention,
         });
-        const stampPixels = canvasPixelCount(stamp);
-        if (stampPixels <= MAX_LIGHT_GRADIENT_STAMP_PIXELS) {
-            let retainedPixels = canvasMapPixelCount(this.lightGradientCache);
-            while (
-                this.lightGradientCache.size > 0 &&
-                (this.lightGradientCache.size >= 240 ||
-                    retainedPixels + stampPixels > MAX_LIGHT_GRADIENT_CACHE_PIXELS)
-            ) {
-                const oldestKey = this.lightGradientCache.keys().next().value;
-                const oldest = this.lightGradientCache.get(oldestKey);
-                retainedPixels -= canvasPixelCount(oldest);
-                releaseCanvasBackingStore(oldest);
-                this.lightGradientCache.delete(oldestKey);
-            }
-            this.lightGradientCache.set(key, stamp);
-        }
+        this._cacheLightGlowStamp(key, stamp, frame);
         return stamp;
+    }
+
+    _cacheLightGlowStamp(key, stamp, frame = 0) {
+        const stampPixels = canvasPixelCount(stamp);
+        if (stampPixels > MAX_LIGHT_GRADIENT_STAMP_PIXELS) return;
+        const cache = this.lightGradientCache;
+        let retainedPixels = canvasMapPixelCount(cache);
+        const fits = () => cache.size < 240 && retainedPixels + stampPixels <= MAX_LIGHT_GRADIENT_CACHE_PIXELS;
+
+        if (!fits()) {
+            // Evict entries untouched in both the current and prior frame in
+            // strict LRU order first, preventing cyclic scan-thrashing when a
+            // single frame's unique stamps slightly exceed the pixel budget.
+            for (const [candidateKey, candidate] of cache) {
+                if (fits()) break;
+                if (frame > 0 && candidate._poolLastFrame >= frame - 1) continue;
+                retainedPixels -= canvasPixelCount(candidate);
+                releaseCanvasBackingStore(candidate);
+                cache.delete(candidateKey);
+            }
+        }
+
+        if (!fits() && frame > 0) {
+            // Every remaining entry is live in the current frame: avoid
+            // scan-thrashing the working set for a single-use stamp, but admit
+            // a stamp that has already repeated this frame by reclaiming
+            // single-use current-frame entries when enough pixels are available.
+            const uncached = this._frameUncachedPoolKeys || (this._frameUncachedPoolKeys = new Set());
+            if (!uncached.has(key)) {
+                uncached.add(key);
+                return;
+            }
+            const reclaim = [];
+            let reclaimPixels = 0;
+            for (const [candidateKey, candidate] of cache) {
+                if ((candidate._poolLastFrameUses || 0) > 1 || (candidate._poolPrevFrameUses || 0) > 1) continue;
+                reclaim.push([candidateKey, candidate]);
+                reclaimPixels += canvasPixelCount(candidate);
+                if (cache.size - reclaim.length < 240
+                    && retainedPixels - reclaimPixels + stampPixels <= MAX_LIGHT_GRADIENT_CACHE_PIXELS) {
+                    break;
+                }
+            }
+            if (cache.size - reclaim.length >= 240
+                || retainedPixels - reclaimPixels + stampPixels > MAX_LIGHT_GRADIENT_CACHE_PIXELS) {
+                return;
+            }
+            for (const [candidateKey, candidate] of reclaim) {
+                retainedPixels -= canvasPixelCount(candidate);
+                releaseCanvasBackingStore(candidate);
+                cache.delete(candidateKey);
+            }
+            uncached.delete(key);
+            stamp._poolLastFrame = frame;
+            stamp._poolLastFrameUses = 2;
+            cache.set(key, stamp);
+            return;
+        }
+
+        if (!fits()) return;
+        if (frame > 0) {
+            stamp._poolLastFrame = frame;
+            stamp._poolLastFrameUses = 1;
+        }
+        cache.set(key, stamp);
     }
 
     _getAtmosphereVignette(canvas, atmosphere = null) {
@@ -14776,6 +15265,9 @@ export class IsometricRenderer {
             postFxMask: postFxFeed.volatilePixels || 0,
             atmosphere: canvasPixelCount(this.atmosphereVignetteCache),
             lightGradients: canvasMapPixelCount(this.lightGradientCache),
+            idleWaterChunks: this._canvasWater?.canvasPool?.reduce((sum, canvas) => sum + canvasPixelCount(canvas), 0) || 0,
+            poolReceiverMask: poolReceiverMaskPixels(this),
+            emitterCuts: emitterCutsVolatilePixels(this).total,
             gpuAgentAtlas: canvasPixelCount(this._gpuAgentFrameAtlas),
             gpuAgentMaterialAtlas: canvasPixelCount(this._gpuAgentMaterialAtlas),
             gpuAgentEmissiveAtlas: canvasPixelCount(this._gpuAgentEmissiveAtlas),

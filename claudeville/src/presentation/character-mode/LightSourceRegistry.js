@@ -143,6 +143,51 @@ export function lightSourceCacheKey(source, phaseBucket = 'fallback') {
     ].join('|');
 }
 
+function canonicalStampNumber(value, fallback = 0) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return number === 0 ? 0 : number;
+}
+
+/**
+ * Raster-only cache key for a stepped Canvas pool stamp
+ * (`CanvasGrade.buildPoolDodgeStamp`). Omits source identity and placement
+ * (`id`, `x`, `y`, `kind`) and preserves every input the rasterizer reads so
+ * identical lamps share one cached stamp with exact RGBA parity and no
+ * bucket-boundary drift.
+ */
+export function lightStampCacheKey({
+    rgb = [255, 200, 110],
+    radius = 32,
+    cell = 1,
+    energy = 1,
+    ambientTint = [0.4, 0.4, 0.4],
+    poolGain = 1,
+    receiver = null,
+    height = 0,
+    normal = null,
+    attention = false,
+} = {}) {
+    const r = canonicalStampNumber(rgb?.[0], 255);
+    const g = canonicalStampNumber(rgb?.[1], 200);
+    const b = canonicalStampNumber(rgb?.[2], 110);
+    const rad = canonicalStampNumber(radius, 32);
+    const cellPx = Math.max(1, Math.round(canonicalStampNumber(cell, 1)));
+    const eng = canonicalStampNumber(energy, 1);
+    const a0 = Math.max(0.12, Number(ambientTint?.[0]) || 0.4);
+    const a1 = Math.max(0.12, Number(ambientTint?.[1]) || 0.4);
+    const a2 = Math.max(0.12, Number(ambientTint?.[2]) || 0.4);
+    const gain = canonicalStampNumber(poolGain, 1);
+    const rec = receiver
+        ? `${canonicalStampNumber(receiver[0], 0)},${canonicalStampNumber(receiver[1], 0)},${canonicalStampNumber(receiver[2], 0)}`
+        : '';
+    const h = Math.max(0, Number(height) || 0);
+    const norm = Array.isArray(normal) && normal.length >= 2
+        ? `${normal[0] === 0 ? 0 : normal[0]},${normal[1] === 0 ? 0 : normal[1]}`
+        : '';
+    return `pool|${r},${g},${b}|${rad}|${cellPx}|${eng}|${a0},${a1},${a2}|${gain}|${rec}|${h}|${norm}|${attention ? 1 : 0}`;
+}
+
 // L1-5 — in the deep-night source-energy bucket the street lamps' and
 // braziers' pools reach this much further (the course weights stay as
 // reviewed: the faint outer courses feather over a longer distance). One

@@ -1,5 +1,12 @@
 import { preferAgentModelCells } from '../AgentLayerRecords.js';
 import { evictableAgentTexture, captureRecordWords, RAIN_LAYER_TABLE } from './GpuWorldRenderer.js';
+import {
+    GpuTextureCacheState,
+    immutableSourceSignature,
+    isImageSourceUnloaded,
+    isImmutableTextureSource,
+    selectEvictionCandidates,
+} from './GpuTextureCache.js';
 // Wave 10 (10.1 Stage A) — the resident world on WebGPU, behind WebGL2 and
 // opt-in (`?renderer=webgpu`). The same interface as GpuWorldRenderer (contract
 // §4.4) over the same inputs: GpuSceneBuilder's record stream batched by
@@ -56,7 +63,7 @@ import {
     resolveWeatherUniform,
 } from './GpuFrameState.js';
 import { createRecordStaging, RECORD_INSTANCE_BYTES, stageGpuRecords } from './GpuRecordLayout.js';
-import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE } from './GpuAlbedoPage.js';
+import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE, validTexturePatch } from './GpuAlbedoPage.js';
 import { coastFieldTexels, mirrorStormDrop, openSeaHazeRows, openSeaSky, openSeaSquall, waterMoodFor } from '../CoastBake.js';
 import { createPostFxLadder, POST_FX_LEVELS } from '../postfx/PostFxLadder.js';
 import { NEUTRAL_SOURCE_ENERGY, sourceEnergyFor } from '../AtmosphereState.js';
@@ -70,7 +77,6 @@ import {
     FRAME_UNIFORM_LAYOUT,
     assembleScene,
     createUniformViews,
-    writeBatchUniforms,
     writeFrameUniforms,
 } from './wgsl/index.js';
 import { SCENE_WGSL, sceneWgsl } from './wgsl/scene.js';
@@ -97,9 +103,23 @@ import {
     WGPU_TEXTURE_FORMATS,
     writeTextureRows,
 } from './wgpu/GpuWgpuTextures.js';
-import { PlanarWaterPass, bayerCollarSelect, isMirrorAdmittedRecord, srgb8ToLinear16 } from './wgpu/PlanarWaterPass.js';
+import {
+    PlanarWaterPass,
+    bayerCollarSelect,
+    isMirrorAdmittedRecord,
+    projectPlanarBasinRect,
+    selectPlanarBedStripHeight,
+    srgb8ToLinear16,
+} from './wgpu/PlanarWaterPass.js';
 import { RAIN_GROUND_CELL } from '../WeatherRenderer.js';
-import { WaterRippleCompute, RIPPLE_FIXED_DT, RIPPLE_GRID_WIDTH, RIPPLE_GRID_HEIGHT } from './wgpu/WaterRippleCompute.js';
+import {
+    WaterRippleCompute,
+    RIPPLE_FIXED_DT,
+    RIPPLE_GRID_WIDTH,
+    RIPPLE_GRID_HEIGHT,
+    collectRainRippleImpulses,
+    computeWetRippleBounds,
+} from './wgpu/WaterRippleCompute.js';
 import { WindFieldCompute, WIND_EMBER_MAX_CAPACITY, WIND_WORLD_BOUNDS } from './wgpu/WindFieldCompute.js';
 import { VolumetricShaftsPass } from './wgpu/VolumetricShaftsPass.js';
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../../config/constants.js';
@@ -132,6 +152,34 @@ const GPU_TIMER_DENSE_MISS_SHARE = 0.1;
 const GPU_TIMER_RING = 30;
 const DRAIN_TIMEOUT_MS = 2000;
 const ZERO4 = Object.freeze([0, 0, 0, 0]);
+// Precomputed dword offsets into BatchUniforms (derived from BATCH_UNIFORM_LAYOUT
+// so direct slot writes stay locked to the WGSL struct).
+const BATCH_U = Object.freeze(Object.fromEntries(
+    BATCH_UNIFORM_LAYOUT.fields.map(field => [field.name, field.offset >> 2]),
+));
+const _surfacePipelineCache = new WeakMap();
+function surfacePipelineFor(surface, writeEmission, depthWriter, cue, additive, emitterRoles, surfacePageDepth) {
+    let table = _surfacePipelineCache.get(surface);
+    if (!table) {
+        table = new Array(64);
+        _surfacePipelineCache.set(surface, table);
+    }
+    const idx = (writeEmission ? 32 : 0) | (depthWriter ? 16 : 0) | (cue ? 8 : 0)
+        | (additive ? 4 : 0) | (emitterRoles ? 2 : 0) | (surfacePageDepth ? 1 : 0);
+    let pipeline = table[idx];
+    if (pipeline === undefined) {
+        pipeline = surface.get(`${writeEmission},${depthWriter},${cue},${additive},${emitterRoles},${surfacePageDepth}`);
+        table[idx] = pipeline;
+    }
+    return pipeline;
+}
+function batchHasReflect(records) {
+    const flag = GPU_RECORD_FLAGS.reflect;
+    for (let index = 0; index < records.length; index++) {
+        if (records[index].flags & flag) return true;
+    }
+    return false;
+}
 // Bytes per texel of the colour formats this renderer allocates or presents.
 const TEXEL_BYTES = Object.freeze({ rgba8unorm: 4, bgra8unorm: 4, 'rgba8unorm-srgb': 4, 'bgra8unorm-srgb': 4, rgba16float: 8, rgba32float: 16 });
 const texelBytes = format => TEXEL_BYTES[format] ?? 4;
@@ -139,18 +187,22 @@ const texelBytes = format => TEXEL_BYTES[format] ?? 4;
 const FRONTIER_BITS = Object.freeze({ mirror: 1, ripples: 2, surfaceDepth: 4, wind: 8, shafts: 16, gi: 32 });
 const FRONTIER_PASSES = { mirror: PlanarWaterPass, ripples: WaterRippleCompute, wind: WindFieldCompute, shafts: VolumetricShaftsPass };
 
+function sceneUniformBytes(renderer) {
+    return (renderer._frameBuffer?.size || 0) + (renderer._batchBuffer?.size || 0)
+        + (renderer._bloomParamBuffer?.size || 0) + (renderer._rainBuffer?.size || 0);
+}
+
+function frontierOwnedBytes(renderer) {
+    const bed = renderer._waterBed;
+    return (renderer._frontierPreparedBytes || 0) + (renderer._mirrorBufferBytes || 0)
+        + (bed ? bed.width * bed.height * 4 : 0);
+}
+
 function defaultFrontier(canvas, option) {
     const query = new URLSearchParams(globalThis.location?.search);
     if (query.get('frontier') === '0' || query.has('debugCaptureTargets')) return false;
     if (globalThis.document?.documentElement?.dataset?.cvProfile === 'mobile') return false;
     return option ?? (query.get('frontier') === '1' || (Boolean(canvas?.ownerDocument) && !query.has('sim')));
-}
-
-// Match the rain vertex shader so each impulse lands at its drop's ground cell.
-function rainCellHash(value) {
-    let x = Math.imul(value ^ (value >>> 16), 0x7feb352d);
-    x = Math.imul(x ^ (x >>> 15), 0x846ca68b);
-    return (x ^ (x >>> 16)) >>> 0;
 }
 
 // The Frontier variant keeps the flat rain field's hash, shape and admission,
@@ -283,7 +335,11 @@ export function waterInputs(terrain) {
                 boundary.set([255, 128, 128, 255], 4 * (ry * RIPPLE_GRID_WIDTH + rx));
         }
     }
-    return { bake: terrain.frontierCoast, mask, contact, exposure, basin: localBasin, planarRect: rect, rippleScale, rippleOrigin, boundary, spillwaySplashes: terrain.spillwaySplashes };
+    return {
+        bake: terrain.frontierCoast, mask, contact, exposure, basin: localBasin, planarRect: rect,
+        rippleScale, rippleOrigin, boundary, wetBounds: computeWetRippleBounds(boundary),
+        spillwaySplashes: terrain.spillwaySplashes,
+    };
 }
 
 function finite(value, fallback = 0) {
@@ -338,6 +394,7 @@ export class GpuWorldRendererWebGPU {
         this._frontierAllowed = defaultFrontier(canvas, true);
         this.frontierConfig = { enabled: defaultFrontier(canvas, frontierEnabled), mirror: true, ripples: true, surfaceDepth: true, wind: true, shafts: true, gi: false };
         this._frontierPasses = new Map();
+        this._frontierPreparedBytes = 0;
         this._frontierMask = 0;
         this._surfaceGroups = new Map();
         this._surfacePages = new Set();
@@ -427,6 +484,8 @@ export class GpuWorldRendererWebGPU {
         this._frameUploadMs = 0;
         this._lastRenderAtMs = null;
         this._textureEntries = new Map();
+        this._textureCacheState = new GpuTextureCacheState();
+        this._deferredDestroyTextures = [];
         this._cachedTextureBytes = 0;
         this._textureCacheNeedsTrim = false;
         this._lastTextureTrimFrame = 0;
@@ -824,6 +883,7 @@ export class GpuWorldRendererWebGPU {
         this._albedoPage = new GpuWgpuAlbedoPage(device);
         this._timer = this.timerSupported ? new GpuWgpuTimer(device) : null;
         this._textureEntries.clear();
+        this._textureCacheState?.clearResident();
         this._batchBindGroups.clear();
         this._frameBindGroup = null;
         this._attributionPipelines = null;
@@ -843,7 +903,15 @@ export class GpuWorldRendererWebGPU {
         for (const target of [this.sceneTarget, this.bloomA, this.bloomB]) {
             for (const texture of target?.textures || []) texture.destroy();
         }
-        for (const entry of this._textureEntries.values()) entry.texture?.destroy?.();
+        this._flushDeferredTextureDestroys?.();
+        const destroyedTextures = new Set();
+        for (const entry of this._textureEntries.values()) {
+            const texture = entry.backing?.texture || entry.texture;
+            if (texture && !destroyedTextures.has(texture)) {
+                destroyedTextures.add(texture);
+                texture.destroy?.();
+            }
+        }
         this._albedoPage?.release();
         for (const texture of [this.emptyMaterialTexture, this.emptyAlbedoPage, this.cloudTileTexture]) texture?.destroy?.();
         for (const buffer of [this._frameBuffer, this._batchBuffer, this._recordBuffer, this._markRecordBuffer,
@@ -862,7 +930,9 @@ export class GpuWorldRendererWebGPU {
         this._targetNeedsBloom = false;
         this._lastEmissionUseAt = -Infinity;
         this._lastBloomUseAt = -Infinity;
+        if (this._deferredDestroyTextures) this._deferredDestroyTextures.length = 0;
         this._textureEntries.clear();
+        this._textureCacheState?.clearResident();
         this._albedoPage?.abandon();
         this._albedoPage = null;
         this.emptyMaterialTexture = null;
@@ -897,6 +967,8 @@ export class GpuWorldRendererWebGPU {
         this._debugLoadBindGroup = null;
         this._timer = null;
         this._lastCanvasTexture = null;
+        this._frameReuse?.reset();
+        this._stagedShaderTimeMs = undefined;
         try {
             this._readout?.context?.unconfigure?.();
         } catch {
@@ -1089,6 +1161,7 @@ export class GpuWorldRendererWebGPU {
     _releaseFrontier() {
         for (const entry of this._frontierPasses.values()) entry.pass?.release();
         this._frontierPasses.clear();
+        this._frontierPreparedBytes = 0;
         this._surfaceGroups.clear();
         this._surfacePages = new Set();
         this._mirrorBuffer?.destroy();
@@ -1105,10 +1178,14 @@ export class GpuWorldRendererWebGPU {
         this._waterBedView = null;
         this._resolveGroups = [];
         this._hullPositions = new Map();
+        const cache = this._textureCacheState;
         for (const [key, entry] of this._textureEntries || []) {
             if (!key.startsWith('frontier:')) continue;
-            entry.texture.destroy();
-            this._cachedTextureBytes -= entry.bytes;
+            const { freedBytes, destroyedTexture } = cache
+                ? cache.detachEntry(key, entry, { removeEntry: true, invalidateBacking: true })
+                : { freedBytes: entry.bytes || 0, destroyedTexture: entry.texture };
+            destroyedTexture?.destroy?.();
+            this._cachedTextureBytes -= freedBytes;
             this._textureEntries.delete(key);
         }
         this._frontierMask = 0;
@@ -1149,8 +1226,17 @@ export class GpuWorldRendererWebGPU {
             const validation = device.popErrorScope();
             Promise.all([preparation, validation]).then(([, error]) => {
                 if (error) throw error;
-                if (this._frontierPasses.get(name) === entry) entry.ready = true;
-                else pass?.release();
+                if (this._frontierPasses.get(name) !== entry) {
+                    pass?.release();
+                    return;
+                }
+                // Prepared allocations live until the pass is released. The mirror vertex
+                // buffer and water bed change size independently and are counted at use.
+                const diag = pass?.getDiagnostics();
+                this._frontierPreparedBytes += diag?.allocatedBytes ?? diag?.memoryBytes?.total ?? 0;
+                if (name === 'mirror') this._frontierPreparedBytes += pass.mirrorUniformBuffer.size + pass.resolveUniformBuffer.size;
+                if (name === 'ripples') this._frontierPreparedBytes += pass.paramsBuffer.size + pass.impulseBuffer.size;
+                entry.ready = true;
             }).catch(error => {
                 entry.error = String(error?.message || error);
                 pass?.release();
@@ -1181,8 +1267,8 @@ export class GpuWorldRendererWebGPU {
 
     _frontierDiagnostics() {
         const passes = {};
-        let logicalBytes = this._mirrorBufferBytes || 0;
-        if (this._waterBed) logicalBytes += this._waterBed.width * this._waterBed.height * 4;
+        const waterBedBytes = this._waterBed ? this._waterBed.width * this._waterBed.height * 4 : 0;
+        const logicalBytes = frontierOwnedBytes(this);
         const depthDelta = this.sceneTarget?.depthFormat === 'depth32float' ? this.width * this.height * (4 - SCENE_DEPTH_BYTES_PER_PIXEL) : 0;
         let cachedBytes = 0;
         for (const [key, entry] of this._textureEntries) if (key.startsWith('frontier:') || key === 'building.harbor:underside') cachedBytes += entry.bytes;
@@ -1190,13 +1276,8 @@ export class GpuWorldRendererWebGPU {
             const entry = this._frontierPasses.get(name);
             const diag = entry?.pass?.getDiagnostics();
             passes[name] = { ...diag, ready: entry?.ready === true, error: entry?.error ?? null };
-            if (entry?.ready) {
-                logicalBytes += diag?.allocatedBytes ?? diag?.memoryBytes?.total ?? 0;
-                if (name === 'mirror') logicalBytes += entry.pass.mirrorUniformBuffer.size + entry.pass.resolveUniformBuffer.size;
-                if (name === 'ripples') logicalBytes += entry.pass.paramsBuffer.size + entry.pass.impulseBuffer.size;
-            }
         }
-        return { enabled: this.frontierEnabled, featureMask: this._frontierMask, passes, passOwnedBytes: logicalBytes, logicalBytes: logicalBytes + cachedBytes + depthDelta,
+        return { enabled: this.frontierEnabled, featureMask: this._frontierMask, passes, waterBedBytes, passOwnedBytes: logicalBytes, logicalBytes: logicalBytes + cachedBytes + depthDelta,
             gpuMsP95: this.gpuMsP95, policy: this._frontierPolicy };
     }
 
@@ -1246,10 +1327,21 @@ export class GpuWorldRendererWebGPU {
         return Boolean(this.contextHealthy && entry?.texture && entry.source && entry.revision === revision);
     }
 
+    _textureCache() {
+        return this._textureCacheState || (this._textureCacheState = new GpuTextureCacheState());
+    }
+
+    _flushDeferredTextureDestroys() {
+        const list = this._deferredDestroyTextures;
+        if (!list?.length) return;
+        for (let index = 0; index < list.length; index++) list[index]?.destroy?.();
+        list.length = 0;
+    }
+
     _entryFor(key, format) {
         let entry = this._textureEntries.get(key);
         if (!entry) {
-            entry = { texture: null, view: null, source: null, revision: null, width: 0, height: 0, bytes: 0, format, lastUsedFrame: -1 };
+            entry = { texture: null, view: null, source: null, src: '', revision: null, width: 0, height: 0, bytes: 0, format, backing: null, lastUsedFrame: -1 };
             this._textureEntries.set(key, entry);
             this._textureCacheNeedsTrim = true;
         }
@@ -1260,57 +1352,97 @@ export class GpuWorldRendererWebGPU {
     // size or non-continuous revision, sub-rect patches otherwise (the WebGL2
     // `_textureFor` rules, patch validity included).
     _textureFor(key, source, revision = null, updates = null) {
-        if (!source || source.width === 0 || source.height === 0) return null;
+        if (!source || source.width === 0 || source.height === 0 || isImageSourceUnloaded(source)) return null;
         const width = Math.max(1, Math.floor(source.width || source.videoWidth || 1));
         const height = Math.max(1, Math.floor(source.height || source.videoHeight || 1));
         let entry = this._textureEntries.get(key);
         if (source.gpuResident === true) {
             if (!entry || entry.revision !== revision || entry.width !== width || entry.height !== height) return null;
-            entry.lastUsedFrame = this.frames + 1;
+            this._textureCache().markUsed(entry, this.frames + 1);
             return entry.view;
         }
-        const storageChanged = !entry || entry.source !== source || entry.width !== width || entry.height !== height;
-        const revisionChanged = !entry || entry.revision !== revision;
-        entry = this._entryFor(key, 'rgba8');
+        const cache = this._textureCache();
+        const currentFrame = this.frames + 1;
+        const prevCachedBytes = this._cachedTextureBytes || 0;
+        const immutable = isImmutableTextureSource(source);
+        const src = immutableSourceSignature(source);
+        const srcChanged = (entry?.src || '') !== src;
+        const storageChanged = !entry || !entry.texture || entry.source !== source || srcChanged || entry.width !== width || entry.height !== height;
+        const revisionChanged = !entry || (!immutable && entry.revision !== revision);
         if (storageChanged || revisionChanged) {
+            const hasUpdates = Array.isArray(updates) && updates.length > 0;
+            const reusable = !hasUpdates && (!entry?._sourceInvalidated || immutable)
+                ? cache.findReusableBacking(source, { width, height, format: 'rgba8', revision, src })
+                : null;
+            if (reusable) {
+                entry = this._entryFor(key, 'rgba8');
+                const alreadyAttached = entry.backing === reusable;
+                const backingUsedThisFrame = cache.isBackingUsedInFrame(entry, currentFrame);
+                if (entry.backing && !alreadyAttached) {
+                    const { freedBytes, destroyedTexture } = cache.detachEntry(key, entry, { removeEntry: false });
+                    if (destroyedTexture) {
+                        if (backingUsedThisFrame) (this._deferredDestroyTextures ||= []).push(destroyedTexture);
+                        else destroyedTexture.destroy?.();
+                    }
+                    this._cachedTextureBytes = (this._cachedTextureBytes || 0) - freedBytes;
+                } else if (!entry.backing && entry.texture && entry.texture !== reusable.texture) {
+                    if (backingUsedThisFrame) (this._deferredDestroyTextures ||= []).push(entry.texture);
+                    else entry.texture.destroy?.();
+                    this._cachedTextureBytes = (this._cachedTextureBytes || 0) - (entry.bytes || 0);
+                }
+                cache.attachEntry(key, entry, reusable, { reused: !alreadyAttached });
+                entry.source = source;
+                entry.src = src;
+                entry.revision = revision;
+                entry._sourceInvalidated = false;
+                if (storageChanged || (this._cachedTextureBytes || 0) !== prevCachedBytes) {
+                    this._textureCacheNeedsTrim = true;
+                    this._updateTextureBytes();
+                }
+                cache.markUsed(entry, currentFrame);
+                return entry.view;
+            }
+            entry = this._entryFor(key, 'rgba8');
+            const sharedBacking = Boolean(entry.backing && entry.backing.refCount > 1);
+            const backingUsedThisFrame = cache.isBackingUsedInFrame(entry, currentFrame);
             const started = performance.now();
             const canPatch = !storageChanged
-                && (entry.lastUsedFrame === this.frames || entry.lastUsedFrame === this.frames + 1)
-                && Array.isArray(updates)
-                && updates.length > 0
-                && updates.every((update) => {
-                    const updateWidth = Math.floor(update?.width || update?.source?.width || 0);
-                    const updateHeight = Math.floor(update?.height || update?.source?.height || 0);
-                    const updateX = Math.floor(update?.x || 0);
-                    const updateY = Math.floor(update?.y || 0);
-                    const subRect = update?.sx != null;
-                    const sx = Math.floor(update?.sx || 0);
-                    const sy = Math.floor(update?.sy || 0);
-                    return Boolean(
-                        update?.source
-                        && updateWidth > 0
-                        && updateHeight > 0
-                        && (subRect
-                            ? sx >= 0 && sy >= 0
-                                && sx + updateWidth <= update.source.width
-                                && sy + updateHeight <= update.source.height
-                            : update.source.width === updateWidth && update.source.height === updateHeight)
-                        && updateX >= 0
-                        && updateY >= 0
-                        && updateX + updateWidth <= width
-                        && updateY + updateHeight <= height
-                    );
-                });
+                && (entry.lastUsedFrame === this.frames || entry.lastUsedFrame === currentFrame)
+                && hasUpdates && updates.every(update => validTexturePatch(update, width, height));
             let uploadedBytes = 0;
+            let targetTexture = entry.texture;
+            let targetView = entry.view;
+            let allocatedFresh = false;
+            // Never overwrite or destroy a backing already sampled by any key
+            // in this same unsubmitted frame: allocate a fresh texture and
+            // defer destroying the replaced backing until post-submit.
+            const needFreshTexture = (
+                sharedBacking
+                || !entry.texture
+                || entry.width !== width
+                || entry.height !== height
+                || entry.format !== 'rgba8'
+                || backingUsedThisFrame
+            );
             try {
+                if (needFreshTexture) {
+                    targetTexture = createWgpuTexture(this.device, width, height, 'rgba8', { external: true, label: key });
+                    allocatedFresh = true;
+                    targetView = targetTexture.createView();
+                    if (canPatch) {
+                        const encoder = this.device.createCommandEncoder();
+                        encoder.copyTextureToTexture({ texture: entry.texture }, { texture: targetTexture }, [width, height, 1]);
+                        this.device.queue.submit([encoder.finish()]);
+                    }
+                }
                 if (canPatch) {
                     for (const update of updates) {
                         if (!update?.source) continue;
                         const updateWidth = Math.floor(update.width || update.source.width);
                         const updateHeight = Math.floor(update.height || update.source.height);
-                        copySourceToTexture(this.device, entry.texture, update.source, {
-                            sx: update.sx != null ? Math.floor(update.sx) : 0,
-                            sy: update.sx != null ? Math.floor(update.sy || 0) : 0,
+                        copySourceToTexture(this.device, targetTexture, update.source, {
+                            sx: Math.floor(update.sx || 0),
+                            sy: Math.floor(update.sy || 0),
                             width: updateWidth,
                             height: updateHeight,
                             x: Math.max(0, Math.floor(update.x || 0)),
@@ -1319,39 +1451,68 @@ export class GpuWorldRendererWebGPU {
                         uploadedBytes += Math.max(0, updateWidth) * Math.max(0, updateHeight) * 4;
                     }
                 } else {
-                    if (!entry.texture || entry.width !== width || entry.height !== height || entry.format !== 'rgba8') {
-                        entry.texture?.destroy?.();
-                        entry.texture = createWgpuTexture(this.device, width, height, 'rgba8', { external: true, label: key });
-                        entry.view = entry.texture.createView();
-                        entry.format = 'rgba8';
-                    }
-                    copySourceToTexture(this.device, entry.texture, source, { width, height });
+                    copySourceToTexture(this.device, targetTexture, source, { width, height });
                     uploadedBytes = width * height * 4;
                 }
             } catch (error) {
+                if (allocatedFresh) targetTexture?.destroy?.();
                 // An undecodable source (an image still loading) draws nothing
                 // this frame and retries on the next.
-                entry.source = null;
+                cache.invalidateEntrySource(entry);
                 entry.revision = null;
                 return null;
             }
             const bytes = width * height * 4;
+            if (sharedBacking) {
+                cache.detachEntry(key, entry, { removeEntry: false });
+            } else if (allocatedFresh && entry.backing) {
+                const { freedBytes, destroyedTexture } = cache.detachEntry(key, entry, { removeEntry: false, invalidateBacking: true });
+                if (destroyedTexture) {
+                    if (backingUsedThisFrame) (this._deferredDestroyTextures ||= []).push(destroyedTexture);
+                    else destroyedTexture.destroy?.();
+                }
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) - freedBytes;
+            } else if (allocatedFresh && entry.texture && entry.texture !== targetTexture) {
+                if (backingUsedThisFrame) (this._deferredDestroyTextures ||= []).push(entry.texture);
+                else entry.texture.destroy?.();
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) - (entry.bytes || 0);
+            }
+            if (entry.backing) {
+                const delta = cache.updateExclusiveBacking(entry.backing, {
+                    texture: targetTexture, view: targetView, width, height, format: 'rgba8', bytes, source, src, revision,
+                });
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) + delta;
+            } else {
+                const backing = cache.createBacking({
+                    key, texture: targetTexture, view: targetView, width, height, format: 'rgba8', bytes, source, src, revision,
+                });
+                cache.attachEntry(key, entry, backing);
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) + bytes;
+            }
+            entry.texture = targetTexture;
+            entry.view = targetView;
+            entry.format = 'rgba8';
             entry.source = source;
+            entry.src = src;
             entry.revision = revision;
             entry.width = width;
             entry.height = height;
-            this._cachedTextureBytes += bytes - (entry.bytes || 0);
             entry.bytes = bytes;
+            entry._sourceInvalidated = false;
+            const elapsed = performance.now() - started;
             this.uploads++;
             this.uploadBytes += uploadedBytes;
             this._uploadByteKinds[canPatch ? 'imagePatches' : 'wholeImages'] += uploadedBytes;
-            this._frameUploadMs += performance.now() - started;
-            if (storageChanged) {
+            this._frameUploadMs += elapsed;
+            cache.recordUpload(key, uploadedBytes, elapsed, currentFrame);
+            if (storageChanged || (this._cachedTextureBytes || 0) !== prevCachedBytes) {
                 this._textureCacheNeedsTrim = true;
                 this._updateTextureBytes();
             }
+        } else if (entry.revision !== revision) {
+            entry.revision = revision;
         }
-        entry.lastUsedFrame = this.frames + 1;
+        cache.markUsed(entry, currentFrame);
         return entry.view;
     }
 
@@ -1366,52 +1527,69 @@ export class GpuWorldRendererWebGPU {
             return null;
         }
         const bytes = w * h * spec.bytesPerTexel;
+        const cache = this._textureCache();
+        const prevCachedBytes = this._cachedTextureBytes || 0;
         let entry = this._textureEntries.get(key);
-        const storageChanged = !entry || entry.format !== format || entry.width !== w || entry.height !== h;
-        if (entry && entry.format !== format) {
-            entry.texture?.destroy?.();
-            this._cachedTextureBytes -= entry.bytes || 0;
-            this._textureEntries.delete(key);
-            entry = null;
-        }
+        const storageChanged = !entry || !entry.texture || entry.format !== format || entry.width !== w || entry.height !== h;
+        const backingUsedThisFrame = cache.isBackingUsedInFrame(entry, this.frames + 1);
         entry = entry || this._entryFor(key, format);
         if (storageChanged || entry.revision !== revision || entry.source !== data) {
             const started = performance.now();
-            if (storageChanged) {
-                entry.texture?.destroy?.();
-                entry.texture = createWgpuTexture(this.device, w, h, format, { label: key });
-                entry.view = entry.texture.createView();
-                entry.format = format;
+            if (storageChanged || backingUsedThisFrame || entry.backing?.refCount > 1) {
+                const { freedBytes, destroyedTexture } = entry.backing
+                    ? cache.detachEntry(key, entry, { invalidateBacking: true })
+                    : { freedBytes: entry.bytes || 0, destroyedTexture: entry.texture };
+                if (destroyedTexture) {
+                    if (backingUsedThisFrame) (this._deferredDestroyTextures ||= []).push(destroyedTexture);
+                    else destroyedTexture.destroy?.();
+                }
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) - freedBytes;
+                const texture = createWgpuTexture(this.device, w, h, format, { label: key });
+                const view = texture.createView();
+                const backing = cache.createBacking({ key, texture, view, width: w, height: h, format, bytes, source: data, revision });
+                cache.attachEntry(key, entry, backing);
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) + bytes;
+            } else if (entry.backing) {
+                cache.updateExclusiveBacking(entry.backing, { source: data, revision });
+            } else {
+                const backing = cache.createBacking({ key, texture: entry.texture, view: entry.view, width: w, height: h, format, bytes, source: data, revision });
+                cache.attachEntry(key, entry, backing);
             }
             const view = data.length === w * h * channels ? data : data.subarray(0, w * h * channels);
             writeTextureRows(this.device, entry.texture, view, w, h, spec.bytesPerTexel);
-            this._cachedTextureBytes += bytes - entry.bytes;
             entry.source = data;
+            entry.src = '';
             entry.revision = revision;
             entry.width = w;
             entry.height = h;
             entry.bytes = bytes;
+            const elapsed = performance.now() - started;
             this.uploads++;
             this.uploadBytes += bytes;
             this._uploadByteKinds.typedFields += bytes;
-            this._frameUploadMs += performance.now() - started;
-            if (storageChanged) {
+            this._frameUploadMs += elapsed;
+            cache.recordUpload(key, bytes, elapsed, this.frames + 1);
+            if (storageChanged || this._cachedTextureBytes !== prevCachedBytes) {
                 this._textureCacheNeedsTrim = true;
                 this._updateTextureBytes();
             }
         }
-        entry.lastUsedFrame = this.frames + 1;
+        cache.markUsed(entry, this.frames + 1);
         return entry.view;
     }
 
     _trimTextureCache(protectedFrame = this.frames + 1) {
+        this._flushDeferredTextureDestroys();
+        const frontierBytes = frontierOwnedBytes(this);
         const nonTextureBytes = (this._recordBufferBytes || 0) + (this._markRecordBufferBytes || 0)
             + (this._particleBuffer ? this._particleBytes.byteLength : 0) + (this._lightRecordBuffer ? LIGHT_RECORD_BUFFER_BYTES : 0)
-            + (this.sceneTarget ? this.width * this.height * texelBytes(this.presentFormat) : 0);
+            + (this.sceneTarget ? this.width * this.height * texelBytes(this.presentFormat) : 0)
+            + frontierBytes + sceneUniformBytes(this);
         const sourceBudget = Math.min(MAX_CACHED_TEXTURE_BYTES,
             160 * 1024 * 1024 - (this.textureBytes - this._cachedTextureBytes) - nonTextureBytes);
-        const overCap = this._cachedTextureBytes > sourceBudget || this._textureEntries.size > MAX_CACHED_TEXTURES;
-        if (!overCap) {
+        const overBytes = this._cachedTextureBytes > sourceBudget;
+        const overCount = this._textureEntries.size > MAX_CACHED_TEXTURES;
+        if (!overBytes && !overCount) {
             this._textureCacheNeedsTrim = false;
             return;
         }
@@ -1419,17 +1597,44 @@ export class GpuWorldRendererWebGPU {
         this._lastSourceBudget = sourceBudget;
         this._lastTextureTrimFrame = this.frames;
         this._textureCacheNeedsTrim = false;
-        const candidates = [...this._textureEntries.entries()]
-            .filter(([key, entry]) => !key.startsWith('frontier:') && (entry.lastUsedFrame < protectedFrame || evictableAgentTexture(key)))
-            .sort((a, b) => finite(a[1].lastUsedFrame) - finite(b[1].lastUsedFrame));
-        for (const [key, entry] of candidates) {
-            if (this._cachedTextureBytes <= sourceBudget && this._textureEntries.size <= MAX_CACHED_TEXTURES) break;
+        const cache = this._textureCache();
+        const candidates = selectEvictionCandidates(this._textureEntries, {
+            protectedFrame,
+            overBytes,
+            skipKey: key => key.startsWith('frontier:'),
+        });
+        const evict = ({ key, entry, isLive, evictableSheet, lastUsed }, bytePressure) => {
             // Destroyed after this frame's submit (trim runs post-submit).
-            entry.texture?.destroy?.();
-            if (entry.lastUsedFrame >= protectedFrame) preferAgentModelCells(key);
+            const { freedBytes, destroyedTexture } = cache.detachEntry(key, entry, { removeEntry: true });
+            destroyedTexture?.destroy?.();
+            if (evictableSheet && (isLive || (bytePressure && protectedFrame - lastUsed <= 60))) {
+                preferAgentModelCells(key, { pressure: bytePressure });
+            }
             this._textureEntries.delete(key);
-            this._cachedTextureBytes -= entry.bytes || 0;
+            this._cachedTextureBytes -= freedBytes;
             this.textureEvictions++;
+            cache.recordEviction(key, freedBytes, { isLive });
+        };
+        let deferredLive = null;
+        for (const candidate of candidates) {
+            const needBytes = this._cachedTextureBytes > sourceBudget;
+            const needCount = this._textureEntries.size > MAX_CACHED_TEXTURES;
+            if (!needBytes && !needCount) break;
+            if (candidate.isLive && !needBytes) {
+                (deferredLive ||= []).push(candidate);
+                continue;
+            }
+            evict(candidate, needBytes);
+        }
+        // Under count-only pressure (`size > MAX_CACHED_TEXTURES` with bytes
+        // within budget), cold entries absorb the trim first; if the cache is
+        // still over the key cap after exhausting cold entries, trim live
+        // eligible sheets down to `MAX_CACHED_TEXTURES`.
+        if (deferredLive && this._textureEntries.size > MAX_CACHED_TEXTURES) {
+            for (const candidate of deferredLive) {
+                if (this._textureEntries.size <= MAX_CACHED_TEXTURES) break;
+                evict(candidate, false);
+            }
         }
         this._updateTextureBytes();
     }
@@ -1499,10 +1704,13 @@ export class GpuWorldRendererWebGPU {
             const uploads = page.uploads;
             const bytes = page.flushUploads();
             if (bytes) {
-                this.uploads += page.uploads - uploads;
+                const elapsed = performance.now() - started;
+                const count = page.uploads - uploads;
+                this.uploads += count;
                 this.uploadBytes += bytes;
                 this._uploadByteKinds.albedoPage += bytes;
-                this._frameUploadMs += performance.now() - started;
+                this._frameUploadMs += elapsed;
+                this._textureCache().recordPageFlush(count, bytes, elapsed, page._frameSameFrameReuploads || 0);
             }
         }
         for (let index = 0; index < batches.length; index++) {
@@ -1847,14 +2055,26 @@ export class GpuWorldRendererWebGPU {
         return true;
     }
 
-    _batchBindGroup(recordBuffer, batch) {
+    _buildSceneBatches(records) {
+        return buildStableGpuBatches(records, this._batchScratch, this._normalizedRecordScratch, this._pageRecord, true);
+    }
+
+    _batchBindGroup(recordBuffer, batch, recBufId = gpuId(recordBuffer), batchBufId = gpuId(this._batchBuffer),
+        emptyId = gpuId(this.emptyMaterialView), defaultPageId = gpuId(this._albedoPage?.view || this.emptyAlbedoPageView)) {
         const B = BATCH_BINDING;
-        const albedo = batch.page ? this.emptyMaterialView : batch.albedoTexture;
-        const page = batch.page ? batch.albedoTexture : (this._albedoPage?.view || this.emptyAlbedoPageView);
-        const material = batch.materialTexture || this.emptyMaterialView;
-        const emissive = batch.emissiveTexture || this.emptyMaterialView;
-        const occluder = batch.occluderTexture || this.emptyMaterialView;
-        const key = `${gpuId(recordBuffer)}:${gpuId(this._batchBuffer)}:${gpuId(albedo)}:${gpuId(page)}:${gpuId(material)}:${gpuId(emissive)}:${gpuId(occluder)}`;
+        const empty = this.emptyMaterialView;
+        const isPaged = Boolean(batch.page);
+        const albedo = isPaged ? empty : batch.albedoTexture;
+        const page = isPaged ? batch.albedoTexture : (this._albedoPage?.view || this.emptyAlbedoPageView);
+        const material = batch.materialTexture || empty;
+        const emissive = batch.emissiveTexture || empty;
+        const occluder = batch.occluderTexture || empty;
+        const albedoId = isPaged ? emptyId : gpuId(albedo);
+        const pageId = isPaged ? gpuId(page) : defaultPageId;
+        const materialId = batch.materialTexture ? gpuId(material) : emptyId;
+        const emissiveId = batch.emissiveTexture ? gpuId(emissive) : emptyId;
+        const occluderId = batch.occluderTexture ? gpuId(occluder) : emptyId;
+        const key = `${recBufId}:${batchBufId}:${albedoId}:${pageId}:${materialId}:${emissiveId}:${occluderId}`;
         let cached = this._batchBindGroups.get(key);
         if (!cached) {
             cached = {
@@ -1887,27 +2107,55 @@ export class GpuWorldRendererWebGPU {
     }
 
     _writeBatchSlot(slot, batch, { mark = false } = {}) {
-        const s = this._batchState;
+        const views = this._batchViews;
+        const f32 = views.f32;
+        const i32 = views.i32;
+        const u32 = views.u32;
+        const base = (slot * BATCH_UNIFORM_STRIDE) >> 2;
         const first = batch.records[0];
         const terrain = !mark && first?.id === 'terrain:static';
         const optOut = ((first?.flags || 0) & GPU_RECORD_FLAGS.fatOptOut) !== 0;
-        const size = batch.page ? [ALBEDO_PAGE_SIZE, ALBEDO_PAGE_SIZE] : (batch.albedoSize || [1, 1]);
-        s.albedoSize = size;
-        s.trimColumn = -1;
-        s.supportH = finite(first?.supportH);
-        s.sublayerRank = finite(first?.sublayerRank);
-        s.surfaceOffset = first?.surfaceOffset || ZERO4;
-        s.albedoPaged = Boolean(batch.page);
-        s.fatPixels = !mark && this.fatPixelsFrame && !optOut;
-        s.additive = !mark && batch.blend === 'add';
-        s.terrainBatch = terrain;
-        s.puddleGround = this._puddleActive && terrain;
-        s.hasMaterialMap = Boolean(batch.materialTexture);
-        s.hasEmissiveMap = Boolean(batch.emissiveTexture);
-        s.hasOccluderMap = Boolean(batch.occluderTexture);
-        s.cueRuns = !mark && Boolean(batch.cueRuns);
-        s.writesDepth = batch.writesDepth === true;
-        writeBatchUniforms(this._batchViews, slot, s);
+        const paged = Boolean(batch.page);
+        let albedoW;
+        let albedoH;
+        if (paged) {
+            albedoW = ALBEDO_PAGE_SIZE;
+            albedoH = ALBEDO_PAGE_SIZE;
+        } else if (batch.albedoSize) {
+            albedoW = batch.albedoSize[0];
+            albedoH = batch.albedoSize[1];
+        } else {
+            const source = batch.albedoTexture && (batch.source || this._textureEntries.get(batch.textureKey));
+            albedoW = source?.width || source?.videoWidth || 1;
+            albedoH = source?.height || source?.videoHeight || 1;
+        }
+        f32[base + BATCH_U.albedoSize] = Number.isFinite(albedoW) ? albedoW : 0;
+        f32[base + BATCH_U.albedoSize + 1] = Number.isFinite(albedoH) ? albedoH : 0;
+        u32[base + BATCH_U.albedoPaged] = paged ? 1 : 0;
+        u32[base + BATCH_U.fatPixels] = (!mark && this.fatPixelsFrame && !optOut) ? 1 : 0;
+        u32[base + BATCH_U.additive] = (!mark && batch.blend === 'add') ? 1 : 0;
+        u32[base + BATCH_U.terrainBatch] = terrain ? 1 : 0;
+        u32[base + BATCH_U.puddleGround] = (this._puddleActive && terrain) ? 1 : 0;
+        u32[base + BATCH_U.hasMaterialMap] = batch.materialTexture ? 1 : 0;
+        u32[base + BATCH_U.hasEmissiveMap] = batch.emissiveTexture ? 1 : 0;
+        u32[base + BATCH_U.hasOccluderMap] = batch.occluderTexture ? 1 : 0;
+        u32[base + BATCH_U.cueRuns] = (!mark && batch.cueRuns) ? 1 : 0;
+        u32[base + BATCH_U.writesDepth] = batch.writesDepth === true ? 1 : 0;
+        i32[base + BATCH_U.trimColumn] = -1;
+        const supportH = first?.supportH;
+        f32[base + BATCH_U.supportH] = typeof supportH === 'number' && Number.isFinite(supportH) ? supportH : finite(supportH);
+        const so = first?.surfaceOffset;
+        if (so) {
+            const so0 = Math.trunc(Number(so[0]));
+            const so1 = Math.trunc(Number(so[1]));
+            i32[base + BATCH_U.surfaceOffset] = Number.isFinite(so0) ? so0 : 0;
+            i32[base + BATCH_U.surfaceOffset + 1] = Number.isFinite(so1) ? so1 : 0;
+        } else {
+            i32[base + BATCH_U.surfaceOffset] = 0;
+            i32[base + BATCH_U.surfaceOffset + 1] = 0;
+        }
+        const rank = first?.sublayerRank;
+        u32[base + BATCH_U.sublayerRank] = typeof rank === 'number' && Number.isFinite(rank) ? Math.trunc(rank) : Math.trunc(finite(rank));
     }
 
     _ensureBatchSlots(count) {
@@ -1930,10 +2178,11 @@ export class GpuWorldRendererWebGPU {
         const u = globalThis.GPUBufferUsage;
         this._ensureBuffer('_markRecordBuffer', '_markRecordBufferBytes', byteLength, u.STORAGE | u.COPY_DST, 'world-mark-records');
         if (upload) this.device.queue.writeBuffer(this._markRecordBuffer, 0, this._markStaging.f32.buffer, 0, byteLength);
-        for (const batch of batches) {
+        for (let index = 0; index < batches.length; index++) {
+            const batch = batches[index];
             const first = batch.records[0];
             batch.albedoTexture = this._textureFor(batch.textureKey, batch.source, first?.textureRevision);
-            batch.albedoSize = batch.albedoTexture ? [this._textureEntries.get(batch.textureKey)?.width || 1, this._textureEntries.get(batch.textureKey)?.height || 1] : null;
+            batch.albedoSize = null;
             batch.materialTexture = null;
             batch.emissiveTexture = null;
             batch.occluderTexture = null;
@@ -2064,45 +2313,46 @@ export class GpuWorldRendererWebGPU {
             this._hullPositions = moved;
             if (this.rainInstances && !motion.reducedMotion) {
                 const u = this._rain.uniforms;
-                const [ox, oy, cols] = u;
-                const rows = Math.ceil(this.rainInstances / cols);
-                for (let cy = oy; cy < oy + rows; cy++) {
-                    for (let cx = ox; cx < ox + cols; cx++) {
-                        const seed = rainCellHash(Math.imul(cx + 32768, 0x8da6b343) ^ Math.imul(cy + 32768, 0xd8163841) ^ u[3]);
-                        if (seed / 4294967296 >= u[4]) continue;
-                        const pick = rainCellHash(seed ^ 0x68e31da4) / 4294967296;
-                        const layer = pick < RAIN_LAYER_TABLE.cut0 ? 0 : pick < RAIN_LAYER_TABLE.cut1 ? 1 : 2;
-                        const phase = u[8 + layer];
-                        const impact = 1 - rainCellHash(seed + 3) / 4294967296;
-                        const previous = this._rainPhases?.[layer];
-                        if (previous == null || !((phase >= previous) ? impact > previous && impact <= phase : impact > previous || impact <= phase)) continue;
-                        const rx = cx * RAIN_GROUND_CELL + Math.floor(rainCellHash(seed + 1) / 4294967296 * RAIN_GROUND_CELL);
-                        const ry = cy * RAIN_GROUND_CELL + Math.floor(rainCellHash(seed + 2) / 4294967296 * RAIN_GROUND_CELL);
-                        impulseAt(rx, ry, 'rain', 1, 0.3);
-                    }
+                if (this._rainPhases) {
+                    collectRainRippleImpulses({
+                        uniforms: u,
+                        rainInstances: this.rainInstances,
+                        previousPhases: this._rainPhases,
+                        cellSize: RAIN_GROUND_CELL,
+                        layerCuts: RAIN_LAYER_TABLE,
+                        rippleOrigin: water.rippleOrigin,
+                        rippleScale: water.rippleScale,
+                        wetBounds: water.wetBounds || null,
+                        onImpulse: (rx, ry) => impulseAt(rx, ry, 'rain', 1, 0.3),
+                    });
+                } else {
+                    this._rainPhases = new Float32Array(3);
                 }
-                this._rainPhases = u.slice(8, 11);
+                this._rainPhases[0] = u[8];
+                this._rainPhases[1] = u[9];
+                this._rainPhases[2] = u[10];
             } else this._rainPhases = null;
         }
         for (const impulse of feed.waterImpulses || []) ripple.queueImpulse(impulse);
         return ripple.encode(encoder, { ...motion, dtSec });
     }
 
-    _encodeFrontierWater(encoder, records, target, emission, feed) {
+    _encodeFrontierWater(encoder, records, target, emission, feed, basinRect = null) {
         const { bake, exposure, contact, basin, planarRect, maskView } = this._waterInputs;
         const pass = this._frontierPasses.get('mirror').pass;
         const state = this._frameState;
         const waterZ = state.basinParams[0];
         const [left, top, width, height] = planarRect;
-        const [cx, cy] = state.cameraXy;
         const scale = state.cameraScale;
-        const x = Math.max(0, Math.floor((left + cx) * scale));
-        const y = Math.max(0, this.height - Math.ceil((top + height + cy) * scale));
-        const w = Math.min(this.width, Math.ceil((left + width + cx) * scale)) - x;
-        const h = Math.min(this.height, this.height - Math.floor((top + cy) * scale)) - y;
-        if (w <= 0 || h <= 0) return;
+        const projected = basinRect || projectPlanarBasinRect(planarRect, state.cameraXy, scale, this.width, this.height);
+        if (!projected.visible) {
+            pass.markMirrorStale();
+            return;
+        }
+        const { x, y, w, h } = projected;
         const mirrorBatches = this._mirrorBatches;
         let count = 0, batchCount = 0;
+        let admittedCount = null;
         const add = (rx, ry, rw, rh, u0, v0, u1, v1, foot, proxy) => {
             const offset = count++ * 12;
             if (!this._mirrorStaging || offset + 12 > this._mirrorStaging.length) {
@@ -2151,11 +2401,14 @@ export class GpuWorldRendererWebGPU {
             batch.firstInstance = first;
             batch.instanceCount = count - first;
         };
-        const captureMirror = feed.reducedMotion || this._frontierPolicy?.frontierFlags.mirrorCadence !== false || !pass._mirrorClearCount || this.frames % 2 === 0;
+        const captureMirror = feed.reducedMotion || this._frontierPolicy?.frontierFlags.mirrorCadence !== false
+            || pass.needsMirrorCapture() || this.frames % 2 === 0;
         if (captureMirror) {
             const admission = { basinId: 1 };
+            admittedCount = 0;
             for (const r of records) {
                 if (!isMirrorAdmittedRecord(r, admission)) continue;
+                admittedCount++;
                 if (r.mirrorProxy) append(r.mirrorProxy);
                 append(r);
             }
@@ -2168,9 +2421,9 @@ export class GpuWorldRendererWebGPU {
             for (const batch of mirrorBatches) batch.instanceBuffer = this._mirrorBuffer;
         }
         // Horizontal refraction never crosses strip boundaries. Reuse this bounded
-        // scratch texture even when the Harbor fills an ultrawide display.
+        // scratch texture (<= 1 MiB) even when the Harbor fills an ultrawide display.
         const bedWidth = Math.min(this.width, Math.ceil(width * scale) + 2);
-        const bedHeight = Math.min(64, this.height);
+        const bedHeight = selectPlanarBedStripHeight(bedWidth, this.height);
         if (!this._waterBed || this._waterBed.width !== bedWidth || this._waterBed.height !== bedHeight) {
             this._waterBed?.destroy();
             this._waterBed = createWgpuTexture(this.device, bedWidth, bedHeight, 'rgba8', { label: 'frontier-clean-bed' });
@@ -2188,7 +2441,7 @@ export class GpuWorldRendererWebGPU {
             cycle: empty, coast: maskView, gust: empty, rippleState: ripple ? ripple.getReadView() : empty,
         });
         const linearSky = row => [...row.slice(0, 3).map(c => srgb8ToLinear16(Math.round(255 * c)) / 65535), row[3]];
-        pass.encode(encoder, { ...state, waterZ, planarRect, basinId: 1, records, mirrorBatches, captureMirror,
+        pass.encode(encoder, { ...state, waterZ, planarRect, basinId: 1, records, admittedCount, mirrorBatches, captureMirror,
             bedCopy: { source: target.color.texture, bed: this._waterBed, origin: [x, y], size: [w, h] },
             featureMask: this._frontierMask, maxSat: waterMaxSaturation({ night: state.waterMood[0], storm: state.waterMood[1] }),
             resolveTargetView: target.color.view, resolveEmissionView: emission && target.emission.view,
@@ -2218,10 +2471,14 @@ export class GpuWorldRendererWebGPU {
         const qualityLevel = this._preparedQualityLevel;
         this._preparedFeed = null;
         if (occluderChannelEnabled && this._occluderChannelSkipped) {
+            const cache = this._textureCache();
             for (const [key, entry] of this._textureEntries) {
                 // A versioned sidecar stays resident. _textureFor compares its source,
                 // dimensions and revision, and falls back to a full copy after missed patches.
-                if (entry.revision == null && key.startsWith('occluder:')) entry.source = null;
+                if (entry.revision == null && key.startsWith('occluder:')) {
+                    cache.invalidateEntrySource(entry);
+                    entry._sourceInvalidated = true;
+                }
             }
         }
         this._occluderChannelSkipped = !occluderChannelEnabled;
@@ -2231,9 +2488,9 @@ export class GpuWorldRendererWebGPU {
             this._prepareFrontier(records[0]?.id === 'terrain:static' ? records[0] : null, feed);
             const page = this._albedoPage;
             page?.beginFrame(this.frames);
-            let batches = buildStableGpuBatches(records, this._batchScratch, this._normalizedRecordScratch, this._pageRecord);
+            let batches = this._buildSceneBatches(records);
             if (page?.repackIfOverflowed()) {
-                batches = buildStableGpuBatches(records, this._batchScratch, this._normalizedRecordScratch, this._pageRecord);
+                batches = this._buildSceneBatches(records);
                 page.endRepackPass();
                 this._batchBindGroups.clear();
                 this._updateTextureBytes();
@@ -2286,35 +2543,45 @@ export class GpuWorldRendererWebGPU {
             // Batch uniforms: scene batches then mark batches, one slot each.
             this._ensureBatchSlots(batches.length + markBatches.length);
             for (let index = 0; index < batches.length; index++) {
-                const batch = batches[index];
-                if (!batch.page && batch.albedoTexture) {
-                    const entry = this._textureEntries.get(batch.textureKey);
-                    batch.albedoSize = entry ? [entry.width, entry.height] : [1, 1];
-                }
-                this._writeBatchSlot(index, batch);
+                this._writeBatchSlot(index, batches[index]);
             }
             for (let index = 0; index < markBatches.length; index++) {
                 this._writeBatchSlot(batches.length + index, markBatches[index], { mark: true });
             }
             const batchByteLength = (batches.length + markBatches.length) * BATCH_UNIFORM_STRIDE;
-            const reuse = (this._frameReuse ||= new GpuFrameReuse()).begin();
-            reuse.bytes(this._recordStaging.f32, byteLength);
-            reuse.bytes(this._frameViews.buffer);
-            reuse.bytes(this._batchViews.buffer, batchByteLength);
-            reuse.bytes(this._particleBytes, this._particleCount * GPU_PARTICLE_INSTANCE_BYTES);
-            // RN-1 — the rain field's uniforms and instance count.
-            reuse.bytes(this._rain.uniforms, this.rainInstances > 0 ? RAIN_UNIFORM_BYTES : 0);
-            reuse.scalar(this.rainInstances);
-            reuse.scalar(this._rainMaskView);
-            reuse.bytes(this._markStaging.f32, this._markByteLength);
-            reuse.bytes(this._bloomParams.buffer);
-            stageGpuFrameBindings(reuse, this, batches, markBatches);
-            const fresh = this._frontierMask !== 0 || forceFreshOutput || timerWasPending || this.hasPendingGpuQueries()
-                || this._readbackPending || this._debugLoad || this.passSamplingEnabled;
-            if (!fresh && reuse.unchanged()) {
-                this.skippedFrames = (this.skippedFrames || 0) + 1;
-                this.lastFrameReused = true;
-                return true;
+            const shaderTimeMs = this._frameState.timeMs;
+            const clockMoved = this._stagedShaderTimeMs !== undefined && !Object.is(shaderTimeMs, this._stagedShaderTimeMs);
+            const fresh = this._frontierMask !== 0 || forceFreshOutput || clockMoved || timerWasPending
+                || this.hasPendingGpuQueries() || this._readbackPending || this._debugLoad || this.passSamplingEnabled;
+            let reuse = null;
+            if (fresh) {
+                // Skip byte/binding reuse bookkeeping when a fresh submission is
+                // already required; the saved baseline is invalidated upon
+                // successful submission so the first eligible frame afterwards
+                // genuinely presents.
+                this._reuseStagedBytes = 0;
+            } else {
+                const particleBytes = this._particleCount * GPU_PARTICLE_INSTANCE_BYTES;
+                const rainBytes = this.rainInstances > 0 ? RAIN_UNIFORM_BYTES : 0;
+                reuse = (this._frameReuse ||= new GpuFrameReuse()).begin();
+                reuse.bytes(this._recordStaging.f32, byteLength);
+                reuse.bytes(this._frameViews.buffer);
+                reuse.bytes(this._batchViews.buffer, batchByteLength);
+                reuse.bytes(this._particleBytes, particleBytes);
+                // RN-1 — the rain field's uniforms and instance count.
+                reuse.bytes(this._rain.uniforms, rainBytes);
+                reuse.scalar(this.rainInstances);
+                reuse.scalar(this._rainMaskView);
+                reuse.bytes(this._markStaging.f32, this._markByteLength);
+                reuse.bytes(this._bloomParams.buffer);
+                stageGpuFrameBindings(reuse, this, batches, markBatches);
+                this._reuseStagedBytes = byteLength + this._frameViews.buffer.byteLength + batchByteLength
+                    + particleBytes + rainBytes + this._markByteLength + this._bloomParams.buffer.byteLength;
+                if (reuse.unchanged()) {
+                    this.skippedFrames = (this.skippedFrames || 0) + 1;
+                    this.lastFrameReused = true;
+                    return true;
+                }
             }
             device.queue.writeBuffer(this._recordBuffer, 0, this._recordStaging.f32.buffer, 0, byteLength);
             device.queue.writeBuffer(this._frameBuffer, 0, this._frameViews.buffer);
@@ -2348,7 +2615,7 @@ export class GpuWorldRendererWebGPU {
             const wind = mask & 8 ? this._frontierPasses.get('wind').pass.encode(encoder, { ...motion,
                 dtSeconds: density * frameGapMs / 1000, forcing: { weather: feed.weather || feed.atmosphere?.weather,
                     emitters: records.find(r => r.windEmitters)?.windEmitters || [], timeSec: feed.timeMs / 1000 },
-                documentHidden: globalThis.document?.hidden }) : null;
+                embers: 'auto', documentHidden: globalThis.document?.hidden }) : null;
             const ripple = mask & 2 ? this._encodeRipples(encoder, records, feed, motion, density * frameGapMs / 1000) : null;
             this._frontierVisibilityReset = false;
             const revision = ripple?.revision ?? wind?.revision ?? this._frontierRevision ?? 0;
@@ -2358,6 +2625,11 @@ export class GpuWorldRendererWebGPU {
                 this._frameViews.u32[offset / 4] = revision;
                 device.queue.writeBuffer(this._frameBuffer, offset, this._frameViews.buffer, offset, 4);
             }
+            const basinRect = (mask & 1) && this._waterInputs
+                ? projectPlanarBasinRect(this._waterInputs.planarRect, this._frameState.cameraXy, this._frameState.cameraScale, this.width, this.height)
+                : null;
+            const basinVisible = Boolean(basinRect?.visible);
+            if ((mask & 1) && !basinVisible) this._frontierPasses.get('mirror')?.pass?.markMirrorStale?.();
             const sceneDescriptor = {
                 label: 'world-scene',
                 colorAttachments: [
@@ -2366,53 +2638,70 @@ export class GpuWorldRendererWebGPU {
                         { view: target.emission.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: 'clear', storeOp: 'store' },
                     ] : []),
                 ],
-                depthStencilAttachment: { view: target.depth.view, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: mask & 17 ? 'store' : 'discard' },
+                depthStencilAttachment: { view: target.depth.view, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: (mask & 16) || basinVisible ? 'store' : 'discard' },
                 timestampWrites: timer?.writes(slot, 'scene'),
             };
             let scene = encoder.beginRenderPass(sceneDescriptor);
-            scene.setBindGroup(0, this._frameBindGroup);
+            const frameBindGroup = this._frameBindGroup;
+            scene.setBindGroup(0, frameBindGroup);
+            let boundGroup0 = frameBindGroup;
             let bound = null;
             let boundRole = 0;
             let draws = 0;
+            const recBuf = this._recordBuffer;
+            const recBufId = gpuId(recBuf);
+            const batchBufId = gpuId(this._batchBuffer);
+            const emptyId = gpuId(this.emptyMaterialView);
+            const defaultPageId = gpuId(this._albedoPage?.view || this.emptyAlbedoPageView);
+            const mirrorPass = basinVisible ? this._frontierPasses.get('mirror').pass : null;
             const bindingRecords = { albedoPage: 0, pilotAtlas: 0, agentAtlas: 0, cueAtlas: 0, other: 0 };
             for (let index = 0; index < batches.length; index++) {
                 const batch = batches[index];
                 if (!batch.albedoTexture) continue;
+                const first = batch.records[0];
                 const cue = Boolean(batch.cueRuns);
-                const emitterRoles = roles && batch.emissiveTexture && batch.blend !== 'add' && !cue;
-                const cleanBed = Boolean(mask & 1) && batch.records[0]?.id === 'terrain:static';
-                const planarBatch = mask & 1 && (cleanBed || batch.records.some(r => r.flags & GPU_RECORD_FLAGS.reflect));
-                const waterPass = planarBatch && this._frontierPasses.get('mirror').pass;
-                const depthWriter = batch.writesDepth === true || Boolean(batch.records[0]?.terrainPlanes);
-                const pipeline = surface ? surface.get([writeEmission, depthWriter, cue, batch.blend === 'add', Boolean(emitterRoles),
-                    batch.writesDepth === true && Boolean(batch.records[0]?.flags & GPU_RECORD_FLAGS.surfacePage)].join())
+                const additive = batch.blend === 'add';
+                const writesDepth = batch.writesDepth === true;
+                const emitterRoles = Boolean(roles && batch.emissiveTexture && !additive && !cue);
+                const cleanBed = basinVisible && first?.id === 'terrain:static';
+                const planarBatch = basinVisible && (cleanBed || (!writesDepth && batchHasReflect(batch.records)));
+                const waterPass = planarBatch ? mirrorPass : null;
+                const depthWriter = writesDepth || Boolean(first?.terrainPlanes);
+                const pipeline = surface
+                    ? surfacePipelineFor(surface, writeEmission, depthWriter, cue, additive, emitterRoles,
+                        writesDepth && Boolean(first?.flags & GPU_RECORD_FLAGS.surfacePage))
                     : waterPass ? (writeEmission ? waterPass.bedPipeline : waterPass.bedColorPipeline)
-                    : emitterRoles ? display.emitterRoles[Number(batch.writesDepth === true)]
-                    : this.pipelines.scene(batch.blend === 'add', batch.writesDepth === true, writeEmission, cue, roles, writeEmission);
+                    : emitterRoles ? display.emitterRoles[Number(writesDepth)]
+                    : this.pipelines.scene(additive, writesDepth, writeEmission, cue, roles, writeEmission);
                 if (pipeline !== bound) {
                     scene.setPipeline(pipeline);
                     bound = pipeline;
                 }
                 if (roles) {
-                    const role = batch.emissiveTexture && !(batch.records[0]?.ownerSlot > 0) ? 1 : 0;
+                    const role = batch.emissiveTexture && !(first?.ownerSlot > 0) ? 1 : 0;
                     if (role !== boundRole) {
                         scene.setBlendConstant({ r: 0, g: 0, b: 0, a: role });
                         boundRole = role;
                     }
                 }
-                if (planarBatch) scene.setBindGroup(0, this._surfaceViewGroup(this._waterInputs.maskView));
-                else if (surface) scene.setBindGroup(0, this._surfaceGroup(batch.records[0]));
-                else if (mask & 1) scene.setBindGroup(0, this._frameBindGroup);
-                scene.setBindGroup(1, this._batchBindGroup(this._recordBuffer, batch), [index * BATCH_UNIFORM_STRIDE]);
+                let group0 = frameBindGroup;
+                if (planarBatch) group0 = this._surfaceViewGroup(this._waterInputs.maskView);
+                else if (surface) group0 = this._surfaceGroup(first);
+                if (group0 !== boundGroup0) {
+                    scene.setBindGroup(0, group0);
+                    boundGroup0 = group0;
+                }
+                scene.setBindGroup(1, this._batchBindGroup(recBuf, batch, recBufId, batchBufId, emptyId, defaultPageId), [index * BATCH_UNIFORM_STRIDE]);
                 scene.draw(cue ? CUE_RUN_VERTICES : 4, batch.count, 0, batch.instanceOffset / RECORD_INSTANCE_BYTES);
                 draws++;
                 if (cleanBed) {
                     scene.end();
-                    this._encodeFrontierWater(encoder, records, target, writeEmission, feed);
+                    this._encodeFrontierWater(encoder, records, target, writeEmission, feed, basinRect);
                     scene = encoder.beginRenderPass({ label: 'world-over-water',
                         colorAttachments: sceneDescriptor.colorAttachments.map(a => ({ ...a, loadOp: 'load' })),
                         depthStencilAttachment: { ...sceneDescriptor.depthStencilAttachment, depthLoadOp: 'load', depthStoreOp: mask & 16 ? 'store' : 'discard' } });
-                    scene.setBindGroup(0, this._frameBindGroup);
+                    scene.setBindGroup(0, frameBindGroup);
+                    boundGroup0 = frameBindGroup;
                     bound = null;
                     boundRole = 0;
                 }
@@ -2423,14 +2712,17 @@ export class GpuWorldRendererWebGPU {
                 else bindingRecords.other += batch.count;
             }
             this._sceneTextureBindings = { groupsBound: draws, records: bindingRecords };
-            if (surface) scene.setBindGroup(0, this._frameBindGroup);
+            if (boundGroup0 !== frameBindGroup) {
+                scene.setBindGroup(0, frameBindGroup);
+                boundGroup0 = frameBindGroup;
+            }
             if (this._particleCount > 0 && this._particleMotifTexture) {
                 if (boundRole) scene.setBlendConstant({ r: 0, g: 0, b: 0, a: 0 });
                 scene.setPipeline(surface ? surface.get('particle' + writeEmission) : this.pipelines.particles(writeEmission, roles, writeEmission));
                 scene.setVertexBuffer(0, this._particleBuffer);
                 scene.draw(4, this._particleCount, 0, 0);
             }
-            if (wind && !feed.reducedMotion) {
+            if (wind?.hasLiveEmbers && !feed.reducedMotion) {
                 const entry = this._frontierPasses.get('wind');
                 scene.setBindGroup(0, this._frameBindGroup);
                 scene.setPipeline(entry.embers.get(target.depthFormat + writeEmission));
@@ -2506,7 +2798,9 @@ export class GpuWorldRendererWebGPU {
             passCpu.present = { cpuMs: performance.now() - mark, draws: 1, bytes: this.width * this.height * 4 };
             timer?.resolve(encoder, slot);
             device.queue.submit([encoder.finish()]);
-            reuse.commit();
+            if (reuse) reuse.commit();
+            else this._frameReuse?.invalidate();
+            this._stagedShaderTimeMs = shaderTimeMs;
             this._lastRenderInput = input;
             this._freshOutputThisTask = true;
             queueMicrotask(this._expireFreshOutput ||= () => { this._freshOutputThisTask = false; });
@@ -2991,6 +3285,11 @@ export class GpuWorldRendererWebGPU {
             cachedTextureCapExceeded: this._cachedTextureBytes > MAX_CACHED_TEXTURE_BYTES,
             cachedTextures: this._textureEntries.size,
             albedoPage: this._albedoPage?.getDiagnostics() || null,
+            textureCache: this._textureCache().getDiagnostics({
+                cachedKeys: this._textureEntries.size,
+                cachedBytes: this._cachedTextureBytes,
+                pageDiagnostics: this._albedoPage?.getDiagnostics() || null,
+            }),
             radiance: { supported: false, override: this.radianceOverride, reason: 'not ported to WebGPU (Stage A declared exclusion)' },
             textureEvictions: this.textureEvictions,
             maxCachedTextureBytes: MAX_CACHED_TEXTURE_BYTES,
@@ -3039,14 +3338,24 @@ export class GpuWorldRendererWebGPU {
         let pinnedSourceBytes = 0;
         let evictableSourceBytes = 0;
         const atlasPages = [];
+        const backingState = new Map();
         for (const [name, entry] of this._textureEntries) {
             const bytes = entry.bytes || 0;
             const pinned = name.startsWith('frontier:') || entry.lastUsedFrame >= this.frames && !evictableAgentTexture(name);
-            if (pinned) pinnedSourceBytes += bytes;
-            else evictableSourceBytes += bytes;
+            const handle = entry.backing || entry;
+            const prev = backingState.get(handle);
+            if (prev) {
+                if (pinned) prev.pinned = true;
+            } else {
+                backingState.set(handle, { bytes: entry.backing ? entry.backing.bytes : bytes, pinned });
+            }
             if (name.includes('world-pilot') || name.includes('agent-frame-atlas')) {
                 atlasPages.push({ name, width: entry.width, height: entry.height, bytes, pinned });
             }
+        }
+        for (const state of backingState.values()) {
+            if (state.pinned) pinnedSourceBytes += state.bytes;
+            else evictableSourceBytes += state.bytes;
         }
         const targetBytes = (target, format) => target ? target.width * target.height * texelBytes(format) : 0;
         const colorBytes = targetBytes(this.sceneTarget, SCENE_COLOR_FORMAT);
@@ -3059,13 +3368,14 @@ export class GpuWorldRendererWebGPU {
         const attachmentBytes = colorBytes + emissionBytes + depthBytes + bloomABytes + bloomBBytes + presentationBytes;
         const particleBytes = this._particleBuffer ? this._particleBytes.byteLength : 0;
         const lightBytes = this._lightRecordBuffer ? LIGHT_RECORD_BUFFER_BYTES : 0;
-        const bufferBytes = (this._recordBufferBytes || 0) + (this._markRecordBufferBytes || 0) + particleBytes + lightBytes;
+        const uniformBytes = sceneUniformBytes(this);
+        const bufferBytes = (this._recordBufferBytes || 0) + (this._markRecordBufferBytes || 0) + particleBytes + lightBytes + uniformBytes;
         const pageBytes = this._albedoPage?.bytes || 0;
-        const frontierBytes = this._frontierDiagnostics().passOwnedBytes;
+        const frontierBytes = frontierOwnedBytes(this);
         const pinnedBytes = frontierBytes + pinnedSourceBytes + pageBytes + attachmentBytes + bufferBytes;
         return {
             frontierBytes,
-            textures: { pinnedSources: pinnedSourceBytes, evictableSources: evictableSourceBytes, albedoPage: pageBytes, radiance: 0 },
+            textures: { pinnedSources: pinnedSourceBytes, evictableSources: evictableSourceBytes, albedoPage: pageBytes, frontier: frontierBytes, radiance: 0 },
             pinnedBytes,
             evictableBytes: evictableSourceBytes,
             totalBytes: pinnedBytes + evictableSourceBytes,
@@ -3080,7 +3390,7 @@ export class GpuWorldRendererWebGPU {
                 bloomA: bloomABytes,
                 bloomB: bloomBBytes,
             },
-            buffers: { vertices: this._recordBufferBytes || 0, marks: this._markRecordBufferBytes || 0, particles: particleBytes, lights: lightBytes },
+            buffers: { vertices: this._recordBufferBytes || 0, marks: this._markRecordBufferBytes || 0, particles: particleBytes, lights: lightBytes, uniforms: uniformBytes },
         };
     }
 

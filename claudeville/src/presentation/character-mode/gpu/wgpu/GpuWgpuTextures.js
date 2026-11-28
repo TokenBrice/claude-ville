@@ -91,6 +91,7 @@ export class GpuWgpuAlbedoPage extends GpuAlbedoPage {
     flushUploads() {
         const pending = this._pending;
         if (!pending.length) return 0;
+        const started = performance.now();
         let bytes = 0;
         for (let index = 0; index < pending.length; index++) {
             const entry = pending[index];
@@ -101,8 +102,8 @@ export class GpuWgpuAlbedoPage extends GpuAlbedoPage {
                     const width = Math.floor(update.width || update.source.width);
                     const height = Math.floor(update.height || update.source.height);
                     copySourceToTexture(this.device, this.texture, update.source, {
-                        sx: update.sx != null ? Math.floor(update.sx) : 0,
-                        sy: update.sx != null ? Math.floor(update.sy || 0) : 0,
+                        sx: Math.floor(update.sx || 0),
+                        sy: Math.floor(update.sy || 0),
                         width,
                         height,
                         x: entry.x + Math.floor(update.x || 0),
@@ -118,10 +119,12 @@ export class GpuWgpuAlbedoPage extends GpuAlbedoPage {
                 bytes += entry.width * entry.height * 4;
             }
             entry.updates = null;
+            entry.lastUploadFrame = this.frame;
             this.uploads++;
         }
         pending.length = 0;
         this.uploadBytes += bytes;
+        this.uploadMs += performance.now() - started;
         return bytes;
     }
 

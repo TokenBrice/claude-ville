@@ -3,6 +3,8 @@ import {
     DAYLIGHT_PASSIVE_CORE_SCALE,
     GPU_RECORD_FLAGS,
     effectBudgetMode,
+    normalizeGpuRecord,
+    validGpuRecord,
     isDaytimeHighEnergyBuilding,
     materialClassId,
 } from './GpuWorldPolicy.js';
@@ -29,6 +31,7 @@ import { roomGlintMask } from '../RoomGlass.js';
 import { IDLE_FRAMES, WALK_FRAMES } from '../SpriteSheet.js';
 
 const PILOT_PROP_IDS = Object.freeze(['prop.lantern', 'prop.plazaBrazier', 'prop.plazaBrazier.lit', 'prop.bridgeLanternPost']);
+const PILOT_PROP_ID_SET = new Set(PILOT_PROP_IDS);
 const TERRAIN_TILE_SOURCES = Object.freeze([
     Object.freeze({ tiles: 'deepWaterTiles', id: 'terrain.shallow-deep' }),
     Object.freeze({ tiles: 'waterTiles', id: 'terrain.shore-shallow' }),
@@ -107,6 +110,24 @@ function finite(value, fallback = 0) {
     const number = Number(value);
     return Number.isFinite(number) ? number : fallback;
 }
+
+// These records belong to this frame. Finalizing in place avoids a copy at submission.
+function finalizeSceneRecord(record) {
+    normalizeGpuRecord(record, record.sequence, record);
+    record.pageLayer = -1;
+    const valid = validGpuRecord(record);
+    const mayPage = !record.materialSource && !record.emissiveSource && !record.occluderSource
+        && !record.sidecarKey && record.pageable && !(record.flags & GPU_RECORD_FLAGS.screenSpace);
+    record.prenormalized = valid && !mayPage;
+    record.pageableNormalized = valid && mayPage;
+    return record;
+}
+
+// Per-sprite immutable descriptor cache for static props (keyed by sprite ->
+// Map<partKey, descriptor>). Revalidated on asset, cache, geometry or atlas
+// policy changes; dynamic per-frame state (depth, sequence, emitter gate, cast
+// shadows, surface registration, harbor mirror tagging) composes at emission.
+const _propDescriptorCache = new WeakMap();
 
 function materialForProp(sprite = {}) {
     const id = String(sprite.id || '').toLowerCase();
@@ -384,7 +405,7 @@ function recordForTerrain(renderer) {
     }
     const { canvas, bounds } = cached;
     const materialSource = terrainMaterialSidecar(renderer, cached);
-    return {
+    return finalizeSceneRecord({
         id: 'terrain:static',
         stableKey: 'terrain:static',
         terrainPlanes: terrainPlaneTexture(renderer.surfaceRegistry),
@@ -417,7 +438,7 @@ function recordForTerrain(renderer) {
             || null,
         sequence: -1,
         sourceKind: 'individual',
-    };
+    });
 }
 
 // 0.10 — the ground haze: the same world-locked stepped field the Canvas
@@ -428,7 +449,7 @@ function recordForHaze(renderer) {
     const field = renderer?._hazeField;
     const strength = finite(renderer?._gpuHazeStrength, 0);
     if (!field?.canvas || !(field.w > 0) || !(field.h > 0) || strength <= 0) return null;
-    return {
+    return finalizeSceneRecord({
         id: 'ground:haze',
         stableKey: 'ground:haze',
         textureKey: 'ground-haze-field',
@@ -448,10 +469,11 @@ function recordForHaze(renderer) {
         elevation: 0,
         emissive: 0,
         occluder: 0,
+        pageable: false,
         textureRevision: field.key || null,
         sequence: -0.9,
         sourceKind: 'individual',
-    };
+    });
 }
 
 // LA-6a / LA-6b — the sky's rare phenomena on the far sea (SkyRenderer
@@ -493,27 +515,37 @@ function farSeaRecords(renderer, records) {
         record.height = layer.height;
         record.alpha = Math.min(1, Math.max(0, layer.alpha));
         record.textureRevision = layer.key;
-        records.push(record);
+        record.flags = 0;
+        records.push(finalizeSceneRecord(record));
     }
+}
+
+function frameStampCast(renderer, frameCtx) {
+    if (!frameCtx) return stampCastFor(castLightingFor(renderer?._lastAtmosphere));
+    if (!frameCtx.hasCast) {
+        frameCtx.cast = stampCastFor(castLightingFor(renderer?._lastAtmosphere));
+        frameCtx.hasCast = true;
+    }
+    return frameCtx.cast;
 }
 
 // 1.5 — building ground casts: one stepped stamp per building, baked by
 // RakingLight per sun bucket (longer and violet at golden hour and sunrise)
 // and shared with the Canvas fallback. `textureRevision` is the bucket key,
 // so the texture uploads only when the sun moves a bucket.
-function buildingShadowRecords(renderer, drawable, sequence) {
-    if (drawable?.kind === 'building-front') return [];
-    if (drawable?.kind === 'building-column' && (drawable.column?.index || 0) > 0) return [];
+function emitBuildingShadow(renderer, drawable, sequence, frameCtx, records) {
+    if (drawable?.kind === 'building-front') return;
+    if (drawable?.kind === 'building-column' && (drawable.column?.index || 0) > 0) return;
     const building = drawable?.building;
     const grounding = getBuildingVisual(building?.type)?.grounding;
     const contact = grounding?.contact;
-    if (grounding?.shadow === 'none' || !(contact?.width > 0) || !(contact?.depth > 0)) return [];
-    const cast = stampCastFor(castLightingFor(renderer?._lastAtmosphere));
+    if (grounding?.shadow === 'none' || !(contact?.width > 0) || !(contact?.depth > 0)) return;
+    const cast = frameStampCast(renderer, frameCtx);
     const buildingId = String(building?.type || drawable?.entry?.id || sequence).replace(/^building\./, '');
     const baked = structureCast(buildingId, grounding, contact, cast);
-    if (!baked) return [];
+    if (!baked) return;
     const source = baked.canvas;
-    return [{
+    records.push({
         id: `ground:building:${buildingId}`,
         stableKey: `ground:building:${buildingId}`,
         textureKey: `building-ground-shadow:${buildingId}`,
@@ -538,7 +570,7 @@ function buildingShadowRecords(renderer, drawable, sequence) {
         groundCast: true,
         textureRevision: baked.key,
         sourceKind: 'individual',
-    }];
+    });
 }
 
 // 1.5 — a tree's ground cast from its trunk base (RakingLight `treeCast`),
@@ -546,17 +578,16 @@ function buildingShadowRecords(renderer, drawable, sequence) {
 // share a texture keyed by that size (not the canvas size: two tree sizes
 // can rasterize to the same canvas and would ping-pong one texture every
 // frame); it re-uploads only when the sun moves a bucket.
-
-function treeCastRecords(renderer, sprite, part, sequence) {
-    if (sprite?.id !== 'fantasy.tree' || part === 'front') return [];
+function emitTreeCast(renderer, sprite, part, sequence, frameCtx, records) {
+    if (sprite?.id !== 'fantasy.tree' || part === 'front') return;
     const bounds = sprite.bounds || {};
     const width = finite(bounds.right) - finite(bounds.left);
     const height = -finite(bounds.top);
-    const cast = stampCastFor(castLightingFor(renderer?._lastAtmosphere));
+    const cast = frameStampCast(renderer, frameCtx);
     const baked = treeCast(width, height, cast);
-    if (!baked) return [];
+    if (!baked) return;
     const source = baked.canvas;
-    return [{
+    records.push({
         id: `ground:tree:${sprite.tileX},${sprite.tileY}`,
         stableKey: `ground:tree:${sprite.tileX},${sprite.tileY}`,
         textureKey: `tree-ground-cast:${baked.sizeKey}`,
@@ -580,7 +611,7 @@ function treeCastRecords(renderer, sprite, part, sequence) {
         groundCast: true,
         textureRevision: baked.key,
         sourceKind: 'individual',
-    }];
+    });
 }
 
 // SD-1 — the sun's shade as ONE ground record: the world-locked shade field
@@ -594,7 +625,7 @@ function shadeFieldRecord(renderer) {
     const layer = shade ? frameShadeLayer() : null;
     if (!layer) return null;
     const { field, canvas } = layer;
-    return {
+    return finalizeSceneRecord({
         id: 'ground:shade',
         stableKey: 'ground:shade',
         textureKey: 'ground-shade-field',
@@ -620,7 +651,7 @@ function shadeFieldRecord(renderer) {
         pageable: false,
         textureRevision: layer.revision,
         sourceKind: 'individual',
-    };
+    });
 }
 
 const SURFACE_PART_RANK = Object.freeze({ banked: 3, hearth: 3, bellows: 4, gate: 4, door: 4, banner: 5 });
@@ -635,29 +666,160 @@ function registerSurface(record, id, page, x, y, rank, supportH = 0) {
     record.pageable = false;
 }
 
-function recordForBuilding(renderer, drawable, sequence) {
+function buildingFrameContext(renderer, drawable, frameCtx) {
     const assets = renderer?.assets;
     const id = drawable?.entry?.id;
     if (!id) return null;
+    const cache = frameCtx?.buildings;
+    const cacheKey = drawable.building || id;
+    if (cache) {
+        const existing = cache.get(cacheKey);
+        if (existing && existing.entry === drawable.entry && existing.id === id) return existing;
+    }
     const individual = assets?.get?.(id);
     const dims = assets?.getDims?.(id) || (individual ? { w: individual.width, h: individual.height } : null);
     if (!dims) return null;
     const [ax, ay] = assets.getAnchor(id) || [dims.w / 2, dims.h];
+    const atlasFrame = assets.getAtlasFrame?.(id);
+    const atlasAlbedo = atlasFrame?.atlas ? assets.getAtlas?.(atlasFrame.atlas, 'albedo') : null;
+    const frontier = Boolean(frameCtx ? frameCtx.frontier : renderer.gpuWorld?.frontierEnabled);
+    const surface = frontier && sidecarFor(assets, id, 'surface');
+    const page = surface?.source ?? surface;
+    const dx = surface?.offsetX || 0;
+    const dy = surface?.offsetY || 0;
+    const surfaceDepth = Boolean(page && page.complete !== false && dx >= 0 && dy >= 0
+        && page.width >= dx + dims.w && page.height >= dy + dims.h && page.width <= 512 && page.height <= 512);
+    const useAtlas = Boolean(!(frontier && id === 'building.harbor') && !surfaceDepth && renderer._gpuAtlasDecision?.building && atlasAlbedo && atlasFrame?.rect);
+    const buildingType = drawable.building?.type || id.replace(/^building\./, '');
+    const materialMeta = drawable.entry?.material || drawable.entry?.gpuMaterial || {};
+    const materialName = materialMeta.class || drawable.entry?.materialClass || MATERIAL_BY_BUILDING[buildingType] || 'stone';
+    const footprint = drawable.building ? landmarkFootprint(drawable.building) : null;
+    const defaultSupportH = drawable.building && renderer.surfaceRegistry
+        ? buildingCenterToWorld(drawable.building, null).y - buildingCenterToWorld(drawable.building, renderer.surfaceRegistry).y
+        : 0;
+    // V8 — landmark emission follows the work tier (isWorkingVisitor counts +
+    // observed-tool recency), never idle, seated or passing bodies.
+    const buildings = renderer?.buildingRenderer;
+    const workTier = buildings?._workTierFor?.(drawable.building);
+    const active = Boolean(workTier) && workTier !== 'dormant';
+    const workOpen = buildings?.partGates?.isOpen?.(`work.${buildingType}`) ?? active;
+    const rawEmissiveGate = buildings?._emissiveGateFor?.(drawable.building) ?? 1;
+    const daytimeEmitter = isDaytimeHighEnergyBuilding(buildingType, workOpen, rawEmissiveGate);
+    // Material/emissive are sampled with the albedo's UVs (see the GL fragment
+    // shaders), so a channel source must share the albedo's geometry. When the
+    // albedo comes from an atlas page the channels must be that page's channel
+    // pages. A per-landmark source under the shared `<atlas>:channels` key
+    // sampled the wrong pixels and triggered a full upload on every rebind.
+    const resolved = useAtlas ? null : packedLandmarkChannels(renderer, id, { crop: true });
+    const materialSource = (useAtlas
+        ? assets.getAtlas?.(atlasFrame.atlas, 'material')
+        : resolved?.material) || null;
+    const emissiveSource = (useAtlas
+        ? assets.getAtlas?.(atlasFrame.atlas, 'emissive')
+        : resolved?.emissive) || null;
+    const occluderSource = (useAtlas
+        ? assets.getAtlas?.(atlasFrame.atlas, 'occluder')
+        : resolved?.occluder) || null;
+    const sidecarKey = useAtlas
+        ? `${atlasFrame.atlas}:channels`
+        : `${id}:material`;
+    const assetEntry = assets.getEntry?.(id) || null;
+    const surfaceCode = (assetEntry || drawable.entry)?.surfaceCode === true;
+    const baseAlpenglowRow = assetEntry?.alpenglowRow || 0;
+    const version = assets.assetVersion || '';
+    const textureRevision = assets.assetVersion || null;
+    const sidecarRevision = useAtlas && atlasFrame?.atlas
+        ? atlasChannelRevision(assets, atlasFrame.atlas)
+        : (resolved?.revision || `${version}:${id}`);
+    const glassPatch = buildings?.glassPatchFor?.(drawable.building) || null;
+    let glassMaterialRevision = null;
+    if (glassPatch) {
+        const glassMat = glassPatch.channels?.material || null;
+        const glintMask = glassMat && surfaceCode && buildings.atmosphereState?.lightGrade?.windowGlint > 0
+            ? roomGlintMask(buildings, drawable.building.type, glassPatch) : null;
+        updateGlassMaterial(glassPatch, glintMask);
+        glassMaterialRevision = glassPatch.glintMask ? `${version}:glass:${glassPatch.glintMask.key}` : null;
+    }
+    const roofPatch = buildings?.roofPatchFor?.(drawable.building) || null;
+    const roofDrip = buildings?.roofDripFor?.(drawable.building) || null;
+    const forgeWorkload = buildings?.forgeWorkloadSpriteFor?.(drawable.building) || null;
+    let harborUnderside = null;
+    if (frontier && buildingType === 'harbor' && assets.harborMirrorColumns) {
+        let underside = sidecarFor(assets, id, 'underside');
+        if (!underside && typeof Image !== 'undefined') {
+            if (!renderer._harborUnderside) {
+                renderer._harborUnderside = new Image();
+                renderer._harborUnderside.src = new URL('../../../../assets/sprites/buildings/building.harbor/underside.png', import.meta.url).href;
+            }
+            underside = renderer._harborUnderside;
+        }
+        if (underside?.width === dims.w && underside?.height === dims.h && underside.complete !== false) {
+            harborUnderside = underside;
+        }
+    }
+    const ctx = {
+        id,
+        entry: drawable.entry,
+        individual,
+        dims,
+        ax,
+        ay,
+        atlasFrame,
+        atlasAlbedo,
+        page,
+        dx,
+        dy,
+        surfaceDepth,
+        useAtlas,
+        buildingType,
+        material: materialClassId(materialName),
+        footprint,
+        frontCornerX: footprint ? Math.round(footprint.front.x) : undefined,
+        footprintFrontY: footprint ? footprint.front.y : null,
+        defaultSupportH,
+        workOpen,
+        emissiveGate: rawEmissiveGate,
+        daytimeEmitter,
+        materialSource,
+        emissiveSource,
+        occluderSource,
+        sidecarKey,
+        sidecarRevision,
+        textureRevision,
+        version,
+        surfaceCode,
+        baseAlpenglowRow,
+        paletteRamp: buildingType === 'command' || (RAMP_LANDMARKS.has(buildingType) && lookStrength('nl1') > 0),
+        elevation: finite(materialMeta.elevation, 0.82),
+        emissive: materialSource
+            ? (active ? finite(materialMeta.activeEmissive, 0.12) : finite(materialMeta.emissive, 0.03))
+            : 0,
+        occluder: finite(materialMeta.occluder, 0.86),
+        landmarkId: GPU_LANDMARK_IDS[buildingType] || 0,
+        sourceKind: useAtlas ? 'atlas' : 'individual',
+        shaftReceiver: buildingType === 'archive' || buildingType === 'forge',
+        harborMirrorColumns: buildingType === 'harbor' ? assets.harborMirrorColumns || null : null,
+        harborUnderside,
+        glassPatch,
+        glassMaterialRevision,
+        roofPatch,
+        roofDrip,
+        forgeWorkload,
+    };
+    if (cache) cache.set(cacheKey, ctx);
+    return ctx;
+}
+
+function emitBuildingRecords(renderer, drawable, sequence, frameCtx, records) {
+    const bctx = buildingFrameContext(renderer, drawable, frameCtx);
+    if (!bctx) return false;
+    const { id, dims, ax, ay, atlasFrame, atlasAlbedo, useAtlas } = bctx;
     const col = drawable.kind === 'building-column' ? drawable.column : null;
     const split = drawable.kind === 'building-back' || drawable.kind === 'building-front';
     const horizon = split
         ? Math.max(1, Math.min(finite(drawable.horizonY, dims.h / 2), dims.h - 1))
         : null;
     const front = drawable.kind === 'building-front';
-    const atlasFrame = assets.getAtlasFrame?.(id);
-    const atlasAlbedo = atlasFrame?.atlas ? assets.getAtlas?.(atlasFrame.atlas, 'albedo') : null;
-    const frontier = renderer.gpuWorld?.frontierEnabled;
-    const surface = frontier && sidecarFor(assets, id, 'surface');
-    const page = surface?.source ?? surface;
-    const dx = surface?.offsetX || 0, dy = surface?.offsetY || 0;
-    const surfaceDepth = page && page.complete !== false && dx >= 0 && dy >= 0
-        && page.width >= dx + dims.w && page.height >= dy + dims.h && page.width <= 512 && page.height <= 512;
-    const useAtlas = Boolean(!(frontier && id === 'building.harbor') && !surfaceDepth && renderer._gpuAtlasDecision?.building && atlasAlbedo && atlasFrame?.rect);
     let source;
     let sourceWidth;
     let sourceHeight;
@@ -677,8 +839,8 @@ function recordForBuilding(renderer, drawable, sequence) {
         sh = rect.sh;
         textureKey = atlasFrame.atlas;
     } else {
-        source = individual;
-        if (!source) return null;
+        source = bctx.individual;
+        if (!source) return false;
         sourceWidth = dims.w;
         sourceHeight = dims.h;
         sx = col ? col.sx : 0;
@@ -687,48 +849,21 @@ function recordForBuilding(renderer, drawable, sequence) {
         sh = split ? (front ? dims.h - horizon : horizon) : dims.h;
         textureKey = id;
     }
-    if (sw <= 0 || sh <= 0) return null;
-    const buildingType = drawable.building?.type || id.replace(/^building\./, '');
-    const materialMeta = drawable.entry?.material || drawable.entry?.gpuMaterial || {};
-    const materialName = materialMeta.class || drawable.entry?.materialClass || MATERIAL_BY_BUILDING[buildingType] || 'stone';
-    const footprint = drawable.building ? landmarkFootprint(drawable.building) : null;
-    const supportH = drawable.supportH ?? (drawable.building && renderer.surfaceRegistry
-        ? buildingCenterToWorld(drawable.building, null).y - buildingCenterToWorld(drawable.building, renderer.surfaceRegistry).y : 0);
-    // V8 — landmark emission follows the work tier (isWorkingVisitor counts +
-    // observed-tool recency), never idle, seated or passing bodies.
-    const workTier = renderer?.buildingRenderer?._workTierFor?.(drawable.building);
-    const active = Boolean(workTier) && workTier !== 'dormant';
-    const workOpen = renderer?.buildingRenderer?.partGates?.isOpen?.(`work.${buildingType}`) ?? active;
-    const rawEmissiveGate = renderer?.buildingRenderer?._emissiveGateFor?.(drawable.building) ?? 1;
-    const daytimeEmitter = isDaytimeHighEnergyBuilding(buildingType, workOpen, rawEmissiveGate);
-    const emissiveGate = rawEmissiveGate;
-    // Material/emissive are sampled with the albedo's UVs (see the GL fragment
-    // shaders), so a channel source must share the albedo's geometry. When the
-    // albedo comes from an atlas page the channels must be that page's channel
-    // pages. A per-landmark source under the shared `<atlas>:channels` key
-    // sampled the wrong pixels and triggered a full upload on every rebind.
-    const resolved = useAtlas ? null : packedLandmarkChannels(renderer, id, { crop: true });
-    const materialSource = (useAtlas
-        ? assets.getAtlas?.(atlasFrame.atlas, 'material')
-        : resolved?.material) || null;
-    const emissiveSource = (useAtlas
-        ? assets.getAtlas?.(atlasFrame.atlas, 'emissive')
-        : resolved?.emissive) || null;
-    const sidecarKey = useAtlas
-        ? `${atlasFrame.atlas}:channels`
-        : `${id}:material`;
-    const surfaceCode = (assets.getEntry?.(id) || drawable.entry)?.surfaceCode === true;
+    if (sw <= 0 || sh <= 0) return false;
+    const supportH = drawable.supportH ?? bctx.defaultSupportH;
     const spriteLeft = Math.round(drawable.wx - ax);
+    const spriteTop = Math.round(drawable.wy - ay);
     const recordId = col ? `${id}:column:${col.index}` : `${id}:${drawable.kind}`;
+    const footY = bctx.footprintFrontY != null ? Math.round(bctx.footprintFrontY - supportH) : undefined;
     const record = {
         id: recordId,
         stableKey: recordId,
         textureKey,
-        sidecarKey,
+        sidecarKey: bctx.sidecarKey,
         source,
-        materialSource,
-        emissiveSource,
-        occluderSource: useAtlas ? assets.getAtlas?.(atlasFrame.atlas, 'occluder') : resolved?.occluder,
+        materialSource: bctx.materialSource,
+        emissiveSource: bctx.emissiveSource,
+        occluderSource: bctx.occluderSource,
         sourceWidth,
         sourceHeight,
         sx,
@@ -739,97 +874,98 @@ function recordForBuilding(renderer, drawable, sequence) {
         y: Math.round(drawable.wy - ay + (split && front ? horizon : 0)),
         width: col ? sw : (useAtlas ? sw : dims.w),
         height: sh,
-        material: materialClassId(materialName),
-        elevation: finite(materialMeta.elevation, 0.82),
+        material: bctx.material,
+        elevation: bctx.elevation,
         // Never bloom an entire albedo sprite. Without an authored packed
         // material map, local semantic lights still illuminate the landmark;
         // emissive bloom begins only when the companion identifies its pixels.
-        emissive: materialSource
-            ? (active ? finite(materialMeta.activeEmissive, 0.12) : finite(materialMeta.emissive, 0.03))
-            : 0,
-        emissiveGate,
-        daytimeEmitter,
+        emissive: bctx.emissive,
+        emissiveGate: bctx.emissiveGate,
+        daytimeEmitter: bctx.daytimeEmitter,
         // 3.5 pilot opt-in: Command's authored material pixels quantize
         // admitted local light to the palette ramp. Look `nl1` (a switch: a
         // ramp is on or off per building) extends it to RAMP_LANDMARKS. A
         // landmark outside them keeps today's additive response, so the ramp
         // cannot leak through a shared atlas batch.
-        paletteRamp: buildingType === 'command' || (RAMP_LANDMARKS.has(buildingType) && lookStrength('nl1') > 0),
-        occluder: finite(materialMeta.occluder, 0.86),
+        paletteRamp: bctx.paletteRamp,
+        occluder: bctx.occluder,
         // V5 / V9 — the landmark's analytic receiver geometry (2.1): its
         // footprint's front corner; a pixel above the front edges is a wall
         // facing its side's face, one in front of them an apron lit as ground.
         // `surfaceCode` (2.3) says the occluder companion carries true height
         // in R and the authored face/height code in B, which override it.
         supportH,
-        footY: footprint ? Math.round(footprint.front.y - supportH) : undefined,
-        frontCornerX: footprint ? Math.round(footprint.front.x) : undefined,
-        frontCornerY: footprint ? Math.round(footprint.front.y - supportH) : undefined,
-        surfaceCode,
-        faceGrade: surfaceCode,
-        goldenRim: surfaceCode,
-        alpenglowRow: Math.max(0, (assets.getEntry?.(id)?.alpenglowRow || 0) - (front ? horizon : 0)),
-        landmarkId: GPU_LANDMARK_IDS[buildingType] || 0,
-        textureRevision: assets.assetVersion || null,
-        sidecarRevision: useAtlas && atlasFrame?.atlas
-            ? atlasChannelRevision(assets, atlasFrame.atlas)
-            : (resolved?.revision || `${assets.assetVersion || ''}:${id}`),
+        footY,
+        frontCornerX: bctx.frontCornerX,
+        frontCornerY: footY,
+        surfaceCode: bctx.surfaceCode,
+        faceGrade: bctx.surfaceCode,
+        goldenRim: bctx.surfaceCode,
+        alpenglowRow: Math.max(0, bctx.baseAlpenglowRow - (front ? horizon : 0)),
+        landmarkId: bctx.landmarkId,
+        textureRevision: bctx.textureRevision,
+        sidecarRevision: bctx.sidecarRevision,
         sequence,
-        sourceKind: useAtlas ? 'atlas' : 'individual',
+        sourceKind: bctx.sourceKind,
     };
-    const shadows = buildingShadowRecords(renderer, drawable, sequence);
-    const glass = glassPatchRecord(renderer, drawable, record, spriteLeft, col, split ? horizon : null, front);
-    const roof = roofWeatherRecords(renderer, drawable, record, spriteLeft, col, split ? horizon : null, front, sequence);
-    const parts = buildingPartRecords(renderer, drawable, record, sequence);
-    const forgeOverlay = forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, split ? horizon : null, front, sequence);
+    const frontier = Boolean(frameCtx ? frameCtx.frontier : renderer.gpuWorld?.frontierEnabled);
+    const register = frontier && bctx.surfaceDepth
+        ? (layer, rank) => {
+            const offsetX = bctx.dx + layer.x - spriteLeft - layer.sx;
+            const offsetY = bctx.dy + layer.y - spriteTop - layer.sy;
+            registerSurface(layer, id, bctx.page, offsetX, offsetY, rank, supportH);
+        }
+        : null;
+    emitBuildingShadow(renderer, drawable, sequence, frameCtx, records);
+    records.push(record);
+    const glass = bctx.glassPatch
+        ? glassPatchRecord(bctx, record, spriteLeft, col, split ? horizon : null, front)
+        : null;
+    if (glass) records.push(glass);
+    const roofStart = records.length;
+    if (bctx.roofPatch || bctx.roofDrip) {
+        emitRoofWeatherRecords(bctx, record, spriteLeft, col, split ? horizon : null, front, sequence, records);
+    }
+    const roofEnd = records.length;
+    const partsStart = roofEnd;
+    emitBuildingPartRecords(renderer, drawable, record, sequence, records);
+    const partsEnd = records.length;
+    const forgeOverlay = bctx.forgeWorkload && drawable.kind !== 'building-back'
+        ? forgeWorkloadRecord(bctx.forgeWorkload, record, spriteLeft, col, split ? horizon : null, front, sequence)
+        : null;
+    if (forgeOverlay) records.push(forgeOverlay);
     if (frontier) {
-        if (surfaceDepth) {
-            const register = (layer, rank) => {
-                const offsetX = dx + layer.x - spriteLeft - layer.sx;
-                const offsetY = dy + layer.y - Math.round(drawable.wy - ay) - layer.sy;
-                registerSurface(layer, id, page, offsetX, offsetY, rank, supportH);
-            };
+        if (register) {
             register(record, drawable.sublayerRank ?? 0);
             if (glass) register(glass, 1);
-            roof.forEach((layer, index) => register(layer, 2 + index));
-            for (const layer of parts) {
-                const name = layer.id.split(':').at(-1);
+            for (let index = roofStart; index < roofEnd; index++) register(records[index], 2 + (index - roofStart));
+            for (let index = partsStart; index < partsEnd; index++) {
+                const layer = records[index];
+                const name = layer.id.slice(layer.id.lastIndexOf(':') + 1);
                 register(layer, SURFACE_PART_RANK[name] ?? 5);
             }
             if (forgeOverlay) register(forgeOverlay, 6);
         }
-        if (buildingType === 'forge' && workOpen && !front && (!col || col.index === 0)) {
+        if (bctx.buildingType === 'forge' && bctx.workOpen && !front && (!col || col.index === 0)) {
             const anchors = getBuildingVisual('forge').effectAnchors;
             const points = [anchors.hearth, anchors.chimney];
+            const assets = renderer?.assets;
             record.windEmitters = points.map(([x, y], i) => ({
-                worldX: spriteLeft + x, worldY: Math.round(drawable.wy - ay) + y, height: assets.forgeWindHeights?.[i] || 0,
+                worldX: spriteLeft + x, worldY: spriteTop + y, height: assets?.forgeWindHeights?.[i] || 0,
                 hearth: true, strength: 0.65, mistStrength: 0.2, dirY: -0.25,
             }));
         }
-        record.shaftReceiver = buildingType === 'archive' || buildingType === 'forge';
-        if (buildingType === 'harbor' && assets.harborMirrorColumns) {
+        record.shaftReceiver = bctx.shaftReceiver;
+        if (bctx.harborMirrorColumns) {
             record.mirrorSource = true;
-            record.mirrorColumns = assets.harborMirrorColumns;
-            let underside = sidecarFor(assets, id, 'underside');
-            if (!underside && typeof Image !== 'undefined') {
-                if (!renderer._harborUnderside) {
-                    renderer._harborUnderside = new Image();
-                    renderer._harborUnderside.src = new URL('../../../../assets/sprites/buildings/building.harbor/underside.png', import.meta.url).href;
-                }
-                underside = renderer._harborUnderside;
-            }
-            if (underside?.width === dims.w && underside?.height === dims.h && underside.complete !== false) {
-                record.mirrorProxy = { ...record, mirrorOnly: true, source: underside, textureKey: id + ':underside',
+            record.mirrorColumns = bctx.harborMirrorColumns;
+            if (bctx.harborUnderside) {
+                record.mirrorProxy = { ...record, mirrorOnly: true, source: bctx.harborUnderside, textureKey: id + ':underside',
                     sourceWidth: dims.w, sourceHeight: dims.h, sx: col?.sx || 0, sy: front ? horizon : 0 };
             }
         }
     }
-    if (!shadows.length && !glass && !roof.length && !parts.length && !forgeOverlay) return record;
-    const out = glass ? [...shadows, record, glass] : [...shadows, record];
-    for (let index = 0; index < roof.length; index++) out.push(roof[index]);
-    for (let index = 0; index < parts.length; index++) out.push(parts[index]);
-    if (forgeOverlay) out.push(forgeOverlay);
-    return out;
+    return true;
 }
 
 // 6.1 / 6.2 — one small record per drawn manifest layer (static overlay such
@@ -842,11 +978,9 @@ function recordForBuilding(renderer, drawable, sequence) {
 // texels it replaces (an overlay emits its own authored albedo instead). A
 // gated-off restIsBase part emits nothing. A `fixture` layer (the Pharos
 // lamp and lens, M22) emits through no occupancy gate.
-const NO_PART_RECORDS = Object.freeze([]);
-
-function buildingPartRecords(renderer, drawable, base, sequence) {
+function emitBuildingPartRecords(renderer, drawable, base, sequence, records) {
     const buildings = renderer?.buildingRenderer;
-    if (!buildings?.partDrawsFor || !drawable?.entry?.layers) return NO_PART_RECORDS;
+    if (!buildings?.partDrawsFor || !drawable?.entry?.layers) return;
     const col = drawable.kind === 'building-column' ? drawable.column : null;
     const split = col
         ? 'column'
@@ -856,16 +990,14 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
     const scratch = renderer._gpuPartDrawScratch || (renderer._gpuPartDrawScratch = []);
     const draws = buildings.partDrawsFor(drawable.entry, drawable.building, drawable.wx, drawable.wy,
         split, drawable.horizonY ?? null, scratch, col);
-    if (!draws.length) return NO_PART_RECORDS;
-    const out = [];
+    if (!draws.length) return;
     for (let index = 0; index < draws.length; index++) {
         const d = draws[index];
         const channels = buildings.partChannelsFor?.(drawable.entry, d) || null;
         const id = `${base.id}:part:${d.name}`;
         const rawPartGate = d.emissiveGate ?? (d.fixture ? 1 : base.emissiveGate);
         const partDaytimeEmitter = Boolean(base.daytimeEmitter && !d.ember && rawPartGate > 0.01);
-        const partGate = rawPartGate;
-        out.push({
+        records.push({
             id,
             stableKey: id,
             textureKey: d.textureKey,
@@ -888,7 +1020,7 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
             elevation: base.elevation,
             emissive: channels?.material ? base.emissive : 0,
             // VQ-8 — a part with its own gate (the banked ember floor) keeps it.
-            emissiveGate: partGate,
+            emissiveGate: rawPartGate,
             daytimeEmitter: partDaytimeEmitter,
             paletteRamp: base.paletteRamp,
             occluder: base.occluder,
@@ -899,15 +1031,11 @@ function buildingPartRecords(renderer, drawable, base, sequence) {
             sourceKind: 'individual',
         });
     }
-    return out;
 }
 
 // Forge anvil billets and result shelf tiles as a depth-sorted GPU record so
 // foreground villagers always paint over them on WebGL2 and WebGPU.
-function forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, horizon, front, sequence) {
-    if (drawable.kind === 'building-back') return null;
-    const layer = renderer?.buildingRenderer?.forgeWorkloadSpriteFor?.(drawable.building);
-    if (!layer) return null;
+function forgeWorkloadRecord(layer, record, spriteLeft, col, horizon, front, sequence) {
     let cx0 = 0;
     let cw = layer.w;
     if (col) {
@@ -927,7 +1055,6 @@ function forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, horizo
     }
     const spriteTop = record.y - (horizon != null && front ? horizon : 0);
     return {
-        ...record,
         id: `${record.id}:forge-workload`,
         stableKey: `${record.stableKey}:forge-workload`,
         textureKey: 'building.forge:workload',
@@ -937,7 +1064,9 @@ function forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, horizo
         emissiveSource: null,
         occluderSource: null,
         surfaceCode: false,
-        faceGrade: false, goldenRim: false, alpenglowRow: 0,
+        faceGrade: false,
+        goldenRim: false,
+        alpenglowRow: 0,
         sourceWidth: layer.w,
         sourceHeight: layer.h,
         sx: cx0,
@@ -948,7 +1077,18 @@ function forgeWorkloadRecord(renderer, drawable, record, spriteLeft, col, horizo
         y: spriteTop + layer.top + sy,
         width: cw,
         height: sh,
+        material: record.material,
+        elevation: record.elevation,
         emissive: 0,
+        emissiveGate: record.emissiveGate,
+        daytimeEmitter: record.daytimeEmitter,
+        paletteRamp: record.paletteRamp,
+        occluder: record.occluder,
+        supportH: record.supportH,
+        footY: record.footY,
+        frontCornerX: record.frontCornerX,
+        frontCornerY: record.frontCornerY,
+        landmarkId: record.landmarkId,
         textureRevision: layer.key,
         sidecarRevision: null,
         sequence: sequence + 0.05,
@@ -969,9 +1109,8 @@ function updateGlassMaterial(patch, mask) {
     patch.glintMask = mask;
 }
 
-function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, front) {
-    const patch = renderer?.buildingRenderer?.glassPatchFor?.(drawable.building);
-    if (!patch) return null;
+function glassPatchRecord(bctx, record, spriteLeft, col, horizon, front) {
+    const patch = bctx.glassPatch;
     let cx0 = 0;
     let cw = patch.w;
     if (col) {
@@ -990,24 +1129,15 @@ function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, 
         if (sh <= 0) return null;
     }
     const spriteTop = record.y - (horizon != null && front ? horizon : 0);
-    const id = drawable.entry.id;
-    const version = renderer.assets?.assetVersion || '';
-    const material = patch.channels?.material || null;
-    const glintMask = material && record.surfaceCode && renderer.buildingRenderer.atmosphereState?.lightGrade?.windowGlint > 0
-        ? roomGlintMask(renderer.buildingRenderer, drawable.building.type, patch) : null;
-    updateGlassMaterial(patch, glintMask);
+    const { id, version } = bctx;
     return {
-        ...record,
         id: `${record.id}:glass`,
         stableKey: `${record.stableKey}:glass`,
         textureKey: `${id}:glass`,
         sidecarKey: `${id}:glass`,
-        goldenRim: false,
-        alpenglowRow: Math.max(0, record.alpenglowRow - Math.max(0, patch.top - (front ? horizon : 0))),
         source: patch.canvas,
-        materialSource: material,
+        materialSource: patch.channels?.material || null,
         emissiveSource: null,
-        emissiveGate: 0,
         occluderSource: patch.channels?.occluder || null,
         sourceWidth: patch.w,
         sourceHeight: patch.h,
@@ -1019,10 +1149,26 @@ function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, 
         y: spriteTop + patch.top + sy,
         width: cw,
         height: sh,
+        material: record.material,
+        elevation: record.elevation,
         emissive: 0,
+        emissiveGate: 0,
+        daytimeEmitter: record.daytimeEmitter,
+        paletteRamp: record.paletteRamp,
+        occluder: record.occluder,
+        supportH: record.supportH,
+        footY: record.footY,
+        frontCornerX: record.frontCornerX,
+        frontCornerY: record.frontCornerY,
+        surfaceCode: record.surfaceCode,
+        faceGrade: record.faceGrade,
+        goldenRim: false,
+        alpenglowRow: Math.max(0, record.alpenglowRow - Math.max(0, patch.top - (front ? horizon : 0))),
+        landmarkId: record.landmarkId,
         textureRevision: `${version}:${patch.revision}`,
         sidecarRevision: `${version}:glass`,
-        materialRevision: patch.glintMask ? `${version}:glass:${patch.glintMask.key}` : null,
+        materialRevision: bctx.glassMaterialRevision,
+        sequence: record.sequence,
         sourceKind: 'individual',
     };
 }
@@ -1034,19 +1180,10 @@ function glassPatchRecord(renderer, drawable, record, spriteLeft, col, horizon, 
 // then the eave-drip strip frame while it rains. Both after the glass patch
 // and before the parts, so doors, banners and pennants stay on top. Clear,
 // dry weather emits nothing but the EN-6 low-sun glint run.
-const NO_ROOF_RECORDS = Object.freeze([]);
-
-function roofWeatherRecords(renderer, drawable, record, spriteLeft, col, horizon, front, sequence) {
-    const buildings = renderer?.buildingRenderer;
-    if (!buildings?.roofPatchFor) return NO_ROOF_RECORDS;
-    const patch = buildings.roofPatchFor(drawable.building);
-    const drip = buildings.roofDripFor?.(drawable.building) || null;
-    if (!patch && !drip) return NO_ROOF_RECORDS;
-    const out = [];
+function emitRoofWeatherRecords(bctx, record, spriteLeft, col, horizon, front, sequence, records) {
     const spriteTop = record.y - (horizon != null && front ? horizon : 0);
-    const id = drawable.entry.id;
-    const version = renderer.assets?.assetVersion || '';
-    const layer = (source, suffix, channels, revision, order) => {
+    const { id, version, roofPatch, roofDrip } = bctx;
+    const emitLayer = (source, suffix, channels, revision, order) => {
         let cx0 = 0;
         let cw = source.w;
         if (col) {
@@ -1064,10 +1201,7 @@ function roofWeatherRecords(renderer, drawable, record, spriteLeft, col, horizon
             sh = front ? source.h - cut : cut;
             if (sh <= 0) return;
         }
-        out.push({
-            ...record,
-            alpenglowRow: Math.max(0, record.alpenglowRow - Math.max(0, source.top - (front ? horizon : 0))),
-            goldenRim: false,
+        records.push({
             id: `${record.id}:${suffix}`,
             stableKey: `${record.stableKey}:${suffix}`,
             textureKey: `${id}:${suffix}`,
@@ -1086,39 +1220,100 @@ function roofWeatherRecords(renderer, drawable, record, spriteLeft, col, horizon
             y: spriteTop + source.top + sy,
             width: cw,
             height: sh,
+            material: record.material,
+            elevation: record.elevation,
             emissive: 0,
+            emissiveGate: record.emissiveGate,
+            daytimeEmitter: record.daytimeEmitter,
+            paletteRamp: record.paletteRamp,
+            occluder: record.occluder,
+            supportH: record.supportH,
+            footY: record.footY,
+            frontCornerX: record.frontCornerX,
+            frontCornerY: record.frontCornerY,
+            surfaceCode: record.surfaceCode,
+            faceGrade: record.faceGrade,
+            goldenRim: false,
+            alpenglowRow: Math.max(0, record.alpenglowRow - Math.max(0, source.top - (front ? horizon : 0))),
+            landmarkId: record.landmarkId,
             textureRevision: `${version}:${revision}`,
             sidecarRevision: `${version}:${suffix}`,
             sequence: sequence + order / 1000,
             sourceKind: 'individual',
         });
     };
-    if (patch) layer(patch, 'roof', patch.channels, patch.revision, 1);
-    if (drip) layer(drip, 'roof-drip', null, 'drip', 1.5);
-    return out;
+    if (roofPatch) emitLayer(roofPatch, 'roof', roofPatch.channels, roofPatch.revision, 1);
+    if (roofDrip) emitLayer(roofDrip, 'roof-drip', null, 'drip', 1.5);
 }
 
-// A prop's cached image: its own padded cache canvas, or for a tree the shared
-// lean frame of the moment (FoliageRenderer), whose `textureKey`
-// (`tree:${sprite}|${variant}|${season}|${frame}`) is shared by every tree
-// showing that frame, so no texture exists per tree (plan 0.7).
-function recordForProp(renderer, drawable, sequence) {
-    const sprite = drawable?.payload?.sprite || drawable?.sprite;
-    if (sprite?.terraceFrame) {
-        const frame = sprite.terraceFrame();
-        if (!frame) return null;
-        return { ...frame, id: `${sprite.id}:${sprite.tileX},${sprite.tileY}`, textureKey: sprite.id,
-            sourceWidth: frame.source.width, sourceHeight: frame.source.height, supportH: sprite.surfaceBaseH ?? sprite.supportH,
-            sublayerRank: 1, surfaceCode: true, pageable: false,
-            materialSource: sidecarFor(renderer.assets, sprite.id), occluderSource: sidecarFor(renderer.assets, sprite.id, 'occluder'),
-            material: materialClassId(sprite.materialClass), footY: sprite.y, sequence };
-    }
-    if (!sprite?._getCachedCanvas) return null;
-    const cached = sprite._getCachedCanvas(renderer?.camera?.zoom || 1);
-    if (!cached?.canvas) return null;
-    const part = drawable?.payload?.part || 'whole';
+// Cache the immutable asset/material/atlas/geometry portion of a static prop
+// part per sprite and asset/cache revision; dynamic per-frame values (painter
+// depth, sequence, emitter gate, seat relation, cast shadow, surface
+// registration) compose at emission in `emitPropRecords`.
+function propPartDescriptor(renderer, sprite, drawable, part, column, cached) {
+    const assets = renderer?.assets;
+    const propId = sprite.id || '';
     const cachedW = cached.canvas.width;
     const cachedH = cached.canvas.height;
+    const assetVersion = assets?.assetVersion || 0;
+    const loadGeneration = assets?._loadGeneration ?? 0;
+    const derivedArtGeneration = assets?.derivedArtGeneration ?? 0;
+    const atlasProp = Boolean(renderer?._gpuAtlasDecision?.prop);
+    const cacheRevision = sprite._gpuCacheRevision || 0;
+    const bounds = sprite.bounds;
+    const supportH = sprite.supportH ?? 0;
+    let byPart = _propDescriptorCache.get(sprite);
+    if (!byPart) {
+        byPart = new Map();
+        _propDescriptorCache.set(sprite, byPart);
+    }
+    const partKey = column
+        ? (typeof column.index === 'number' ? column.index : column)
+        : part;
+    let desc = byPart.get(partKey);
+    let hit = Boolean(
+        desc
+        && desc.assets === assets
+        && desc.assetVersion === assetVersion
+        && desc.loadGeneration === loadGeneration
+        && desc.derivedArtGeneration === derivedArtGeneration
+        && desc.atlasProp === atlasProp
+        && desc.cacheCanvas === cached.canvas
+        && desc.cacheX === cached.x
+        && desc.cacheY === cached.y
+        && desc.cacheW === cachedW
+        && desc.cacheH === cachedH
+        && desc.cacheTextureKey === cached.textureKey
+        && desc.cacheMaterial === cached.material
+        && desc.cacheOccluder === cached.occluder
+        && desc.cacheEmissive === cached.emissive
+        && desc.cacheRevision === cacheRevision
+        && desc.propId === propId
+        && desc.tileX === sprite.tileX
+        && desc.tileY === sprite.tileY
+        && desc.spriteX === sprite.x
+        && desc.spriteY === sprite.y
+        && desc.splitForOcclusion === sprite.splitForOcclusion
+        && desc.splitY === bounds?.splitY
+        && desc.boundsTop === bounds?.top
+        && desc.boundsBottom === bounds?.bottom
+        && desc.materialClass === sprite.materialClass
+        && desc.supportH === supportH
+        && desc.drawableStableKey === drawable.stableKey
+        && (!column || (desc.columnLeft === column.left && desc.columnRight === column.right && desc.columnIndex === column.index)),
+    );
+    if (hit && desc.isPilot) {
+        const atlasAlbedo = desc.atlasName ? assets?.getAtlas?.(desc.atlasName, 'albedo') : null;
+        hit = !desc.pendingChannels && desc.atlasAlbedo === atlasAlbedo;
+        // Atlas metadata and its channel images can arrive in separate tasks.
+        if (hit && atlasProp && !desc.atlasName && assets?.getAtlasFrame?.(propId)?.atlas) hit = false;
+        if (hit && desc.sourceKind === 'atlas') {
+            hit = desc.materialSource === (assets.getAtlas(desc.atlasName, 'material') || null)
+                && desc.emissiveSource === (assets.getAtlas(desc.atlasName, 'emissive') || null);
+        }
+    }
+    if (hit) return desc;
+
     let destX = cached.x;
     let destY = cached.y;
     let destW = cachedW;
@@ -1126,7 +1321,7 @@ function recordForProp(renderer, drawable, sequence) {
     let splitLocalY = 0;
     const split = Boolean(sprite.splitForOcclusion && (part === 'back' || part === 'front'));
     if (split) {
-        const splitWorldY = sprite.y + finite(sprite.bounds?.splitY, -18);
+        const splitWorldY = sprite.y + finite(bounds?.splitY, -18);
         splitLocalY = Math.max(1, Math.min(cachedH - 1, Math.round(splitWorldY - cached.y)));
         if (part === 'back') destH = splitLocalY;
         else {
@@ -1135,19 +1330,31 @@ function recordForProp(renderer, drawable, sequence) {
         }
     }
     // A depth column is a vertical slice of the same cached image.
-    const column = part === 'column' ? drawable?.payload?.column : null;
     const columnSpan = column ? sprite.columnSourceSpan(column, cached) : null;
+    if (columnSpan && columnSpan.sw <= 0) {
+        desc = {
+            empty: true,
+            assets, assetVersion, loadGeneration, derivedArtGeneration, atlasProp,
+            cacheCanvas: cached.canvas, cacheX: cached.x, cacheY: cached.y, cacheW: cachedW, cacheH: cachedH,
+            cacheTextureKey: cached.textureKey, cacheMaterial: cached.material, cacheOccluder: cached.occluder, cacheEmissive: cached.emissive,
+            cacheRevision, propId, tileX: sprite.tileX, tileY: sprite.tileY, spriteX: sprite.x, spriteY: sprite.y,
+            splitForOcclusion: sprite.splitForOcclusion, splitY: bounds?.splitY, boundsTop: bounds?.top, boundsBottom: bounds?.bottom,
+            materialClass: sprite.materialClass, supportH, drawableStableKey: drawable.stableKey,
+            columnLeft: column.left, columnRight: column.right, columnIndex: column.index,
+            isPilot: false, pendingChannels: false, atlasName: null, atlasAlbedo: null,
+        };
+        byPart.set(partKey, desc);
+        return desc;
+    }
     if (columnSpan) {
-        if (columnSpan.sw <= 0) return null;
         destX += columnSpan.sx;
         destW = columnSpan.sw;
     }
-    const assets = renderer?.assets;
-    const propId = sprite.id || '';
-    const isPilot = PILOT_PROP_IDS.includes(propId);
+    const isPilot = PILOT_PROP_ID_SET.has(propId);
     const atlasFrame = isPilot ? assets?.getAtlasFrame?.(propId) : null;
-    const atlasAlbedo = atlasFrame?.atlas ? assets?.getAtlas?.(atlasFrame.atlas, 'albedo') : null;
-    const useAtlas = Boolean(isPilot && renderer._gpuAtlasDecision?.prop && atlasAlbedo && atlasFrame?.rect);
+    const atlasName = atlasFrame?.atlas || null;
+    const atlasAlbedo = atlasName ? assets?.getAtlas?.(atlasName, 'albedo') : null;
+    const useAtlas = Boolean(isPilot && atlasProp && atlasAlbedo && atlasFrame?.rect);
     let source = cached.canvas;
     let sourceWidth = cachedW;
     let sourceHeight = cachedH;
@@ -1166,7 +1373,7 @@ function recordForProp(renderer, drawable, sequence) {
         sy = native.sy;
         sw = native.sw;
         sh = native.sh;
-        textureKey = atlasFrame.atlas;
+        textureKey = atlasName;
         sourceKind = 'atlas';
         if (split) {
             const splitSrc = Math.max(1, Math.min(native.sh - 1, Math.round(splitLocalY * native.sh / cachedH)));
@@ -1207,13 +1414,13 @@ function recordForProp(renderer, drawable, sequence) {
         ? assets.getMaterialMetadata?.(propId)?.materialClass
         : null;
     const materialName = sprite.materialClass || authoredClass || materialForProp(sprite);
-    const elevated = Math.max(0, finite(sprite.bounds?.bottom) - finite(sprite.bounds?.top));
+    const elevated = Math.max(0, finite(bounds?.bottom) - finite(bounds?.top));
     const ownMaterial = !useAtlas && cached.material;
     const materialSource = (useAtlas
-        ? assets?.getAtlas?.(atlasFrame.atlas, 'material')
+        ? assets?.getAtlas?.(atlasName, 'material')
         : (ownMaterial || (resolved?.origin !== 'fallback' && resolved?.material))) || null;
     const emissiveSource = (useAtlas
-        ? assets?.getAtlas?.(atlasFrame.atlas, 'emissive')
+        ? assets?.getAtlas?.(atlasName, 'emissive')
         : (resolved?.origin !== 'fallback' && resolved?.emissive)) || null;
     // A procedural prop's own channels, painted beside its cached albedo
     // (StaticPropSprite `channels`): an occluder canvas is a 2.3 surface
@@ -1232,12 +1439,27 @@ function recordForProp(renderer, drawable, sequence) {
         destY += pad;
         destH -= pad;
     }
-    const record = {
-        id: `prop:${propId || `${sprite.tileX},${sprite.tileY}`}:${part}${column ? `:${column.index}` : ''}`,
-        stableKey: drawable.stableKey || propId || `${sprite.tileX},${sprite.tileY}`,
+    const coordTag = propId ? '' : `${sprite.tileX},${sprite.tileY}`;
+    desc = {
+        empty: false,
+        assets, assetVersion, loadGeneration, derivedArtGeneration, atlasProp,
+        cacheCanvas: cached.canvas, cacheX: cached.x, cacheY: cached.y, cacheW: cachedW, cacheH: cachedH,
+        cacheTextureKey: cached.textureKey, cacheMaterial: cached.material, cacheOccluder: cached.occluder, cacheEmissive: cached.emissive,
+        cacheRevision, propId, tileX: sprite.tileX, tileY: sprite.tileY, spriteX: sprite.x, spriteY: sprite.y,
+        splitForOcclusion: sprite.splitForOcclusion, splitY: bounds?.splitY, boundsTop: bounds?.top, boundsBottom: bounds?.bottom,
+        materialClass: sprite.materialClass, supportH, drawableStableKey: drawable.stableKey,
+        columnLeft: column?.left, columnRight: column?.right, columnIndex: column?.index,
+        isPilot,
+        pendingChannels: Boolean(isPilot && !useAtlas && (!resolved?.ready || resolved.origin === 'fallback')),
+        atlasName,
+        atlasAlbedo,
+        isTree: propId === 'fantasy.tree' && part !== 'front',
+        isForgeOpenFront: propId === 'forge-open-front',
+        id: `prop:${propId || coordTag}:${part}${column ? `:${column.index}` : ''}`,
+        stableKey: drawable.stableKey || propId || coordTag,
         textureKey,
         sidecarKey: ownChannels ? `${textureKey}:own` : materialSource
-            ? (useAtlas && atlasFrame?.atlas ? `${atlasFrame.atlas}:channels` : `${propId}:channels`)
+            ? (useAtlas && atlasName ? `${atlasName}:channels` : `${propId}:channels`)
             : '',
         source,
         materialSource,
@@ -1255,34 +1477,96 @@ function recordForProp(renderer, drawable, sequence) {
         y: destY,
         width: destW,
         height: destH,
-        // V5 — a prop (split halves and columns alike) receives light at its
-        // own ground line, not its painter sort.
-        supportH: sprite.supportH ?? 0,
         footY: Math.round(finite(sprite.y)),
-        // SD-2 — a prop the shade field holds as a mass of its own.
         sunSelf: shadeSelfProp(propId),
         material: materialClassId(materialName),
         elevation: materialName === 'foliage' ? 0.64 : elevated > 70 ? 0.58 : 0.34,
         emissive: emissiveSource || ownEmissive ? 0 : (materialName === 'fire' ? 0.35 : 0),
-        emissiveGate: typeof sprite.emitterGate === 'function' ? sprite.emitterGate() : 1,
         occluder: elevated > 36 ? 0.58 : 0.2,
-        textureRevision: useAtlas ? (assets.assetVersion || 0) : (sprite._gpuCacheRevision || 0),
-        sidecarRevision: useAtlas && atlasFrame?.atlas
-            ? atlasChannelRevision(assets, atlasFrame.atlas)
-            : (resolved?.revision || (ownChannels ? `own:${sprite._gpuCacheRevision || 0}` : null)),
-        sequence,
+        textureRevision: useAtlas ? assetVersion : cacheRevision,
+        sidecarRevision: useAtlas && atlasName
+            ? atlasChannelRevision(assets, atlasName)
+            : (resolved?.revision || (ownChannels ? `own:${cacheRevision}` : null)),
         sourceKind,
+    };
+    byPart.set(partKey, desc);
+    return desc;
+}
+
+// A prop's cached image: its own padded cache canvas, or for a tree the shared
+// lean frame of the moment (FoliageRenderer), whose `textureKey`
+// (`tree:${sprite}|${variant}|${season}|${frame}`) is shared by every tree
+// showing that frame, so no texture exists per tree (plan 0.7).
+function emitPropRecords(renderer, drawable, sequence, frameCtx, records) {
+    const sprite = drawable?.payload?.sprite || drawable?.sprite;
+    if (sprite?.terraceFrame) {
+        const frame = sprite.terraceFrame();
+        if (!frame) return false;
+        records.push({ ...frame, id: `${sprite.id}:${sprite.tileX},${sprite.tileY}`, textureKey: sprite.id,
+            sourceWidth: frame.source.width, sourceHeight: frame.source.height, supportH: sprite.surfaceBaseH ?? sprite.supportH,
+            sublayerRank: 1, surfaceCode: true, pageable: false,
+            materialSource: sidecarFor(renderer.assets, sprite.id), occluderSource: sidecarFor(renderer.assets, sprite.id, 'occluder'),
+            material: materialClassId(sprite.materialClass), footY: sprite.y, sequence });
+        return false;
+    }
+    if (!sprite?._getCachedCanvas) return false;
+    const cached = sprite._getCachedCanvas(renderer?.camera?.zoom || 1);
+    if (!cached?.canvas) return false;
+    const part = drawable?.payload?.part || 'whole';
+    const column = part === 'column' ? drawable?.payload?.column : null;
+    const desc = propPartDescriptor(renderer, sprite, drawable, part, column, cached);
+    if (!desc || desc.empty) return false;
+    if (desc.isTree) emitTreeCast(renderer, sprite, part, sequence, frameCtx, records);
+    const record = {
+        id: desc.id,
+        stableKey: desc.stableKey,
+        textureKey: desc.textureKey,
+        sidecarKey: desc.sidecarKey,
+        source: desc.source,
+        materialSource: desc.materialSource,
+        emissiveSource: desc.emissiveSource,
+        occluderSource: desc.occluderSource,
+        surfaceCode: desc.surfaceCode,
+        alpenglowRow: desc.alpenglowRow,
+        sourceWidth: desc.sourceWidth,
+        sourceHeight: desc.sourceHeight,
+        sx: desc.sx,
+        sy: desc.sy,
+        sw: desc.sw,
+        sh: desc.sh,
+        x: desc.x,
+        y: desc.y,
+        width: desc.width,
+        height: desc.height,
+        // V5 — a prop (split halves and columns alike) receives light at its
+        // own ground line, not its painter sort.
+        supportH: desc.supportH,
+        footY: desc.footY,
+        // SD-2 — a prop the shade field holds as a mass of its own.
+        sunSelf: desc.sunSelf,
+        material: desc.material,
+        elevation: desc.elevation,
+        emissive: desc.emissive,
+        emissiveGate: typeof sprite.emitterGate === 'function' ? sprite.emitterGate() : 1,
+        occluder: desc.occluder,
+        textureRevision: desc.textureRevision,
+        sidecarRevision: desc.sidecarRevision,
+        sequence,
+        sourceKind: desc.sourceKind,
     };
     const parentId = drawable.buildingId || drawable.payload?.buildingId;
     const crop = drawable.surfaceCrop || drawable.payload?.surfaceCrop;
-    if (renderer.gpuWorld?.frontierEnabled && (parentId === 'building.forge' || crop || propId === 'forge-open-front')) {
+    const frontier = Boolean(frameCtx ? frameCtx.frontier : renderer.gpuWorld?.frontierEnabled);
+    if (frontier && (parentId === 'building.forge' || crop || desc.isForgeOpenFront)) {
+        const assets = renderer?.assets;
         const id = parentId || 'building.forge';
         const surface = sidecarFor(assets, id, 'surface');
         const page = surface?.source ?? surface;
-        const parent = renderer.buildingRenderer?.buildings?.find(building => 'building.' + building.type === id);
+        const parent = frameCtx ? frameCtx.getBuildingById(id)
+            : renderer.buildingRenderer?.buildings?.find(building => 'building.' + building.type === id);
         if (page?.width && page.complete !== false && (parent || crop)) {
             const centre = parent && buildingCenterToWorld(parent);
-            const anchor = assets.getAnchor(id);
+            const anchor = assets?.getAnchor?.(id);
             const x = centre && anchor
                 ? cached.x - Math.round(centre.x - anchor[0])
                 : (crop?.x ?? crop?.sx ?? crop?.[0]) - record.sx;
@@ -1294,8 +1578,8 @@ function recordForProp(renderer, drawable, sequence) {
             }
         }
     }
-    const casts = treeCastRecords(renderer, sprite, part, sequence);
-    return casts.length ? [...casts, record] : record;
+    records.push(record);
+    return true;
 }
 
 function recordsForAgent(drawable, sequence) {
@@ -1875,55 +2159,69 @@ function decideAtlasCategories(renderer, drawables = []) {
     const assets = renderer?.assets;
     const atlas = assets?.getAtlas?.('world-pilot', 'albedo');
     const atlasBytes = atlas ? atlas.width * atlas.height * 4 : 0;
-    const buildings = new Map();
-    const props = new Map();
-    for (const drawable of drawables || []) {
-        if (drawable.kind?.startsWith?.('building')) {
+    const buildings = renderer ? (renderer._gpuAtlasBuildings ||= new Map()) : new Map();
+    const props = renderer ? (renderer._gpuAtlasProps ||= new Map()) : new Map();
+    buildings.clear();
+    props.clear();
+    let buildingBytes = 0;
+    let propBytes = 0;
+    const list = drawables || [];
+    for (let index = 0; index < list.length; index++) {
+        const drawable = list[index];
+        const kind = drawable?.kind;
+        if (typeof kind !== 'string') continue;
+        if (kind.startsWith('building')) {
             const id = drawable.payload?.entry?.id || drawable.entry?.id;
             if (!id || buildings.has(id) || !assets?.getAtlasFrame?.(id)) continue;
-            buildings.set(id, uniqueAssetBytes(assets, id));
-        } else if (drawable.kind?.startsWith?.('prop')) {
+            const bytes = uniqueAssetBytes(assets, id);
+            buildings.set(id, bytes);
+            buildingBytes += bytes;
+        } else if (kind.startsWith('prop')) {
             const sprite = drawable.payload?.sprite || drawable.sprite;
             const id = sprite?.id;
-            if (!id || !PILOT_PROP_IDS.includes(id) || props.has(id) || !assets?.getAtlasFrame?.(id)) continue;
-            props.set(id, uniqueAssetBytes(assets, id));
+            if (!id || !PILOT_PROP_ID_SET.has(id) || props.has(id) || !assets?.getAtlasFrame?.(id)) continue;
+            const bytes = uniqueAssetBytes(assets, id);
+            props.set(id, bytes);
+            propBytes += bytes;
         }
     }
-    const atlasResident = Boolean(renderer._gpuAtlasResident);
+    const atlasResident = Boolean(renderer?._gpuAtlasResident);
     const building = shouldUseAtlasForCategory({
         category: 'building',
         atlasBytes,
-        individualBytes: [...buildings.values()].reduce((sum, bytes) => sum + bytes, 0),
+        individualBytes: buildingBytes,
         recordCount: buildings.size,
         atlasResident,
     });
     const prop = shouldUseAtlasForCategory({
         category: 'prop',
         atlasBytes,
-        individualBytes: [...props.values()].reduce((sum, bytes) => sum + bytes, 0),
+        individualBytes: propBytes,
         recordCount: props.size,
         atlasResident: atlasResident || building,
     });
-    if (building || prop) renderer._gpuAtlasResident = true;
+    if ((building || prop) && renderer) renderer._gpuAtlasResident = true;
     return {
         building,
         prop,
         atlasBytes,
         buildingIds: buildings.size,
         propIds: props.size,
-        buildingBytes: [...buildings.values()].reduce((sum, bytes) => sum + bytes, 0),
-        propBytes: [...props.values()].reduce((sum, bytes) => sum + bytes, 0),
+        buildingBytes,
+        propBytes,
     };
 }
 
-function sourceKindCensus(records = [], decision = {}) {
+function sourceKindCensus(records = [], decision = {}, seenScratch = null) {
     let atlasRecords = 0;
     let individualRecords = 0;
     let uploadBytesEstimate = 0;
-    const seenTextures = new Set();
-    for (const record of records) {
+    const seenTextures = seenScratch || new Set();
+    seenTextures.clear();
+    for (let index = 0; index < records.length; index++) {
+        const record = records[index];
         const kind = record.sourceKind
-            || (String(record.textureKey || '').startsWith('world-pilot') || record.textureKey === 'world-pilot'
+            || (String(record.textureKey || '').startsWith('world-pilot')
                 ? 'atlas'
                 : 'individual');
         if (kind === 'atlas') atlasRecords += 1;
@@ -1932,11 +2230,13 @@ function sourceKindCensus(records = [], decision = {}) {
         if (seenTextures.has(key)) continue;
         seenTextures.add(key);
         uploadBytesEstimate += Math.max(0, record.sourceWidth || 0) * Math.max(0, record.sourceHeight || 0) * 4;
-        for (const channel of [record.materialSource, record.emissiveSource, record.occluderSource]) {
-            if (channel && channel !== record.source) {
-                uploadBytesEstimate += Math.max(0, channel.width || 0) * Math.max(0, channel.height || 0) * 4;
-            }
-        }
+        const src = record.source;
+        const mat = record.materialSource;
+        if (mat && mat !== src) uploadBytesEstimate += Math.max(0, mat.width || 0) * Math.max(0, mat.height || 0) * 4;
+        const emi = record.emissiveSource;
+        if (emi && emi !== src) uploadBytesEstimate += Math.max(0, emi.width || 0) * Math.max(0, emi.height || 0) * 4;
+        const occ = record.occluderSource;
+        if (occ && occ !== src) uploadBytesEstimate += Math.max(0, occ.width || 0) * Math.max(0, occ.height || 0) * 4;
     }
     return {
         atlasRecords,
@@ -1963,7 +2263,9 @@ function stampPainterDepth(records, from, drawable) {
     const kindWrites = DEPTH_WRITING_KINDS.test(drawable?.kind || '');
     for (let index = from; index < records.length; index++) {
         const record = records[index];
-        if (!record || String(record.id || '').startsWith('ground:')) continue;
+        if (!record) continue;
+        const id = record.id;
+        if (typeof id === 'string' && id.startsWith('ground:')) continue;
         if (record.depthSortY == null) record.depthSortY = drawable.sortY;
         if (record.writesDepth == null) record.writesDepth = kindWrites;
     }
@@ -2026,12 +2328,19 @@ function insertLampSilhouetteRecords(renderer, records, at) {
     }
     const bodies = [];
     const frameKeys = renderer._gpuAgentAtlasFrameKeys;
-    let recordsById;
+    let recordsById = null;
     for (const [agentId, sprite] of renderer.agentSprites) {
         const cast = lampSilhouetteFor(sprite);
         if (!cast) continue;
         const id = `agent:${agentId}`;
-        recordsById ??= new Map(records.map(record => [record.id, record]));
+        if (!recordsById) {
+            recordsById = renderer._gpuLampRecordsById ||= new Map();
+            recordsById.clear();
+            for (let index = 0; index < records.length; index++) {
+                const rec = records[index];
+                recordsById.set(rec.id, rec);
+            }
+        }
         const record = recordsById.get(id);
         if (!record?.source || !(record.width > 0) || !(record.height > 0)) continue;
         // The frame in the body's atlas cell: its walk-strip key and frame,
@@ -2063,11 +2372,37 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     if (renderer) renderer._gpuAtlasDecision = decision;
     const records = renderer?._gpuWorldRecordScratch || [];
     records.length = 0;
+    const frontier = Boolean(renderer?.gpuWorld?.frontierEnabled);
+    const buildingCache = renderer ? (renderer._gpuBuildingFrameCache ||= new Map()) : new Map();
+    buildingCache.clear();
+    let buildingById = null;
+    const frameCtx = {
+        frontier,
+        hasCast: false,
+        cast: null,
+        buildings: buildingCache,
+        getBuildingById(id) {
+            if (!buildingById) {
+                buildingById = renderer ? (renderer._gpuBuildingByIdCache ||= new Map()) : new Map();
+                buildingById.clear();
+                const list = renderer?.buildingRenderer?.buildings;
+                if (list) {
+                    for (let index = 0; index < list.length; index++) {
+                        const building = list[index];
+                        const key = 'building.' + building.type;
+                        if (!buildingById.has(key)) buildingById.set(key, building);
+                    }
+                }
+            }
+            return buildingById.get(id);
+        },
+    };
     const terrain = recordForTerrain(renderer);
     if (terrain) records.push(terrain);
     // 1.3 — terrain-baked emitter props (plaza braziers, street lanterns)
     // redraw over the terrain with their emissive sidecars.
-    records.push(...cacheEmitterRecords(renderer, atlasChannelRevision));
+    const emitters = cacheEmitterRecords(renderer, atlasChannelRevision);
+    for (let index = 0; index < emitters.length; index++) records.push(emitters[index]);
     // LA-6a / LA-6b — the far-sea phenomena, under the offshore backdrop.
     farSeaRecords(renderer, records);
     // W8.5a — the offshore backdrop (`ground:offshore:*`): the open sea's
@@ -2075,24 +2410,42 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     // the terrain, under the island's casts, haze, fog and every drawable.
     offshoreSceneryRecords(renderer, records);
     const haze = recordForHaze(renderer);
-    if (haze) {
-        // A baked field over its own world rect (world px, so not V9
-        // screenSpace): kept off the albedo page; footY -1 keeps the world grid.
-        haze.pageable = false;
-        records.push(haze);
-    }
+    if (haze) records.push(haze);
     const cue = renderer?._semanticGroundCanvas;
     if (cue && renderer._semanticGroundActive) {
         const camera = renderer.camera;
-        records.push({ id: 'ground:semantics', source: cue, textureKey: 'ground:semantics',
-            x: -camera.renderOffsetX / camera.zoom, y: -camera.renderOffsetY / camera.zoom,
-            width: renderer._semanticGroundViewport.width / camera.zoom, height: renderer._semanticGroundViewport.height / camera.zoom,
-            textureRevision: renderer._semanticGroundRevision, elevation: 0, occluder: 0, pageable: false,
+        records.push(finalizeSceneRecord({
+            id: 'ground:semantics',
+            stableKey: 'ground:semantics',
+            textureKey: 'ground:semantics',
+            sidecarKey: '',
+            source: cue,
+            sourceWidth: cue.width,
+            sourceHeight: cue.height,
+            sx: 0,
+            sy: 0,
+            sw: cue.width,
+            sh: cue.height,
+            x: -camera.renderOffsetX / camera.zoom,
+            y: -camera.renderOffsetY / camera.zoom,
+            width: renderer._semanticGroundViewport.width / camera.zoom,
+            height: renderer._semanticGroundViewport.height / camera.zoom,
+            alpha: 1,
+            material: materialClassId('default'),
+            elevation: 0,
+            emissive: 0,
+            emissiveGate: 1,
+            occluder: 0,
+            textureRevision: renderer._semanticGroundRevision,
+            pageable: false,
             // 4.6 — its texels are backing pixels drawn at the rounded offset:
             // nearest on flight frames too (V9 fatOptOut).
             fatOptOut: true,
             // B.2 — the redraw's dirty rect (null = full upload).
-            textureUpdates: renderer._semanticGroundUpdates || null });
+            textureUpdates: renderer._semanticGroundUpdates || null,
+            sequence: -0.75,
+            sourceKind: 'individual',
+        }));
     }
     // SD-1 — the sun's shade: over the haze and the ground cues, under every
     // contact stamp and villager mark, where the sun trails lay before it.
@@ -2101,15 +2454,19 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     // NL-3 — the lamp silhouettes join the ground band here (under every
     // body's contact shadow, ring and candle), once the agent atlas is packed.
     const lampShadeAt = records.length;
+    const list = drawables || [];
     let sequence = 0;
-    for (const drawable of drawables || []) {
-        let next = null;
+    for (let drawIndex = 0; drawIndex < list.length; drawIndex++) {
+        const drawable = list[drawIndex];
+        const kind = drawable?.kind;
         const from = records.length;
-        if (drawable.kind?.startsWith?.('building')) {
-            next = recordForBuilding(renderer, drawable.payload || drawable, sequence);
-        } else if (drawable.kind?.startsWith?.('prop')) {
-            next = recordForProp(renderer, drawable, sequence);
-        } else if (drawable.kind === 'agent') {
+        let canFinalize = false;
+        let next = null;
+        if (typeof kind === 'string' && kind.startsWith('building')) {
+            canFinalize = emitBuildingRecords(renderer, drawable.payload || drawable, sequence, frameCtx, records);
+        } else if (typeof kind === 'string' && kind.startsWith('prop')) {
+            canFinalize = emitPropRecords(renderer, drawable, sequence, frameCtx, records);
+        } else if (kind === 'agent') {
             const agentRecords = recordsForAgent(drawable, sequence);
             for (let index = 0; index < agentRecords.length; index++) records.push(agentRecords[index]);
         } else if (typeof drawable.buildGpuRecord === 'function') {
@@ -2119,43 +2476,58 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
         }
         if (Array.isArray(next)) {
             for (let index = 0; index < next.length; index++) records.push(next[index]);
+        } else if (next) {
+            records.push(next);
         }
-        else if (next) records.push(next);
         stampPainterDepth(records, from, drawable);
-        if (renderer.gpuWorld?.frontierEnabled && /^(?:prop|agent|harbor-hulls)/.test(drawable.kind)) {
+        if (frontier && typeof kind === 'string'
+            && (kind.startsWith('prop') || kind === 'agent' || kind.startsWith('harbor-hulls'))) {
+            const harborApron = renderer.harborWaterApronTiles;
+            const waterMeta = renderer.waterMeta;
             for (let i = from; i < records.length; i++) {
                 const r = records[i];
                 if (r.reflect || r.screenSpace || r.cueRun || r.actionMark || r.blend === 'add'
                     || (r.flags & (GPU_RECORD_FLAGS.reflect | GPU_RECORD_FLAGS.screenSpace | GPU_RECORD_FLAGS.cueRun | GPU_RECORD_FLAGS.actionMark))) continue;
-                if (r.id?.startsWith('harbor:hull:')) {
+                const rid = r.id;
+                if (typeof rid === 'string' && rid.startsWith('harbor:hull:')) {
                     r.mirrorSource = true;
                     continue;
                 }
-                if (!r.writesDepth || String(r.id).startsWith('ground:')) continue;
-                const x = r.x + r.width / 2, y = r.footY ?? r.depthSortY;
+                if (!r.writesDepth || (typeof rid === 'string' && rid.startsWith('ground:'))) continue;
+                const x = r.x + r.width / 2;
+                const y = r.footY ?? r.depthSortY;
                 const tile = Math.round(y / (2 * TILE_HALF_HEIGHT) + x / (2 * TILE_HALF_WIDTH)) + ',' + Math.round(y / (2 * TILE_HALF_HEIGHT) - x / (2 * TILE_HALF_WIDTH));
-                if (renderer.harborWaterApronTiles?.has(tile) || renderer.waterMeta?.get(tile)?.region === 'harbor') {
+                if (harborApron?.has(tile) || waterMeta?.get(tile)?.region === 'harbor') {
                     r.mirrorSource = true;
                 }
             }
         }
+        if (canFinalize) {
+            for (let i = from; i < records.length; i++) finalizeSceneRecord(records[i]);
+        }
         sequence++;
     }
+    buildingCache.clear();
+    if (buildingById) buildingById.clear();
     packGpuAgentFrameAtlas(renderer, records);
     insertLampSilhouetteRecords(renderer, records, lampShadeAt);
     const ordered = renderer?._gpuWorldOrderedRecords || [];
+    const groundScratch = renderer ? (renderer._gpuWorldGroundScratch ||= []) : [];
+    const standingScratch = renderer ? (renderer._gpuWorldStandingScratch ||= []) : [];
     ordered.length = 0;
-    for (let index = 0; index < records.length; index++) {
-        if (records[index].id === 'terrain:static') ordered.push(records[index]);
-    }
-    for (let index = 0; index < records.length; index++) {
-        const record = records[index];
-        if (record.id !== 'terrain:static' && String(record.id || '').startsWith('ground:')) ordered.push(record);
-    }
+    groundScratch.length = 0;
+    standingScratch.length = 0;
     for (let index = 0; index < records.length; index++) {
         const record = records[index];
-        if (record.id !== 'terrain:static' && !String(record.id || '').startsWith('ground:')) ordered.push(record);
+        const id = record.id;
+        if (id === 'terrain:static') ordered.push(record);
+        else if (typeof id === 'string' && id.startsWith('ground:')) groundScratch.push(record);
+        else standingScratch.push(record);
     }
+    for (let index = 0; index < groundScratch.length; index++) ordered.push(groundScratch[index]);
+    for (let index = 0; index < standingScratch.length; index++) ordered.push(standingScratch[index]);
+    groundScratch.length = 0;
+    standingScratch.length = 0;
     // When a daylight frame has an active work-gated emitter (awake Forge fire,
     // awake Portal, active Command braziers), the GPU renderer raises frame
     // coreEnergy to DAYTIME_WORK_BLOOM_CORE (0.36); scale all other emissive
@@ -2185,7 +2557,8 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     if (renderer) {
         renderer._gpuWorldRecordScratch = records;
         renderer._gpuWorldOrderedRecords = ordered;
-        renderer._gpuMaterialPacketDiagnostics = sourceKindCensus(ordered, decision);
+        const censusSeen = renderer._gpuCensusSeenTextures ||= new Set();
+        renderer._gpuMaterialPacketDiagnostics = sourceKindCensus(ordered, decision, censusSeen);
         renderer._gpuMaterialPacketDiagnostics.terrainOrigin = renderer._gpuTerrainMaterialOrigin || 'procedural';
     }
     return ordered;

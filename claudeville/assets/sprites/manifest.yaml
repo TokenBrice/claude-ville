@@ -24,8 +24,6 @@ atlases:
       emissive: assets/sprites/atlases/world-pilot.emissive.png
       occluder: assets/sprites/atlases/world-pilot.occluder.png
     ids:
-      - agent.claude.opus
-      - agent.codex.gpt56sol
       - building.command
       - building.watchtower
       - building.harbor
@@ -44,6 +42,19 @@ atlases:
       - atmosphere.light.lighthouse-beam
       - atmosphere.light.fire-glow
       - atmosphere.light.lantern-glow
+  - id: world-pilot-characters
+    maxWidth: 2048
+    padding: 2
+    powerOfTwo: false
+    metadata: assets/sprites/atlases/world-pilot-characters.json
+    channels:
+      albedo: assets/sprites/atlases/world-pilot-characters.albedo.png
+      material: assets/sprites/atlases/world-pilot-characters.material.png
+      emissive: assets/sprites/atlases/world-pilot-characters.emissive.png
+      occluder: assets/sprites/atlases/world-pilot-characters.occluder.png
+    ids:
+      - agent.claude.opus
+      - agent.codex.gpt56sol
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
 # Character sheets are 8 direction columns by 10 animation rows:
@@ -264,7 +275,7 @@ characters:
     materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
-    atlasFrame: { atlas: world-pilot, keyPrefix: agent.claude.opus }
+    atlasFrame: { atlas: world-pilot-characters, keyPrefix: agent.claude.opus }
     elevation: { base: 0, top: 80, unit: sprite-px }
     emissive:
       strength: 0.45
@@ -721,7 +732,7 @@ characters:
     materialSidecar: true
     emissiveSidecar: true
     occluderSidecar: true
-    atlasFrame: { atlas: world-pilot, keyPrefix: agent.codex.gpt56sol }
+    atlasFrame: { atlas: world-pilot-characters, keyPrefix: agent.codex.gpt56sol }
     elevation: { base: 0, top: 80, unit: sprite-px }
     emissive:
       strength: 0

@@ -789,6 +789,8 @@ export class App {
         this._villageBound = false;
         this._foundationReady = false;
         this._surfacesBound = false;
+        this._surfaceRenderQueued = false;
+        this._lastSurfaceKey = null;
         this._usageRequested = false;
         this._bootStatusWrap = null;
         this._bootStatusEl = null;
@@ -1160,13 +1162,24 @@ export class App {
         this._foundationReady = true;
     }
 
-    _dispatchVillage(action, { render = true } = {}) {
+    _dispatchVillage(action, { render = true, coalesce = false } = {}) {
         this.villageState = reduceVillageState(this.villageState || initialVillageState(), action);
         if (render) {
             eventBus.emit('village:state', this.villageState);
-            this._renderVillageSurfaces();
+            if (coalesce) this._scheduleVillageSurfaceRender();
+            else this._renderVillageSurfaces();
         }
         return this.villageState;
+    }
+
+    _scheduleVillageSurfaceRender() {
+        if (this._destroyed || this._surfaceRenderQueued) return;
+        this._surfaceRenderQueued = true;
+        queueMicrotask(() => {
+            this._surfaceRenderQueued = false;
+            if (this._destroyed) return;
+            this._renderVillageSurfaces();
+        });
     }
 
     _advanceFromStarting() {
@@ -1192,7 +1205,7 @@ export class App {
                 // EN-2 — link liveness: staleness keys on the last message.
                 lastMessageAt: payload.lastMessageAt,
                 stale: payload.stale,
-            });
+            }, { coalesce: true });
         };
         const onWatcherState = (payload = {}) => {
             if (payload?.ok === true) {
@@ -1201,18 +1214,18 @@ export class App {
                     source: 'polling',
                     agentCount: this.world?.agents?.size || 0,
                     at: payload.at || Date.now(),
-                });
+                }, { coalesce: true });
                 return;
             }
             if (payload?.ok === false) {
                 this._dispatchVillage({
                     type: 'source-failed',
                     code: payload.code || 'session-poll-failed',
-                });
+                }, { coalesce: true });
                 return;
             }
             if (payload?.state === 'polling') {
-                this._dispatchVillage({ type: 'link', state: LinkState.POLLING });
+                this._dispatchVillage({ type: 'link', state: LinkState.POLLING }, { coalesce: true });
             }
         };
         const onWsSnapshot = (data) => {
@@ -1224,13 +1237,13 @@ export class App {
                 source: 'websocket',
                 agentCount: count,
                 at: Date.now(),
-            });
+            }, { coalesce: true });
         };
         const onChronicleStatus = (payload = {}) => {
             this._dispatchVillage({
                 type: 'storage',
                 chronicle: payload.status || 'unknown',
-            });
+            }, { coalesce: true });
         };
 
         this._eventUnsubscribers.push(eventBus.on('ws:state', onWsState));
@@ -1564,6 +1577,7 @@ export class App {
         this._bootAnnouncementEl = announcement;
         this._bootFailureEl = failure;
         this._bootActionEl = action;
+        this._lastSurfaceKey = null;
     }
 
     _renderVillageSurfaces() {
@@ -1575,11 +1589,35 @@ export class App {
         if (state.storage?.chronicle === 'degraded') {
             status = `${status} · CHRONICLE HISTORY UNAVAILABLE`;
         }
-        this._setTextIfChanged(this._bootStatusEl, status);
-        this._setTextIfChanged(this._bootAnnouncementEl, status);
 
         const retryable = isRetryable(state);
         const failureCode = state.failureCode || (phase === VillagePhase.DEGRADED ? state.link?.lastErrorCode : null);
+        const copy = EMPTY_SURFACE_COPY[phase] || EMPTY_SURFACE_COPY[VillagePhase.SYNCING];
+        const occupied = (state.agentCount || 0) > 0 || (this.world?.agents?.size || 0) > 0;
+        const playingDay = state.retold && phase === VillagePhase.READY_EMPTY;
+        const showEmpty = !playingDay && phase !== VillagePhase.READY_LIVE && !occupied;
+        const settled = phase === VillagePhase.READY_LIVE
+            || phase === VillagePhase.READY_EMPTY
+            || phase === VillagePhase.READY_NO_PROVIDERS;
+        const mode = this.modeManager?.getCurrentMode() || 'character';
+        const surfaceKey = [
+            phase,
+            status,
+            retryable ? '1' : '0',
+            failureCode || '',
+            this._retryPromise ? '1' : '0',
+            showEmpty ? '1' : '0',
+            settled ? '1' : '0',
+            state.storage?.chronicle || '',
+            mode,
+            this._firstRunHintRevealed ? '1' : '0',
+        ].join('|');
+        if (surfaceKey === this._lastSurfaceKey) return;
+        this._lastSurfaceKey = surfaceKey;
+
+        this._setTextIfChanged(this._bootStatusEl, status);
+        this._setTextIfChanged(this._bootAnnouncementEl, status);
+
         if (this._bootFailureEl) {
             if (phase === VillagePhase.FAILED) {
                 this._setTextIfChanged(this._bootFailureEl, this._failureCopy(failureCode));
@@ -1593,19 +1631,12 @@ export class App {
             this._bootActionEl.disabled = Boolean(this._retryPromise);
         }
 
-        const copy = EMPTY_SURFACE_COPY[phase] || EMPTY_SURFACE_COPY[VillagePhase.SYNCING];
-        const occupied = (state.agentCount || 0) > 0 || (this.world?.agents?.size || 0) > 0;
-        const playingDay = state.retold && phase === VillagePhase.READY_EMPTY;
-        const showEmpty = !playingDay && phase !== VillagePhase.READY_LIVE && !occupied;
         // One voice: while an empty-state card is up it carries the words, the
         // failure detail and the retry button; the banner only speaks when no
         // card does (a degraded source behind a populated village, or a
         // degraded chronicle). The live region announces either way.
-        const settled = phase === VillagePhase.READY_LIVE
-            || phase === VillagePhase.READY_EMPTY
-            || phase === VillagePhase.READY_NO_PROVIDERS;
         const card = showEmpty
-            ? document.getElementById(this.modeManager?.getCurrentMode() === 'dashboard' ? 'dashboardEmpty' : 'worldEmpty')
+            ? document.getElementById(mode === 'dashboard' ? 'dashboardEmpty' : 'worldEmpty')
             : null;
         const tailHost = card || this._bootStatusWrap;
         if (tailHost) {
@@ -1614,7 +1645,8 @@ export class App {
             }
         }
         if (this._bootStatusWrap) {
-            this._bootStatusWrap.hidden = Boolean(card) || (settled && state.storage?.chronicle !== 'degraded');
+            const hideWrap = Boolean(card) || (settled && state.storage?.chronicle !== 'degraded');
+            if (this._bootStatusWrap.hidden !== hideWrap) this._bootStatusWrap.hidden = hideWrap;
         }
         this._paintEmptySurface(document.getElementById('worldEmpty'), {
             titleSel: '.world-empty__title',
@@ -1639,7 +1671,13 @@ export class App {
 
     _paintEmptySurface(root, { titleSel, copySel, nextClass, legendSel, copy, show, useHidden, visibleClass }) {
         if (!root) return;
-        root.dataset.phase = this.villageState?.phase || VillagePhase.SYNCING;
+        if (!show) {
+            if (useHidden && !root.hidden) root.hidden = true;
+            if (visibleClass && root.classList.contains(visibleClass)) root.classList.remove(visibleClass);
+            return;
+        }
+        const phase = this.villageState?.phase || VillagePhase.SYNCING;
+        if (root.dataset.phase !== phase) root.dataset.phase = phase;
         const quietWorld = root.id === 'worldEmpty' && copy === EMPTY_SURFACE_COPY[VillagePhase.READY_EMPTY];
         const title = root.querySelector(titleSel);
         const body = root.querySelector(copySel);
@@ -1656,19 +1694,26 @@ export class App {
         const legend = legendSel ? root.querySelector(legendSel) : null;
         if (legend) {
             const rows = copy.legend || [];
-            legend.replaceChildren(...rows.flatMap(({ label, value }) => {
-                const term = document.createElement('dt');
-                const description = document.createElement('dd');
-                term.textContent = label;
-                description.textContent = value;
-                return [term, description];
-            }));
-            legend.hidden = rows.length === 0;
+            if (legend._renderedCopy !== copy) {
+                legend._renderedCopy = copy;
+                legend.replaceChildren(...rows.flatMap(({ label, value }) => {
+                    const term = document.createElement('dt');
+                    const description = document.createElement('dd');
+                    term.textContent = label;
+                    description.textContent = value;
+                    return [term, description];
+                }));
+            }
+            const hideLegend = rows.length === 0;
+            if (legend.hidden !== hideLegend) legend.hidden = hideLegend;
         }
-        if (useHidden) root.hidden = !show;
-        if (visibleClass) root.classList.toggle(visibleClass, show);
+        if (useHidden && root.hidden) root.hidden = false;
+        if (visibleClass && !root.classList.contains(visibleClass)) root.classList.add(visibleClass);
         const hints = root.querySelector('.dashboard__empty-hints');
-        if (hints) hints.hidden = copy !== EMPTY_SURFACE_COPY[VillagePhase.READY_EMPTY];
+        if (hints) {
+            const hideHints = copy !== EMPTY_SURFACE_COPY[VillagePhase.READY_EMPTY];
+            if (hints.hidden !== hideHints) hints.hidden = hideHints;
+        }
         const doorSpec = EMPTY_SURFACE_DOORS[this.villageState?.phase] || null;
         let door = root.querySelector('.empty-door');
         if (!door && doorSpec) {
@@ -1683,7 +1728,8 @@ export class App {
                 // After TRY AGAIN, which the card adopts once it shows.
                 if (root.lastElementChild !== door) root.appendChild(door);
             }
-            door.hidden = !doorSpec;
+            const hideDoor = !doorSpec;
+            if (door.hidden !== hideDoor) door.hidden = hideDoor;
         }
     }
 
@@ -1696,15 +1742,18 @@ export class App {
     _bindWorldEmptyState() {
         if (this._surfacesBound) return;
         this._surfacesBound = true;
-        const sync = () => {
+        const sync = ({ coalesce = false } = {}) => {
             if (this.agentSimulator?.recorded && this.villageState.source === 'simulator') {
-                this._dispatchVillage({ type: 'snapshot', agentCount: this.world.agents.size });
+                this._dispatchVillage({ type: 'snapshot', agentCount: this.world.agents.size }, { coalesce });
+            } else if (coalesce) {
+                this._scheduleVillageSurfaceRender();
             } else {
                 this._renderVillageSurfaces();
             }
         };
-        this._eventUnsubscribers.push(eventBus.on('agent:added', sync));
-        this._eventUnsubscribers.push(eventBus.on('agent:removed', sync));
+        const onRosterChange = () => sync({ coalesce: true });
+        this._eventUnsubscribers.push(eventBus.on('agent:added', onRosterChange));
+        this._eventUnsubscribers.push(eventBus.on('agent:removed', onRosterChange));
         sync();
         this._eventUnsubscribers.push(eventBus.on('mode:changed', mode => {
             if (mode !== 'dashboard') return;
