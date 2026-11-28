@@ -638,9 +638,11 @@ test('Antigravity discovers T3 Code agy acp conversations under ~/.t3 when no ro
   const tmp = makeTempDir('cv-antigravity-t3-');
   const savedHome = process.env.HOME;
   const savedRoot = process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+  const savedHobotnicaHome = process.env.HOBOTNICA_HOME;
   try {
     process.env.HOME = tmp;
     delete process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+    delete process.env.HOBOTNICA_HOME;
     const convId = 'dddddddd-5555-4555-8555-555555555555';
     const now = Date.parse('2026-11-23T12:47:00Z');
     const acpDir = path.join(tmp, '.t3', 'userdata', 'providers', 'antigravity', 'ac0a3dfd', 'antigravity-acp');
@@ -666,6 +668,8 @@ test('Antigravity discovers T3 Code agy acp conversations under ~/.t3 when no ro
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
     if (savedRoot !== undefined) process.env.CLAUDEVILLE_ANTIGRAVITY_DIR = savedRoot;
+    if (savedHobotnicaHome === undefined) delete process.env.HOBOTNICA_HOME;
+    else process.env.HOBOTNICA_HOME = savedHobotnicaHome;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
@@ -681,9 +685,11 @@ test('Antigravity groups a T3 Code delegate under the thread that started it', {
   const tmp = makeTempDir('cv-antigravity-t3-lineage-');
   const savedHome = process.env.HOME;
   const savedRoot = process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+  const savedHobotnicaHome = process.env.HOBOTNICA_HOME;
   try {
     process.env.HOME = tmp;
     delete process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+    delete process.env.HOBOTNICA_HOME;
     const delegateId = 'eeeeeeee-6666-4666-8666-666666666666';
     const ownId = 'ffffffff-7777-4777-8777-777777777777';
     const claudeId = '00dd9673-f202-4300-a82a-0ef61373229e';
@@ -739,6 +745,8 @@ test('Antigravity groups a T3 Code delegate under the thread that started it', {
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
     if (savedRoot !== undefined) process.env.CLAUDEVILLE_ANTIGRAVITY_DIR = savedRoot;
+    if (savedHobotnicaHome === undefined) delete process.env.HOBOTNICA_HOME;
+    else process.env.HOBOTNICA_HOME = savedHobotnicaHome;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
@@ -747,9 +755,11 @@ test('a T3 Code thread the operator renamed names its Antigravity villager, like
   const tmp = makeTempDir('cv-antigravity-t3-renamed-');
   const savedHome = process.env.HOME;
   const savedRoot = process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+  const savedHobotnicaHome = process.env.HOBOTNICA_HOME;
   try {
     process.env.HOME = tmp;
     delete process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
+    delete process.env.HOBOTNICA_HOME;
     const ids = {
       renamed: 'aaaaaaaa-8888-4888-8888-888888888888',
       auto: 'bbbbbbbb-9999-4999-8999-999999999999',
@@ -806,6 +816,8 @@ test('a T3 Code thread the operator renamed names its Antigravity villager, like
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
     if (savedRoot !== undefined) process.env.CLAUDEVILLE_ANTIGRAVITY_DIR = savedRoot;
+    if (savedHobotnicaHome === undefined) delete process.env.HOBOTNICA_HOME;
+    else process.env.HOBOTNICA_HOME = savedHobotnicaHome;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });

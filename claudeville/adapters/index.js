@@ -20,6 +20,7 @@ const { getJsonlDiagnostics, trimCache, readFailures, mcpProcessParent } = requi
 const { decorateSessionPresentation } = require('./sessionPresentation');
 const { normalizeDialogue, normalizeObservedSources } = require('./dialogue');
 const { hookOverlay, mergeOverlay, HOOK_MERGE_WINDOW_MS } = require('./hooks');
+const { foldHobotnicaPush, getHobotnicaDetail } = require('./hobotnicaPush');
 const { normalizeToolResults } = require('./toolResults');
 const {
   getGitEnrichmentPerfStats,
@@ -244,9 +245,26 @@ function normalizeTodos(value) {
 // session reads as the work it still is. An approval stays: the host CLI shows
 // a permission prompt to a person, whichever agent raised it.
 function withoutLauncherWait(session) {
+  if (session?.waitAudience === 'operator') return session;
   if (!session?.headless && !session?.parentSessionId) return session;
   if (session.waitReason !== 'question' && session.waitReason !== 'plan_review') return session;
   return { ...session, waitReason: null, openQuestion: null, awaitingSince: null };
+}
+
+function normalizeHobotnicaMeta(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const bounded = (raw, max = 256) => (typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, max) : null);
+  const threadId = bounded(value.threadId, 256);
+  if (!threadId) return null;
+  return {
+    instanceId: bounded(value.instanceId, 128),
+    threadId,
+    childThreadId: bounded(value.childThreadId, 256),
+    subagentId: bounded(value.subagentId, 256),
+    parentThreadId: bounded(value.parentThreadId, 256),
+    waveId: bounded(value.waveId, 128),
+    pushOnly: value.pushOnly === true,
+  };
 }
 
 const COMPACTION_MAX_RECORDS = 4;
@@ -298,7 +316,7 @@ function normalizeSession(rawSession, context = {}) {
     ? session.workingSet.slice(0, 16).flatMap((item) => {
       const itemPath = typeof item?.path === 'string' ? item.path.trim() : '';
       const op = item?.op === 'read' || item?.op === 'write' ? item.op : null;
-      const source = item?.source === 'hook' || item?.source === 'transcript' ? item.source : null;
+      const source = ['hook', 'transcript', 'push'].includes(item?.source) ? item.source : null;
       const at = Number(item?.at);
       if (!itemPath || !op || !source || !Number.isFinite(at)) return [];
       return [{ path: itemPath, op, at, source }];
@@ -360,13 +378,20 @@ function normalizeSession(rawSession, context = {}) {
       : null,
     signalObservedAt: session?.signalObservedAt ?? session?.pendingSince ?? session?.awaitingSince ?? session?.lastActivity ?? null,
     signalCertainty: session?.signalCertainty || (session?.turnState && session.turnState !== 'unknown' ? 'observed' : 'unavailable'),
-    signalSource: ['hook', 'registry'].includes(session?.signalSource) ? session.signalSource : 'transcript',
-    promptDetail: session?.signalSource === 'hook' && typeof session?.promptDetail === 'string'
+    signalSource: ['hook', 'registry', 'push'].includes(session?.signalSource) ? session.signalSource : 'transcript',
+    promptDetail: (session?.signalSource === 'hook' || session?.signalSource === 'push') && typeof session?.promptDetail === 'string'
       ? session.promptDetail.slice(0, 200)
       : undefined,
     workingSet,
     lastResults: normalizeToolResults(session?.lastResults),
     waitReason: session?.waitReason ?? null,
+    waveId: typeof session?.waveId === 'string' && session.waveId.trim()
+      ? session.waveId.trim().slice(0, 128)
+      : null,
+    supersedes: typeof session?.supersedes === 'string' && session.supersedes.trim()
+      ? session.supersedes.trim().slice(0, 256)
+      : null,
+    hobotnica: normalizeHobotnicaMeta(session?.hobotnica),
     resident: session?.resident === true,
     userNamed: session?.userNamed === true,
     sendMessages: Array.isArray(session?.sendMessages) ? session.sendMessages : [],
@@ -511,9 +536,9 @@ function linkMcpSession(session) {
   return { ...session, ...link };
 }
 
-function foldSessionOverlays(sessions, now) {
+function foldSessionOverlays(sessions, now, activeThresholdMs = undefined) {
   hookOverlay.prune(now);
-  return sessions.map((normalized) => {
+  const hookFolded = sessions.map((normalized) => {
     const prefix = `${normalized.provider}-`;
     const aliases = [normalized.sessionId, normalized.sourceSessionId, normalized.agentId,
       normalized.sessionId.startsWith(prefix) ? normalized.sessionId.slice(prefix.length) : normalized.sessionId].filter(Boolean);
@@ -538,7 +563,9 @@ function foldSessionOverlays(sessions, now) {
       };
     }
     return mergeOverlay(normalized, overlay, now);
-  }).sort((a, b) => b.lastActivity - a.lastActivity);
+  });
+  return foldHobotnicaPush(hookFolded, now, { normalizeSession, activeThresholdMs })
+    .sort((a, b) => b.lastActivity - a.lastActivity);
 }
 
 // A pending provider refresh must not hide newer hooks on a stale REST read.
@@ -546,7 +573,7 @@ function foldSessionOverlays(sessions, now) {
 function getCachedSessionsWithOverlays(activeThresholdMs) {
   if (_sessionListCache.normalizedThreshold !== activeThresholdMs
     || !_sessionListCache.normalizedSessions) return null;
-  return foldSessionOverlays(_sessionListCache.normalizedSessions, Date.now());
+  return foldSessionOverlays(_sessionListCache.normalizedSessions, Date.now(), activeThresholdMs);
 }
 
 /**
@@ -669,7 +696,7 @@ function getAllSessions(activeThresholdMs, { force = false, overlayOnly = false 
     const linked = linkMcpSession(session);
     return alreadyNormalized.has(linked) ? linked : normalizeSession(linked);
   });
-  const sessions = foldSessionOverlays(normalizedSessions, now);
+  const sessions = foldSessionOverlays(normalizedSessions, now, activeThresholdMs);
 
   _sessionListCache.at = Date.now();
   _sessionListCache.threshold = activeThresholdMs;
@@ -690,6 +717,12 @@ function getAllSessions(activeThresholdMs, { force = false, overlayOnly = false 
 function getSessionDetailByProvider(provider, sessionId, project, { force = false } = {}) {
   const now = Date.now();
   provider = normalizeProviderId(provider);
+  const pushDetail = getHobotnicaDetail(provider, sessionId, project);
+  if (pushDetail) {
+    const value = normalizeDetail(pushDetail, { provider, sessionId, project });
+    value.freshness = { state: 'fresh', observedAt: now, ageMs: 0 };
+    return value;
+  }
   const key = `${provider}::${sessionId}::${project || ''}`;
   const cached = _sessionDetailCache.get(key);
 

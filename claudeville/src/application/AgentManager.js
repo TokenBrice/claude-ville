@@ -69,6 +69,9 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'rootSessionId',
     'workflowId',
     'workflowName',
+    'waveId',
+    'hobotnica',
+    'supersedes',
     'compactions',
     'compactionCount',
     'model',
@@ -525,6 +528,23 @@ export class AgentManager {
         }
         this._rosterBatchIdentities = null;
         if (failures) this._noteIngestFailures(failures, firstError);
+
+        this._emittedSupersedes ??= new Set();
+        for (const session of data.sessions) {
+            const fromId = typeof session?.supersedes === 'string' ? session.supersedes.trim() : '';
+            const toId = typeof session?.sessionId === 'string' ? session.sessionId.trim() : '';
+            if (!fromId || !toId || fromId === toId) continue;
+            const pairKey = `${fromId}::${toId}`;
+            if (this._emittedSupersedes.has(pairKey)) continue;
+            const successor = this.world.agents.get(toId);
+            if (!successor || successor.isDeparted) continue;
+            this._emittedSupersedes.add(pairKey);
+            if (this._emittedSupersedes.size > 512) {
+                const oldest = this._emittedSupersedes.values().next().value;
+                if (oldest !== undefined) this._emittedSupersedes.delete(oldest);
+            }
+            eventBus.emit('agent:superseded', { fromId, toId, agent: successor });
+        }
 
         this._sweepDepartedAgents(currentIds);
     }
@@ -992,6 +1012,16 @@ export class AgentManager {
             rootSessionId: session.rootSessionId || null,
             workflowId: session.workflowId || null,
             workflowName: session.workflowName || null,
+            waveId: typeof session.waveId === 'string' && session.waveId.trim()
+                ? session.waveId.trim().slice(0, 128)
+                : null,
+            supersedes: typeof session.supersedes === 'string' && session.supersedes.trim()
+                ? session.supersedes.trim().slice(0, 256)
+                : null,
+            hobotnica: session.hobotnica && typeof session.hobotnica === 'object'
+                && typeof session.hobotnica.threadId === 'string' && session.hobotnica.threadId.trim()
+                ? { ...session.hobotnica }
+                : null,
             compactions: Array.isArray(session.compactions)
                 ? session.compactions.slice(-4).map(item => ({
                     at: Number(item?.at) || 0,
@@ -1081,7 +1111,7 @@ export class AgentManager {
                 ? Math.max(0, Number(session.lastTurnDurationMs))
                 : null,
             signalSource,
-            promptDetail: (signalSource === 'hook' || signalSource === 'registry') && typeof session.promptDetail === 'string'
+            promptDetail: (signalSource === 'hook' || signalSource === 'registry' || signalSource === 'push') && typeof session.promptDetail === 'string'
                 ? session.promptDetail.slice(0, 200)
                 : null,
             signalCertainty: session.signalCertainty || 'unavailable',

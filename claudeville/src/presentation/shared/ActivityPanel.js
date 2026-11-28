@@ -298,7 +298,7 @@ function chapterMarginaliaShape(kind) {
 // and keeps the complete text behind the shared disclosure.
 function safePromptDetail(agent) {
     const source = agent?.promptDetail
-        || (agent?.signalSource === 'hook' ? agent?.lastToolInput : '');
+        || ((agent?.signalSource === 'hook' || agent?.signalSource === 'push') ? agent?.lastToolInput : '');
     return redactSecrets(source || '')
         .replace(/[\u0000-\u001f\u007f]+/g, ' ')
         .replace(/\s+/g, ' ')
@@ -651,8 +651,9 @@ export function relationshipLoreLine(bond, now = Date.now()) {
 }
 
 export class ActivityPanel {
-    constructor({ world = null, renderer = null, harborTraffic = null, biographyService = null, affinityService = null, toast = null } = {}) {
+    constructor({ world = null, renderer = null, harborTraffic = null, biographyService = null, affinityService = null, toast = null, onFocusExternal = null } = {}) {
         const getterFor = (value) => (typeof value === 'function' ? value : () => value);
+        this._onFocusExternal = typeof onFocusExternal === 'function' ? onFocusExternal : null;
         this.panelEl = document.getElementById('activityPanel');
         // V8 — the activity panel's box is reserved screen for moments,
         // plates and director framing.
@@ -804,6 +805,7 @@ export class ActivityPanel {
         this._activeTab = this._loadActiveTab();
         this._pinStripEl = null;
         this._pinToggleBtn = null;
+        this._openHobotnicaBtn = null;
         this._pinFetchSeq = 0;
         const rendererPinnedIds = this._getRenderer()?.getPinnedAgentIds?.() || [];
         this._pinned = new Set(rendererPinnedIds.length ? rendererPinnedIds : this._loadPinnedAgentIds());
@@ -819,6 +821,7 @@ export class ActivityPanel {
             .filter(node => node?.parentNode)
             .map(node => ({ node, parent: node.parentNode }));
         this._ensurePinCompare();
+        this._ensureOpenExternalAction();
         this._ensureWorkingDirectoryAction();
         this._ensureTabFolio();
         this._ensureCostLedgerDisclosure();
@@ -876,6 +879,11 @@ export class ActivityPanel {
         this._onPinToggleClick = () => {
             if (this._mode === 'agent' && this.currentAgent) {
                 this._togglePinnedAgent(this.currentAgent);
+            }
+        };
+        this._onOpenHobotnicaClick = () => {
+            if (this._mode === 'agent' && this.currentAgent?.hobotnica?.threadId) {
+                this._onFocusExternal?.(this.currentAgent);
             }
         };
         this._onWorkingDirectoryCopyClick = () => this._copyWorkingDirectory();
@@ -942,6 +950,7 @@ export class ActivityPanel {
                 }
                 this._renderRelationships(agent);
                 this._updatePinToggle(agent);
+                this._updateOpenExternalBtn(agent);
                 this._syncTabEmptyStates();
             }
         };
@@ -961,6 +970,31 @@ export class ActivityPanel {
             if (holdOpen) this._holdDepartedRecord(agent);
             else if (this.currentAgent && agent.id === this.currentAgent.id) this.currentAgent = null;
             this._refreshPinCompare();
+        };
+        this._onAgentSuperseded = ({ fromId, toId, agent } = {}) => {
+            if (!fromId || !toId) return;
+            if (this._pinned.has(fromId)) {
+                const nextPinned = new Set();
+                for (const id of this._pinned) {
+                    nextPinned.add(id === fromId ? toId : id);
+                }
+                this._pinned = nextPinned;
+                this._pinnedDetails.delete(fromId);
+                this._pinIdentities.delete(fromId);
+                this._persistPinnedAgentIds();
+                eventBus.emit('agents:pins-changed', {
+                    pinnedAgentIds: [...this._pinned].slice(0, PIN_COMPARE_LIMIT),
+                });
+                this._refreshPinCompare({ fetch: true });
+            }
+            if (agent && this.currentAgent?.id === fromId) {
+                if (this._mode === 'agent') {
+                    this._heldDepartedId = null;
+                    this.show(agent);
+                } else {
+                    this.currentAgent = agent;
+                }
+            }
         };
         this._onBuildingSelected = (building) => {
             if (building) this.showBuilding(building);
@@ -1035,6 +1069,7 @@ export class ActivityPanel {
 
         this.closeBtn.addEventListener('click', this._onCloseClick);
         this._pinToggleBtn?.addEventListener('click', this._onPinToggleClick);
+        this._openHobotnicaBtn?.addEventListener('click', this._onOpenHobotnicaClick);
         this._workingDirectoryCopyBtn?.addEventListener('click', this._onWorkingDirectoryCopyClick);
         document.addEventListener('click', this._onInteractionClick, true);
         document.addEventListener('keydown', this._onInteractionKeydown, true);
@@ -1048,6 +1083,7 @@ export class ActivityPanel {
         eventBus.on('agent:deselected', this._onAgentDeselected);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
+        eventBus.on('agent:superseded', this._onAgentSuperseded);
         eventBus.on(BUILDING_EVENTS.SELECTED, this._onBuildingSelected);
         eventBus.on(BUILDING_EVENTS.DESELECTED, this._onBuildingDeselected);
         eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, this._onBuildingPresence);
@@ -1386,6 +1422,28 @@ export class ActivityPanel {
             this.closeBtn.parentNode.insertBefore(button, this.closeBtn);
             this._pinToggleBtn = button;
         }
+    }
+
+    _ensureOpenExternalAction() {
+        if (this._openHobotnicaBtn) return;
+        const header = this.panelEl?.querySelector('.activity-panel__header');
+        if (!header) return;
+        const button = el('button', {
+            className: 'activity-panel__external-btn',
+            text: 'Open in Hobotnica ↗',
+            title: 'Open in Hobotnica ↗',
+            ariaLabel: 'Open in Hobotnica',
+            style: { display: 'none' },
+        });
+        button.type = 'button';
+        header.appendChild(button);
+        this._openHobotnicaBtn = button;
+    }
+
+    _updateOpenExternalBtn(agent) {
+        if (!this._openHobotnicaBtn) return;
+        const visible = this._mode === 'agent' && Boolean(agent?.hobotnica?.threadId);
+        this._openHobotnicaBtn.style.display = visible ? '' : 'none';
     }
 
     // U-P8 — the agent's repo and current branch under the provenance line:
@@ -1756,6 +1814,7 @@ export class ActivityPanel {
         this._renderDirectorFeed();
         this._renderRelationships(agent);
         this._updatePinToggle(agent);
+        this._updateOpenExternalBtn(agent);
         this._applyActiveTab();
         this._syncTabEmptyStates();
         this._refreshPinCompare({ fetch: true });
@@ -1787,6 +1846,7 @@ export class ActivityPanel {
         this._renderSignatures.buildingDetail = '';
         this._hideAgentSections();
         this._updatePinToggle(null);
+        this._updateOpenExternalBtn(null);
         this._updateWorkingDirectory(null);
         this._refreshPinCompare({ fetch: this._pinCompareDirty });
         this._ensureBuildingContentEl();
@@ -1819,6 +1879,7 @@ export class ActivityPanel {
             this._teardownHeroPortrait();
             this._updateCallCard(null);
             this._updatePinToggle(retainedAgent);
+            this._updateOpenExternalBtn(retainedAgent);
             this._updateWorkingDirectory(retainedAgent);
             if (wasBuilding) this._teardownBuildingView();
         });
@@ -4938,6 +4999,7 @@ export class ActivityPanel {
         this._mode = null;
         this.closeBtn?.removeEventListener('click', this._onCloseClick);
         this._pinToggleBtn?.removeEventListener('click', this._onPinToggleClick);
+        this._openHobotnicaBtn?.removeEventListener('click', this._onOpenHobotnicaClick);
         this._workingDirectoryCopyBtn?.removeEventListener('click', this._onWorkingDirectoryCopyClick);
         document.removeEventListener('click', this._onInteractionClick, true);
         document.removeEventListener('keydown', this._onInteractionKeydown, true);
@@ -4946,6 +5008,7 @@ export class ActivityPanel {
         eventBus.off('agent:deselected', this._onAgentDeselected);
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);
+        eventBus.off('agent:superseded', this._onAgentSuperseded);
         eventBus.off(BUILDING_EVENTS.SELECTED, this._onBuildingSelected);
         eventBus.off(BUILDING_EVENTS.DESELECTED, this._onBuildingDeselected);
         eventBus.off(BUILDING_EVENTS.ACTIVE_AGENTS, this._onBuildingPresence);
@@ -4988,6 +5051,7 @@ export class ActivityPanel {
         const ownedNodes = [
             this._pinStripEl,
             this._pinToggleBtn,
+            this._openHobotnicaBtn,
             this._workingDirectoryRowEl,
             this._statusElapsedEl,
             this._repoLineEl,
@@ -5030,6 +5094,8 @@ export class ActivityPanel {
         this.closeBtn = null;
         this._pinStripEl = null;
         this._pinToggleBtn = null;
+        this._openHobotnicaBtn = null;
+        this._onFocusExternal = null;
         this._workingDirectoryRowEl = null;
         this._workingDirectoryValueEl = null;
         this._workingDirectoryCopyBtn = null;

@@ -92,7 +92,16 @@ export async function startIsolatedServer({ home, env } = {}) {
     CLAUDEVILLE_ANTIGRAVITY_DIR: path.join(isolatedHome, '.gemini', 'antigravity-cli'),
     CLAUDEVILLE_T3_DIR: path.join(isolatedHome, '.t3'),
   };
-  for (const key of ['ZAI_API_KEY', 'GLM_MCP_API_KEY', 'Z_AI_API_KEY', 'GLM_QUOTA_URL', 'ACP_GLM_BASE_URL']) {
+  for (const key of [
+    'ZAI_API_KEY',
+    'GLM_MCP_API_KEY',
+    'Z_AI_API_KEY',
+    'GLM_QUOTA_URL',
+    'ACP_GLM_BASE_URL',
+    'HOBOTNICA_HOME',
+    'CLAUDEVILLE_HOBOTNICA_TOKEN_FILE',
+    'CLAUDEVILLE_HOBOTNICA_PORT',
+  ]) {
     delete childEnv[key];
   }
   if (env) Object.assign(childEnv, env);

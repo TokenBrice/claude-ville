@@ -98,7 +98,7 @@ export function isWatchingOnPoll(session) {
 }
 
 export function normalizeSignalSource(source) {
-    return ['hook', 'registry', 'transcript'].includes(source) ? source : null;
+    return ['hook', 'registry', 'transcript', 'push'].includes(source) ? source : null;
 }
 
 // Fallback for providers with no turn state: the old name-and-punctuation

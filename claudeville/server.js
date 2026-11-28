@@ -1,5 +1,6 @@
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
@@ -35,6 +36,7 @@ const villageWeather = require('./services/villageWeather');
 const { SessionResidency } = require('./services/sessionResidency');
 const { detectCollisions } = require('./services/workingSet');
 const { hookOverlay } = require('./adapters/hooks');
+const { hobotnicaPush } = require('./adapters/hobotnicaPush');
 
 // Claude adapter (teams/tasks are Claude-only)
 const claudeAdapter = adapters.find(a => a.provider === 'claude');
@@ -567,6 +569,248 @@ function handlePostIngestHook(req, res) {
         : 'invalid hook event';
       return sendError(res, 400, message);
     }
+  });
+}
+
+let _bridgeTokenCache = { key: null, token: null };
+const BRIDGE_TOKEN_MAX_BYTES = 4096;
+
+function bridgeTokenFilePath() {
+  const configured = typeof process.env.CLAUDEVILLE_HOBOTNICA_TOKEN_FILE === 'string'
+    ? process.env.CLAUDEVILLE_HOBOTNICA_TOKEN_FILE.trim()
+    : '';
+  if (configured) return configured;
+  const hobotnicaHome = typeof process.env.HOBOTNICA_HOME === 'string' && process.env.HOBOTNICA_HOME.trim()
+    ? process.env.HOBOTNICA_HOME.trim()
+    : path.join(os.homedir(), '.local', 'share', 'hobotnica');
+  return path.join(hobotnicaHome, 'userdata', 'secrets', 'claudeville-bridge-token');
+}
+
+function resolveHobotnicaFocusPort() {
+  const raw = Number(process.env.CLAUDEVILLE_HOBOTNICA_PORT || 3873);
+  return Number.isInteger(raw) && raw >= 1 && raw <= 65535 ? raw : 3873;
+}
+
+// Fail-closed 0600 bridge token reader: symlinks (file or parent dir),
+// non-owner UIDs, missing/empty files, and group/world-accessible modes on
+// POSIX are rejected.
+function readBridgeTokenFile() {
+  const filePath = bridgeTokenFilePath();
+  const parentDir = path.dirname(filePath);
+  let parentStat;
+  let lstat;
+  try {
+    parentStat = fs.lstatSync(parentDir);
+    lstat = fs.lstatSync(filePath);
+  } catch {
+    _bridgeTokenCache = { key: null, token: null };
+    return null;
+  }
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
+    _bridgeTokenCache = { key: null, token: null };
+    return null;
+  }
+  if (!lstat.isFile() || lstat.isSymbolicLink()) {
+    _bridgeTokenCache = { key: null, token: null };
+    return null;
+  }
+  const currentUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (process.platform !== 'win32') {
+    if ((lstat.mode & 0o077) !== 0) {
+      _bridgeTokenCache = { key: null, token: null };
+      return null;
+    }
+    if (currentUid !== null && lstat.uid !== currentUid) {
+      _bridgeTokenCache = { key: null, token: null };
+      return null;
+    }
+  }
+  if (lstat.size <= 0 || lstat.size > BRIDGE_TOKEN_MAX_BYTES) {
+    _bridgeTokenCache = { key: null, token: null };
+    return null;
+  }
+  const cacheKey = `${filePath}|${parentStat.dev}:${parentStat.ino}|${lstat.dev}:${lstat.ino}:${lstat.size}:${lstat.mtimeMs}:${lstat.mode}:${lstat.uid}`;
+  if (_bridgeTokenCache.key === cacheKey && _bridgeTokenCache.token) {
+    return _bridgeTokenCache.token;
+  }
+  let fd;
+  try {
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+    fd = fs.openSync(filePath, flags);
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile()) {
+      _bridgeTokenCache = { key: null, token: null };
+      return null;
+    }
+    if (process.platform !== 'win32') {
+      if ((opened.mode & 0o077) !== 0) {
+        _bridgeTokenCache = { key: null, token: null };
+        return null;
+      }
+      if (currentUid !== null && opened.uid !== currentUid) {
+        _bridgeTokenCache = { key: null, token: null };
+        return null;
+      }
+    }
+    if (opened.size <= 0 || opened.size > BRIDGE_TOKEN_MAX_BYTES) {
+      _bridgeTokenCache = { key: null, token: null };
+      return null;
+    }
+    const buffer = Buffer.allocUnsafe(opened.size);
+    const bytesRead = fs.readSync(fd, buffer, 0, opened.size, 0);
+    const token = buffer.toString('utf8', 0, bytesRead).trim();
+    if (!token) {
+      _bridgeTokenCache = { key: null, token: null };
+      return null;
+    }
+    _bridgeTokenCache = { key: cacheKey, token };
+    return token;
+  } catch {
+    _bridgeTokenCache = { key: null, token: null };
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
+function extractBridgeToken(req) {
+  const authHeader = req?.headers?.authorization;
+  if (typeof authHeader === 'string') {
+    const match = /^\s*Bearer\s+(\S+)\s*$/i.exec(authHeader);
+    if (match?.[1]) return match[1];
+  }
+  const bridgeHeader = req?.headers?.['x-hobotnica-bridge-token'];
+  if (typeof bridgeHeader === 'string' && bridgeHeader.trim()) {
+    return bridgeHeader.trim();
+  }
+  return null;
+}
+
+function bridgeTokenAccepted(req) {
+  const expected = readBridgeTokenFile();
+  if (!expected) return false;
+  const supplied = extractBridgeToken(req);
+  if (!supplied) return false;
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  const suppliedBuffer = Buffer.from(supplied, 'utf8');
+  return expectedBuffer.length === suppliedBuffer.length
+    && crypto.timingSafeEqual(expectedBuffer, suppliedBuffer);
+}
+
+/**
+ * POST /api/ingest/hobotnica
+ * Accept instance-scoped `hobotnica-telemetry.v1` snapshot/delta/heartbeat frames.
+ */
+function handlePostIngestHobotnica(req, res) {
+  const localRequest = validateLocalRequest(req, { requireOrigin: false });
+  if (!localRequest.ok) {
+    return sendError(res, localRequest.statusCode, localRequest.message);
+  }
+  if (!bridgeTokenAccepted(req)) return sendError(res, 401, 'Unauthorized');
+
+  readJsonBody(req, (err, body) => {
+    if (err) {
+      const statusCode = err.statusCode === 413 ? 413 : 400;
+      return sendError(res, statusCode, statusCode === 413 ? 'Payload Too Large' : 'invalid JSON body');
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return sendError(res, 400, 'invalid hobotnica telemetry envelope');
+    }
+    try {
+      const result = hobotnicaPush.ingest(body);
+      if (result.changed) {
+        markProviderDataDirty({
+          provider: null,
+          kind: 'overlay',
+          reason: 'hobotnica-push',
+        }, null, { coalesce: false });
+      }
+      scheduleHobotnicaPushExpiry();
+      return sendJson(res, 200, {
+        ok: true,
+        claudevilleBootId: SERVER_IDENTITY.bootId,
+        wsClients: wsClients.size,
+      });
+    } catch (ingestError) {
+      const message = typeof ingestError?.code === 'string' && ingestError.code.startsWith('INVALID_')
+        ? String(ingestError.message || 'invalid hobotnica telemetry envelope')
+        : 'invalid hobotnica telemetry envelope';
+      return sendError(res, 400, message);
+    }
+  });
+}
+
+function boundedFocusId(value, maxLen = 256) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maxLen) return false;
+  return trimmed;
+}
+
+/**
+ * POST /api/focus
+ * Broadcast an outbound WebSocket `focus` command to open ClaudeVille tabs.
+ */
+function handlePostFocus(req, res) {
+  const localRequest = validateLocalRequest(req, { requireOrigin: false });
+  if (!localRequest.ok) {
+    return sendError(res, localRequest.statusCode, localRequest.message);
+  }
+  if (!bridgeTokenAccepted(req)) return sendError(res, 401, 'Unauthorized');
+
+  readJsonBody(req, (err, body) => {
+    if (err) {
+      const statusCode = err.statusCode === 413 ? 413 : 400;
+      return sendError(res, statusCode, statusCode === 413 ? 'Payload Too Large' : 'invalid JSON body');
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return sendError(res, 400, 'invalid focus request');
+    }
+
+    const sessionId = boundedFocusId(body.sessionId);
+    const nativeSessionId = boundedFocusId(body.nativeSessionId);
+    const threadId = boundedFocusId(body.threadId);
+    const subagentId = boundedFocusId(body.subagentId);
+    const provider = boundedFocusId(body.provider, 64);
+    if (
+      sessionId === false
+      || nativeSessionId === false
+      || threadId === false
+      || subagentId === false
+      || provider === false
+    ) {
+      return sendError(res, 400, 'invalid focus request');
+    }
+    if (!sessionId && !nativeSessionId && !threadId && !subagentId) {
+      return sendError(res, 400, 'invalid focus request');
+    }
+
+    const resolvedId = hobotnicaPush.resolveCanonicalId({
+      sessionId,
+      nativeSessionId,
+      threadId,
+      subagentId,
+      provider,
+    }) || sessionId || nativeSessionId || threadId || subagentId;
+
+    const payload = {
+      type: 'focus',
+      sessionId: resolvedId,
+      timestamp: Date.now(),
+    };
+    for (const socket of Array.from(wsClients)) {
+      wsSend(socket, payload);
+    }
+
+    return sendJson(res, 200, {
+      ok: true,
+      focused: wsClients.size > 0,
+      sessionId: resolvedId,
+      clients: wsClients.size,
+    });
   });
 }
 
@@ -1137,8 +1381,120 @@ function handleTextMessage(socket, message) {
       const fresh = Date.now() - lastResyncFreshAt >= RESYNC_FRESH_WINDOW_MS;
       if (fresh) lastResyncFreshAt = Date.now();
       sendInitialData(socket, fresh ? { forceFresh: true } : {});
+    } else if (data.type === 'focus-external') {
+      handleWsFocusExternal(socket, data);
     }
   } catch { /* ignore */ }
+}
+
+const FOCUS_EXTERNAL_MIN_INTERVAL_MS = 500;
+const FOCUS_EXTERNAL_MAX_RESPONSE_BYTES = 4096;
+
+function handleWsFocusExternal(socket, data) {
+  if (socket._cvFocusExternalInFlight) {
+    wsSend(socket, { type: 'focus-external-result', ok: false, reason: 'busy' });
+    return;
+  }
+  const now = Date.now();
+  if (socket._cvLastFocusExternalAt && (now - socket._cvLastFocusExternalAt) < FOCUS_EXTERNAL_MIN_INTERVAL_MS) {
+    wsSend(socket, { type: 'focus-external-result', ok: false, reason: 'rate_limited' });
+    return;
+  }
+  const threadId = boundedFocusId(data?.threadId);
+  const subagentId = boundedFocusId(data?.subagentId);
+  const childThreadId = boundedFocusId(data?.childThreadId);
+  if (!threadId || subagentId === false || childThreadId === false) {
+    wsSend(socket, { type: 'focus-external-result', ok: false, reason: 'invalid_request' });
+    return;
+  }
+  const token = readBridgeTokenFile();
+  if (!token) {
+    wsSend(socket, { type: 'focus-external-result', ok: false, reason: 'unconfigured' });
+    return;
+  }
+  const bodyObj = { threadId };
+  if (subagentId) bodyObj.subagentId = subagentId;
+  if (childThreadId) bodyObj.childThreadId = childThreadId;
+  const bodyStr = JSON.stringify(bodyObj);
+  const port = resolveHobotnicaFocusPort();
+
+  socket._cvFocusExternalInFlight = true;
+  socket._cvLastFocusExternalAt = now;
+
+  let replied = false;
+  const reply = (payload) => {
+    if (replied) return;
+    replied = true;
+    socket._cvFocusExternalInFlight = false;
+    if (!socket.destroyed && socket.writable) {
+      wsSend(socket, { type: 'focus-external-result', ...payload });
+    }
+  };
+
+  // Fixed loopback target only: never trust or forward any URL from client or push payloads.
+  const req = http.request({
+    hostname: LOOPBACK_HOST,
+    port,
+    method: 'POST',
+    path: '/api/cockpit/focus',
+    headers: {
+      Host: `${LOOPBACK_HOST}:${port}`,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(bodyStr),
+      Authorization: `Bearer ${token}`,
+    },
+  }, (res) => {
+    const statusCode = Number(res.statusCode) || 0;
+    const chunks = [];
+    let totalBytes = 0;
+    let truncated = false;
+    res.on('data', (chunk) => {
+      if (truncated) return;
+      totalBytes += chunk.length;
+      if (totalBytes > FOCUS_EXTERNAL_MAX_RESPONSE_BYTES) {
+        const remaining = FOCUS_EXTERNAL_MAX_RESPONSE_BYTES - (totalBytes - chunk.length);
+        if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
+        truncated = true;
+        return;
+      }
+      chunks.push(chunk);
+    });
+    res.on('end', () => {
+      let parsed = null;
+      if (chunks.length > 0 && !truncated) {
+        try {
+          parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch {
+          parsed = null;
+        }
+      }
+      if (statusCode === 202 || parsed?.delivered === false) {
+        reply({ ok: false, delivered: false, statusCode, reason: 'no_cockpit' });
+        return;
+      }
+      if (statusCode === 200) {
+        reply({ ok: true, delivered: true, statusCode });
+        return;
+      }
+      reply({ ok: false, statusCode });
+    });
+    res.on('error', () => {
+      reply({ ok: false, reason: 'unreachable' });
+    });
+  });
+  req.setTimeout(2000, () => {
+    req.destroy(new Error('timeout'));
+  });
+  req.on('error', (err) => {
+    reply({
+      ok: false,
+      reason: err?.message === 'timeout' ? 'timeout' : 'unreachable',
+    });
+  });
+  req.on('close', () => {
+    socket._cvFocusExternalInFlight = false;
+  });
+  req.end(bodyStr);
 }
 
 function createWebSocketFrame(data, opcode = 0x1) {
@@ -1398,6 +1754,7 @@ function replySnapshotUnavailable(socket, err) {
 let watchDebounce = null;
 let watchRefreshDebounce = null;
 let hookOverlayExpiryTimer = null;
+let hobotnicaPushExpiryTimer = null;
 let hookOverlayBroadcastTimer = null;
 let dynamicWatchRetireTimer = null;
 let heartbeatTimer = null;
@@ -2091,6 +2448,28 @@ function scheduleHookOverlayExpiry() {
     scheduleHookOverlayExpiry();
   }, Math.max(1, expiresAt - now + 5));
   hookOverlayExpiryTimer.unref?.();
+}
+
+function scheduleHobotnicaPushExpiry() {
+  if (hobotnicaPushExpiryTimer) clearTimeout(hobotnicaPushExpiryTimer);
+  const now = Date.now();
+  hobotnicaPush.prune(now);
+  const expiresAt = hobotnicaPush.nextExpiryAt(now);
+  if (expiresAt === null) {
+    hobotnicaPushExpiryTimer = null;
+    return;
+  }
+  hobotnicaPushExpiryTimer = setTimeout(() => {
+    hobotnicaPushExpiryTimer = null;
+    if (shutdownStarted) return;
+    markProviderDataDirty(
+      { kind: 'overlay', reason: 'hobotnica-push-expiry' },
+      null,
+      { coalesce: false },
+    );
+    scheduleHobotnicaPushExpiry();
+  }, Math.max(1, expiresAt - now + 5));
+  hobotnicaPushExpiryTimer.unref?.();
 }
 
 function debouncedWatchRefresh() {
@@ -2981,8 +3360,16 @@ const API_ROUTES = {
   POST: new Map([
     ['/api/session-details', handlePostSessionDetails],
     ['/api/ingest/hook', handlePostIngestHook],
+    ['/api/ingest/hobotnica', handlePostIngestHobotnica],
+    ['/api/focus', handlePostFocus],
   ]),
 };
+
+const POST_ONLY_API_ROUTES = new Set([
+  '/api/ingest/hook',
+  '/api/ingest/hobotnica',
+  '/api/focus',
+]);
 
 const server = http.createServer((req, res) => {
   const localRequest = validateLocalRequest(req);
@@ -3006,7 +3393,7 @@ const server = http.createServer((req, res) => {
   if (routeHandler) {
     return routeHandler(req, res, parsedUrl);
   }
-  if (pathname === '/api/ingest/hook') {
+  if (POST_ONLY_API_ROUTES.has(pathname)) {
     return sendError(res, 405, 'Method Not Allowed');
   }
 
@@ -3118,6 +3505,7 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
   clearRuntimeTimer(watchDebounce);
   clearRuntimeTimer(watchRefreshDebounce);
   clearRuntimeTimer(hookOverlayExpiryTimer);
+  clearRuntimeTimer(hobotnicaPushExpiryTimer);
   clearRuntimeTimer(hookOverlayBroadcastTimer);
   clearRuntimeTimer(sessionScanTimer);
   clearRuntimeTimer(dynamicWatchRetireTimer);
@@ -3129,6 +3517,7 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
   watchDebounce = null;
   watchRefreshDebounce = null;
   hookOverlayExpiryTimer = null;
+  hobotnicaPushExpiryTimer = null;
   hookOverlayBroadcastTimer = null;
   sessionScanTimer = null;
   dynamicWatchRetireTimer = null;

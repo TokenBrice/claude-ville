@@ -155,10 +155,12 @@ function withTempHome(prefix, fn) {
   const savedHome = process.env.HOME;
   const savedRoot = process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
   const savedGlmAcp = process.env.CLAUDEVILLE_GLM_ACP_SESSION_DIR;
+  const savedHobotnicaHome = process.env.HOBOTNICA_HOME;
   try {
     process.env.HOME = tmp;
     delete process.env.CLAUDEVILLE_ANTIGRAVITY_DIR;
     delete process.env.CLAUDEVILLE_GLM_ACP_SESSION_DIR;
+    delete process.env.HOBOTNICA_HOME;
     t3code.clearT3Cache();
     return fn(tmp);
   } finally {
@@ -166,6 +168,8 @@ function withTempHome(prefix, fn) {
     else process.env.HOME = savedHome;
     if (savedRoot !== undefined) process.env.CLAUDEVILLE_ANTIGRAVITY_DIR = savedRoot;
     if (savedGlmAcp !== undefined) process.env.CLAUDEVILLE_GLM_ACP_SESSION_DIR = savedGlmAcp;
+    if (savedHobotnicaHome === undefined) delete process.env.HOBOTNICA_HOME;
+    else process.env.HOBOTNICA_HOME = savedHobotnicaHome;
     t3code.clearT3Cache();
     fs.rmSync(tmp, { recursive: true, force: true });
   }

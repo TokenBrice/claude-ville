@@ -1,7 +1,7 @@
 // Singleton event bus (observer pattern)
 //
 // Event-name contracts (string keys; no registry enforcement):
-//   agent:added, agent:updated, agent:removed
+//   agent:added, agent:updated, agent:removed, agent:superseded
 //   agent:selected, agent:deselected
 //   agents:pins-changed                       // { pinnedAgentIds: string[] } in insertion order
 //   building:selected, building:deselected     // emitted by IsometricRenderer click handler
@@ -10,7 +10,7 @@
 //   mode:changed, usage:updated
 //   fps:updated                                 // number (~2/s) from IsometricRenderer loop, null when loop stops
 //   atmosphere:updated                           // atmosphere snapshot (~2/s) from IsometricRenderer; the audio directors listen
-//   ws:connected, ws:disconnected, ws:init, ws:update, ws:message
+//   ws:connected, ws:disconnected, ws:init, ws:update, ws:focus, ws:message
 //   ws:server-changed                            // { from, to, versionChanged }: a full frame from a different server (EN-4)
 export const BUILDING_EVENTS = Object.freeze({
     SELECTED: 'building:selected',
