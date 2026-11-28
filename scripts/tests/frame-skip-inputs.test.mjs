@@ -104,3 +104,59 @@ test('removing a buffer or scalar from a frame invalidates the presented baselin
     reuse.begin();
     assert.equal(reuse.unchanged(), false);
 });
+
+test('word-wise byte comparison detects single-byte changes across aligned words, tails, and unaligned subviews', () => {
+    for (const length of [16, 17, 18, 19, 20, 63, 64, 67]) {
+        const reuse = new GpuFrameReuse();
+        const backing = new Uint8Array(length + 4);
+        for (let i = 0; i < backing.length; i++) backing[i] = (i * 37 + 11) & 255;
+        for (const offset of [0, 1, 2, 3]) {
+            reuse.reset();
+            const subview = new Uint8Array(backing.buffer, offset, length);
+            reuse.begin().bytes(subview);
+            reuse.commit();
+            reuse.begin().bytes(subview);
+            assert.equal(reuse.unchanged(), true, `len=${length} off=${offset} unchanged`);
+            // Flip first, middle, and final byte individually.
+            for (const pos of new Set([0, length >> 1, length - 1])) {
+                subview[pos] ^= 1;
+                reuse.begin().bytes(subview);
+                assert.equal(reuse.unchanged(), false, `len=${length} off=${offset} pos=${pos} must differ`);
+                subview[pos] ^= 1;
+                reuse.begin().bytes(subview);
+                assert.equal(reuse.unchanged(), true, `len=${length} off=${offset} pos=${pos} restored`);
+            }
+        }
+    }
+});
+
+test('GpuFrameReuse.reset() and shrinking scalar counts drop stale baselines and references', () => {
+    const reuse = new GpuFrameReuse();
+    const token = { handle: 'old' };
+    const buf = new Uint8Array([1, 2, 3, 4]);
+    reuse.begin();
+    reuse.bytes(buf);
+    reuse.scalar(token);
+    reuse.scalar(42);
+    reuse.commit();
+    assert.equal(reuse._presentedScalars.length, 2);
+
+    // Shrink to 1 scalar and commit: old trailing scalar reference is released.
+    reuse.begin();
+    reuse.bytes(buf);
+    reuse.scalar(99);
+    assert.equal(reuse.unchanged(), false);
+    reuse.commit();
+    assert.equal(reuse._presentedScalars.length, 1);
+    assert.equal(reuse._currentScalars.length, 1);
+    assert.equal(reuse._presentedScalars.includes(token), false);
+
+    // reset() clears saved buffers and invalidates baseline.
+    reuse.reset();
+    assert.equal(reuse._bytes.length, 0);
+    assert.equal(reuse._presentedScalars.length, 0);
+    reuse.begin();
+    reuse.bytes(buf);
+    reuse.scalar(99);
+    assert.equal(reuse.unchanged(), false);
+});

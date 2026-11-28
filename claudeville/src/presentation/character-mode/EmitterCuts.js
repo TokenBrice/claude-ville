@@ -29,6 +29,7 @@
 import { AMBIENT_GROUND_PROPS, DISTRICT_PROPS, SCENIC_POINT_PROPS } from '../../config/scenery.js';
 import { atlasSourceRect } from './AssetManager.js';
 import { sourceEnergyFor } from './AtmosphereState.js';
+import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { buildEmitterCut, CanvasOverlayStampCache, emitterNightCarry } from './CanvasGrade.js';
 import { mirrorAccentGate, mirrorAccentLayers, mirrorAccentRainCut, mirrorStormDrop } from './CoastBake.js';
 import {
@@ -444,7 +445,124 @@ function cacheWaterRecords(renderer) {
 
 const cuts = new Map();
 const cutImages = new Map();
-let occluderScratch = null;
+let cutRevisionCounter = 0;
+
+// Bounded tiered scratch canvas pool so small/medium emitter cuts never share
+// a viewport-sized scratch canvas with full-harbor water columns or moon path
+// layers, and alternating large/medium requests (e.g. 2496x1404 and 600x600)
+// hit distinct buckets with zero resize thrashing while respecting both entry
+// and RGBA byte budgets.
+const SCRATCH_TIERS = Object.freeze([32, 64, 128, 256, 512, 768, 1024, 1536, 2048, 2560, 3072]);
+const SCRATCH_BUCKET_LIMIT = 16;
+const SCRATCH_MAX_BYTES = 28 * 1024 * 1024;
+const SCRATCH_LARGE_STEP = 256;
+const SCRATCH_OVERSIZE_SHRINK_HYSTERESIS = 120;
+let scratchDocument = null;
+let scratchBuckets = new Map();
+let scratchBucketBytes = 0;
+let scratchOversize = null;
+let scratchOversizeSmallStreak = 0;
+let backingOwner = null;
+
+function ensureScratchDocument() {
+    if (typeof document === 'undefined') return;
+    if (scratchDocument !== document) {
+        releaseScratchPool();
+        scratchDocument = document;
+    }
+}
+
+function releaseScratchPool() {
+    for (const canvas of scratchBuckets.values()) {
+        releaseCanvasBackingStore(canvas);
+    }
+    scratchBuckets.clear();
+    scratchBucketBytes = 0;
+    if (scratchOversize) {
+        releaseCanvasBackingStore(scratchOversize);
+        scratchOversize = null;
+    }
+    scratchOversizeSmallStreak = 0;
+}
+
+function nextScratchTier(n) {
+    for (let i = 0; i < SCRATCH_TIERS.length; i++) {
+        if (SCRATCH_TIERS[i] >= n) return SCRATCH_TIERS[i];
+    }
+    return 0;
+}
+
+function ceilStep(n, step) {
+    return Math.max(step, Math.ceil(n / step) * step);
+}
+
+function evictOldestScratchBucket() {
+    const oldest = scratchBuckets.entries().next();
+    if (oldest.done) return false;
+    const [oldestKey, oldestCanvas] = oldest.value;
+    scratchBuckets.delete(oldestKey);
+    scratchBucketBytes = Math.max(0, scratchBucketBytes - canvasPixelCount(oldestCanvas) * 4);
+    releaseCanvasBackingStore(oldestCanvas);
+    emitterPerfStats.scratchEvictions++;
+    return true;
+}
+
+export function scratchCanvasFor(w, h) {
+    ensureScratchDocument();
+    const bw = nextScratchTier(w);
+    const bh = nextScratchTier(h);
+    const bucketBytes = bw && bh ? bw * bh * 4 : 0;
+    if (bw && bh && bucketBytes <= SCRATCH_MAX_BYTES) {
+        const key = (bw << 12) | bh;
+        let canvas = scratchBuckets.get(key);
+        if (canvas) {
+            // Refresh LRU recency.
+            scratchBuckets.delete(key);
+            scratchBuckets.set(key, canvas);
+            return canvas;
+        }
+        while (scratchBuckets.size >= SCRATCH_BUCKET_LIMIT
+            || (scratchBuckets.size > 0 && scratchBucketBytes + bucketBytes > SCRATCH_MAX_BYTES)) {
+            if (!evictOldestScratchBucket()) break;
+        }
+        canvas = document.createElement('canvas');
+        canvas.width = bw;
+        canvas.height = bh;
+        scratchBuckets.set(key, canvas);
+        scratchBucketBytes += bucketBytes;
+        emitterPerfStats.scratchCreates++;
+        return canvas;
+    }
+    const targetW = bw || ceilStep(w, SCRATCH_LARGE_STEP);
+    const targetH = bh || ceilStep(h, SCRATCH_LARGE_STEP);
+    if (!scratchOversize) {
+        scratchOversize = document.createElement('canvas');
+        scratchOversize.width = targetW;
+        scratchOversize.height = targetH;
+        scratchOversizeSmallStreak = 0;
+        emitterPerfStats.scratchCreates++;
+        return scratchOversize;
+    }
+    if (scratchOversize.width < w || scratchOversize.height < h) {
+        scratchOversize.width = Math.max(scratchOversize.width, targetW);
+        scratchOversize.height = Math.max(scratchOversize.height, targetH);
+        scratchOversizeSmallStreak = 0;
+        emitterPerfStats.scratchResizes++;
+        return scratchOversize;
+    }
+    if (scratchOversize.width * scratchOversize.height > targetW * targetH * 2.5) {
+        scratchOversizeSmallStreak++;
+        if (scratchOversizeSmallStreak >= SCRATCH_OVERSIZE_SHRINK_HYSTERESIS) {
+            scratchOversize.width = targetW;
+            scratchOversize.height = targetH;
+            scratchOversizeSmallStreak = 0;
+            emitterPerfStats.scratchResizes++;
+        }
+    } else {
+        scratchOversizeSmallStreak = 0;
+    }
+    return scratchOversize;
+}
 
 // NE P1.3 — quantise nightCarry to 1/16 steps so Canvas emitter cuts track
 // dusk/night transitions without rebuilding every frame or growing the cache.
@@ -489,6 +607,7 @@ function cutFor(assets, id, grade = null, placement = null) {
     const emissive = placement?.sidecar || emissiveImageFor(assets, id, albedo, key);
     if (!emissive) return null;
     const cut = buildEmitterCut(albedo, emissive, quantisedGradeForStep(carryStep));
+    if (cut) cut._revision = ++cutRevisionCounter;
     cuts.set(key, { carryStep, cut });
     return cut;
 }
@@ -556,6 +675,7 @@ export function partCutFor(assets, buildings, entry, draw, grade = null) {
     if (!emissive) return null;
     const backing = cached?.backing || {};
     const cut = buildEmitterCut(draw.image, emissive, quantisedGradeForStep(carryStep), backing);
+    if (cut) cut._revision = ++cutRevisionCounter;
     cuts.set(key, { revision, carryStep, backing, cut });
     return cut;
 }
@@ -565,7 +685,7 @@ let partScratch = null;
 // Draws the lit emitter texels of the frame each part shows now, carved by
 // whatever the depth pass drew in front of the building, after the
 // building's own cut (a part covers the base texels under it).
-function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight = false, baseCore = core, grade = null) {
+function drawPartCuts(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomOps, isDaylight = false, baseCore = core, grade = null, frameOccluders = null, viewBounds = null) {
     const buildings = renderer.buildingRenderer;
     if (!buildings?.partDrawsFor || !emitter.entry?.layers) return;
     partScratch ||= [];
@@ -589,31 +709,15 @@ function drawPartCuts(ctx, renderer, emitter, core, scale, bloomCtx, isDaylight 
         const y = d.y + (top - d.sy);
         const w = right - left;
         const h = bottom - top;
-        const occluders = occludersFor(renderer, emitter.sortY, emitter.sortY, x, y, w, h);
+        const sx = left - cut.x;
+        const sy = top - cut.y;
+        const occluders = occludersFor(renderer, emitter.sortY, emitter.sortY, x, y, w, h, null, frameOccluders);
         ctx.globalAlpha = alpha;
-        drawPartFrame(ctx, cut.canvas, left - cut.x, top - cut.y, w, h, x, y, occluders, scale);
-        if (bloomCtx) {
-            bloomCtx.globalAlpha = alpha;
-            drawPartFrame(bloomCtx, cut.bloom, left - cut.x, top - cut.y, w, h, x, y, occluders, scale);
+        drawCarvedSubRect(ctx, cut.canvas, sx, sy, w, h, x, y, occluders, scale, viewBounds);
+        if (bloomOps) {
+            pushBloomOp(bloomOps, cut.bloom, cut._revision || 0, sx, sy, w, h, x, y, alpha, occluders);
         }
     }
-}
-
-// The (sx, sy, w, h) frame of a part strip at world (x, y), carved.
-function drawPartFrame(ctx, source, sx, sy, w, h, x, y, occluders, scale) {
-    if (occluders.length) drawCarved(ctx, partFrameCanvas(source, sx, sy, w, h), x, y, occluders, scale);
-    else ctx.drawImage(source, sx, sy, w, h, x, y, w, h);
-}
-
-let partFrame = null;
-function partFrameCanvas(source, sx, sy, w, h) {
-    if (!partFrame) partFrame = document.createElement('canvas');
-    partFrame.width = w;
-    partFrame.height = h;
-    const ctx = partFrame.getContext('2d');
-    ctx.clearRect(0, 0, w, h);
-    ctx.drawImage(source, sx, sy, w, h, 0, 0, w, h);
-    return partFrame;
 }
 
 function buildingColumnSortY(drawables, building, worldX, fallbackSortY) {
@@ -636,20 +740,41 @@ function buildingColumnSortY(drawables, building, worldX, fallbackSortY) {
     return best ?? fallbackSortY;
 }
 
-function* emitterPlacements(renderer) {
+function buildingEntriesColumnSortY(entries, worldX, fallbackSortY) {
+    let best = null;
+    let nearestDist = Infinity;
+    for (let i = 0; i < entries.length; i++) {
+        const d = entries[i];
+        if (d.kind === 'building-column' && d.column) {
+            if (worldX >= d.column.worldLeft && worldX <= d.column.worldRight) return d.sortY;
+            const center = (d.column.worldLeft + d.column.worldRight) / 2;
+            const dist = Math.abs(worldX - center);
+            if (dist < nearestDist) {
+                nearestDist = dist;
+                best = d.sortY;
+            }
+        } else if (d.kind !== 'building-back') {
+            best = d.sortY;
+        }
+    }
+    return best ?? fallbackSortY;
+}
+
+function* emitterPlacements(renderer, buildingCache = null) {
     const assets = renderer.assets;
     const buildings = renderer.buildingRenderer;
-    const buildingDrawables = buildings?.enumerateDrawables?.() || [];
+    const cache = buildingCache || buildingDrawablesCacheFor(renderer);
+    const buildingDrawables = cache.drawables;
     const seen = new Set();
     for (const drawable of buildingDrawables) {
         const building = drawable.building;
         if (!building || seen.has(building) || !hasEmissiveSidecar(assets, drawable.entry?.id)) continue;
         seen.add(building);
-        const sortYAtX = (worldX) => buildingColumnSortY(buildingDrawables, building, worldX, drawable.sortY);
-        let frontSortY = drawable.sortY;
-        for (const d of buildingDrawables) {
-            if (d.building === building && d.sortY > frontSortY) frontSortY = d.sortY;
-        }
+        const group = cache.byBuilding.get(building);
+        const sortYAtX = group
+            ? (worldX) => buildingEntriesColumnSortY(group.entries, worldX, drawable.sortY)
+            : (worldX) => buildingColumnSortY(buildingDrawables, building, worldX, drawable.sortY);
+        const frontSortY = group ? group.frontSortY : drawable.sortY;
         const workTier = buildings._workTierFor?.(building);
         const active = buildings.partGates?.isOpen?.(`work.${building.type}`) ?? (Boolean(workTier) && workTier !== 'dormant');
         const gate = buildings._emissiveGateFor?.(building) ?? 1;
@@ -728,55 +853,299 @@ export function villagerOccluder(sprite) {
     return { x: sprite.x + box.left, y: sprite.y + box.top, w: box.right - box.left, h: box.bottom - box.top };
 }
 
-function occludersFor(renderer, sortY, staticSortY, x, y, w, h, skipPropId = null) {
+// Per-renderer static occluder caches, refreshed on prop/drawable/asset
+// revisions while moving villagers and hulls are read live in painter order.
+const staticPropCacheMap = new WeakMap();
+const buildingCacheMap = new WeakMap();
+const emitterPerfStats = {
+    staticPropSyncs: 0,
+    staticPropRebuilds: 0,
+    landmarkCacheHits: 0,
+    landmarkCacheRebuilds: 0,
+    carvedDraws: 0,
+    uncarvedDraws: 0,
+    bloomReuses: 0,
+    bloomRedraws: 0,
+    bloomEmptySkips: 0,
+    scratchCreates: 0,
+    scratchResizes: 0,
+    scratchEvictions: 0,
+};
+
+function staticPropOccludersFor(renderer) {
+    const props = renderer?._staticPropSprites;
+    if (!props?.length) return EMPTY_ARRAY;
+    emitterPerfStats.staticPropSyncs++;
+    let cache = staticPropCacheMap.get(renderer);
+    let needsRebuild = !cache || cache.props !== props || cache.count !== props.length;
+    if (!needsRebuild) {
+        const skipped = cache.skipped;
+        for (let i = 0; i < skipped.length; i++) {
+            const idx = skipped[i];
+            const sprite = props[idx];
+            if (sprite?.bounds && typeof sprite.sortY === 'number' && !Number.isNaN(sprite.sortY)) {
+                needsRebuild = true;
+                break;
+            }
+        }
+    }
+    if (!needsRebuild) {
+        const entries = cache.entries;
+        let sortChanged = false;
+        for (let i = 0; i < entries.length; i++) {
+            const e = entries[i];
+            const sprite = props[e.index];
+            const bounds = sprite?.bounds;
+            if (sprite !== e.sprite || !bounds || typeof sprite.sortY !== 'number' || Number.isNaN(sprite.sortY)) {
+                needsRebuild = true;
+                break;
+            }
+            const cached = sprite._cacheCanvas;
+            const cachedCanvas = cached?.canvas || null;
+            const gpuRev = sprite._gpuCacheRevision || 0;
+            if (e.sortY !== sprite.sortY) {
+                e.sortY = sprite.sortY;
+                sortChanged = true;
+            }
+            if (e.cached !== cached || e.gpuRev !== gpuRev || e.bounds !== bounds || e.image !== cachedCanvas
+                || (cachedCanvas
+                    ? (e.x !== cached.x || e.y !== cached.y || e.w !== cachedCanvas.width || e.h !== cachedCanvas.height)
+                    : (e.spriteX !== sprite.x || e.spriteY !== sprite.y))) {
+                e.cached = cached;
+                e.gpuRev = gpuRev;
+                e.bounds = bounds;
+                e.spriteX = sprite.x;
+                e.spriteY = sprite.y;
+                if (cachedCanvas) {
+                    e.x = cached.x;
+                    e.y = cached.y;
+                    e.w = cachedCanvas.width;
+                    e.h = cachedCanvas.height;
+                    e.image = cachedCanvas;
+                    e.rev = gpuRev;
+                } else {
+                    e.x = sprite.x + bounds.left;
+                    e.y = sprite.y + bounds.top;
+                    e.w = bounds.right - bounds.left;
+                    e.h = bounds.bottom - bounds.top;
+                    e.image = null;
+                    e.rev = gpuRev;
+                }
+            }
+        }
+        if (!needsRebuild) {
+            if (sortChanged) entries.sort((a, b) => b.sortY - a.sortY);
+            return entries;
+        }
+    }
+    emitterPerfStats.staticPropRebuilds++;
+    const entries = [];
+    const skipped = [];
+    for (let i = 0; i < props.length; i++) {
+        const sprite = props[i];
+        const bounds = sprite?.bounds;
+        if (!bounds || typeof sprite.sortY !== 'number' || Number.isNaN(sprite.sortY)) {
+            skipped.push(i);
+            continue;
+        }
+        const cached = sprite._cacheCanvas;
+        const cachedCanvas = cached?.canvas || null;
+        const gpuRev = sprite._gpuCacheRevision || 0;
+        entries.push(cachedCanvas
+            ? {
+                index: i,
+                sprite,
+                id: sprite.id || null,
+                sortY: sprite.sortY,
+                cached,
+                gpuRev,
+                bounds,
+                spriteX: sprite.x,
+                spriteY: sprite.y,
+                x: cached.x,
+                y: cached.y,
+                w: cachedCanvas.width,
+                h: cachedCanvas.height,
+                image: cachedCanvas,
+                rev: gpuRev,
+            }
+            : {
+                index: i,
+                sprite,
+                id: sprite.id || null,
+                sortY: sprite.sortY,
+                cached: null,
+                gpuRev,
+                bounds,
+                spriteX: sprite.x,
+                spriteY: sprite.y,
+                x: sprite.x + bounds.left,
+                y: sprite.y + bounds.top,
+                w: bounds.right - bounds.left,
+                h: bounds.bottom - bounds.top,
+                image: null,
+                rev: gpuRev,
+            });
+    }
+    // Descending sortY lets occluder queries break as soon as sortY <= threshold.
+    entries.sort((a, b) => b.sortY - a.sortY);
+    staticPropCacheMap.set(renderer, { props, count: props.length, entries, skipped });
+    return entries;
+}
+
+const EMPTY_ARRAY = Object.freeze([]);
+
+function buildingDrawablesCacheFor(renderer) {
+    const drawables = renderer?.buildingRenderer?.enumerateDrawables?.() || EMPTY_ARRAY;
+    const assetVersion = renderer?.assets?.assetVersion || '';
+    let cache = buildingCacheMap.get(renderer);
+    if (cache && cache.drawables === drawables && cache.length === drawables.length && cache.assetVersion === assetVersion) {
+        return cache;
+    }
+    const byBuilding = new Map();
+    for (let i = 0; i < drawables.length; i++) {
+        const d = drawables[i];
+        if (!d?.building) continue;
+        let group = byBuilding.get(d.building);
+        if (!group) {
+            group = { entries: [], frontSortY: d.sortY };
+            byBuilding.set(d.building, group);
+        }
+        group.entries.push(d);
+        if (d.sortY > group.frontSortY) group.frontSortY = d.sortY;
+    }
+    cache = {
+        drawables,
+        length: drawables.length,
+        assetVersion,
+        byBuilding,
+        landmarks: null,
+        landmarkPendingIds: null,
+        landmarkImages: null,
+        resolvedDrawables: new Map(),
+    };
+    buildingCacheMap.set(renderer, cache);
+    return cache;
+}
+
+function collectVillagerOccluders(renderer) {
     const out = [];
-    const resolveDepth = typeof sortY === 'function' ? sortY : null;
     const agents = renderer.agentSprites instanceof Map ? renderer.agentSprites.values() : renderer.agentSprites || [];
     for (const sprite of agents) {
-        // The painter key the depth pass sorted the body at this frame
-        // (DrawablePass `agentSortY`: a body tucked behind a split building
-        // sorts before its back half).
         const depth = Number.isFinite(sprite?._depthSortY) ? sprite._depthSortY : sprite?.y;
-        const threshold = resolveDepth ? resolveDepth(sprite.x) : sortY;
-        if (!sprite?._bodyBox || !Number.isFinite(sprite.x) || !Number.isFinite(depth) || depth <= threshold) continue;
+        if (!sprite?._bodyBox || !Number.isFinite(sprite.x) || !Number.isFinite(depth)) continue;
         const rect = villagerOccluder(sprite);
-        if (overlaps(rect, x, y, w, h)) out.push(rect);
-    }
-    const staticThreshold = typeof staticSortY === 'function' ? staticSortY(x + w / 2) : staticSortY;
-    for (const sprite of renderer._staticPropSprites || []) {
-        const bounds = sprite?.bounds;
-        if (!bounds || !(sprite.sortY > staticThreshold)) continue;
-        if (skipPropId && (sprite.id === skipPropId || sprite.id?.startsWith?.(skipPropId + '.'))) continue;
-        const cached = sprite._cacheCanvas;
-        const rect = cached?.canvas
-            ? { x: cached.x, y: cached.y, w: cached.canvas.width, h: cached.canvas.height, image: cached.canvas }
-            : { x: sprite.x + bounds.left, y: sprite.y + bounds.top, w: bounds.right - bounds.left, h: bounds.bottom - bounds.top };
-        if (overlaps(rect, x, y, w, h)) out.push(rect);
+        out.push({ x: sprite.x, depth, rect });
     }
     return out;
+}
+
+function buildFrameOccluders(renderer) {
+    return {
+        villagers: collectVillagerOccluders(renderer),
+        staticProps: staticPropOccludersFor(renderer),
+        buildings: buildingDrawablesCacheFor(renderer),
+    };
+}
+
+function occludersFor(renderer, sortY, staticSortY, x, y, w, h, skipPropId = null, frameOccluders = null) {
+    const out = [];
+    const resolveDepth = typeof sortY === 'function' ? sortY : null;
+    if (frameOccluders) {
+        const villagers = frameOccluders.villagers;
+        for (let i = 0; i < villagers.length; i++) {
+            const v = villagers[i];
+            const threshold = resolveDepth ? resolveDepth(v.x) : sortY;
+            if (v.depth <= threshold) continue;
+            if (overlaps(v.rect, x, y, w, h)) out.push(v.rect);
+        }
+    } else {
+        const agents = renderer.agentSprites instanceof Map ? renderer.agentSprites.values() : renderer.agentSprites || [];
+        for (const sprite of agents) {
+            // The painter key the depth pass sorted the body at this frame
+            // (DrawablePass `agentSortY`: a body tucked behind a split building
+            // sorts before its back half).
+            const depth = Number.isFinite(sprite?._depthSortY) ? sprite._depthSortY : sprite?.y;
+            const threshold = resolveDepth ? resolveDepth(sprite.x) : sortY;
+            if (!sprite?._bodyBox || !Number.isFinite(sprite.x) || !Number.isFinite(depth) || depth <= threshold) continue;
+            const rect = villagerOccluder(sprite);
+            if (overlaps(rect, x, y, w, h)) out.push(rect);
+        }
+    }
+    const staticThreshold = typeof staticSortY === 'function' ? staticSortY(x + w / 2) : staticSortY;
+    const staticProps = frameOccluders ? frameOccluders.staticProps : staticPropOccludersFor(renderer);
+    for (let i = 0; i < staticProps.length; i++) {
+        const entry = staticProps[i];
+        if (!(entry.sortY > staticThreshold)) break;
+        if (skipPropId && (entry.id === skipPropId || entry.id?.startsWith?.(skipPropId + '.'))) continue;
+        if (overlaps(entry, x, y, w, h)) out.push(entry);
+    }
+    return out;
+}
+
+function visibleWorldBoundsFor(ctx, pad = 1) {
+    const canvas = ctx?.canvas;
+    if (!canvas || !(canvas.width > 0) || !(canvas.height > 0)) return null;
+    const t = ctx.getTransform?.();
+    if (!t || !(t.a > 0) || !(t.d > 0) || t.b || t.c) return null;
+    return {
+        x0: Math.floor(-t.e / t.a) - pad,
+        y0: Math.floor(-t.f / t.d) - pad,
+        x1: Math.ceil((canvas.width - t.e) / t.a) + pad,
+        y1: Math.ceil((canvas.height - t.f) / t.d) + pad,
+    };
+}
+
+// When carving for a nearest-neighbor overlay at integer device scale where
+// source and every active occluder land on whole world texels, carving at 1x
+// and scaling on blit is bit-identical to carving at `scale` while touching
+// `scale^2` fewer scratch pixels. Any fractional scale, fractional occluder
+// placement (sub-texel moving bodies), fallback fillRect occluder, or smoothed
+// target (bloom) stays on full `scale`.
+function resolveCarveScale(ctx, x, y, occluders, scale) {
+    if (!(scale > 1) || ctx.imageSmoothingEnabled !== false) return scale;
+    if (!Number.isInteger(scale) || !Number.isInteger(x) || !Number.isInteger(y)) return scale;
+    for (let i = 0; i < occluders.length; i++) {
+        const rect = occluders[i];
+        if (!rect.image || !Number.isInteger(rect.x) || !Number.isInteger(rect.y)) return scale;
+        if (rect.sx !== undefined && (!Number.isInteger(rect.sx) || !Number.isInteger(rect.sy)
+            || !Number.isInteger(rect.w) || !Number.isInteger(rect.h))) {
+            return scale;
+        }
+    }
+    return 1;
 }
 
 // The carve runs at the overlay's device scale (`scale` device px per world
 // px): a body placed on a sub-texel step at zoom or DPR > 1 is cut back out
 // on the device pixels it covered, so no 1-px strip of graded flame is left
-// along its silhouette.
-function carvedCut(cut, x, y, occluders, scale) {
-    const { width, height } = cut.canvas;
-    const w = Math.ceil(width * scale);
-    const h = Math.ceil(height * scale);
-    if (!occluderScratch) occluderScratch = document.createElement('canvas');
-    if (occluderScratch.width < w) occluderScratch.width = w;
-    if (occluderScratch.height < h) occluderScratch.height = h;
-    const ctx = occluderScratch.getContext('2d');
+// along its silhouette. Clips to the caller's source sub-rect while preserving
+// sub-pixel alignment (ox, oy) on fractional scales, and clears a 2-px apron
+// past (w, h) so bilinear bloom draws never sample stale texels from earlier
+// draws in the same scratch bucket.
+function carvedSubRect(source, sx, sy, sw, sh, x, y, occluders, scale, clipOffsetX = 0, clipOffsetY = 0) {
+    const dx0 = Math.floor(clipOffsetX * scale);
+    const dy0 = Math.floor(clipOffsetY * scale);
+    const ox = clipOffsetX * scale - dx0;
+    const oy = clipOffsetY * scale - dy0;
+    const w = Math.max(1, Math.ceil(sw * scale + ox));
+    const h = Math.max(1, Math.ceil(sh * scale + oy));
+    const scratch = scratchCanvasFor(w + 1, h + 1);
+    const ctx = scratch.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.imageSmoothingEnabled = false;
     ctx.globalCompositeOperation = 'source-over';
-    ctx.clearRect(0, 0, w, h);
-    ctx.setTransform(scale, 0, 0, scale, 0, 0);
-    ctx.drawImage(cut.canvas, 0, 0);
+    ctx.clearRect(0, 0, Math.min(scratch.width, w + 2), Math.min(scratch.height, h + 2));
+    ctx.setTransform(scale, 0, 0, scale, ox, oy);
+    if (sx === 0 && sy === 0 && sw === source.width && sh === source.height) {
+        ctx.drawImage(source, 0, 0);
+    } else {
+        ctx.drawImage(source, sx, sy, sw, sh, 0, 0, sw, sh);
+    }
     ctx.globalCompositeOperation = 'destination-out';
     ctx.fillStyle = '#000';
-    for (const rect of occluders) {
+    for (let i = 0; i < occluders.length; i++) {
+        const rect = occluders[i];
         if (rect.sx !== undefined) {
             ctx.drawImage(rect.image, rect.sx, rect.sy, rect.w, rect.h, rect.x - x, rect.y - y, rect.w, rect.h);
         } else if (rect.image) {
@@ -787,7 +1156,167 @@ function carvedCut(cut, x, y, occluders, scale) {
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
-    return { canvas: occluderScratch, w, h };
+    return { canvas: scratch, w, h, ox, oy };
+}
+
+function drawCarvedSubRect(ctx, source, sx, sy, sw, sh, x, y, occluders, scale, viewBounds = null, fullSource = false) {
+    let csx = sx;
+    let csy = sy;
+    let cw = sw;
+    let ch = sh;
+    let cx = x;
+    let cy = y;
+    let clipOffsetX = 0;
+    let clipOffsetY = 0;
+    if (viewBounds) {
+        const left = Math.max(0, Math.floor(viewBounds.x0 - x));
+        const top = Math.max(0, Math.floor(viewBounds.y0 - y));
+        const right = Math.min(sw, Math.ceil(viewBounds.x1 - x));
+        const bottom = Math.min(sh, Math.ceil(viewBounds.y1 - y));
+        if (right <= left || bottom <= top) return false;
+        if (left > 0 || top > 0 || right < sw || bottom < sh) {
+            csx = sx + left;
+            csy = sy + top;
+            cw = right - left;
+            ch = bottom - top;
+            cx = x + left;
+            cy = y + top;
+            clipOffsetX = left;
+            clipOffsetY = top;
+        }
+    }
+    let activeOccluders = occluders;
+    if (occluders.length && (cw !== sw || ch !== sh || cx !== x || cy !== y)) {
+        const filtered = [];
+        for (let i = 0; i < occluders.length; i++) {
+            if (overlaps(occluders[i], cx, cy, cw, ch)) filtered.push(occluders[i]);
+        }
+        activeOccluders = filtered;
+    }
+    if (!activeOccluders.length) {
+        emitterPerfStats.uncarvedDraws++;
+        if (fullSource && csx === 0 && csy === 0 && cw === source.width && ch === source.height) {
+            ctx.drawImage(source, cx, cy);
+        } else {
+            ctx.drawImage(source, csx, csy, cw, ch, cx, cy, cw, ch);
+        }
+        return true;
+    }
+    emitterPerfStats.carvedDraws++;
+    const carveScale = resolveCarveScale(ctx, cx, cy, activeOccluders, scale);
+    const carved = carvedSubRect(source, csx, csy, cw, ch, cx, cy, activeOccluders, carveScale, clipOffsetX, clipOffsetY);
+    ctx.drawImage(carved.canvas, 0, 0, carved.w, carved.h, cx - carved.ox / carveScale, cy - carved.oy / carveScale, carved.w / carveScale, carved.h / carveScale);
+    return true;
+}
+
+const bloomOps = [];
+const bloomOpPool = [];
+function pushBloomOp(list, source, sourceRev, sx, sy, sw, sh, x, y, alpha, occluders) {
+    const idx = list.length;
+    let op = bloomOpPool[idx];
+    if (!op) {
+        op = { source: null, sourceRev: 0, sx: 0, sy: 0, sw: 0, sh: 0, x: 0, y: 0, alpha: 1, occluders: null };
+        bloomOpPool[idx] = op;
+    }
+    op.source = source;
+    op.sourceRev = sourceRev;
+    op.sx = sx;
+    op.sy = sy;
+    op.sw = sw;
+    op.sh = sh;
+    op.x = x;
+    op.y = y;
+    op.alpha = alpha;
+    op.occluders = occluders;
+    list.push(op);
+}
+
+let bloomLayer = null;
+let bloomDocument = null;
+let bloomRevision = 0;
+let bloomPrevBounds = null;
+let bloomForceFullRefresh = true;
+let bloomPrevSig = [];
+let bloomCurrSig = [];
+
+function resetBloomLayer() {
+    if (bloomLayer && bloomPrevBounds) {
+        const bCtx = bloomLayer.getContext('2d');
+        bCtx.setTransform(1, 0, 0, 1, 0, 0);
+        bCtx.globalAlpha = 1;
+        bCtx.globalCompositeOperation = 'source-over';
+        bCtx.clearRect(
+            bloomPrevBounds.x0,
+            bloomPrevBounds.y0,
+            bloomPrevBounds.x1 - bloomPrevBounds.x0,
+            bloomPrevBounds.y1 - bloomPrevBounds.y0,
+        );
+        bloomPrevBounds = null;
+        bloomRevision++;
+    }
+    bloomForceFullRefresh = true;
+    bloomPrevSig.length = 0;
+}
+
+function ensureBloomCanvas(width, height) {
+    if (typeof document === 'undefined') return { canvas: null, resized: false };
+    let resized = false;
+    if (!bloomLayer || bloomDocument !== document) {
+        bloomDocument = document;
+        bloomLayer = document.createElement('canvas');
+        bloomLayer.width = width;
+        bloomLayer.height = height;
+        bloomPrevBounds = null;
+        bloomForceFullRefresh = true;
+        bloomPrevSig.length = 0;
+        resized = true;
+    } else if (bloomLayer.width !== width || bloomLayer.height !== height) {
+        bloomLayer.width = width;
+        bloomLayer.height = height;
+        bloomPrevBounds = null;
+        bloomForceFullRefresh = true;
+        bloomPrevSig.length = 0;
+        resized = true;
+    }
+    return { canvas: bloomLayer, resized };
+}
+
+function projectBoundsToBloom(bounds, x, y, w, h, ba, bb, bc, bd, be, bf, maxW, maxH) {
+    const x0 = x * ba + y * bc + be;
+    const y0 = x * bb + y * bd + bf;
+    const x1 = (x + w) * ba + (y + h) * bc + be;
+    const y1 = (x + w) * bb + (y + h) * bd + bf;
+    const px0 = Math.max(0, Math.floor(Math.min(x0, x1)) - 2);
+    const py0 = Math.max(0, Math.floor(Math.min(y0, y1)) - 2);
+    const px1 = Math.min(maxW, Math.ceil(Math.max(x0, x1)) + 2);
+    const py1 = Math.min(maxH, Math.ceil(Math.max(y0, y1)) + 2);
+    if (px1 <= px0 || py1 <= py0) return bounds;
+    if (!bounds) return { x0: px0, y0: py0, x1: px1, y1: py1 };
+    if (px0 < bounds.x0) bounds.x0 = px0;
+    if (py0 < bounds.y0) bounds.y0 = py0;
+    if (px1 > bounds.x1) bounds.x1 = px1;
+    if (py1 > bounds.y1) bounds.y1 = py1;
+    return bounds;
+}
+
+function unionBloomRects(a, b, maxW, maxH) {
+    if (!a && !b) return null;
+    if (!a) return { x: b.x0, y: b.y0, w: b.x1 - b.x0, h: b.y1 - b.y0 };
+    if (!b) return { x: a.x0, y: a.y0, w: a.x1 - a.x0, h: a.y1 - a.y0 };
+    const x0 = Math.max(0, Math.min(a.x0, b.x0));
+    const y0 = Math.max(0, Math.min(a.y0, b.y0));
+    const x1 = Math.min(maxW, Math.max(a.x1, b.x1));
+    const y1 = Math.min(maxH, Math.max(a.y1, b.y1));
+    if (x1 <= x0 || y1 <= y0) return null;
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+function signaturesEqual(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) return false;
+    }
+    return true;
 }
 
 /**
@@ -803,10 +1332,14 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
     const assets = renderer?.assets;
     const camera = renderer?.camera;
     if (!ctx || !assets || !camera) return null;
+    backingOwner = renderer;
     const energy = sourceEnergyFor(atmosphere?.lighting);
     const core = energy.core;
     const isDaylight = energy.bucket === 'daylight';
-    if (!(core > 0.02)) return null;
+    if (!(core > 0.02)) {
+        resetBloomLayer();
+        return null;
+    }
     const viewport = renderer._screenViewport?.() || null;
     const topLeft = viewport ? camera.screenToWorld(0, 0) : null;
     const bottomRight = viewport ? camera.screenToWorld(viewport.width, viewport.height) : null;
@@ -816,22 +1349,169 @@ export function drawCanvasEmitterCuts(ctx, renderer, atmosphere, bloomScale = 0)
     ctx.globalCompositeOperation = 'source-over';
     const transform = ctx.getTransform();
     const scale = Math.max(1, Math.hypot(transform.a, transform.b));
-    const bloomCtx = bloomScale > 0 && ctx.canvas ? bloomTarget(ctx.canvas, transform, bloomScale) : null;
+    const viewBounds = visibleWorldBoundsFor(ctx, 1);
+    const frameOccluders = buildFrameOccluders(renderer);
+    const wantBloom = bloomScale > 0 && Boolean(ctx.canvas);
+    bloomOps.length = 0;
     ctx.globalAlpha = 1;
     const grade = atmosphere?.lightGrade || null;
-    drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight);
-    for (const emitter of emitterPlacements(renderer)) {
+    drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight, frameOccluders, viewBounds);
+    for (const emitter of emitterPlacements(renderer, frameOccluders.buildings)) {
         const emitterCore = isDaylight && emitter.daytimeEmitter ? DAYTIME_WORK_BLOOM_CORE : core;
-        drawSpriteCut(ctx, renderer, emitter, emitterCore, scale, topLeft, bottomRight, bloomCtx, grade);
-        if (emitter.building) drawPartCuts(ctx, renderer, emitter, emitterCore, scale, bloomCtx, isDaylight, core, grade);
+        drawSpriteCut(ctx, renderer, emitter, emitterCore, scale, topLeft, bottomRight, wantBloom ? bloomOps : null, grade, frameOccluders, viewBounds);
+        if (emitter.building) drawPartCuts(ctx, renderer, emitter, emitterCore, scale, topLeft, bottomRight, wantBloom ? bloomOps : null, isDaylight, core, grade, frameOccluders, viewBounds);
     }
-    // 5.3 — lit ship lamps (masthead and stern lanterns), cut like panes.
-    renderer.harborTraffic?.drawLampCuts?.(ctx, core, bloomCtx);
+
+    let returnedBloom = null;
+    if (wantBloom) {
+        const bloomWidth = Math.max(1, Math.ceil(ctx.canvas.width * bloomScale));
+        const bloomHeight = Math.max(1, Math.ceil(ctx.canvas.height * bloomScale));
+        const ba = transform.a * bloomScale;
+        const bb = transform.b * bloomScale;
+        const bc = transform.c * bloomScale;
+        const bd = transform.d * bloomScale;
+        const be = transform.e * bloomScale;
+        const bf = transform.f * bloomScale;
+        const { canvas: targetCanvas, resized } = ensureBloomCanvas(bloomWidth, bloomHeight);
+
+        // Inspect harbor ship lamps so we know if they emit into bloomCtx and
+        // whether any ship pose changed since last frame.
+        const harbor = renderer.harborTraffic;
+        const hasLampMethod = typeof harbor?.drawLampCuts === 'function';
+        let shipLampsOpaque = false;
+        let hasShipLamps = false;
+        const sig = bloomCurrSig;
+        sig.length = 0;
+        sig.push(bloomWidth, bloomHeight, ba, bb, bc, bd, be, bf, bloomOps.length);
+        for (let i = 0; i < bloomOps.length; i++) {
+            const op = bloomOps[i];
+            const occ = op.occluders;
+            sig.push(op.source, op.sourceRev, op.sx, op.sy, op.sw, op.sh, op.x, op.y, op.alpha, occ.length);
+            for (let j = 0; j < occ.length; j++) {
+                const o = occ[j];
+                sig.push(o.image ?? null, o.rev ?? 0, o.sx ?? -1, o.sy ?? -1, o.x, o.y, o.w, o.h);
+            }
+        }
+        let shipBounds = null;
+        if (hasLampMethod) {
+            if (harbor._lampsLit === false) {
+                sig.push(0);
+            } else if (harbor._lampsLit === true && Array.isArray(harbor._hullItems)) {
+                const items = harbor._hullItems;
+                let shipCount = 0;
+                const countPos = sig.length;
+                sig.push(0);
+                for (let i = 0; i < items.length; i++) {
+                    const item = items[i];
+                    const pose = item?.pose;
+                    const lampAlpha = pose ? pose.alpha * core : 0;
+                    if (!pose?.lamps || item.behindBuilding || !(lampAlpha > 0.02)) continue;
+                    shipCount++;
+                    hasShipLamps = true;
+                    const g = hullGeometry(pose);
+                    sig.push(pose.lamps, pose.lamps.image ?? null, g.x, g.y, g.sx, g.width, g.height, Math.min(1, lampAlpha));
+                    shipBounds = projectBoundsToBloom(shipBounds, g.x, g.y, g.width, g.height, ba, bb, bc, bd, be, bf, bloomWidth, bloomHeight);
+                }
+                sig[countPos] = shipCount;
+            } else {
+                shipLampsOpaque = true;
+                hasShipLamps = true;
+            }
+        }
+
+        if (!bloomOps.length && !hasShipLamps && !shipLampsOpaque) {
+            harbor?.drawLampCuts?.(ctx, core, null);
+            resetBloomLayer();
+            emitterPerfStats.bloomEmptySkips++;
+            returnedBloom = null;
+        } else if (targetCanvas && !resized && !bloomForceFullRefresh && !shipLampsOpaque && signaturesEqual(sig, bloomPrevSig)) {
+            harbor?.drawLampCuts?.(ctx, core, null);
+            targetCanvas._cvEmissionMeta = {
+                revision: bloomRevision,
+                prevRevision: bloomRevision,
+                dirtyRect: null,
+                fullRefresh: false,
+            };
+            emitterPerfStats.bloomReuses++;
+            returnedBloom = bloomPrevBounds ? targetCanvas : null;
+        } else if (targetCanvas) {
+            const fullRefresh = resized || bloomForceFullRefresh || !bloomPrevBounds;
+            const bCtx = targetCanvas.getContext('2d');
+            bCtx.setTransform(1, 0, 0, 1, 0, 0);
+            bCtx.globalAlpha = 1;
+            bCtx.globalCompositeOperation = 'source-over';
+            if (fullRefresh) {
+                bCtx.clearRect(0, 0, bloomWidth, bloomHeight);
+            } else {
+                bCtx.clearRect(
+                    bloomPrevBounds.x0,
+                    bloomPrevBounds.y0,
+                    bloomPrevBounds.x1 - bloomPrevBounds.x0,
+                    bloomPrevBounds.y1 - bloomPrevBounds.y0,
+                );
+            }
+            bCtx.setTransform(ba, bb, bc, bd, be, bf);
+            bCtx.imageSmoothingEnabled = true;
+            bCtx.globalCompositeOperation = 'lighter';
+            let currBounds = shipLampsOpaque ? { x0: 0, y0: 0, x1: bloomWidth, y1: bloomHeight } : shipBounds;
+            for (let i = 0; i < bloomOps.length; i++) {
+                const op = bloomOps[i];
+                const projected = projectBoundsToBloom(null, op.x, op.y, op.sw, op.sh, ba, bb, bc, bd, be, bf, bloomWidth, bloomHeight);
+                if (!projected) continue;
+                bCtx.globalAlpha = op.alpha;
+                // Do not sub-rect crop smoothed bilinear bloom emitters mid-sprite.
+                const drawn = drawCarvedSubRect(
+                    bCtx,
+                    op.source,
+                    op.sx,
+                    op.sy,
+                    op.sw,
+                    op.sh,
+                    op.x,
+                    op.y,
+                    op.occluders,
+                    scale,
+                    null,
+                    op.sx === 0 && op.sy === 0 && op.sw === op.source.width && op.sh === op.source.height,
+                );
+                if (drawn && !shipLampsOpaque) {
+                    currBounds = projectBoundsToBloom(currBounds, op.x, op.y, op.sw, op.sh, ba, bb, bc, bd, be, bf, bloomWidth, bloomHeight);
+                }
+            }
+            harbor?.drawLampCuts?.(ctx, core, bCtx);
+            const dirtyRect = fullRefresh
+                ? { x: 0, y: 0, w: bloomWidth, h: bloomHeight }
+                : unionBloomRects(bloomPrevBounds, currBounds, bloomWidth, bloomHeight);
+            const prevRevision = bloomRevision;
+            bloomRevision++;
+            bloomPrevBounds = currBounds;
+            // Discontinuity guard: if nothing landed in bloom, force a full
+            // upload once emitters return so GPU never retains stale texels.
+            bloomForceFullRefresh = !currBounds;
+            // Swap signature arrays without reallocating.
+            const swap = bloomPrevSig;
+            bloomPrevSig = bloomCurrSig;
+            bloomCurrSig = swap;
+            if (shipLampsOpaque || !currBounds) bloomPrevSig.length = 0;
+            targetCanvas._cvEmissionMeta = {
+                revision: bloomRevision,
+                prevRevision,
+                dirtyRect,
+                fullRefresh,
+            };
+            emitterPerfStats.bloomRedraws++;
+            returnedBloom = currBounds ? targetCanvas : null;
+        }
+    } else {
+        // 5.3 — lit ship lamps (masthead and stern lanterns), cut like panes.
+        renderer.harborTraffic?.drawLampCuts?.(ctx, core, null);
+    }
+
     // 2.7 — the Lighthouse lamp's own light (halo, lens flash, fans).
     ctx.globalAlpha = 1;
     renderer.buildingRenderer?.drawLanternLight?.(ctx);
     ctx.restore();
-    return bloomCtx ? bloomLayer : null;
+    return returnedBloom;
 }
 
 // W2 (spec 02 §4.3/§4.5/§4.7/§4.8) — Canvas fallback overlays: cached golden
@@ -982,6 +1662,8 @@ export function drawCanvasGradeOverlays(ctx, renderer, atmosphere) {
         drawCarvedBuildingLayer(ctx, renderer, { canvas: stamp, x, y }, building, sortYAtX);
     }
     if (grade.afterglow > 0) {
+        const viewBounds = visibleWorldBoundsFor(ctx, 1);
+        const frameOccluders = buildFrameOccluders(renderer);
         for (const sprite of renderer.districtPropSprites || []) {
             const id = sprite?.id;
             const entry = id ? assets.getEntry?.(id) : null;
@@ -994,34 +1676,11 @@ export function drawCanvasGradeOverlays(ctx, renderer, atmosphere) {
             const x = Math.round(sprite.x - ax);
             const y = Math.round(sprite.y - ay);
             if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + stamp.width < topLeft.x || y + stamp.height < topLeft.y)) continue;
-            const occluders = occludersFor(renderer, sprite.sortY, sprite.sortY, x, y, stamp.width, stamp.height, id);
-            drawCarved(ctx, stamp, x, y, occluders, scale);
+            const occluders = occludersFor(renderer, sprite.sortY, sprite.sortY, x, y, stamp.width, stamp.height, id, frameOccluders);
+            drawCarvedSubRect(ctx, stamp, 0, 0, stamp.width, stamp.height, x, y, occluders, scale, viewBounds, true);
         }
     }
     ctx.restore();
-}
-
-let bloomLayer = null;
-
-// The hybrid bloom source, cleared, sized `scale` x the overlay's backing
-// store and carrying the overlay's world transform at that scale. Cuts sum
-// on it (`lighter`, smoothed: the bloom blurs it anyway).
-function bloomTarget(overlay, transform, scale) {
-    bloomLayer ||= document.createElement('canvas');
-    const width = Math.max(1, Math.ceil(overlay.width * scale));
-    const height = Math.max(1, Math.ceil(overlay.height * scale));
-    if (bloomLayer.width !== width) bloomLayer.width = width;
-    if (bloomLayer.height !== height) bloomLayer.height = height;
-    const context = bloomLayer.getContext('2d');
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.globalAlpha = 1;
-    context.globalCompositeOperation = 'source-over';
-    context.clearRect(0, 0, width, height);
-    context.setTransform(transform.a * scale, transform.b * scale, transform.c * scale,
-        transform.d * scale, transform.e * scale, transform.f * scale);
-    context.imageSmoothingEnabled = true;
-    context.globalCompositeOperation = 'lighter';
-    return context;
 }
 
 // 3.7 — the Canvas twin of the lit mirror accent records: each lit glass
@@ -1030,7 +1689,7 @@ function bloomTarget(overlay, transform, scale) {
 // `mirrorAccentRainCut`: EN-7, a fading room thins the survivors), never a
 // partial alpha: a half-alpha amber over the graded teal water mixes to
 // lime, so every drawn accent texel stays its own palette colour.
-function drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight) {
+function drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRight, frameOccluders = null, viewBounds = null) {
     // EN-7 — the frame's one mirror break (the mood layer's too).
     const drop = mirrorStormDrop(atmosphere?.weather, atmosphere);
     for (const whole of mirrorAccentLayers(renderer)) {
@@ -1039,7 +1698,7 @@ function drawMirrorAccentCuts(ctx, renderer, atmosphere, core, topLeft, bottomRi
         const { x, y, w, h } = whole;
         if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + w < topLeft.x || y + h < topLeft.y)) continue;
         const gated = mirrorAccentRainCut(whole, drop, share);
-        if (gated) drawCarvedTerrainLayer(ctx, renderer, { canvas: gated.canvas, x, y, w, h });
+        if (gated) drawCarvedTerrainLayer(ctx, renderer, { canvas: gated.canvas, x, y, w, h }, frameOccluders, viewBounds);
     }
 }
 
@@ -1056,6 +1715,80 @@ function hullOccluders(renderer, x, y, w, h, out) {
     }
 }
 
+function alphaBoundsFromRgba(data, width, height) {
+    let x0 = width;
+    let y0 = height;
+    let x1 = -1;
+    let y1 = -1;
+    for (let y = 0; y < height; y++) {
+        const row = y * width * 4;
+        for (let x = 0; x < width; x++) {
+            if (data[row + x * 4 + 3] === 0) continue;
+            if (x < x0) x0 = x;
+            if (y < y0) y0 = y;
+            if (x > x1) x1 = x;
+            if (y > y1) y1 = y;
+        }
+    }
+    if (x1 < 0) return null;
+    return { sx: x0, sy: y0, sw: x1 - x0 + 1, sh: y1 - y0 + 1 };
+}
+
+function layerSubRect(layer, viewBounds) {
+    const canvas = layer.canvas;
+    const fullW = canvas.width;
+    const fullH = canvas.height;
+    let sx = 0;
+    let sy = 0;
+    let sw = fullW;
+    let sh = fullH;
+    const cb = layer.contentBounds;
+    if (cb) {
+        if (cb.sw <= 0 || cb.sh <= 0) return null;
+        sx = cb.sx;
+        sy = cb.sy;
+        sw = cb.sw;
+        sh = cb.sh;
+    } else if (layer.sw !== undefined && layer.sh !== undefined) {
+        sx = layer.sx || 0;
+        sy = layer.sy || 0;
+        sw = layer.sw;
+        sh = layer.sh;
+    }
+    let x = layer.x + sx;
+    let y = layer.y + sy;
+    let clipOffsetX = 0;
+    let clipOffsetY = 0;
+    if (viewBounds) {
+        const left = Math.max(0, Math.floor(viewBounds.x0 - x));
+        const top = Math.max(0, Math.floor(viewBounds.y0 - y));
+        const right = Math.min(sw, Math.ceil(viewBounds.x1 - x));
+        const bottom = Math.min(sh, Math.ceil(viewBounds.y1 - y));
+        if (right <= left || bottom <= top) return null;
+        if (left > 0 || top > 0 || right < sw || bottom < sh) {
+            sx += left;
+            sy += top;
+            sw = right - left;
+            sh = bottom - top;
+            x += left;
+            y += top;
+            clipOffsetX = left;
+            clipOffsetY = top;
+        }
+    }
+    return {
+        sx,
+        sy,
+        sw,
+        sh,
+        x,
+        y,
+        clipOffsetX,
+        clipOffsetY,
+        fullSource: sx === 0 && sy === 0 && sw === fullW && sh === fullH,
+    };
+}
+
 /**
  * Draws a world-space layer that lies on the terrain (`{ canvas, x, y }`,
  * world px) on the ungraded overlay `ctx` (camera transform applied), carved
@@ -1063,19 +1796,42 @@ function hullOccluders(renderer, x, y, w, h, out) {
  * drew over it, by their own drawn pixels. Used by the 3.7 mirror accents
  * and the 2.9 water columns (CanvasWaterState `drawCanvasWaterColumns`).
  */
-export function drawCarvedTerrainLayer(ctx, renderer, layer) {
-    const x = layer.x;
-    const y = layer.y;
-    const w = layer.canvas.width;
-    const h = layer.canvas.height;
+export function drawCarvedTerrainLayer(ctx, renderer, layer, frameOccluders = null, viewBounds = null) {
+    if (renderer) backingOwner = renderer;
     const transform = ctx.getTransform();
     const scale = Math.max(1, Math.hypot(transform.a, transform.b));
-    const occluders = occludersFor(renderer, -Infinity, -Infinity, x, y, w, h);
-    for (const rect of landmarkOccluders(renderer)) {
-        if (overlaps(rect, x, y, w, h)) occluders.push(rect);
+    const bounds = viewBounds ?? visibleWorldBoundsFor(ctx, 1);
+    const sub = layerSubRect(layer, bounds);
+    if (!sub) return;
+    const occluders = occludersFor(renderer, -Infinity, -Infinity, sub.x, sub.y, sub.sw, sub.sh, null, frameOccluders);
+    const landmarks = landmarkOccluders(renderer, frameOccluders?.buildings || null);
+    for (let i = 0; i < landmarks.length; i++) {
+        const rect = landmarks[i];
+        if (overlaps(rect, sub.x, sub.y, sub.sw, sub.sh)) occluders.push(rect);
     }
-    hullOccluders(renderer, x, y, w, h, occluders);
-    drawCarved(ctx, layer.canvas, x, y, occluders, scale);
+    hullOccluders(renderer, sub.x, sub.y, sub.sw, sub.sh, occluders);
+    if (!occluders.length) {
+        emitterPerfStats.uncarvedDraws++;
+        if (sub.fullSource) ctx.drawImage(layer.canvas, sub.x, sub.y);
+        else ctx.drawImage(layer.canvas, sub.sx, sub.sy, sub.sw, sub.sh, sub.x, sub.y, sub.sw, sub.sh);
+        return;
+    }
+    emitterPerfStats.carvedDraws++;
+    const carveScale = resolveCarveScale(ctx, sub.x, sub.y, occluders, scale);
+    const carved = carvedSubRect(
+        layer.canvas,
+        sub.sx,
+        sub.sy,
+        sub.sw,
+        sub.sh,
+        sub.x,
+        sub.y,
+        occluders,
+        carveScale,
+        sub.clipOffsetX,
+        sub.clipOffsetY,
+    );
+    ctx.drawImage(carved.canvas, 0, 0, carved.w, carved.h, sub.x - carved.ox / carveScale, sub.y - carved.oy / carveScale, carved.w / carveScale, carved.h / carveScale);
 }
 
 // Static rock crystals only: existing authored cool emission, not reserve,
@@ -1083,7 +1839,9 @@ export function drawCarvedTerrainLayer(ctx, renderer, layer) {
 export function drawMineCrystalGlow(ctx, renderer) {
     if (renderer.villageLampsLit?.() !== true) return;
     const buildings = renderer.buildingRenderer;
-    const drawable = buildings?.enumerateDrawables?.().find(d => d.building?.type === 'mine');
+    const cache = buildingDrawablesCacheFor(renderer);
+    const buildingDrawables = cache.drawables;
+    const drawable = buildingDrawables.find(d => d.building?.type === 'mine');
     if (!drawable) return;
     const assets = renderer.assets;
     const id = 'building.mine';
@@ -1110,6 +1868,7 @@ export function drawMineCrystalGlow(ctx, renderer) {
             if (!emission[i + 3] || emission[i + 1] < emission[i] * 1.15 || emission[i + 2] < emission[i] * 1.15) art.data[i + 3] = 0;
         }
         c.putImageData(art, 0, 0);
+        const canvasBounds = alphaBoundsFromRgba(art.data, w, h);
         // Two small cyan dilation courses outside the authored crystal
         // texels, checker-dithered at the rim. No radial blur, no data art:
         // the mask only lives high on the static rock, above the carts and
@@ -1142,19 +1901,28 @@ export function drawMineCrystalGlow(ctx, renderer) {
         halo.width = w;
         halo.height = h;
         halo.getContext('2d').putImageData(haloArt, 0, 0);
-        cut = buildings._mineCrystalCut = { image, mask, version, canvas, halo };
+        const haloBounds = alphaBoundsFromRgba(haloArt.data, w, h);
+        cut = buildings._mineCrystalCut = { image, mask, version, canvas, halo, canvasBounds, haloBounds };
     }
     const [ax, ay] = assets.getAnchor(id);
-    const buildingDrawables = buildings?.enumerateDrawables?.() || [];
-    const mineDepth = (worldX) => buildingColumnSortY(buildingDrawables, drawable.building, worldX, drawable.sortY);
+    const group = cache.byBuilding.get(drawable.building);
+    const mineDepth = group
+        ? (worldX) => buildingEntriesColumnSortY(group.entries, worldX, drawable.sortY)
+        : (worldX) => buildingColumnSortY(buildingDrawables, drawable.building, worldX, drawable.sortY);
+    const baseX = Math.round(drawable.wx - ax);
+    const baseY = Math.round(drawable.wy - ay);
     ctx.save();
     ctx.globalAlpha = 0.65;
-    drawCarvedBuildingLayer(ctx, renderer, {
-        canvas: cut.halo, x: Math.round(drawable.wx - ax), y: Math.round(drawable.wy - ay),
-    }, drawable.building, mineDepth);
-    drawCarvedBuildingLayer(ctx, renderer, {
-        canvas: cut.canvas, x: Math.round(drawable.wx - ax), y: Math.round(drawable.wy - ay),
-    }, drawable.building, mineDepth);
+    if (cut.haloBounds) {
+        drawCarvedBuildingLayer(ctx, renderer, {
+            canvas: cut.halo, x: baseX, y: baseY, contentBounds: cut.haloBounds,
+        }, drawable.building, mineDepth);
+    }
+    if (cut.canvasBounds) {
+        drawCarvedBuildingLayer(ctx, renderer, {
+            canvas: cut.canvas, x: baseX, y: baseY, contentBounds: cut.canvasBounds,
+        }, drawable.building, mineDepth);
+    }
     ctx.restore();
 }
 
@@ -1164,62 +1932,139 @@ export function drawMineCrystalGlow(ctx, renderer) {
  * the cut; later landmarks, props and body silhouettes still cover it.
  */
 export function drawCarvedBuildingLayer(ctx, renderer, layer, owner, sortY) {
-    const { canvas, x, y } = layer;
-    const w = canvas.width;
-    const h = canvas.height;
+    if (renderer) backingOwner = renderer;
     const transform = ctx.getTransform();
     const scale = Math.max(1, Math.hypot(transform.a, transform.b));
-    const occluders = occludersFor(renderer, sortY, sortY, x, y, w, h);
+    const viewBounds = visibleWorldBoundsFor(ctx, 1);
+    const sub = layerSubRect(layer, viewBounds);
+    if (!sub) return;
+    // Evaluate column sortY at the uncropped layer center so contentBounds or
+    // viewport clipping never shifts the static-prop depth threshold.
+    const staticSortY = typeof sortY === 'function'
+        ? sortY(layer.x + layer.canvas.width / 2)
+        : sortY;
+    const occluders = occludersFor(renderer, sortY, staticSortY, sub.x, sub.y, sub.sw, sub.sh);
     const assets = renderer.assets;
-    for (const drawable of renderer.buildingRenderer?.enumerateDrawables?.() || []) {
+    const cache = buildingDrawablesCacheFor(renderer);
+    const drawables = cache.drawables;
+    const resolvedMap = cache.resolvedDrawables;
+    for (let i = 0; i < drawables.length; i++) {
+        const drawable = drawables[i];
         if (!drawable.building || drawable.building === owner) continue;
         const threshold = typeof sortY === 'function'
             ? sortY(drawable.column ? (drawable.column.worldLeft + drawable.column.worldRight) / 2 : drawable.wx)
             : sortY;
         if (!(drawable.sortY > threshold)) continue;
-        const image = assets.get?.(drawable.entry?.id);
-        const anchor = assets.getAnchor?.(drawable.entry?.id);
+        const id = drawable.entry?.id;
+        const image = assets.get?.(id);
+        const anchor = assets.getAnchor?.(id);
         if (!image || !anchor) continue;
+        let rect = resolvedMap.get(drawable);
         const imgW = image.naturalWidth || image.width;
         const imgH = image.naturalHeight || image.height;
         const originX = Math.round(drawable.wx - anchor[0]);
         const originY = Math.round(drawable.wy - anchor[1]);
-        const rect = drawable.kind === 'building-column' && drawable.column
-            ? {
-                x: originX + drawable.column.sx,
-                y: originY,
-                w: drawable.column.sw,
-                h: imgH,
-                image,
-                sx: drawable.column.sx,
-                sy: 0,
-            }
-            : { x: originX, y: originY, w: imgW, h: imgH, image };
-        if (overlaps(rect, x, y, w, h)) occluders.push(rect);
+        if (!rect || rect.image !== image || rect.originX !== originX || rect.originY !== originY
+            || rect.imgW !== imgW || rect.imgH !== imgH) {
+            rect = drawable.kind === 'building-column' && drawable.column
+                ? {
+                    originX,
+                    originY,
+                    imgW,
+                    imgH,
+                    x: originX + drawable.column.sx,
+                    y: originY,
+                    w: drawable.column.sw,
+                    h: imgH,
+                    image,
+                    sx: drawable.column.sx,
+                    sy: 0,
+                }
+                : { originX, originY, imgW, imgH, x: originX, y: originY, w: imgW, h: imgH, image };
+            resolvedMap.set(drawable, rect);
+        }
+        if (overlaps(rect, sub.x, sub.y, sub.sw, sub.sh)) occluders.push(rect);
     }
-    drawCarved(ctx, canvas, x, y, occluders, scale);
+    if (!occluders.length) {
+        emitterPerfStats.uncarvedDraws++;
+        if (sub.fullSource) ctx.drawImage(layer.canvas, sub.x, sub.y);
+        else ctx.drawImage(layer.canvas, sub.sx, sub.sy, sub.sw, sub.sh, sub.x, sub.y, sub.sw, sub.sh);
+        return;
+    }
+    emitterPerfStats.carvedDraws++;
+    const carveScale = resolveCarveScale(ctx, sub.x, sub.y, occluders, scale);
+    const carved = carvedSubRect(
+        layer.canvas,
+        sub.sx,
+        sub.sy,
+        sub.sw,
+        sub.sh,
+        sub.x,
+        sub.y,
+        occluders,
+        carveScale,
+        sub.clipOffsetX,
+        sub.clipOffsetY,
+    );
+    ctx.drawImage(carved.canvas, 0, 0, carved.w, carved.h, sub.x - carved.ox / carveScale, sub.y - carved.oy / carveScale, carved.w / carveScale, carved.h / carveScale);
 }
 
-// Each landmark's drawn base image at its placement.
-function landmarkOccluders(renderer) {
+// Each landmark's drawn base image at its placement, cached per drawable revision.
+function landmarkOccluders(renderer, buildingCache = null) {
     const assets = renderer.assets;
+    const cache = buildingCache || buildingDrawablesCacheFor(renderer);
+    if (cache.landmarks) {
+        let valid = true;
+        if (cache.landmarkPendingIds?.length) {
+            for (let i = 0; i < cache.landmarkPendingIds.length; i++) {
+                if (assets.get?.(cache.landmarkPendingIds[i])) {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+        if (valid && cache.landmarkImages) {
+            for (let i = 0; i < cache.landmarkImages.length; i++) {
+                const item = cache.landmarkImages[i];
+                if (assets.get?.(item.id) !== item.image) {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+        if (valid) {
+            emitterPerfStats.landmarkCacheHits++;
+            return cache.landmarks;
+        }
+    }
+    emitterPerfStats.landmarkCacheRebuilds++;
     const out = [];
+    const pendingIds = [];
+    const images = [];
     const seen = new Set();
-    for (const drawable of renderer.buildingRenderer?.enumerateDrawables?.() || []) {
+    for (let i = 0; i < cache.drawables.length; i++) {
+        const drawable = cache.drawables[i];
         if (!drawable.building || seen.has(drawable.building)) continue;
         seen.add(drawable.building);
         const id = drawable.entry?.id;
         const image = id ? assets.get?.(id) : null;
         const anchor = id ? assets.getAnchor?.(id) : null;
-        if (!image || !anchor) continue;
+        if (!image || !anchor) {
+            if (id && !image) pendingIds.push(id);
+            continue;
+        }
         const w = image.naturalWidth || image.width;
         const h = image.naturalHeight || image.height;
+        images.push({ id, image });
         out.push({ x: Math.round(drawable.wx - anchor[0]), y: Math.round(drawable.wy - anchor[1]), w, h, image });
     }
+    cache.landmarks = out;
+    cache.landmarkPendingIds = pendingIds;
+    cache.landmarkImages = images;
     return out;
 }
 
-function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomCtx, grade = null) {
+function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight, bloomOpsList, grade = null, frameOccluders = null, viewBounds = null) {
     const assets = renderer.assets;
     const alpha = Math.min(1, Math.max(0, emitter.gate) * core);
     if (alpha < 0.02) return;
@@ -1230,25 +2075,88 @@ function drawSpriteCut(ctx, renderer, emitter, core, scale, topLeft, bottomRight
     const y = Math.round(emitter.y - ay) + cut.y;
     const { width, height } = cut.canvas;
     if (topLeft && (x > bottomRight.x || y > bottomRight.y || x + width < topLeft.x || y + height < topLeft.y)) return;
-    const occluders = occludersFor(renderer, emitter.sortY, emitter.staticSortY ?? emitter.sortY, x, y, width, height, emitter.skipPropPrefix || null);
+    const occluders = occludersFor(renderer, emitter.sortY, emitter.staticSortY ?? emitter.sortY, x, y, width, height, emitter.skipPropPrefix || null, frameOccluders);
     if (emitter.glass) {
         const glass = emitter.glass;
-        occluders.push({ x: x - cut.x + glass.left, y: y - cut.y + glass.top, w: glass.w, h: glass.h, image: glass.canvas });
+        const gw = glass.w ?? glass.canvas?.width ?? 0;
+        const gh = glass.h ?? glass.canvas?.height ?? 0;
+        occluders.push({ x: x - cut.x + glass.left, y: y - cut.y + glass.top, w: gw, h: gh, image: glass.canvas, rev: glass.revision ?? 0 });
     }
     ctx.globalAlpha = alpha;
-    drawCarved(ctx, cut.canvas, x, y, occluders, scale);
-    if (bloomCtx) {
-        bloomCtx.globalAlpha = alpha;
-        drawCarved(bloomCtx, cut.bloom, x, y, occluders, scale);
+    drawCarvedSubRect(ctx, cut.canvas, 0, 0, width, height, x, y, occluders, scale, viewBounds, true);
+    if (bloomOpsList) {
+        pushBloomOp(bloomOpsList, cut.bloom, cut._revision || 0, 0, 0, width, height, x, y, alpha, occluders);
     }
 }
 
-// `canvas` at world (x, y) on `ctx`, minus the occluders' drawn pixels.
-function drawCarved(ctx, canvas, x, y, occluders, scale) {
-    if (!occluders.length) {
-        ctx.drawImage(canvas, x, y);
-        return;
+/**
+ * Lightweight O(1) accounting for persistent volatile canvas backing retained
+ * by EmitterCuts (pooled carve scratch canvases + cached hybrid bloom layer).
+ * Safe for periodic budget telemetry without enumerating scratch buckets.
+ * Pass `renderer` to attribute shared module backing only to its current owner.
+ */
+export function emitterCutsVolatilePixels(renderer = null) {
+    if (renderer && backingOwner && backingOwner !== renderer) {
+        return { scratch: 0, bloom: 0, total: 0 };
     }
-    const carved = carvedCut({ canvas }, x, y, occluders, scale);
-    ctx.drawImage(carved.canvas, 0, 0, carved.w, carved.h, x, y, carved.w / scale, carved.h / scale);
+    const scratch = Math.round(scratchBucketBytes / 4) + canvasPixelCount(scratchOversize);
+    const bloom = canvasPixelCount(bloomLayer);
+    return {
+        scratch,
+        bloom,
+        total: scratch + bloom,
+    };
+}
+
+/**
+ * Releases persistent carve scratch canvases and the cached hybrid bloom
+ * backing store (for Dashboard suspend, renderer dispose, or WebGL context
+ * restore). Subsequent draws allocate fresh backing stores and emit a full
+ * bloom refresh.
+ */
+export function releaseEmitterCutsBacking(renderer = null) {
+    if (renderer) {
+        staticPropCacheMap.delete(renderer);
+        buildingCacheMap.delete(renderer);
+        if (backingOwner && backingOwner !== renderer) return;
+    }
+    releaseScratchPool();
+    if (bloomLayer) {
+        releaseCanvasBackingStore(bloomLayer);
+        bloomLayer = null;
+    }
+    bloomDocument = null;
+    bloomPrevBounds = null;
+    bloomForceFullRefresh = true;
+    bloomPrevSig.length = 0;
+    bloomCurrSig.length = 0;
+    bloomOps.length = 0;
+    for (let i = 0; i < bloomOpPool.length; i++) {
+        const op = bloomOpPool[i];
+        op.source = null;
+        op.occluders = null;
+    }
+    backingOwner = null;
+    bloomRevision++;
+}
+
+export function emitterCutsDiagnostics() {
+    const buckets = [];
+    for (const [key, canvas] of scratchBuckets) {
+        buckets.push({ w: canvas.width, h: canvas.height, key });
+    }
+    return {
+        ...emitterPerfStats,
+        buckets,
+        scratchBucketBytes,
+        scratchMaxBytes: SCRATCH_MAX_BYTES,
+        oversizeScratch: scratchOversize ? { w: scratchOversize.width, h: scratchOversize.height } : null,
+        bloomRevision,
+        bloomBounds: bloomPrevBounds ? {
+            x: bloomPrevBounds.x0,
+            y: bloomPrevBounds.y0,
+            w: bloomPrevBounds.x1 - bloomPrevBounds.x0,
+            h: bloomPrevBounds.y1 - bloomPrevBounds.y0,
+        } : null,
+    };
 }

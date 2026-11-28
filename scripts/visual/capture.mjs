@@ -36,7 +36,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import { launchChromium } from '../smoke/support/chromium.mjs';
-import { BENCH_WEATHER, GPU_LAUNCH_ARGS, resolveServer } from '../smoke/support/world-bench.mjs';
+import { BENCH_WEATHER, benchLaunchArgs, resolveServer } from '../smoke/support/world-bench.mjs';
 import { GPU_RECORD_FLAGS } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -159,7 +159,8 @@ export function definitiveBackendFailure(expectedBackend, reason) {
 export function describeFenceState(state) {
     const grade = state?.grade || null;
     return `gradeKey=${grade?.key ?? null} afterglow=${grade?.afterglow ?? null} rimStrength=${grade?.rimStrength ?? null} `
-        + `worldBackendReason=${JSON.stringify(state?.worldBackendReason ?? null)} snowCover=${state?.snowCover ?? null} snowBucket=${state?.snowBucket ?? null}`;
+        + `worldBackendReason=${JSON.stringify(state?.worldBackendReason ?? null)} snowCover=${state?.snowCover ?? null} snowBucket=${state?.snowBucket ?? null}`
+        + (state?.frameFailure ? ` frameFailure=${JSON.stringify(state.frameFailure)}` : '');
 }
 
 /**
@@ -347,6 +348,7 @@ Options:
   --golden-dir=<dir>      Golden root (default: claudeville/visual/golden)
   --accept                Write/update golden baselines in --golden-dir
   --allow-fallback        Do not fail on software fallback adapter
+  --postfx=0              Capture the pure Canvas fallback (requires --backend=canvas)
   --frontier              Enable WebGPU Frontier passes
   --authored-solar        Pin a zero day shift: authored diurnal keys at
                           06:00/12:30/18:00/18:27/19:45/22:00 on any date/host
@@ -423,6 +425,10 @@ export function parseArgs(argv) {
                     return { width: Number(m[1]), height: Number(m[2]), dpr: Number(m[3] || 1), label: item };
                 });
                 break;
+            case '--postfx':
+                if (value !== '0') throw new Error('--postfx accepts only 0');
+                opts.disablePostFx = true;
+                break;
             case '--backend':
                 if (!['webgpu', 'webgl', 'canvas'].includes(value)) throw new Error(`Unsupported backend: ${value}`);
                 opts.backend = value;
@@ -451,6 +457,7 @@ export function parseArgs(argv) {
     }
     const baseList = opts.scenarios || (opts.cases.length ? [] : DEFAULT_SCENARIOS.slice(0, 2));
     opts.scenarios = [...baseList, ...opts.cases];
+    if (opts.disablePostFx && opts.backend !== 'canvas') throw new Error('--postfx=0 requires --backend=canvas');
     if (opts.frontier && opts.backend !== 'webgpu') throw new Error('--frontier requires --backend=webgpu');
     return opts;
 }
@@ -498,6 +505,7 @@ function installVisualCaptureHelpers() {
         const solar = r?._lastAtmosphere?.solar || null;
         return {
             bootState: app?._bootState || null,
+            frameFailure: r?._frameFailureStats?.lastMessage ?? null,
             worldReadyAttr: Boolean(modeEl),
             worldStackOpacity,
             firstFrameReason: r?._firstFrameReason ?? null,
@@ -713,8 +721,9 @@ function installVisualCaptureHelpers() {
         // terrain restages and run 2 real render ticks after pose+hour+weather
         // so `_lampSilhouetteMode`, `brazierFlames`, and Command banner settle
         // deterministically before stopping the loop and freezing records.
-        const settleDeadline = Date.now() + 10_000;
-        while (Date.now() < settleDeadline) {
+        // The capture pins the calendar date. Deadlines need an advancing clock.
+        const settleDeadline = performance.now() + 10_000;
+        while (performance.now() < settleDeadline) {
             const state = C.readFenceState();
             if (!state.assetsLoading && !state.terrainRestaging) break;
             await nextRaf();
@@ -776,16 +785,20 @@ function installVisualCaptureHelpers() {
                 if (!water) return null;
                 return `${water.stats?.capBuilds ?? 0}|${water.chunks?.size ?? 0}|${water.caps?.size ?? 0}|${water.nextCaps ? 'swap' : ''}`;
             };
-            const seaDeadline = Date.now() + seaSettleMs;
+            const seaDeadline = performance.now() + seaSettleMs;
             let previous = seaSignature();
             let quiet = 0;
             canvasSea.settled = false;
-            while (canvasSea.renders < seaSettleRenders && Date.now() < seaDeadline) {
+            while (canvasSea.renders < seaSettleRenders && performance.now() < seaDeadline) {
                 r.renderNow?.();
                 canvasSea.renders++;
                 await nextRaf();
                 const next = seaSignature();
-                quiet = next !== null && next === previous && !r._canvasWater?.nextCaps ? quiet + 1 : 0;
+                const water = r._canvasWater;
+                // A partial chunk can advance several rows without publishing a new cap.
+                const pending = water?.capWork || water?.nextCaps || water?.nextCapWork
+                    || water?.stats?.capsPending || water?.stats?.chunksPending;
+                quiet = next !== null && next === previous && !pending ? quiet + 1 : 0;
                 previous = next;
                 if (quiet >= 2 || next === null) { canvasSea.settled = true; break; }
             }
@@ -901,13 +914,20 @@ export async function captureVisualRun(options) {
     const outDir = path.resolve(ROOT, options.out || path.join('output', 'visual-capture', stamp));
     mkdirSync(outDir, { recursive: true });
     const server = await resolveServer(options.url);
-    const browser = await launchChromium({ headless: !options.headed, args: [...GPU_LAUNCH_ARGS] });
+    const browser = await launchChromium({
+        headless: !options.headed,
+        args: benchLaunchArgs({
+            headed: options.headed,
+            renderer: options.backend,
+            postfx: options.disablePostFx ? 'off' : 'default',
+        }),
+    });
     const results = [];
 
     try {
         for (const size of options.sizes) {
             for (const item of options.scenarios) {
-                const caseId = `${item.id}-${size.label.replace('@', 'dpr')}-${options.backend}`;
+                const caseId = `${item.id}-${size.label.replace('@', 'dpr')}-${options.backend}${options.disablePostFx ? '-no-postfx' : ''}`;
                 const caseDir = path.join(outDir, caseId);
                 mkdirSync(caseDir, { recursive: true });
 
@@ -937,6 +957,7 @@ export async function captureVisualRun(options) {
                 try {
                     const url = new URL(`${server.baseUrl}/`);
                     url.searchParams.set('sim', '1');
+                    if (options.disablePostFx) url.searchParams.set('postfx', '0');
                     if (options.frontier) url.searchParams.set('frontier', '1');
                     url.searchParams.set('scenario', item.scenario);
                     url.searchParams.set('renderer', options.backend);
@@ -948,6 +969,14 @@ export async function captureVisualRun(options) {
                     );
                     await page.evaluate(`(${installVisualCaptureHelpers.toString()})()`);
                     await page.keyboard.press('Escape');
+                    // This fixture delivers its two inbound ships on real timers.
+                    // Backend startup time must not choose which harbor gets captured.
+                    if (item.scenario === 'git-harbor') {
+                        await page.waitForFunction(() => {
+                            const events = window.__claudeVilleApp.world.agents.get('sim-git-captain')?.gitEvents;
+                            return ['git-fetch-1', 'git-pull-1'].every(id => events?.some(event => event.id === id));
+                        }, null, { timeout: 60_000 });
+                    }
 
                     const posed = await page.evaluate((a) => window.__cvVisualCapture.pinAndPose(a), {
                         scenario: item.scenario,

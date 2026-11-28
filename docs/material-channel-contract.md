@@ -877,11 +877,10 @@ actionStrip:
 
 ## Pilot
 
-`world-pilot` covers 19 reviewed IDs: all nine landmarks; the lantern, rune
-brazier and bridge lantern post; three light overlays; shallow/deep water
-transitions; one Claude class; and
-one Codex class. Building overlay layers are included with their parent. No
-individual sidecar PNG is required for the pilot.
+`world-pilot` contains all nine landmarks and their overlay layers, the lamp
+and brazier props, three light overlays and two water transitions. The Opus and
+GPT-5.6 Sol character sheets live in `world-pilot-characters`. This keeps the
+160 character frames out of the four channel textures uploaded for landmarks.
 
 ## Tooling
 
@@ -891,6 +890,7 @@ npm run sprites:atlas-plan -- --atlas=world-pilot
 
 # Rebuild committed atlas channels and metadata from existing source PNGs.
 npm run sprites:atlas-bake -- --atlas=world-pilot
+npm run sprites:atlas-bake -- --atlas=world-pilot-characters
 
 # Validate schema, dimensions, anchors, hashes, alpha bounds, frame tags,
 # matching rectangles, nearest gutters, and orphan/missing channels.

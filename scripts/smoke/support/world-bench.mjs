@@ -3,10 +3,15 @@
 // Dashboard return, K-slope and vsync-unlocked arms) and
 // `scripts/world/gpu-burst.mjs` (real-frame throughput per level). Imported
 // helper; not directly executable.
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { gpuLaunchArgs, launchChromium } from './chromium.mjs';
 import { startIsolatedServer } from './isolated-server.mjs';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 // Pinned weather presets (the V2 quiet-host protocol: clear, plus rain and
 // storm for weather items).
@@ -25,16 +30,83 @@ export const BENCH_WEATHER = Object.freeze({
 // unlocked arm adds vsync and frame-rate limits off so the rAF interval is
 // the frame's own cost.
 export const GPU_LAUNCH_ARGS = Object.freeze(gpuLaunchArgs());
+export const NO_GPU_LAUNCH_ARGS = Object.freeze(['--disable-gpu', '--disable-webgl']);
 export const UNLOCKED_LAUNCH_ARGS = Object.freeze(['--disable-gpu-vsync', '--disable-frame-rate-limit']);
 
 // A `tag` adds an inert `--cv-bench-tag=<tag>` switch (Chromium ignores
 // unknown switches) so `browserRootPid(tag)` can find the launched browser's
 // process tree in `/proc`.
-export function launchBenchBrowser({ headed = false, unlocked = false, tag = null } = {}) {
+// Explicit pure Canvas headed runs use ordinary Chrome flags (omitting
+// `GPU_LAUNCH_ARGS`, whose Linux Vulkan ANGLE flags blank headed 2D canvases),
+// while resident GPU, hybrid PostFx, headless and `--disable-gpu` runs keep
+// their respective flags.
+export function benchLaunchArgs({
+  headed = false,
+  unlocked = false,
+  disableGpu = false,
+  renderer = null,
+  postfx = 'default',
+  tag = null,
+} = {}) {
+  const pureCanvasHeaded = headed === true
+    && disableGpu !== true
+    && renderer === 'canvas'
+    && (postfx === 'off' || postfx === '0' || postfx === false);
+  const baseArgs = disableGpu
+    ? NO_GPU_LAUNCH_ARGS
+    : (pureCanvasHeaded ? [] : GPU_LAUNCH_ARGS);
+  return [
+    ...baseArgs,
+    ...(unlocked ? UNLOCKED_LAUNCH_ARGS : []),
+    ...(tag ? [`--cv-bench-tag=${tag}`] : []),
+  ];
+}
+
+export function launchBenchBrowser({
+  headed = false,
+  unlocked = false,
+  disableGpu = false,
+  renderer = null,
+  postfx = 'default',
+  tag = null,
+} = {}) {
   return launchChromium({
     headless: !headed,
-    args: [...GPU_LAUNCH_ARGS, ...(unlocked ? UNLOCKED_LAUNCH_ARGS : []), ...(tag ? [`--cv-bench-tag=${tag}`] : [])],
+    args: benchLaunchArgs({ headed, unlocked, disableGpu, renderer, postfx, tag }),
   });
+}
+
+/** Build URL query params for World backend, PostFx and Frontier controls. */
+export function buildWorldQuery({ renderer = null, postfx = 'default', frontier = 'default' } = {}) {
+  const query = {};
+  if (renderer) query.renderer = renderer;
+  if (postfx === 'off') query.postfx = '0';
+  else if (postfx === 'on') query.postfx = '1';
+  if (frontier === 'on') query.frontier = '1';
+  else if (frontier === 'off') query.frontier = '0';
+  return query;
+}
+
+/** Build metadata (package version + short git commit when available). */
+export function buildMetadata() {
+  let version = null;
+  let commit = null;
+  let dirty = null;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+    version = pkg?.version ?? null;
+  } catch { /* ignore */ }
+  try {
+    commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || null;
+    dirty = execFileSync('git', ['status', '--porcelain'], {
+      cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim().length > 0;
+  } catch { /* ignore */ }
+  return { version, commit, dirty };
 }
 
 function procCmdline(pid) {
@@ -122,15 +194,29 @@ export function parseConditions(value) {
 }
 
 /** Boot a fresh context on a sim scenario and wait for the World to be ready. */
-export async function openWorld(browser, { baseUrl, scenario, width, height, dpr = 1, query = {}, reducedMotion = false }) {
+export async function openWorld(browser, {
+  baseUrl,
+  scenario,
+  width,
+  height,
+  dpr = 1,
+  query = {},
+  reducedMotion = false,
+  sidebar = 'default',
+  autoCamera = false,
+}) {
   const context = await browser.newContext({
     viewport: { width, height },
     deviceScaleFactor: dpr,
     reducedMotion: reducedMotion ? 'reduce' : 'no-preference',
   });
-  await context.addInitScript(() => {
-    try { localStorage.setItem('cv-auto-camera', '0'); } catch {}
-  });
+  await context.addInitScript(({ sidebarState, autoCam }) => {
+    try {
+      localStorage.setItem('cv-auto-camera', autoCam ? '1' : '0');
+      if (sidebarState === 'collapsed') localStorage.setItem('claudeville.sidebarCollapsed', 'true');
+      else if (sidebarState === 'expanded') localStorage.setItem('claudeville.sidebarCollapsed', 'false');
+    } catch {}
+  }, { sidebarState: sidebar, autoCam: autoCamera === true });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(String(error?.message || error).slice(0, 300)));
@@ -140,7 +226,9 @@ export async function openWorld(browser, { baseUrl, scenario, width, height, dpr
   const url = new URL(`${baseUrl}/`);
   url.searchParams.set('sim', '1');
   url.searchParams.set('scenario', scenario);
-  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
+  }
   await page.goto(url.href, { waitUntil: 'load', timeout: 60_000 });
   await page.waitForFunction(() => {
     const app = window.__claudeVilleApp;
@@ -150,42 +238,278 @@ export async function openWorld(browser, { baseUrl, scenario, width, height, dpr
 }
 
 /**
- * Pin the V1 pose: Auto off, fixed hour and weather, camera on a tile at a
- * zoom tier (`survey` where the backing DPR offers it). Returns what the page
- * reports about the GPU world it is posed on.
+ * Pin the V1 pose: Auto off (unless `autoCamera: true`), fixed hour and
+ * weather, camera on a tile at a zoom tier (`survey` where the backing DPR
+ * offers it). Returns what the page reports about the world it is posed on.
  */
-export function poseWorld(page, { hour = 22, weather = 'clear', zoom = 1, tile = [20, 20] } = {}) {
-  return page.evaluate(async ({ hour, weatherProfile, zoom, tile }) => {
+export function poseWorld(page, { hour = 22, weather = 'clear', zoom = 1, tile = [20, 20], autoCamera = false } = {}) {
+  return page.evaluate(async ({ hour, weatherProfile, zoom, tile, autoCam }) => {
     const renderer = window.__claudeVilleApp.renderer;
-    renderer.cameraDirector?.setAutoMode?.(false);
+    renderer.cameraDirector?.setAutoMode?.(autoCam === true);
     const atmosphere = renderer.atmosphereState || window.__claudeVilleAtmosphere;
     atmosphere?.setTimelineMode?.('fixed');
     atmosphere?.setHour?.(hour);
     atmosphere?.setWeather?.(weatherProfile);
     const camera = renderer.camera;
-    camera.abortDirectorGlide?.();
-    camera.noteUserInput?.();
-    const { tileToWorld } = await import('/src/presentation/character-mode/Projection.js');
-    const point = tileToWorld({ tileX: tile[0], tileY: tile[1] });
-    // `tierZoom(0.5)` is the survey tier (SURVEY_TIER): 0.5 at backing DPR 2,
-    // the widest resting step elsewhere.
-    const cameraZoom = camera.tierZoom(zoom === 'survey' ? 0.5 : Number(zoom));
-    renderer.setCameraPose({ x: point.x, y: point.y, zoom: cameraZoom });
+    if (!autoCam) {
+      camera.abortDirectorGlide?.();
+      camera.noteUserInput?.();
+      const { tileToWorld } = await import('/src/presentation/character-mode/Projection.js');
+      const point = tileToWorld({ tileX: tile[0], tileY: tile[1] });
+      // `tierZoom(0.5)` is the survey tier (SURVEY_TIER): 0.5 at backing DPR 2,
+      // the widest resting step elsewhere.
+      const cameraZoom = camera.tierZoom(zoom === 'survey' ? 0.5 : Number(zoom));
+      renderer.setCameraPose({ x: point.x, y: point.y, zoom: cameraZoom });
+    }
     const gpu = renderer.gpuWorld;
+    const postFx = renderer.postFx?.getDiagnostics?.() || null;
+    const canvasBudget = window.__claudeVillePerf?.canvasBudget?.() || null;
+    const mainCanvas = renderer.canvas;
     // WebGL2 names its driver; WebGPU its adapter (Stage B: the Chromium default).
     const gl = gpu?.gl;
     const info = gl?.getExtension?.('WEBGL_debug_renderer_info');
+    const frontier = gpu?._frontierDiagnostics?.() || gpu?.getDiagnostics?.()?.frontier || null;
     return {
       gpuWorldActive: gpu?.isActive?.() === true,
       backend: renderer.worldRendererMode ?? null,
+      worldBackendReason: renderer.worldBackendReason ?? null,
+      worldBackendNotes: renderer.worldBackendNotes ? { ...renderer.worldBackendNotes } : null,
       glRenderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : null,
       gpuAdapter: gpu?.adapterInfo ?? null,
       dpr: window.devicePixelRatio,
+      effectiveDpr: canvasBudget?.dpr ?? null,
       zoom: camera.zoom,
-      backing: gpu ? [gpu.width, gpu.height] : null,
+      cameraCenter: camera.screenToWorld(camera._viewportWidth() / 2, camera._viewportHeight() / 2),
+      cameraMode: renderer.cameraDirector?.isAutoMode?.() ? 'auto' : 'fixed',
+      backing: gpu?.isActive?.()
+        ? [gpu.width, gpu.height]
+        : (mainCanvas ? [mainCanvas.width, mainCanvas.height] : null),
+      visibleCanvasPixels: canvasBudget?.visibleCanvasPixels ?? null,
+      maxMainCanvasPixels: canvasBudget?.budgets?.maxMainCanvasPixels ?? null,
+      cssViewport: [window.innerWidth, window.innerHeight],
+      canvasCss: mainCanvas ? [Math.round(mainCanvas.clientWidth), Math.round(mainCanvas.clientHeight)] : null,
+      sidebarCollapsed: Boolean(document.getElementById('sidebar')?.classList?.contains('sidebar--collapsed')),
+      postFxSupported: postFx?.supported === true,
+      postFxActive: postFx?.active === true,
+      frontierEnabled: frontier?.enabled === true,
+      frontierMask: frontier?.featureMask ?? 0,
       agents: renderer.agentSprites?.size ?? null,
     };
-  }, { hour, weatherProfile: BENCH_WEATHER[weather], zoom, tile });
+  }, { hour, weatherProfile: BENCH_WEATHER[weather], zoom, tile, autoCam: autoCamera === true });
+}
+
+/**
+ * Synchronous in-page collector for the measurement-contract snapshot.
+ * Exported so both `readWorldStateSnapshot(page)` and `measureIncidentWindow`
+ * reuse the exact same snapshot logic without IPC skew.
+ */
+export function collectWorldStateSnapshot(ambientFramePacing = null) {
+  const app = window.__claudeVilleApp;
+  const renderer = app?.renderer;
+  const gpu = renderer?.gpuWorld;
+  const gpuDiag = gpu?.getDiagnostics?.() || null;
+  const postFx = renderer?.postFx?.getDiagnostics?.() || null;
+  const postFxFeed = renderer?.postFxFeed?.getDiagnostics?.() || null;
+  const canvasBudget = window.__claudeVillePerf?.canvasBudget?.() || null;
+  const mainCanvas = renderer?.canvas || null;
+  const camera = renderer?.camera || null;
+  const gl = gpu?.isActive?.() ? gpu.gl : renderer?.postFx?.gl;
+  const info = gl?.getExtension?.('WEBGL_debug_renderer_info');
+
+  const frontierDiag = gpuDiag?.frontier || null;
+  const frontierPasses = frontierDiag?.passes
+    ? Object.fromEntries(Object.entries(frontierDiag.passes).map(([name, entry]) => [name, {
+      configured: gpu.frontierConfig?.[name] !== false && (name !== 'shafts' || gpu.frontierConfig?.surfaceDepth !== false),
+      ready: entry?.ready === true,
+      error: entry?.error ?? null,
+    }]))
+    : null;
+  const readyPasses = frontierPasses
+    ? Object.entries(frontierPasses).filter(([, entry]) => entry.ready).map(([name]) => name)
+    : [];
+  const pendingPasses = frontierPasses
+    ? Object.entries(frontierPasses).filter(([, entry]) => entry.configured && !entry.ready).map(([name]) => name)
+    : [];
+
+  const gpuTimerSupported = gpuDiag?.gpuTimerSupported === true;
+  const gpuTimerSamples = gpuDiag?.gpuTimerSamples ?? 0;
+  const gpuMs = Number.isFinite(gpuDiag?.gpuMs) ? gpuDiag.gpuMs : null;
+  const gpuTimingState = gpuDiag?.active
+    ? (gpuTimerSupported && gpuTimerSamples > 0 && gpuMs !== null ? 'measured' : 'unknown')
+    : (postFx?.active
+      ? (Number.isFinite(postFx?.gpuMs) ? 'measured' : 'unknown')
+      : 'not-applicable');
+
+  const worldStats = app?.world?.getStats?.() || null;
+  const qualityLevel = gpuDiag?.active
+    ? gpuDiag.qualityLevel
+    : (postFx?.active ? (postFx.level ?? postFx.ladder?.effectiveLevel ?? null) : null);
+  const qualityReason = gpuDiag?.active
+    ? gpuDiag.qualityReason
+    : (postFx?.active ? (postFx.ladder?.lastDecisionReason ?? null) : null);
+
+  return {
+    backend: renderer?.worldRendererMode ?? null,
+    worldBackendReason: renderer?.worldBackendReason ?? null,
+    worldBackendNotes: renderer?.worldBackendNotes ? { ...renderer.worldBackendNotes } : null,
+    gpuWorldActive: gpu?.isActive?.() === true,
+    gpuAdapter: gpu?.adapterInfo ?? null,
+    glRenderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : null,
+    postFx: {
+      supported: postFx?.supported === true,
+      active: postFx?.active === true,
+      suspended: postFx?.suspended === true,
+      level: postFx?.level ?? null,
+      ladderReason: postFx?.ladder?.lastDecisionReason ?? null,
+      frames: postFx?.frames ?? 0,
+      uploadMs: Number.isFinite(postFx?.uploadMs) ? postFx.uploadMs : null,
+      maskUploadMs: Number.isFinite(postFx?.maskUploadMs) ? postFx.maskUploadMs : null,
+      setupCpuMs: Number.isFinite(postFx?.setupCpuMs) ? postFx.setupCpuMs : null,
+      shaderCpuMs: Number.isFinite(postFx?.shaderCpuMs) ? postFx.shaderCpuMs : null,
+      renderTotalCpuMs: Number.isFinite(postFx?.renderTotalCpuMs) ? postFx.renderTotalCpuMs : null,
+      gpuMs: Number.isFinite(postFx?.gpuMs) ? postFx.gpuMs : null,
+      feed: postFxFeed ? {
+        maskPixels: postFxFeed.maskPixels ?? null,
+        maskRebuilds: postFxFeed.maskRebuilds ?? 0,
+        maskReuses: postFxFeed.maskReuses ?? 0,
+        maskLastReason: postFxFeed.maskLastReason ?? null,
+      } : null,
+    },
+    frontier: {
+      enabled: frontierDiag?.enabled === true,
+      featureMask: frontierDiag?.featureMask ?? 0,
+      allReady: frontierDiag?.enabled === true ? readyPasses.length > 0 && pendingPasses.length === 0 : null,
+      readyPasses,
+      pendingPasses,
+      passes: frontierPasses,
+      policy: frontierDiag?.policy ?? null,
+    },
+    quality: {
+      level: qualityLevel,
+      reason: qualityReason,
+      shedEffects: gpuDiag?.shedEffects ? gpuDiag.shedEffects.map(effect => `${effect.id} ${effect.mode}`) : [],
+      transitions: gpuDiag?.qualityTransitions ?? null,
+      timingSource: gpuDiag?.qualityTimingSource ?? null,
+    },
+    viewport: {
+      css: [window.innerWidth, window.innerHeight],
+      canvasCss: mainCanvas ? [Math.round(mainCanvas.clientWidth), Math.round(mainCanvas.clientHeight)] : null,
+      backing: gpu?.isActive?.()
+        ? [gpu.width, gpu.height]
+        : (mainCanvas ? [mainCanvas.width, mainCanvas.height] : null),
+      visibleCanvasPixels: canvasBudget?.visibleCanvasPixels ?? (mainCanvas ? mainCanvas.width * mainCanvas.height : null),
+      maxMainCanvasPixels: canvasBudget?.budgets?.maxMainCanvasPixels ?? null,
+      effectiveDpr: canvasBudget?.dpr ?? null,
+      windowDpr: window.devicePixelRatio,
+      sidebarCollapsed: Boolean(document.getElementById('sidebar')?.classList?.contains('sidebar--collapsed')),
+    },
+    camera: {
+      mode: renderer?.cameraDirector?.isAutoMode?.() ? 'auto' : 'fixed',
+      center: camera?.screenToWorld(camera._viewportWidth() / 2, camera._viewportHeight() / 2) ?? null,
+      x: camera?.x ?? null,
+      y: camera?.y ?? null,
+      zoom: camera?.zoom ?? null,
+      gliding: Boolean(camera?.isDirectorGliding?.() || camera?._zoomAnimation || camera?._followEase),
+      owner: renderer?.cameraDirector?.getOwner?.() ?? null,
+    },
+    atmosphere: {
+      hour: renderer?._lastAtmosphere?.clock?.minuteOfDay != null
+        ? Number((renderer._lastAtmosphere.clock.minuteOfDay / 60).toFixed(2))
+        : null,
+      clockLabel: renderer?._lastAtmosphere?.clock?.label ?? null,
+      weather: renderer?._lastAtmosphere?.weather?.type ?? null,
+      effectiveMonth: renderer?._lastAtmosphere?.effectiveDate?.getMonth?.() ?? null,
+    },
+    agents: {
+      total: app?.world?.agents?.size ?? renderer?.agentSprites?.size ?? null,
+      working: worldStats?.working ?? null,
+      idle: worldStats?.idle ?? null,
+      waiting: worldStats?.waiting ?? null,
+    },
+    pacing: {
+      ambientFramePacing,
+      motionScale: renderer?.motionScale ?? null,
+      ambientNow: renderer?._framePacing?.ambient === true,
+    },
+    presentGeneration: renderer?.presentGeneration ?? 0,
+    debugOverlayEnabled: renderer?.debugOverlay?.enabled === true,
+    frameFailures: canvasBudget?.runtime?.frameFailures
+      ? {
+        total: canvasBudget.runtime.frameFailures.total ?? 0,
+        consecutive: canvasBudget.runtime.frameFailures.consecutive ?? 0,
+        paused: canvasBudget.runtime.frameFailures.paused === true,
+        byStage: { ...(canvasBudget.runtime.frameFailures.byStage || {}) },
+      }
+      : null,
+    gpu: gpuDiag
+      ? {
+        active: gpuDiag.active === true,
+        frames: gpuDiag.frames ?? 0,
+        skippedFrames: gpuDiag.skippedFrames ?? 0,
+        uploads: gpuDiag.uploads ?? 0,
+        uploadBytes: gpuDiag.uploadBytes ?? 0,
+        uploadBytesByKind: gpuDiag.uploadBytesByKind ? { ...gpuDiag.uploadBytesByKind } : null,
+        textureEvictions: gpuDiag.textureEvictions ?? 0,
+        records: gpuDiag.records ?? null,
+        batches: gpuDiag.batches ?? null,
+        lights: gpuDiag.lights ?? null,
+        lightAdmission: gpuDiag.lightAdmission ? { ...gpuDiag.lightAdmission } : null,
+        cachedTextures: gpuDiag.cachedTextures ?? null,
+        cachedTextureBytes: gpuDiag.cachedTextureBytes ?? null,
+        residentTextureBytes: gpuDiag.residentTextureBytes ?? gpuDiag.textureBytes ?? null,
+        gpuMs,
+        gpuMsP25: Number.isFinite(gpuDiag.gpuMsP25) ? gpuDiag.gpuMsP25 : null,
+        gpuTimerSupported,
+        gpuTimerSamples,
+        gpuTimingState,
+        passSamplingEnabled: gpuDiag.passSamplingEnabled === true,
+        passes: gpuDiag.passSamplingEnabled && gpuDiag.passes ? gpuDiag.passes : null,
+      }
+      : {
+        active: false,
+        frames: 0,
+        skippedFrames: 0,
+        uploads: 0,
+        uploadBytes: 0,
+        uploadBytesByKind: null,
+        textureEvictions: 0,
+        records: null,
+        batches: null,
+        lights: null,
+        lightAdmission: null,
+        cachedTextures: null,
+        cachedTextureBytes: null,
+        residentTextureBytes: null,
+        gpuMs: null,
+        gpuMsP25: null,
+        gpuTimerSupported: false,
+        gpuTimerSamples: 0,
+        gpuTimingState,
+        passSamplingEnabled: false,
+        passes: null,
+      },
+    water: renderer?._canvasWater?.stats ? { ...renderer._canvasWater.stats } : null,
+    lightGradients: renderer?.lightGradientCache?.size ?? null,
+  };
+}
+
+/**
+ * Capture a complete World runtime snapshot for measurement-contract reporting:
+ * effective backend, PostFx, Frontier mask/readiness, quality level, pacing,
+ * viewport/backing dimensions, camera state, GPU/water counters, and agent counts.
+ */
+export function readWorldStateSnapshot(page) {
+  return page.evaluate(async (collectSource) => {
+    let ambientFramePacing = null;
+    try {
+      const pacingModule = await import('/src/presentation/character-mode/FramePacing.js');
+      ambientFramePacing = pacingModule?.AMBIENT_FRAME_PACING === true;
+    } catch { /* optional */ }
+    const collect = typeof collectSource === 'string'
+      ? new Function(`return (${collectSource});`)()
+      : collectWorldStateSnapshot;
+    return collect(ambientFramePacing);
+  }, collectWorldStateSnapshot.toString());
 }
 
 export function quantile(values, fraction) {

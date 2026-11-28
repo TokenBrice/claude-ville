@@ -187,3 +187,10 @@ test('Shift-D behaviour rows expose all metrics and cache by sampled tick', () =
     sample(counter, 250, [['a', 'forge', 'forge', false]]);
     assert.notEqual(overlay._behaviorRows(counter.metrics), rows);
 });
+
+test('debug timing rows surface expensive late stages and preserve frame order for other readers', () => {
+    const segments = ['setup', 'sky', 'horizon', 'terrain', 'water', 'lights'].map((label, ms) => ({ label, ms }));
+    const rows = new DebugOverlay()._renderTimingRows({ timings: { totalMs: 15, segments } });
+    assert.deepEqual(rows, ['frame: 15ms total', 'lights: 5.0ms', 'water: 4.0ms', 'terrain: 3.0ms', 'horizon: 2.0ms', 'sky: 1.0ms']);
+    assert.equal(segments[0].label, 'setup');
+});

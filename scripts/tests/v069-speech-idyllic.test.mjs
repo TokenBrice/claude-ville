@@ -419,8 +419,12 @@ test('Both mode snapshots SPOKEN line before AgentSprite.drawThought clears _sta
 
 test('spoken and overview auto modes do not leak phantom bubble hit rects or suppress head glyphs', () => {
     const renderer = makeRendererHost(1.0);
-    renderer.setSpeechDisplay('spoken');
     const sprite = makeSpeaker('hidden-bubble', { x: 400, y: 300 });
+    renderer.setSpeechDisplay('bubbles');
+    renderer._assignAgentBubbleSlots([sprite], 1.0, [], null, 900);
+    const previousBody = sprite._thoughtRects.body;
+    assert.ok(renderer._collectAgentLabelHitRects([sprite]).includes(previousBody));
+    renderer.setSpeechDisplay('spoken');
     renderer._assignAgentBubbleSlots([sprite], 1.0, [], null, 1000);
     assert.notEqual(sprite.bubbleSlot, null, 'speaker still resolves for SPOKEN scribe');
     assert.equal(sprite._thoughtBubblesDrawn, false);
@@ -428,7 +432,7 @@ test('spoken and overview auto modes do not leak phantom bubble hit rects or sup
 
     // Phantom bubble body rect must NOT be handed to building plaques.
     const hitRects = renderer._collectAgentLabelHitRects([sprite]);
-    assert.equal(hitRects.includes(sprite._thoughtRects.body), false, 'undrawn bubble body excluded from plaque hit rects');
+    assert.equal(hitRects.includes(previousBody), false, 'undrawn bubble body excluded from plaque hit rects');
 
     // AgentSprite._thoughtOwnsHead must return false when bubbles are hidden!
     const agentSprite = Object.create(AgentSprite.prototype);

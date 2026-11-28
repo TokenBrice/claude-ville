@@ -79,7 +79,15 @@ import {
     stageGpuRecords,
 } from './GpuRecordLayout.js';
 import { GpuFrameReuse, stageGpuFrameBindings } from './GpuFrameReuse.js';
-import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE, GpuAlbedoPage } from './GpuAlbedoPage.js';
+import { ALBEDO_PAGE_GUTTER, ALBEDO_PAGE_SIZE, GpuAlbedoPage, validTexturePatch } from './GpuAlbedoPage.js';
+import {
+    GpuTextureCacheState,
+    immutableSourceSignature,
+    isEvictableAgentTexture,
+    isImageSourceUnloaded,
+    isImmutableTextureSource,
+    selectEvictionCandidates,
+} from './GpuTextureCache.js';
 import { FIRELIGHT_DARK_SHARE, FIRELIGHT_PILOT_LANDMARK, resolveFirelight } from './Firelight.js';
 import { buildRadianceEmitters, GroundRadiance, RADIANCE_MIN_SOLVE_MS, RADIANCE_SCENE_GLSL } from './GroundRadiance.js';
 import { SUN_SHADE_GLSL, resolveSunShade } from './SunShade.js';
@@ -4428,8 +4436,10 @@ export function captureRecordWords(raw, normalized, batches, offset = 0, marks =
 }
 
 // Sidecars use the model key directly, without the albedo's agent-model prefix.
+// Full model sheets remain live-evictable (demoting to 92x92 cells via
+// preferAgentModelCells); live `|cell:` entries have no smaller fallback.
 export function evictableAgentTexture(key) {
-    return /^(?:(?:material|occluder|emissive):)?(?:agentLayer:|agent-(?:model|sheet(?:-lod)?|strip):|agent\.)/.test(key);
+    return isEvictableAgentTexture(key);
 }
 
 export class GpuWorldRenderer {
@@ -4534,6 +4544,8 @@ export class GpuWorldRenderer {
         this._frameUploadMs = 0;
         this._lastRenderAtMs = null;
         this._textureEntries = new Map();
+        this._textureCacheState = new GpuTextureCacheState();
+        this._deferredDeleteTextures = [];
         this._cachedTextureBytes = 0;
         this._textureCacheNeedsTrim = false;
         this._lastTextureTrimFrame = 0;
@@ -4794,6 +4806,7 @@ export class GpuWorldRenderer {
         });
         gl.activeTexture(gl.TEXTURE0);
         this._textureEntries.clear();
+        this._textureCacheState?.clearResident();
         // A restored context is a fresh binding namespace; the mirror is
         // rebuilt with it (PF-5).
         this._bindMirror = new GlBindMirror(gl);
@@ -4854,6 +4867,17 @@ export class GpuWorldRenderer {
      * ceiling and Shift-D see an R8 field at a quarter of an RGBA canvas.
      * Returns the texture, or null for an invalid field.
      */
+    _textureCache() {
+        return this._textureCacheState || (this._textureCacheState = new GpuTextureCacheState());
+    }
+
+    _flushDeferredTextureDeletes() {
+        const list = this._deferredDeleteTextures;
+        if (!list?.length) return;
+        for (let index = 0; index < list.length; index++) this.gl?.deleteTexture?.(list[index]);
+        list.length = 0;
+    }
+
     uploadTypedTexture(key, { width, height, format, data, revision = null } = {}) {
         const gl = this.gl;
         const spec = TEXTURE_FORMATS[format];
@@ -4864,12 +4888,13 @@ export class GpuWorldRenderer {
             return null;
         }
         const bytes = w * h * spec.bytesPerTexel;
+        const cache = this._textureCache();
+        const prevCachedBytes = this._cachedTextureBytes || 0;
         let entry = this._textureEntries.get(key);
-        const storageChanged = !entry || entry.format !== format || entry.width !== w || entry.height !== h;
-        if (!entry || entry.format !== format) {
-            if (entry?.texture) gl.deleteTexture(entry.texture);
-            this._cachedTextureBytes -= entry?.bytes || 0;
-            entry = { texture: null, source: null, revision: null, width: 0, height: 0, bytes: 0, format };
+        const storageChanged = !entry || entry.format !== format || entry.width !== w || entry.height !== h || !entry.texture;
+        const backingUsedThisFrame = cache.isBackingUsedInFrame(entry, this.frames + 1);
+        if (!entry) {
+            entry = { texture: null, source: null, src: '', revision: null, width: 0, height: 0, bytes: 0, format, backing: null, lastUsedFrame: -1 };
             this._textureEntries.set(key, entry);
             this._textureCacheNeedsTrim = true;
         }
@@ -4879,31 +4904,49 @@ export class GpuWorldRenderer {
             // restore that unit's texture (a caller that already bound its
             // sampler, e.g. the cloud tile, keeps it for this frame's draw).
             const bound = gl.getParameter(gl.TEXTURE_BINDING_2D);
-            if (storageChanged) {
-                if (entry.texture) gl.deleteTexture(entry.texture);
-                entry.texture = this._createTexture(w, h, { data, format });
+            if (storageChanged || backingUsedThisFrame || entry.backing?.refCount > 1) {
+                const { freedBytes, destroyedTexture } = entry.backing
+                    ? cache.detachEntry(key, entry, { invalidateBacking: true })
+                    : { freedBytes: entry.bytes || 0, destroyedTexture: entry.texture };
+                if (destroyedTexture) {
+                    if (backingUsedThisFrame) (this._deferredDeleteTextures ||= []).push(destroyedTexture);
+                    else gl.deleteTexture(destroyedTexture);
+                }
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) - freedBytes;
+                const texture = this._createTexture(w, h, { data, format });
+                const backing = cache.createBacking({ key, texture, width: w, height: h, format, bytes, source: data, revision });
+                cache.attachEntry(key, entry, backing);
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) + bytes;
             } else {
                 gl.bindTexture(gl.TEXTURE_2D, entry.texture);
                 gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
                 gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl[spec.format], gl[spec.type], data);
                 gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+                if (entry.backing) {
+                    cache.updateExclusiveBacking(entry.backing, { source: data, revision });
+                } else {
+                    const backing = cache.createBacking({ key, texture: entry.texture, width: w, height: h, format, bytes, source: data, revision });
+                    cache.attachEntry(key, entry, backing);
+                }
             }
             gl.bindTexture(gl.TEXTURE_2D, storageChanged && bound && !gl.isTexture(bound) ? null : bound);
-            this._cachedTextureBytes += bytes - entry.bytes;
             entry.source = data;
+            entry.src = '';
             entry.revision = revision;
             entry.width = w;
             entry.height = h;
             entry.bytes = bytes;
+            const elapsed = performance.now() - started;
             this.uploads++;
             this.uploadBytes += bytes;
-            this._frameUploadMs += performance.now() - started;
-            if (storageChanged) {
+            this._frameUploadMs += elapsed;
+            cache.recordUpload(key, bytes, elapsed, this.frames + 1);
+            if (storageChanged || this._cachedTextureBytes !== prevCachedBytes) {
                 this._textureCacheNeedsTrim = true;
                 this._updateTextureBytes();
             }
         }
-        entry.lastUsedFrame = this.frames + 1;
+        cache.markUsed(entry, this.frames + 1);
         return entry.texture;
     }
 
@@ -4970,10 +5013,18 @@ export class GpuWorldRenderer {
         this._targetNeedsBloom = false;
         this._lastEmissionUseAt = -Infinity;
         this._lastBloomUseAt = -Infinity;
+        this._flushDeferredTextureDeletes?.();
+        const deletedTextures = new Set();
         for (const entry of this._textureEntries?.values?.() || []) {
-            if (entry.texture) gl.deleteTexture(entry.texture);
+            const texture = entry.backing?.texture || entry.texture;
+            if (texture && !deletedTextures.has(texture)) {
+                deletedTextures.add(texture);
+                gl.deleteTexture(texture);
+            }
         }
+        if (this._deferredDeleteTextures) this._deferredDeleteTextures.length = 0;
         this._textureEntries?.clear?.();
+        this._textureCacheState?.clearResident();
         this._albedoPage?.release();
         this._albedoPage = null;
         this._radiance?.release();
@@ -5031,7 +5082,9 @@ export class GpuWorldRenderer {
         this._targetNeedsBloom = false;
         this._lastEmissionUseAt = -Infinity;
         this._lastBloomUseAt = -Infinity;
+        if (this._deferredDeleteTextures) this._deferredDeleteTextures.length = 0;
         this._textureEntries?.clear?.();
+        this._textureCacheState?.clearResident();
         this._albedoPage?.abandon();
         this._albedoPage = null;
         this._radiance?.abandon();
@@ -5212,7 +5265,7 @@ export class GpuWorldRenderer {
 
     _textureFor(key, source, revision = null, updates = null) {
         const gl = this.gl;
-        if (!source || source.width === 0 || source.height === 0) return null;
+        if (!source || source.width === 0 || source.height === 0 || isImageSourceUnloaded(source)) return null;
         const width = Math.max(1, Math.floor(source.width || source.videoWidth || 1));
         const height = Math.max(1, Math.floor(source.height || source.videoHeight || 1));
         let entry = this._textureEntries.get(key);
@@ -5221,20 +5274,66 @@ export class GpuWorldRenderer {
         // bake): it resolves only to a live texture of the same revision.
         if (source.gpuResident === true) {
             if (!entry || entry.revision !== revision || entry.width !== width || entry.height !== height) return null;
-            entry.lastUsedFrame = this.frames + 1;
+            this._textureCache().markUsed(entry, this.frames + 1);
             return entry.texture;
         }
+        const cache = this._textureCache();
+        const currentFrame = this.frames + 1;
+        const prevCachedBytes = this._cachedTextureBytes || 0;
+        const immutable = isImmutableTextureSource(source);
+        const src = immutableSourceSignature(source);
+        const srcChanged = (entry?.src || '') !== src;
         const storageChanged = !entry
+            || !entry.texture
             || entry.source !== source
+            || srcChanged
             || entry.width !== width
             || entry.height !== height;
-        const revisionChanged = !entry || entry.revision !== revision;
-        if (!entry) {
-            entry = { texture: gl.createTexture(), source: null, revision: null, width: 0, height: 0, bytes: 0, format: 'rgba8' };
-            this._textureEntries.set(key, entry);
-            this._textureCacheNeedsTrim = true;
-        }
+        const revisionChanged = !entry || (!immutable && entry.revision !== revision);
         if (storageChanged || revisionChanged) {
+            const hasUpdates = Array.isArray(updates) && updates.length > 0;
+            const reusable = !hasUpdates && (!entry?._sourceInvalidated || immutable)
+                ? cache.findReusableBacking(source, { width, height, format: 'rgba8', revision, src })
+                : null;
+            if (reusable) {
+                if (!entry) {
+                    entry = { texture: null, source: null, src: '', revision: null, width: 0, height: 0, bytes: 0, format: 'rgba8', backing: null, lastUsedFrame: -1 };
+                    this._textureEntries.set(key, entry);
+                    this._textureCacheNeedsTrim = true;
+                }
+                const alreadyAttached = entry.backing === reusable;
+                const backingUsedThisFrame = cache.isBackingUsedInFrame(entry, currentFrame);
+                if (entry.backing && !alreadyAttached) {
+                    const { freedBytes, destroyedTexture } = cache.detachEntry(key, entry, { removeEntry: false });
+                    if (destroyedTexture) {
+                        if (backingUsedThisFrame) (this._deferredDeleteTextures ||= []).push(destroyedTexture);
+                        else gl.deleteTexture(destroyedTexture);
+                    }
+                    this._cachedTextureBytes = (this._cachedTextureBytes || 0) - freedBytes;
+                } else if (!entry.backing && entry.texture && entry.texture !== reusable.texture) {
+                    if (backingUsedThisFrame) (this._deferredDeleteTextures ||= []).push(entry.texture);
+                    else gl.deleteTexture(entry.texture);
+                    this._cachedTextureBytes = (this._cachedTextureBytes || 0) - (entry.bytes || 0);
+                }
+                cache.attachEntry(key, entry, reusable, { reused: !alreadyAttached });
+                entry.source = source;
+                entry.src = src;
+                entry.revision = revision;
+                entry._sourceInvalidated = false;
+                if (storageChanged || (this._cachedTextureBytes || 0) !== prevCachedBytes) {
+                    this._textureCacheNeedsTrim = true;
+                    this._updateTextureBytes();
+                }
+                cache.markUsed(entry, currentFrame);
+                return entry.texture;
+            }
+            if (!entry) {
+                entry = { texture: null, source: null, src: '', revision: null, width: 0, height: 0, bytes: 0, format: 'rgba8', backing: null, lastUsedFrame: -1 };
+                this._textureEntries.set(key, entry);
+                this._textureCacheNeedsTrim = true;
+            }
+            const sharedBacking = Boolean(entry.backing && entry.backing.refCount > 1);
+            const backingUsedThisFrame = cache.isBackingUsedInFrame(entry, currentFrame);
             const started = performance.now();
             // Binding-neutral like uploadTypedTexture: the upload binds on
             // whatever unit is active, so restore that unit's texture — a
@@ -5243,6 +5342,36 @@ export class GpuWorldRenderer {
             // stub may not implement the query; then bind nothing back.
             const bound = typeof gl.getParameter === 'function'
                 ? gl.getParameter(gl.TEXTURE_BINDING_2D) : null;
+            // A patch list holds only this revision's changes: it applies
+            // only to a texture that saw the preceding revision. A source
+            // returning after frames on the albedo page needs a whole upload.
+            const canPatch = !storageChanged
+                && (entry.lastUsedFrame === this.frames || entry.lastUsedFrame === currentFrame)
+                && hasUpdates && updates.every(update => validTexturePatch(update, width, height));
+            // Never overwrite a backing already sampled by an earlier batch in
+            // this same frame (shared or exclusively-detached mid-frame): copy
+            // on write into a fresh texture and defer deleting the replaced one
+            // until post-submit so earlier batches keep their exact pixels.
+            const needFreshTexture = sharedBacking || !entry.texture || backingUsedThisFrame;
+            const previousTexture = entry.texture;
+            if (sharedBacking) {
+                cache.detachEntry(key, entry, { removeEntry: false });
+                entry.texture = null;
+            } else if (needFreshTexture && entry.backing) {
+                const { freedBytes, destroyedTexture } = cache.detachEntry(key, entry, { removeEntry: false, invalidateBacking: true });
+                if (destroyedTexture) {
+                    if (backingUsedThisFrame) (this._deferredDeleteTextures ||= []).push(destroyedTexture);
+                    else gl.deleteTexture(destroyedTexture);
+                }
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) - freedBytes;
+                entry.texture = null;
+            } else if (needFreshTexture && entry.texture) {
+                if (backingUsedThisFrame) (this._deferredDeleteTextures ||= []).push(entry.texture);
+                else gl.deleteTexture(entry.texture);
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) - (entry.bytes || 0);
+                entry.texture = null;
+            }
+            if (!entry.texture) entry.texture = gl.createTexture();
             gl.bindTexture(gl.TEXTURE_2D, entry.texture);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -5250,49 +5379,29 @@ export class GpuWorldRenderer {
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-            // A patch list holds only this revision's changes: it applies
-            // only to a texture that saw every earlier revision, i.e. one used
-            // on the previous frame (a source that spent frames on the albedo
-            // page, B.1b, returns with a whole upload).
-            const canPatch = !storageChanged
-                && (entry.lastUsedFrame === this.frames || entry.lastUsedFrame === this.frames + 1)
-                && Array.isArray(updates)
-                && updates.length > 0
-                && updates.every((update) => {
-                    const updateWidth = Math.floor(update?.width || update?.source?.width || 0);
-                    const updateHeight = Math.floor(update?.height || update?.source?.height || 0);
-                    const updateX = Math.floor(update?.x || 0);
-                    const updateY = Math.floor(update?.y || 0);
-                    // A sub-rect update (sx/sy set) reads that rect of a larger
-                    // source; otherwise the source is exactly the patch.
-                    const subRect = update?.sx != null;
-                    const sx = Math.floor(update?.sx || 0);
-                    const sy = Math.floor(update?.sy || 0);
-                    return Boolean(
-                        update?.source
-                        && updateWidth > 0
-                        && updateHeight > 0
-                        && (subRect
-                            ? sx >= 0 && sy >= 0
-                                && sx + updateWidth <= update.source.width
-                                && sy + updateHeight <= update.source.height
-                            : update.source.width === updateWidth && update.source.height === updateHeight)
-                        && updateX >= 0
-                        && updateY >= 0
-                        && updateX + updateWidth <= width
-                        && updateY + updateHeight <= height
-                    );
-                });
+            if (needFreshTexture && canPatch) {
+                // Seed the new revision with all prior patches, including texels absent from this update.
+                const previousFramebuffer = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+                const framebuffer = gl.createFramebuffer();
+                try {
+                    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuffer);
+                    gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, previousTexture, 0);
+                    gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 0, 0, width, height, 0);
+                } finally {
+                    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, previousFramebuffer);
+                    gl.deleteFramebuffer(framebuffer);
+                }
+            }
             let uploadedBytes = 0;
             if (canPatch) {
                 for (const update of updates) {
                     if (!update?.source) continue;
-                    if (update.sx != null) {
+                    if (update.sx != null || update.sy != null) {
                         gl.pixelStorei(gl.UNPACK_ROW_LENGTH, update.source.width);
-                        gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, Math.floor(update.sx));
+                        gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, Math.floor(update.sx || 0));
                         gl.pixelStorei(gl.UNPACK_SKIP_ROWS, Math.floor(update.sy || 0));
                         gl.texSubImage2D(gl.TEXTURE_2D, 0, Math.floor(update.x || 0), Math.floor(update.y || 0),
-                            Math.floor(update.width), Math.floor(update.height), gl.RGBA, gl.UNSIGNED_BYTE, update.source);
+                            Math.floor(update.width || update.source.width), Math.floor(update.height || update.source.height), gl.RGBA, gl.UNSIGNED_BYTE, update.source);
                         gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
                         gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
                         gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
@@ -5317,30 +5426,49 @@ export class GpuWorldRenderer {
             gl.bindTexture(gl.TEXTURE_2D, bound && gl.isTexture(bound) ? bound : null);
             // Canvas and image sources upload as RGBA8: 4 B per texel.
             const bytes = width * height * TEXTURE_FORMATS.rgba8.bytesPerTexel;
+            if (entry.backing) {
+                const delta = cache.updateExclusiveBacking(entry.backing, {
+                    texture: entry.texture, width, height, format: 'rgba8', bytes, source, src, revision,
+                });
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) + delta;
+            } else {
+                const backing = cache.createBacking({
+                    key, texture: entry.texture, width, height, format: 'rgba8', bytes, source, src, revision,
+                });
+                cache.attachEntry(key, entry, backing);
+                this._cachedTextureBytes = (this._cachedTextureBytes || 0) + bytes;
+            }
             entry.source = source;
+            entry.src = src;
             entry.revision = revision;
             entry.width = width;
             entry.height = height;
-            this._cachedTextureBytes += bytes - (entry.bytes || 0);
             entry.bytes = bytes;
+            entry._sourceInvalidated = false;
+            const elapsed = performance.now() - started;
             this.uploads++;
             this.uploadBytes += uploadedBytes;
-            this._frameUploadMs += performance.now() - started;
-            if (storageChanged) {
+            this._frameUploadMs += elapsed;
+            cache.recordUpload(key, uploadedBytes, elapsed, currentFrame);
+            if (storageChanged || (this._cachedTextureBytes || 0) !== prevCachedBytes) {
                 this._textureCacheNeedsTrim = true;
                 this._updateTextureBytes();
             }
+        } else if (entry.revision !== revision) {
+            entry.revision = revision;
         }
-        entry.lastUsedFrame = this.frames + 1;
+        cache.markUsed(entry, currentFrame);
         return entry.texture;
     }
 
     _trimTextureCache(protectedFrame = this.frames + 1) {
+        this._flushDeferredTextureDeletes();
         const nonTextureBytes = (this.vertexBufferBytes || 0) + (this.particleBuffer ? this._particleBytes.byteLength : 0);
         const sourceBudget = Math.min(MAX_CACHED_TEXTURE_BYTES,
             160 * 1024 * 1024 - (this.textureBytes - this._cachedTextureBytes) - nonTextureBytes);
-        const overCap = this._cachedTextureBytes > sourceBudget || this._textureEntries.size > MAX_CACHED_TEXTURES;
-        if (!overCap) {
+        const overBytes = this._cachedTextureBytes > sourceBudget;
+        const overCount = this._textureEntries.size > MAX_CACHED_TEXTURES;
+        if (!overBytes && !overCount) {
             this._textureCacheNeedsTrim = false;
             return;
         }
@@ -5348,17 +5476,39 @@ export class GpuWorldRenderer {
         this._lastSourceBudget = sourceBudget;
         this._lastTextureTrimFrame = this.frames;
         this._textureCacheNeedsTrim = false;
-        const candidates = [...this._textureEntries.entries()]
-            .filter(([key, entry]) => entry.lastUsedFrame < protectedFrame || evictableAgentTexture(key))
-            .sort((a, b) => finite(a[1].lastUsedFrame) - finite(b[1].lastUsedFrame));
-        for (const [key, entry] of candidates) {
-            if (this._cachedTextureBytes <= sourceBudget
-                && this._textureEntries.size <= MAX_CACHED_TEXTURES) break;
-            this.gl.deleteTexture(entry.texture);
-            if (entry.lastUsedFrame >= protectedFrame) preferAgentModelCells(key);
+        const cache = this._textureCache();
+        const candidates = selectEvictionCandidates(this._textureEntries, { protectedFrame, overBytes });
+        const evict = ({ key, entry, isLive, evictableSheet, lastUsed }, bytePressure) => {
+            const { freedBytes, destroyedTexture } = cache.detachEntry(key, entry, { removeEntry: true });
+            if (destroyedTexture) this.gl.deleteTexture(destroyedTexture);
+            if (evictableSheet && (isLive || (bytePressure && protectedFrame - lastUsed <= 60))) {
+                preferAgentModelCells(key, { pressure: bytePressure });
+            }
             this._textureEntries.delete(key);
-            this._cachedTextureBytes -= entry.bytes || 0;
+            this._cachedTextureBytes -= freedBytes;
             this.textureEvictions++;
+            cache.recordEviction(key, freedBytes, { isLive });
+        };
+        let deferredLive = null;
+        for (const candidate of candidates) {
+            const needBytes = this._cachedTextureBytes > sourceBudget;
+            const needCount = this._textureEntries.size > MAX_CACHED_TEXTURES;
+            if (!needBytes && !needCount) break;
+            if (candidate.isLive && !needBytes) {
+                (deferredLive ||= []).push(candidate);
+                continue;
+            }
+            evict(candidate, needBytes);
+        }
+        // Under count-only pressure (`size > MAX_CACHED_TEXTURES` with bytes
+        // within budget), cold entries absorb the trim first; if the cache is
+        // still over the key cap after exhausting cold entries, trim live
+        // eligible sheets down to `MAX_CACHED_TEXTURES`.
+        if (deferredLive && this._textureEntries.size > MAX_CACHED_TEXTURES) {
+            for (const candidate of deferredLive) {
+                if (this._textureEntries.size <= MAX_CACHED_TEXTURES) break;
+                evict(candidate, false);
+            }
         }
         this._updateTextureBytes();
     }
@@ -5572,9 +5722,12 @@ export class GpuWorldRenderer {
             const uploads = page.uploads;
             const bytes = page.flushUploads();
             if (bytes) {
-                this.uploads += page.uploads - uploads;
+                const elapsed = performance.now() - started;
+                const count = page.uploads - uploads;
+                this.uploads += count;
                 this.uploadBytes += bytes;
-                this._frameUploadMs += performance.now() - started;
+                this._frameUploadMs += elapsed;
+                this._textureCache().recordPageFlush(count, bytes, elapsed, page._frameSameFrameReuploads || 0);
             }
         }
         for (let index = 0; index < batches.length; index++) {
@@ -6878,8 +7031,12 @@ export class GpuWorldRenderer {
         this._preparedFeed = null;
         let gpuTimer = null;
         if (occluderChannelEnabled && this._occluderChannelSkipped) {
+            const cache = this._textureCache();
             for (const [key, entry] of this._textureEntries) {
-                if (key.startsWith('occluder:')) entry.source = null;
+                if (key.startsWith('occluder:')) {
+                    cache.invalidateEntrySource(entry);
+                    entry._sourceInvalidated = true;
+                }
             }
         }
         this._occluderChannelSkipped = !occluderChannelEnabled;
@@ -7165,6 +7322,11 @@ export class GpuWorldRenderer {
             cachedTextures: this._textureEntries.size,
             // B.1b — layers, bytes, slots, paged/overflow records this frame.
             albedoPage: this._albedoPage?.getDiagnostics() || null,
+            textureCache: this._textureCache().getDiagnostics({
+                cachedKeys: this._textureEntries.size,
+                cachedBytes: this._cachedTextureBytes,
+                pageDiagnostics: this._albedoPage?.getDiagnostics() || null,
+            }),
             // 2.10 — the ground radiance pilot: solves, emitters, bytes.
             radiance: this._radiance ? { ...this._radiance.getDiagnostics(), override: this.radianceOverride } : null,
             textureEvictions: this.textureEvictions,
@@ -7218,14 +7380,24 @@ export class GpuWorldRenderer {
         let pinnedSourceBytes = 0;
         let evictableSourceBytes = 0;
         const atlasPages = [];
+        const backingState = new Map();
         for (const [name, entry] of this._textureEntries) {
             const bytes = entry.bytes || 0;
             const pinned = entry.lastUsedFrame >= this.frames && !evictableAgentTexture(name);
-            if (pinned) pinnedSourceBytes += bytes;
-            else evictableSourceBytes += bytes;
+            const handle = entry.backing || entry;
+            const prev = backingState.get(handle);
+            if (prev) {
+                if (pinned) prev.pinned = true;
+            } else {
+                backingState.set(handle, { bytes: entry.backing ? entry.backing.bytes : bytes, pinned });
+            }
             if (name.includes('world-pilot') || name.includes('agent-frame-atlas')) {
                 atlasPages.push({ name, width: entry.width, height: entry.height, bytes, pinned });
             }
+        }
+        for (const state of backingState.values()) {
+            if (state.pinned) pinnedSourceBytes += state.bytes;
+            else evictableSourceBytes += state.bytes;
         }
         const targetBytes = target => target ? target.width * target.height * 4 : 0;
         const depthBytes = target => target?.depthBuffer

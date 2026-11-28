@@ -26,6 +26,10 @@ export const ALBEDO_PAGE_UNIT_KEY = 'albedo-page';
 // A repack sizes the page so its live set fills at most this share of it.
 const REPACK_FILL = 0.6;
 const REPACK_COOLDOWN_FRAMES = 90;
+// When more than half of the page's used area or slot count is stale dead
+// slots (e.g. moving villagers emitting variable-size shadow stamps), allow
+// compaction sooner instead of spilling 2D fallback textures for 90 frames.
+const STALE_REPACK_COOLDOWN_FRAMES = 15;
 // Shelves are snapped to 4 texels and accept items up to a quarter shorter.
 const SHELF_SNAP = 4;
 
@@ -86,12 +90,12 @@ export class ShelfPacker {
     }
 }
 
-function validPatch(update, width, height) {
+export function validTexturePatch(update, width, height) {
     const updateWidth = Math.floor(update?.width || update?.source?.width || 0);
     const updateHeight = Math.floor(update?.height || update?.source?.height || 0);
     const updateX = Math.floor(update?.x || 0);
     const updateY = Math.floor(update?.y || 0);
-    const subRect = update?.sx != null;
+    const subRect = update?.sx != null || update?.sy != null;
     const sx = Math.floor(update?.sx || 0);
     const sy = Math.floor(update?.sy || 0);
     return Boolean(
@@ -135,6 +139,10 @@ export class GpuAlbedoPage {
         this.liveEntries = 0;
         this.uploads = 0;
         this.uploadBytes = 0;
+        this.uploadMs = 0;
+        this.recycledSlots = 0;
+        this.sameFrameReuploads = 0;
+        this._frameSameFrameReuploads = 0;
     }
 
     get bytes() {
@@ -149,6 +157,29 @@ export class GpuAlbedoPage {
         this.overflowArea = 0;
         this.liveEntries = 0;
         this._overflowKeys = null;
+        this._frameSameFrameReuploads = 0;
+    }
+
+    // Reclaim an unused exact-size slot before spilling to a standalone 2D
+    // texture. Requiring exact dimensions overwrites 100% of the slot rect and
+    // preserves the 2-texel transparent gutter; requiring `lastUsedFrame < frame - 1`
+    // guarantees no current-frame draw or continuous sub-rect patch touches it.
+    _recycleStaleSlot(width, height) {
+        let oldestKey = null;
+        let oldestEntry = null;
+        const staleBefore = this.frame - 1;
+        for (const [key, entry] of this.entries) {
+            if (entry.pending || entry.lastUsedFrame >= staleBefore) continue;
+            if (entry.width !== width || entry.height !== height) continue;
+            if (!oldestEntry || entry.lastUsedFrame < oldestEntry.lastUsedFrame) {
+                oldestKey = key;
+                oldestEntry = entry;
+            }
+        }
+        if (!oldestEntry) return null;
+        this.entries.delete(oldestKey);
+        this.recycledSlots++;
+        return { layer: oldestEntry.layer, x: oldestEntry.x, y: oldestEntry.y };
     }
 
     /**
@@ -162,12 +193,15 @@ export class GpuAlbedoPage {
         const width = record.sourceWidth;
         const height = record.sourceHeight;
         let entry = this.entries.get(key);
+        // Earlier batches still sample this slot. A conflicting revision uses its standalone texture.
+        if (entry?.lastUsedFrame === this.frame && (entry.source !== record.source
+            || entry.revision !== (record.textureRevision ?? null) || entry.width !== width || entry.height !== height)) return null;
         if (entry && (entry.width !== width || entry.height !== height)) {
             this.entries.delete(key);
             entry = null;
         }
         if (!entry) {
-            const slot = this.packer ? this.packer.place(width, height) : null;
+            const slot = this.packer ? (this.packer.place(width, height) || this._recycleStaleSlot(width, height)) : null;
             if (!slot) {
                 this.overflowRecords++;
                 const keys = this._overflowKeys || (this._overflowKeys = new Set());
@@ -179,7 +213,7 @@ export class GpuAlbedoPage {
             }
             entry = {
                 layer: slot.layer, x: slot.x, y: slot.y, width, height,
-                source: null, revision: undefined, lastUsedFrame: -1, pending: false,
+                source: null, revision: undefined, lastUsedFrame: -1, lastUploadFrame: -1, pending: false,
             };
             this.entries.set(key, entry);
         }
@@ -199,10 +233,14 @@ export class GpuAlbedoPage {
             // Same rules as the 2D cache: a new source uploads whole; a new
             // revision of the same source takes its sub-rect updates.
             const whole = entry.source !== source || !continuous;
+            if (entry.pending || entry.lastUploadFrame === this.frame) {
+                this.sameFrameReuploads++;
+                this._frameSameFrameReuploads++;
+            }
             entry.source = source;
             entry.revision = revision;
             const updates = !whole && Array.isArray(record.textureUpdates) && record.textureUpdates.length > 0
-                && record.textureUpdates.every((update) => validPatch(update, width, height))
+                && record.textureUpdates.every((update) => validTexturePatch(update, width, height))
                 ? record.textureUpdates
                 : null;
             if (entry.pending) entry.updates = null;
@@ -227,12 +265,16 @@ export class GpuAlbedoPage {
      */
     repackIfOverflowed() {
         if (!this.overflowRecords) return false;
-        if (this.texture && this.frame - this.lastRepackFrame < REPACK_COOLDOWN_FRAMES) return false;
+        const stale = Math.max(0, (this.packer?.usedArea || 0) - this.liveArea);
+        const staleEntries = Math.max(0, this.entries.size - this.liveEntries);
+        const cooldown = (stale > this.liveArea || staleEntries > this.liveEntries)
+            ? STALE_REPACK_COOLDOWN_FRAMES
+            : REPACK_COOLDOWN_FRAMES;
+        if (this.texture && this.frame - this.lastRepackFrame < cooldown) return false;
         const capacity = ALBEDO_PAGE_SIZE * ALBEDO_PAGE_SIZE;
         const wanted = this.liveArea + this.overflowArea;
         const estimate = Math.ceil(wanted / (capacity * REPACK_FILL));
         const layers = Math.max(1, this._layerFloor, Math.min(ALBEDO_PAGE_MAX_LAYERS, estimate));
-        const stale = (this.packer?.usedArea || 0) - this.liveArea;
         if (this.texture && layers <= this.layers && stale <= 0) return false;
         this._allocate(layers);
         this.lastRepackFrame = this.frame;
@@ -281,6 +323,7 @@ export class GpuAlbedoPage {
     flushUploads() {
         const pending = this._pending;
         if (!pending.length) return 0;
+        const started = performance.now();
         const gl = this.gl;
         const readBinding = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
         if (!this._scratch) {
@@ -309,9 +352,9 @@ export class GpuAlbedoPage {
                     const width = Math.floor(update.width || update.source.width);
                     const height = Math.floor(update.height || update.source.height);
                     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-                    if (update.sx != null) {
+                    if (update.sx != null || update.sy != null) {
                         gl.pixelStorei(gl.UNPACK_ROW_LENGTH, update.source.width);
-                        gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, Math.floor(update.sx));
+                        gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, Math.floor(update.sx || 0));
                         gl.pixelStorei(gl.UNPACK_SKIP_ROWS, Math.floor(update.sy || 0));
                         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, update.source);
                         gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
@@ -329,6 +372,7 @@ export class GpuAlbedoPage {
                 bytes += entry.width * entry.height * 4;
             }
             entry.updates = null;
+            entry.lastUploadFrame = this.frame;
             this.uploads++;
         }
         pending.length = 0;
@@ -337,6 +381,7 @@ export class GpuAlbedoPage {
         gl.bindTexture(gl.TEXTURE_2D, null);
         gl.bindFramebuffer(gl.READ_FRAMEBUFFER, readBinding);
         this.uploadBytes += bytes;
+        this.uploadMs += performance.now() - started;
         return bytes;
     }
 
@@ -363,17 +408,33 @@ export class GpuAlbedoPage {
     }
 
     getDiagnostics() {
+        const capacityArea = ALBEDO_PAGE_SIZE * ALBEDO_PAGE_SIZE * this.layers;
+        const usedArea = this.packer?.usedArea || 0;
+        const staleArea = Math.max(0, usedArea - this.liveArea);
+        const staleEntries = Math.max(0, this.entries.size - this.liveEntries);
         return {
             layers: this.layers,
             bytes: this.bytes,
             entries: this.entries.size,
             liveEntries: this.liveEntries,
+            staleEntries,
             pagedRecords: this.pagedRecords,
             overflowRecords: this.overflowRecords,
-            fill: this.layers ? Number((this.liveArea / (ALBEDO_PAGE_SIZE * ALBEDO_PAGE_SIZE * this.layers)).toFixed(3)) : 0,
+            overflowUniqueKeys: this._overflowKeys?.size || 0,
+            overflowArea: this.overflowArea,
+            usedArea,
+            liveArea: this.liveArea,
+            staleArea,
+            capacityArea,
+            fill: capacityArea ? Number((this.liveArea / capacityArea).toFixed(3)) : 0,
+            occupancy: capacityArea ? Number((usedArea / capacityArea).toFixed(3)) : 0,
+            staleShare: usedArea ? Number((staleArea / usedArea).toFixed(3)) : 0,
+            recycledSlots: this.recycledSlots,
+            sameFrameReuploads: this.sameFrameReuploads,
             repacks: this.repacks,
             uploads: this.uploads,
             uploadBytes: this.uploadBytes,
+            uploadMs: Number(this.uploadMs.toFixed(2)),
         };
     }
 }

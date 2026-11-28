@@ -1135,12 +1135,25 @@ export class AgentManager {
             usedReferences.add(reference);
             idsByReference[reference] = id;
         }
+        const stringTables = primary?.gitEventStringTables || fallback?.gitEventStringTables || null;
         return {
             idsByReference,
             fields: primary?.gitEventFields || fallback?.gitEventFields || null,
-            stringTables: primary?.gitEventStringTables || fallback?.gitEventStringTables || null,
+            stringTables,
+            dictionaries: this._gitEventDictionariesFrom(stringTables),
             eventsById,
         };
+    }
+
+    _gitEventDictionariesFrom(stringTables) {
+        if (!Array.isArray(stringTables) || stringTables.length === 0) return null;
+        const dictionaries = new Map();
+        for (const entry of stringTables) {
+            if (Array.isArray(entry) && Number.isInteger(entry[0]) && Array.isArray(entry[1])) {
+                dictionaries.set(entry[0], entry[1]);
+            }
+        }
+        return dictionaries.size > 0 ? dictionaries : null;
     }
 
     _rehydrateGitEvents(gitEvents, wire) {
@@ -1178,10 +1191,11 @@ export class AgentManager {
         }
         if (!Array.isArray(row[0]) || !Array.isArray(wire.fields)) return null;
 
-        const dictionaries = new Map();
-        for (const entry of wire.stringTables || []) {
-            if (Array.isArray(entry) && Number.isInteger(entry[0]) && Array.isArray(entry[1])) {
-                dictionaries.set(entry[0], entry[1]);
+        let dictionaries = wire.dictionaries;
+        if (dictionaries === undefined) {
+            dictionaries = this._gitEventDictionariesFrom(wire.stringTables);
+            if (wire && typeof wire === 'object' && !Object.isFrozen(wire)) {
+                wire.dictionaries = dictionaries;
             }
         }
         const event = {};
@@ -1192,7 +1206,7 @@ export class AgentManager {
             if (!present) continue;
             if (valueIndex >= row.length) return null;
             let value = row[valueIndex++];
-            const dictionary = dictionaries.get(fieldIndex);
+            const dictionary = dictionaries?.get(fieldIndex);
             if (dictionary) {
                 if (!Number.isInteger(value) || value < 0 || value >= dictionary.length) return null;
                 value = dictionary[value];

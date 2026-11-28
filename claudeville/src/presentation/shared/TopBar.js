@@ -1477,7 +1477,7 @@ export class TopBar {
         // The rate and the coverage caveat ride beside today's total — two
         // facts about the same number, and the topbar has no width to spare.
         const rate = this.spendLedger?.burnRate?.(now);
-        this._spendRollups = this.spendLedger?.rollups?.(now) || { projects: [], providers: [] };
+        const spendPanelOpen = Boolean(this._spendPanelEl && this._spendPanelEl.style.display !== 'none');
         const rateText = rate ? `${formatNumber(Math.round(rate.tokensPerHour))}/h` : '';
         setText(this.els.rate, pending ? '' : [rateText, incomplete ? 'partial' : ''].filter(Boolean).join(' · '));
         // UI-15: the ledger counts only while a page is open in this browser,
@@ -1494,7 +1494,7 @@ export class TopBar {
                 : `${seen}. A burn rate appears after a couple of minutes of activity. Click for project, provider and session detail.`;
         }
         if (this.els.rateWrap && this._coverageNote) this.els.rateWrap.dataset.tip += ` ${this._coverageNote}`;
-        if (this._spendPanelEl?.style.display !== 'none' && !this._spendPanelHeld()) this._renderSpendPanel();
+        if (spendPanelOpen && !this._spendPanelHeld()) this._renderSpendPanel(now);
     }
 
     // UI-12: the open popover follows the ledger but holds still under the
@@ -1552,10 +1552,11 @@ export class TopBar {
         if (restoreFocus && wasOpen) focusWithoutScroll(this.els.rateWrap);
     }
 
-    _renderSpendPanel() {
+    _renderSpendPanel(now = Date.now()) {
         const panel = this._spendPanelEl;
         if (!panel) return;
-        const rollups = this._spendRollups || { projects: [], providers: [] };
+        const rollups = this.spendLedger?.rollups?.(now) || this._spendRollups || { projects: [], providers: [] };
+        this._spendRollups = rollups;
         const heading = el('div', {
             text: 'SPEND MAP',
             className: 'topbar__spend-heading',
@@ -1852,7 +1853,7 @@ export class TopBar {
         this._ensureConnectionDetails();
         const panel = this._connectionPanelEl;
         if (!panel) return;
-        this._renderConnectionDetails();
+        this._renderConnectionDetails(Date.now(), { force: true });
         const rect = this.els.connection.getBoundingClientRect();
         panel.style.left = `${Math.round(Math.max(8, rect.left))}px`;
         panel.style.top = `${Math.round(rect.bottom)}px`;
@@ -1868,9 +1869,9 @@ export class TopBar {
         if (restoreFocus && wasOpen) focusWithoutScroll(this.els.connection);
     }
 
-    _renderConnectionDetails(now = Date.now()) {
+    _renderConnectionDetails(now = Date.now(), { force = false } = {}) {
         const panel = this._connectionPanelEl;
-        if (!panel) return;
+        if (!panel || (!force && panel.style.display === 'none')) return;
         const link = this._villageState.link;
         const age = snapshotAgeMs(this._villageState, now);
         const snapshot = age === null

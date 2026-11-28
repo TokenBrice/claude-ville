@@ -537,7 +537,9 @@ export function collectDampMarks({
 
 // Follow-up after layer extraction: move private renderer calls used here into
 // explicit layer/context methods so this module stays a frame orchestrator.
-export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = false) {
+export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = false, options = null) {
+    const forceCanvas = options?.forceCanvas === true;
+    const deferWebGpuFailureFallback = options?.deferWebGpuFailureFallback === true;
     const ctx = renderer.ctx;
     const canvas = renderer.canvas;
     const overlayCtx = renderer.overlayCtx;
@@ -570,7 +572,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
         buildings: renderer.buildingRenderer,
         actors: renderer.agentSprites,
     });
-    const gpuWorldRequested = renderer.gpuWorld?.isActive?.() === true;
+    const gpuWorldRequested = !forceCanvas && renderer.gpuWorld?.isActive?.() === true;
     const sceneCategoryContext = renderer._sceneCategoryContext || (renderer._sceneCategoryContext = {});
     sceneCategoryContext.renderer = renderer;
     sceneCategoryContext.renderNow = renderNow;
@@ -586,7 +588,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // 4.6 — a glide planned now is a continuous dolly only where its flight
     // frames will render fat-pixel; the Canvas world takes the stepped family.
     if (renderer.camera) renderer.camera.fatFlight = gpuWorldActive;
-    const postFxActive = !gpuWorldActive && renderer.postFx?.isActive?.() === true;
+    const postFxActive = !forceCanvas && !gpuWorldActive && renderer.postFx?.isActive?.() === true;
     // #28 integration — fire the child sprite's one-shot handoff ack-bob once the
     // director's baton reaches it (progress near terminus), deduped per scene id.
     if (villageSnapshot?.handoffs?.length) {
@@ -669,7 +671,9 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // 5.3 — ship lamps burn on the village lamp clock.
     renderer.harborTraffic?.setLampsLit?.(renderer.villageLampsLit?.() === true);
     const perfNow = performance.now();
-    renderer._frameLightSources = renderer._computeFrameLightSources(atmosphere, perfNow);
+    renderer._frameLightSources = renderer._computeFrameLightSources(atmosphere, perfNow, {
+        planWetReflections: !gpuWorldActive,
+    });
     renderer._updateGateDoorState?.(perfNow);
     markFrameTiming(frameTimer, 'setup');
 
@@ -805,6 +809,7 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     for (const sprite of sortedSprites) {
         sprite.setLightingState?.(agentLighting);
         sprite.setGpuWorldEnabled?.(gpuWorldActive);
+        sprite._lowZoomImpostor = false;
     }
     const propDrawables = renderer._enumeratePropDrawables();
     const harborPendingRepos = renderer.harborTraffic?.getPendingRepoSummaries?.() ?? [];
@@ -906,8 +911,10 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // V5 — the hybrid pools' ground-receiver mask (CanvasPoolMask), built
     // here so both grade owners read one mask.
     if (feed && postFxActive) {
+        markFrameTiming(frameTimer, 'hybrid-feed');
         const maskRect = poolMaskRect(renderer, viewport);
         feed.poolMask = maskRect ? poolReceiverMask(renderer, maskRect) : null;
+        markFrameTiming(frameTimer, 'hybrid-pool-mask');
     }
     if (gpuWorldActive) {
         // 4.6 — the camera feed: whether this GL frame is a flight frame (the
@@ -1028,14 +1035,42 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
             && renderer.gpuWorld.markRecords === gpuRenderContext.marks.length;
         if (gpuMarksDrawn) gpuMarks = gpuRenderContext.marks;
         markFrameTiming(frameTimer, 'gpu-world');
+        if (!gpuWorldRendered) {
+            renderer._setPostFxCanvasVisible?.(false);
+            // When the caller armed an immediate in-frame WebGPU -> WebGL2
+            // fallback for a fatal WebGPU failure, let that fallback render
+            // this task instead of double-drawing Canvas first (if that
+            // fallback also fails, its retry runs without deferral and takes
+            // the Canvas rescue below).
+            const hasInFrameWebGpuFallback = deferWebGpuFailureFallback
+                && renderer.worldRendererMode === 'webgpu'
+                && Boolean(renderer.gpuWorld?.failure);
+            if (hasInFrameWebGpuFallback) {
+                finishFrameTiming(renderer, frameTimer);
+                return true;
+            }
+            // Bounded same-frame full Canvas rescue: the lower 2D canvas
+            // skipped terrain, shadows, and depth-sorted drawables assuming
+            // resident GPU output would cover it. Re-run once as a complete
+            // Canvas frame so a false resident draw never exposes mostly sky.
+            if (!forceCanvas) {
+                renderer.markGovernor?.beginFrame?.({
+                    regionSize: 200 / (renderer.camera?.zoom || 1),
+                    motionScale: renderer.motionScale,
+                });
+                return renderWorldFrame(renderer, 0, false, { forceCanvas: true });
+            }
+        }
     } else if (postFxActive) {
         // 1.3 — on the hybrid path the water columns and emitter cuts land on
         // the (still empty) overlay before the PostFx pass: the cuts' own
         // emission, at the FULL bloom target's half scale, is its bloom
         // source, as authored emission is the resident bloom's.
         drawCanvasWaterColumns(overlayCtx, renderer);
+        markFrameTiming(frameTimer, 'hybrid-water-columns');
         drawCanvasGradeOverlays(overlayCtx, renderer, atmosphere);
         const emission = drawCanvasEmitterCuts(overlayCtx, renderer, atmosphere, 0.5);
+        markFrameTiming(frameTimer, 'hybrid-emitter-cuts');
         if (feed) feed.emission = emission;
         postFxRendered = renderer.postFx?.render?.(canvas, feed) === true;
         markFrameTiming(frameTimer, 'postfx');
@@ -1060,8 +1095,10 @@ export function renderWorldFrame(renderer, dt = 16, allowTerrainArtifactWait = f
     // hybrid path drew both above, before its pass).
     if (!gpuWorldRendered && !postFxActive) {
         drawCanvasWaterColumns(overlayCtx, renderer);
+        markFrameTiming(frameTimer, 'canvas-water-columns');
         drawCanvasGradeOverlays(overlayCtx, renderer, atmosphere);
         drawCanvasEmitterCuts(overlayCtx, renderer, atmosphere);
+        markFrameTiming(frameTimer, 'canvas-emitter-cuts');
     }
     // 10.2 — on the resident path, with the overlay's backing pixels exactly
     // the GPU's (an integer device scale, the same size), a verified-success

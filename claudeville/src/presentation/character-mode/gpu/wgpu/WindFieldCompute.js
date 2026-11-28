@@ -52,6 +52,10 @@ export const WIND_FIXED_DT_MS = 1000 / WIND_STEP_HZ;
 export const WIND_MAX_CATCHUP_STEPS = 2;
 export const WIND_WORKGROUP_SIZE = 8;
 export const WIND_EMBER_WORKGROUP_SIZE = 64;
+// Maximum decorative ember lifetime in WIND_EMBER_COMPUTE_WGSL is 0.9 + 1.4 = 2.3 s.
+// Add 1 extra dispatch after max life so the last live ember explicitly writes heat = 0.
+export const WIND_EMBER_MAX_LIFE_S = 2.3;
+export const WIND_EMBER_COOLDOWN_DISPATCHES = Math.ceil(WIND_EMBER_MAX_LIFE_S / WIND_FIXED_DT_S) + 1;
 
 export const WIND_FRONTIER_MASK_BIT = 1 << 3; // 8 (FrameUniforms.frontier.x bit 3)
 
@@ -869,6 +873,7 @@ export class WindFieldCompute {
         this._revision = 0;
         this._lastDispatchedSteps = 0;
         this._reducedMotion = false;
+        this._emberCooldownDispatches = 0;
 
         this._forcing = {
             baseWindX: 0.35,
@@ -1181,6 +1186,7 @@ export class WindFieldCompute {
         this._stepCount = 0;
         this._revision = 0;
         this._lastDispatchedSteps = 0;
+        this._emberCooldownDispatches = 0;
         this._obstacleDirty = true;
         this._emittersDirty = true;
         this._prepared = true;
@@ -1236,9 +1242,32 @@ export class WindFieldCompute {
         return this._emberBuffer;
     }
 
+    /** True when at least one active emitter meets the WGSL hearth spawn threshold. */
+    hasActiveHearthEmitter() {
+        const list = this._forcing.emitters;
+        const count = Math.min(list.length, WIND_EMITTER_CAPACITY);
+        for (let i = 0; i < count; i++) {
+            const em = list[i];
+            if ((em.flags & WIND_EMITTER_FLAGS.hearth) !== 0 && em.gustStrength > 0.05) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * True while an active hearth can spawn embers or previously spawned embers
+     * have not yet completed their full `WIND_EMBER_COOLDOWN_DISPATCHES` fade-out.
+     */
+    hasLiveEmbers() {
+        return this.emberCapacity > 0 && (this.hasActiveHearthEmitter() || this._emberCooldownDispatches > 0);
+    }
+
     /**
      * Encode 0..2 fixed 20 Hz compute steps of the wind/mist field (plus
-     * decorative embers) onto `encoder`.
+     * decorative embers) onto `encoder`. Pass `embers: 'auto'` to suspend the
+     * ember compute pass once all active hearths are off and the last live
+     * ember has expired and been zeroed.
      */
     encode(encoder, {
         dtSeconds = 0,
@@ -1258,6 +1287,8 @@ export class WindFieldCompute {
                 revision: this._revision,
                 fieldView: this.getCurrentFieldView(),
                 emberBuffer: this._emberBuffer,
+                hasLiveEmbers: this.hasLiveEmbers(),
+                emberDispatched: false,
             };
         }
 
@@ -1271,6 +1302,8 @@ export class WindFieldCompute {
         });
         this._lastDispatchedSteps = steps;
 
+        const hearthActive = this.hasActiveHearthEmitter();
+        let emberDispatched = false;
         if (steps > 0) {
             const groups = Math.ceil(this.gridSize / WIND_WORKGROUP_SIZE);
             for (let s = 0; s < steps; s++) {
@@ -1287,13 +1320,19 @@ export class WindFieldCompute {
                 this._revision++;
             }
 
-            if (embers && this.emberCapacity > 0 && this._emberPipeline) {
+            const shouldRunEmbers = embers === 'auto'
+                ? (hearthActive || this._emberCooldownDispatches > 0)
+                : Boolean(embers);
+            if (shouldRunEmbers && this.emberCapacity > 0 && this._emberPipeline) {
                 const emberGroups = Math.ceil(this.emberCapacity / WIND_EMBER_WORKGROUP_SIZE);
                 const pass = encoder.beginComputePass({ label: 'w5d-wind-embers' });
                 pass.setPipeline(this._emberPipeline);
                 pass.setBindGroup(0, this._emberBindGroups[this._readIndex]);
                 pass.dispatchWorkgroups(emberGroups, 1, 1);
                 pass.end();
+                emberDispatched = true;
+                if (hearthActive) this._emberCooldownDispatches = WIND_EMBER_COOLDOWN_DISPATCHES;
+                else if (this._emberCooldownDispatches > 0) this._emberCooldownDispatches--;
             }
         }
 
@@ -1303,6 +1342,8 @@ export class WindFieldCompute {
             revision: this._revision,
             fieldView: this.getCurrentFieldView(),
             emberBuffer: this._emberBuffer,
+            hasLiveEmbers: this.hasLiveEmbers(),
+            emberDispatched,
         };
     }
 
@@ -1312,6 +1353,7 @@ export class WindFieldCompute {
 
         this._device = null;
         this._prepared = false;
+        this._emberCooldownDispatches = 0;
         this._windPipeline = null;
         this._windLayout = null;
         this._windPipelineLayout = null;
@@ -1351,6 +1393,8 @@ export class WindFieldCompute {
             reducedMotion: this._reducedMotion,
             frozen: this._reducedMotion,
             emberCapacity: this.emberCapacity,
+            emberCooldownDispatches: this._emberCooldownDispatches,
+            hasLiveEmbers: this.hasLiveEmbers(),
             activeEmitters: this._forcing.emitters.length,
             forcing: {
                 baseWindX: this._forcing.baseWindX,

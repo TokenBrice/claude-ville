@@ -11,6 +11,9 @@ import {
     CANONICAL_BAYER4_RANKS,
     FRESNEL_COURSE_WEIGHTS,
     MIRROR_SOURCE_FLAG,
+    PLANAR_BED_MAX_BYTES,
+    PLANAR_BED_MAX_STRIP_HEIGHT,
+    PLANAR_BED_MIN_STRIP_HEIGHT,
     PLANAR_CLEAR_COLOR,
     PLANAR_CLEAR_DEPTH,
     PLANAR_COLOR_BYTES,
@@ -41,10 +44,12 @@ import {
     linear16ToSrgb8,
     mix256,
     mix256rgb,
+    projectPlanarBasinRect,
     reflectWorldHeight,
     reflectWorldY,
     resolvePlanarWaterTexel,
     roundHalfAwayFromZero,
+    selectPlanarBedStripHeight,
     skyCourseAt,
     srgb8ToLinear16,
     waterChannel,
@@ -66,9 +71,13 @@ import {
     RIPPLE_TOTAL_TEXTURE_BYTES,
     WATER_RIPPLE_COMPUTE_WGSL,
     WaterRippleCompute,
+    collectRainRippleImpulses,
     computeRippleEnergyCpu,
+    computeWetRippleBounds,
     createRippleFieldCpu,
     createWaterRippleCompute,
+    intersectRainCellsWithRippleGrid,
+    rainCellHash,
     setBoundaryWallCpu,
     stepRippleFieldCpu,
 } from '../../claudeville/src/presentation/character-mode/gpu/wgpu/WaterRippleCompute.js';
@@ -739,4 +748,205 @@ test('W5-A: Harbor underside baker (--help, --check), PNG invariants (384x284, z
     for (const binding of Object.values(RIPPLE_COMPUTE_BINDING)) {
         assert.match(WATER_RIPPLE_COMPUTE_WGSL, new RegExp(`@group\\(0\\)\\s+@binding\\(${binding}\\)`));
     }
+});
+
+test('W5-A P3: storm rain impulse intersection matches brute-force cell coordinates and hash order bit-for-bit', () => {
+    const boundary = new Uint8Array(RIPPLE_GRID_WIDTH * RIPPLE_GRID_HEIGHT * 4);
+    for (let y = 30; y < 140; y++) {
+        for (let x = 20; x < 180; x++) {
+            boundary[(y * RIPPLE_GRID_WIDTH + x) * 4] = 255;
+        }
+    }
+    const wetBounds = computeWetRippleBounds(boundary);
+    assert.deepEqual(wetBounds, { minX: 20, maxX: 179, minY: 30, maxY: 139, empty: false });
+
+    const rippleOrigin = [-896, 96];
+    const rippleScale = 256 / 2176;
+    const cellSize = 32;
+    const layerCuts = { cut0: 0.34, cut1: 0.72 };
+
+    const bruteForce = (uniforms, rainInstances, prevPhases) => {
+        const out = [];
+        const [ox, oy, cols] = uniforms;
+        const rows = Math.ceil(rainInstances / cols);
+        for (let cy = oy; cy < oy + rows; cy++) {
+            for (let cx = ox; cx < ox + cols; cx++) {
+                const seed = rainCellHash(Math.imul(cx + 32768, 0x8da6b343) ^ Math.imul(cy + 32768, 0xd8163841) ^ uniforms[3]);
+                if (seed / 4294967296 >= uniforms[4]) continue;
+                const pick = rainCellHash(seed ^ 0x68e31da4) / 4294967296;
+                const layer = pick < layerCuts.cut0 ? 0 : pick < layerCuts.cut1 ? 1 : 2;
+                const phase = uniforms[8 + layer];
+                const impact = 1 - rainCellHash(seed + 3) / 4294967296;
+                const previous = prevPhases?.[layer];
+                if (previous == null || !((phase >= previous) ? impact > previous && impact <= phase : impact > previous || impact <= phase)) continue;
+                const rx = cx * cellSize + Math.floor(rainCellHash(seed + 1) / 4294967296 * cellSize);
+                const ry = cy * cellSize + Math.floor(rainCellHash(seed + 2) / 4294967296 * cellSize);
+                const gx = Math.floor((rx - rippleOrigin[0]) * rippleScale);
+                const gy = Math.floor((ry - rippleOrigin[1]) * rippleScale);
+                if (gx < 0 || gy < 0 || gx >= RIPPLE_GRID_WIDTH || gy >= RIPPLE_GRID_HEIGHT) continue;
+                if (!boundary[(gy * RIPPLE_GRID_WIDTH + gx) * 4]) continue;
+                out.push([rx, ry, gx, gy]);
+            }
+        }
+        return out;
+    };
+
+    const cases = [
+        // Wide storm spanning well outside the ripple grid on all 4 sides, normal phase step
+        { ox: -80, oy: -40, cols: 160, rows: 120, prev: new Float32Array([0.1, 0.2, 0.3]), cur: [0.35, 0.45, 0.55] },
+        // Phase wrap-around across 1.0 -> 0.0
+        { ox: -60, oy: -20, cols: 130, rows: 90, prev: new Float32Array([0.88, 0.92, 0.95]), cur: [0.12, 0.08, 0.05] },
+        // Completely off the ripple grid (inland zoomed away from water)
+        { ox: -120, oy: -80, cols: 24, rows: 20, prev: new Float32Array([0.1, 0.2, 0.3]), cur: [0.5, 0.5, 0.5] },
+        // First rain frame (no previousPhases): zero cells scanned, zero impulses
+        { ox: -60, oy: -20, cols: 120, rows: 80, prev: null, cur: [0.2, 0.3, 0.4] },
+    ];
+
+    for (const c of cases) {
+        const u = new Float32Array(16);
+        u[0] = c.ox;
+        u[1] = c.oy;
+        u[2] = c.cols;
+        u[3] = 4242;
+        u[4] = 0.45;
+        u[8] = c.cur[0];
+        u[9] = c.cur[1];
+        u[10] = c.cur[2];
+        const instances = c.cols * c.rows;
+        const expected = bruteForce(u, instances, c.prev);
+        const actual = [];
+        const stats = collectRainRippleImpulses({
+            uniforms: u,
+            rainInstances: instances,
+            previousPhases: c.prev,
+            cellSize,
+            layerCuts,
+            rippleOrigin,
+            rippleScale,
+            wetBounds,
+            onImpulse: (rx, ry) => {
+                const gx = Math.floor((rx - rippleOrigin[0]) * rippleScale);
+                const gy = Math.floor((ry - rippleOrigin[1]) * rippleScale);
+                if (gx < 0 || gy < 0 || gx >= RIPPLE_GRID_WIDTH || gy >= RIPPLE_GRID_HEIGHT) return;
+                if (!boundary[(gy * RIPPLE_GRID_WIDTH + gx) * 4]) return;
+                actual.push([rx, ry, gx, gy]);
+            },
+        });
+        assert.deepEqual(actual, expected, `exact impulse coordinates & hash order must match for ox=${c.ox}`);
+        if (c.prev) {
+            assert.ok(stats.scannedCells < instances, `expected intersection (${stats.scannedCells}) < full viewport (${instances})`);
+        } else {
+            assert.equal(stats.scannedCells, 0, 'first frame without previous phases must scan 0 cells');
+        }
+    }
+
+    // Empty boundary yields empty wetBounds and 0 scanned cells
+    const emptyBounds = computeWetRippleBounds(new Uint8Array(64));
+    assert.equal(emptyBounds.empty, true);
+    assert.equal(intersectRainCellsWithRippleGrid({ ox: 0, oy: 0, cols: 50, rows: 50, wetBounds: emptyBounds }).empty, true);
+});
+
+test('W5-A P3: projected basin visibility, mirror staleness on pan-back, and bounded bed strip height', async () => {
+    const basin = [150, 710, 820, 388];
+    // Centered on basin -> visible
+    const inView = projectPlanarBasinRect(basin, [-100, -600], 1, 1920, 1080);
+    assert.equal(inView.visible, true);
+    assert.ok(inView.w > 0 && inView.h > 0);
+    // Panned far northwest (inland) -> completely off-screen
+    assert.equal(projectPlanarBasinRect(basin, [-2500, -600], 1, 1920, 1080).visible, false);
+    assert.equal(projectPlanarBasinRect(basin, [2500, -600], 1, 1920, 1080).visible, false);
+    assert.equal(projectPlanarBasinRect(basin, [-100, -2500], 1, 1920, 1080).visible, false);
+    assert.equal(projectPlanarBasinRect(basin, [-100, 1500], 1, 1920, 1080).visible, false);
+    assert.equal(projectPlanarBasinRect([0, 0, 0, 0], [0, 0], 1, 1920, 1080).visible, false);
+
+    // Strip height pricing bounds: strictly within [64, 256] (capped by viewport) and <= 1 MiB when width permits
+    for (const [bedW, vpH] of [[822, 1080], [1872, 1080], [2560, 1440], [3440, 1440], [640, 48]]) {
+        const h = selectPlanarBedStripHeight(bedW, vpH);
+        assert.ok(h <= vpH && h <= PLANAR_BED_MAX_STRIP_HEIGHT);
+        assert.ok(h >= Math.min(PLANAR_BED_MIN_STRIP_HEIGHT, vpH));
+        if (bedW * PLANAR_BED_MIN_STRIP_HEIGHT * 4 <= PLANAR_BED_MAX_BYTES) {
+            assert.ok(bedW * h * 4 <= PLANAR_BED_MAX_BYTES, `bedW=${bedW} h=${h} exceeded 1 MiB budget`);
+        }
+    }
+
+    // Mirror staleness & skipped mirror uniform write when captureMirror is false
+    const { device, encoder } = createMockWebGpuDevice();
+    const planar = createPlanarWaterPass();
+    await planar.prepare(device);
+    assert.equal(planar.needsMirrorCapture(), true, 'freshly prepared mirror needs initial capture');
+
+    const writesBefore = device.writes.length;
+    planar.encode(encoder, { planarRect: basin, basinId: 1, captureMirror: false });
+    assert.equal(device.writes.length, writesBefore, 'captureMirror=false must skip unused mirror uniform write');
+    assert.equal(device.renderPasses.length, 0);
+    assert.equal(planar.needsMirrorCapture(), true, 'still stale until captured');
+
+    planar.encode(encoder, { planarRect: basin, basinId: 1, captureMirror: true, admittedCount: 3 });
+    assert.equal(device.renderPasses.length, 1);
+    assert.equal(planar.needsMirrorCapture(), false, 'cleared after live mirror capture');
+    assert.equal(planar.getDiagnostics().admittedRecords, 3);
+
+    planar.markMirrorStale();
+    assert.equal(planar.needsMirrorCapture(), true, 'marking stale off-screen forces capture on pan-back');
+    planar.release();
+    assert.equal(planar.needsMirrorCapture(), true, 'release resets stale flag for recovery');
+});
+
+test('W5-A P3: _waterBed scratch is counted in Frontier diagnostics, renderer accounting, and unified GPU budget ledger', async () => {
+    const { GpuWorldRendererWebGPU } = await import('../../claudeville/src/presentation/character-mode/gpu/GpuWorldRendererWebGPU.js');
+    const { gpuResourceAccounting } = await import('../../claudeville/src/presentation/character-mode/CanvasBudget.js');
+
+    const bedWidth = 1872;
+    const bedHeight = selectPlanarBedStripHeight(bedWidth, 1080);
+    const expectedBedBytes = bedWidth * bedHeight * 4;
+    assert.equal(bedHeight, 140);
+    assert.equal(expectedBedBytes, 1_048_320);
+
+    const stub = Object.assign(Object.create(GpuWorldRendererWebGPU.prototype), {
+        frontierConfig: { enabled: true },
+        _frontierMask: 1,
+        _mirrorBufferBytes: 480,
+        _waterBed: { width: bedWidth, height: bedHeight },
+        sceneTarget: { width: 1920, height: 1080, depthFormat: 'depth32float', emission: null, emissionFormat: 'rgba8unorm' },
+        width: 1920,
+        height: 1080,
+        presentFormat: 'bgra8unorm',
+        bloomA: null,
+        bloomB: null,
+        _textureEntries: new Map(),
+        _frontierPasses: new Map(),
+        _albedoPage: null,
+        _particleBuffer: null,
+        _lightRecordBuffer: null,
+        _recordBufferBytes: 0,
+        _markRecordBufferBytes: 0,
+        gpuMsP95: 2.0,
+        _frontierPolicy: null,
+        suspended: false,
+        contextHealthy: true,
+        frames: 1,
+    });
+
+    const frontierDiag = stub._frontierDiagnostics();
+    assert.equal(frontierDiag.waterBedBytes, expectedBedBytes);
+    assert.equal(frontierDiag.passOwnedBytes, expectedBedBytes + 480);
+    assert.ok(frontierDiag.logicalBytes >= expectedBedBytes + 480);
+
+    const accounting = stub.getResourceAccounting();
+    assert.equal(accounting.frontierBytes, expectedBedBytes + 480);
+    assert.equal(accounting.textures.frontier, expectedBedBytes + 480);
+    assert.equal(
+        accounting.totalBytes,
+        accounting.pinnedBytes + accounting.evictableBytes,
+        'renderer accounting total must not double-count frontierBytes',
+    );
+
+    const unifiedGpu = gpuResourceAccounting({
+        textures: accounting.textures,
+        attachments: accounting.attachments,
+        buffers: accounting.buffers,
+    });
+    assert.equal(unifiedGpu.textures.frontier, expectedBedBytes + 480);
+    assert.equal(unifiedGpu.pinnedBytes, accounting.pinnedBytes);
+    assert.equal(unifiedGpu.totalBytes, accounting.totalBytes);
 });

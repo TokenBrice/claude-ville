@@ -492,6 +492,7 @@ export class CanvasOverlayStampCache {
 
 // 4x4 Bayer in [0, 1).
 const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const BAYER4_POOL_OFFSET = Float64Array.from(BAYER4, value => (value / 16 - 0.5) * 0.08);
 
 // The C1 emissive ramp, luma-normalised (#ff9d4a rim, #ffcf7a mid, #ffe9b8
 // core), and the course weights: the resident `stepPool`/`poolWeight`.
@@ -506,6 +507,10 @@ const POOL_SHARE = GRADE_CONSTANTS.AMBIENT_POOL_SHARE.value;
 // core #ffcf7a) and each course's share of the landing at full pool light.
 const LAND_MID = [1.346, 0.948, 0.504];
 const LAND_STOPS = [POOL_RIM, LAND_MID, POOL_MID];
+const ATTENTION_STOPS = Object.freeze([0.12, 0.40, 0.75]);
+const ATTENTION_WEIGHTS = Object.freeze([0.30, 0.54, 0.76]);
+const ATTENTION_SHARE = Object.freeze([0.84, 0.88, 0.90]);
+const ATTENTION_TINT_STOPS = Object.freeze([POOL_RIM, POOL_MID, POOL_CORE]);
 // V5 — the brightest ground stop (dressed plaza) is the receiver the stamp
 // clamps against.
 const PLAZA_PEAK = ART_RAMPS.plaza[ART_RAMPS.plaza.length - 1];
@@ -624,10 +629,10 @@ export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell =
     const hue = color.map(channel => channel / colorLuma);
     const warm = clamp((hue[0] - hue[2]) * 1.25);
     const tintFor = ramp => hue.map((channel, index) => (1 + (channel - 1) * 0.7) * (1 - warm) + ramp[index] * warm);
-    const stops = attention ? [0.12, 0.40, 0.75] : POOL_STOPS;
-    const weights = attention ? [0.30, 0.54, 0.76] : POOL_WEIGHTS;
-    const shares = attention ? [0.84, 0.88, 0.90] : POOL_SHARE;
-    const tints = attention ? [POOL_RIM, POOL_MID, POOL_CORE].map(tintFor)
+    const stops = attention ? ATTENTION_STOPS : POOL_STOPS;
+    const weights = attention ? ATTENTION_WEIGHTS : POOL_WEIGHTS;
+    const shares = attention ? ATTENTION_SHARE : POOL_SHARE;
+    const tints = attention ? ATTENTION_TINT_STOPS.map(tintFor)
         : POOL_CHROMA.map((chroma, course) => tintFor(POOL_RIM.map((channel, i) =>
             channel + (POOL_CORE[i] - channel) * course / 5)).map(channel => 1 + (channel - 1) * chroma));
     const landTints = attention ? LAND_STOPS.map(tintFor)
@@ -637,15 +642,47 @@ export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell =
     const ambientLuma = ambient[0] * LUMA[0] + ambient[1] * LUMA[1] + ambient[2] * LUMA[2];
     const adaptGain = warm * 0.85 * 0.6 * clamp((poolGain - 0.15) / 1.05);
     const shade = warm > 0.01;
+    // Precompute the 3 attention or 6 ambient course dodge/shade bytes once so
+    // the per-pixel loop only resolves the dithered course and copies bytes.
+    const courseCount = stops.length;
+    const courseDodge = new Uint8Array(courseCount * 3);
+    const courseShade = shade ? new Uint8Array(courseCount * 3) : null;
+    const towards = [0, 0, 0];
+    const gains = [0, 0, 0];
+    for (let course = 0; course < courseCount; course++) {
+        const strength = Math.min(1, weights[course] * energy * colorLuma);
+        const tint = tints[course];
+        const landTint = landTints[course];
+        const lift = poolGain * strength / ambientLuma;
+        const land = warm * shares[course] * Math.max(Math.min(1, strength / LAND_FULL_STRENGTH), clamp(1.6 * lift / (1 + lift)));
+        const adapt = shade ? Math.max(Math.min(1, strength * 1.5) * adaptGain, land) : 0;
+        for (let channel = 0; channel < 3; channel++) {
+            gains[channel] = poolGain * strength * tint[channel] / ambient[channel];
+            // Ambient under the light: graded x (ambientLuma / ambient) x stop.
+            towards[channel] = 1 + (landTint[channel] * ambientLuma / ambient[channel] - 1) * adapt;
+        }
+        const scale = receiverScale(receiver, towards, gains);
+        const ci = course * 3;
+        for (let channel = 0; channel < 3; channel++) {
+            const toward = towards[channel];
+            const m = gains[channel] * scale;
+            const multiply = Math.min(1, toward);
+            const dodge = (toward + m) / multiply;
+            courseDodge[ci + channel] = Math.round(clamp(1 - 1 / dodge, 0, 0.94) * 255);
+            if (shade) courseShade[ci + channel] = Math.round(multiply * 255);
+        }
+    }
+
     const canvas = document.createElement('canvas');
-    canvas.width = shade ? cells * 2 : cells;
+    const canvasWidth = shade ? cells * 2 : cells;
+    canvas.width = canvasWidth;
     canvas.height = rows;
     const ctx = canvas.getContext('2d');
-    const image = ctx.createImageData(canvas.width, rows);
+    const image = ctx.createImageData(canvasWidth, rows);
     const data = image.data;
     if (shade) {
         // The multiply half is white (no change) outside the pool.
-        for (let y = 0; y < rows; y++) data.fill(255, (y * canvas.width + cells) * 4, (y * canvas.width + cells * 2) * 4);
+        for (let y = 0; y < rows; y++) data.fill(255, (y * canvasWidth + cells) * 4, (y * canvasWidth + cells * 2) * 4);
     }
     const centreX = cells / 2;
     const centreY = rows / 2;
@@ -653,43 +690,41 @@ export function buildPoolDodgeStamp({ rgb = [255, 200, 110], radius = 32, cell =
     const heightCells = Math.max(0, Number(height) || 0) / cellPx;
     const reachCells = Math.max(1, Math.hypot(radiusCells, heightCells));
     const lobed = Array.isArray(normal) && normal.length >= 2;
+    const nx = lobed ? normal[0] : 0;
+    const ny = lobed ? normal[1] : 0;
+    const shadeStride = cells * 4;
+    const stop0 = stops[0];
     for (let y = 0; y < rows; y++) {
+        const gy = (y + 0.5 - centreY) * 2;
+        if (Math.hypot(0, gy, heightCells) >= reachCells) continue;
+        const rowOffset = y * canvasWidth * 4;
+        const bayerRow = (y & 3) * 4;
         for (let x = 0; x < cells; x++) {
             const gx = x + 0.5 - centreX;
-            const gy = (y + 0.5 - centreY) * 2;
             const d = Math.hypot(gx, gy, heightCells);
             const t = d / reachCells;
             if (t >= 1) continue;
-            const lobe = lobed ? clamp(0.30 + 1.4 * (normal[0] * gx + normal[1] * gy) / Math.max(Math.hypot(gx, gy), 1)) : 1;
+            const lobe = lobed ? clamp(0.30 + 1.4 * (nx * gx + ny * gy) / Math.max(Math.hypot(gx, gy), 1)) : 1;
             const falloff = (1 - t * t * (3 - 2 * t)) * lobe;
-            const q = falloff + (BAYER4[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 0.08;
-            let step = 0;
-            for (const stop of stops) if (q >= stop) step++;
-            if (step <= 0) continue;
-            const strength = Math.min(1, weights[step - 1] * energy * colorLuma);
-            const tint = tints[step - 1];
-            const landTint = landTints[step - 1];
-            const offset = (y * canvas.width + x) * 4;
-            const lift = poolGain * strength / ambientLuma;
-            const land = warm * shares[step - 1] * Math.max(Math.min(1, strength / LAND_FULL_STRENGTH), clamp(1.6 * lift / (1 + lift)));
-            const adapt = shade ? Math.max(Math.min(1, strength * 1.5) * adaptGain, land) : 0;
-            const towards = [0, 0, 0];
-            const gains = [0, 0, 0];
-            for (let channel = 0; channel < 3; channel++) {
-                gains[channel] = poolGain * strength * tint[channel] / ambient[channel];
-                // Ambient under the light: graded x (ambientLuma / ambient) x stop.
-                towards[channel] = 1 + (landTint[channel] * ambientLuma / ambient[channel] - 1) * adapt;
+            const q = falloff + BAYER4_POOL_OFFSET[bayerRow + (x & 3)];
+            if (!(q >= stop0)) continue;
+            let step = 1;
+            for (let s = 1; s < courseCount; s++) {
+                if (q >= stops[s]) step++;
+                else break;
             }
-            const scale = receiverScale(receiver, towards, gains);
-            for (let channel = 0; channel < 3; channel++) {
-                const toward = towards[channel];
-                const m = gains[channel] * scale;
-                const multiply = Math.min(1, toward);
-                const dodge = (toward + m) / multiply;
-                data[offset + channel] = Math.round(clamp(1 - 1 / dodge, 0, 0.94) * 255);
-                if (shade) data[offset + cells * 4 + channel] = Math.round(multiply * 255);
-            }
+            const ci = (step - 1) * 3;
+            const offset = rowOffset + x * 4;
+            data[offset] = courseDodge[ci];
+            data[offset + 1] = courseDodge[ci + 1];
+            data[offset + 2] = courseDodge[ci + 2];
             data[offset + 3] = 255;
+            if (shade) {
+                const shadeOffset = offset + shadeStride;
+                data[shadeOffset] = courseShade[ci];
+                data[shadeOffset + 1] = courseShade[ci + 1];
+                data[shadeOffset + 2] = courseShade[ci + 2];
+            }
         }
     }
     ctx.putImageData(image, 0, 0);

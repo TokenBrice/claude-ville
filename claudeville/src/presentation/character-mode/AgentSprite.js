@@ -1708,6 +1708,15 @@ export class AgentSprite {
         this._gpuBaseSpriteCanvas = null;
         this._layerProfile = null;
         this._layerFrame = null;
+        this._layerFrameObj = null;
+        this._layerDesc = null;
+        this._layerCell = null;
+        this._gpuRecordArgs = null;
+        this._frameGeometry = null;
+        this._poseCell = null;
+        this._groundMarks = null;
+        this._lowZoomImpostor = false;
+        this.gpuOverlayRenderer?.releaseRenderResources?.();
         this._bubbleLayoutCacheKey = '';
         this._bubbleLayoutCache = null;
         this._releaseProfileOwnership();
@@ -3281,12 +3290,16 @@ export class AgentSprite {
         const bridgeTiles = this.bridgeTiles;
         const laneTiles = routing?.laneTiles;
         if (!roadTiles?.size && !bridgeTiles?.size && !laneTiles?.size && !standingTiles?.size) return null;
-        if (this._routeLaneMap !== laneTiles) {
-            this._routeLaneMap = laneTiles;
-            this._routePlazaTiles = new Set();
-            for (const [key, info] of laneTiles?.entries?.() || []) {
-                if (info?.plazaLike) this._routePlazaTiles.add(key);
+        let plazaTiles = routing?.plazaTiles;
+        if (!plazaTiles) {
+            if (this._routeLaneMap !== laneTiles) {
+                this._routeLaneMap = laneTiles;
+                this._routePlazaTiles = new Set();
+                for (const [key, info] of laneTiles?.entries?.() || []) {
+                    if (info?.plazaLike) this._routePlazaTiles.add(key);
+                }
             }
+            plazaTiles = this._routePlazaTiles;
         }
 
         const personalityBucket = routePersonalityFor(this.agent?.sessionId || this.agent?.id || this.agent?.agentId);
@@ -3307,7 +3320,7 @@ export class AgentSprite {
             roadTiles,
             preferredTiles: roadTiles,
             laneTiles,
-            plazaTiles: this._routePlazaTiles,
+            plazaTiles,
             bridgeTiles,
             congestionTiles: routing?.congestionTiles,
             congestionVersion: routing?.congestionVersion || '',
@@ -3316,7 +3329,7 @@ export class AgentSprite {
             personalityBucket,
             preferredBridgeId,
             weights,
-            cacheKey: `roads:${roadTiles?.size || 0}:lanes:${laneTiles?.size || 0}:plazas:${this._routePlazaTiles?.size || 0}:bridges:${bridgeTiles?.size || 0}`,
+            cacheKey: `roads:${roadTiles?.size || 0}:lanes:${laneTiles?.size || 0}:plazas:${plazaTiles?.size || 0}:bridges:${bridgeTiles?.size || 0}`,
         };
     }
 
@@ -4939,7 +4952,9 @@ export class AgentSprite {
         // A pending body (materialize beat, dispatch comet, gate entry queue)
         // is hidden on both backends: no stale GPU record stands in for it.
         if (this.isArrivalPending()) {
+            this._lowZoomImpostor = false;
             this._gpuFrameRecord = null;
+            this._layerFrame = null;
             return;
         }
 
@@ -4958,7 +4973,12 @@ export class AgentSprite {
         // the visual fade + sparkle flash + pinned FINAL bubble. We wrap the
         // remaining draw body in save/restore so alpha unwinds cleanly.
         const archiveProgress = this._archiveFadeProgress();
-        if (archiveProgress >= 1) return;
+        if (archiveProgress >= 1) {
+            this._lowZoomImpostor = false;
+            this._gpuFrameRecord = null;
+            this._layerFrame = null;
+            return;
+        }
         let archivePushed = false;
         if (archiveProgress > 0) {
             ctx.save();
@@ -5010,6 +5030,8 @@ export class AgentSprite {
         this._budgetImpostorXray = false;
 
         if (!this.compositor) {
+            this._gpuFrameRecord = null;
+            this._layerFrame = null;
             if (archivePushed) ctx.restore();
             return;
         }
@@ -5084,6 +5106,8 @@ export class AgentSprite {
         }
 
         if (!validSpriteSource(this.spriteCanvas) || !this.spriteSheet) {
+            this._gpuFrameRecord = null;
+            this._layerFrame = null;
             if (archivePushed) ctx.restore();
             return;
         }
@@ -5132,43 +5156,51 @@ export class AgentSprite {
                 dx + Math.ceil((bounds.maxX + 1) * CROWD_LOD_SCALE),
                 drawY + 3,
             );
-            this._poseCell = {
-                sx: cell.sx,
-                sy: cell.sy,
-                sw: cell.sw,
-                sh: cell.sh,
-                source: 'sheet',
-                group: null,
-                meta: null,
-                now: null,
-                canvas: this.spriteCanvas,
-                dx,
-                dy,
-                drawScale: CROWD_LOD_SCALE,
-            };
-            this._layoutGroundMarks(this._stableContentWidth() * CROWD_LOD_SCALE);
-            const frameGeometry = {
-                cell,
-                dx,
-                dy,
-                bounds,
-                drawScale: CROWD_LOD_SCALE,
-                lod: true,
-            };
-            this._setGpuFrameRecord({
-                cell,
-                dx,
-                dy,
-                drawScale: CROWD_LOD_SCALE,
-                profileKey,
-                spriteId,
-                alpha: 1,
-                contentTopY,
-                identity,
-                frameGeometry,
-                lod: true,
+            const poseCell = this._poseCell || (this._poseCell = {
+                sx: 0, sy: 0, sw: 0, sh: 0, source: 'sheet', group: null, meta: null, now: null, canvas: null, dx: 0, dy: 0, drawScale: 1,
             });
-            this._drawBudgetImpostor(ctx);
+            poseCell.sx = cell.sx;
+            poseCell.sy = cell.sy;
+            poseCell.sw = cell.sw;
+            poseCell.sh = cell.sh;
+            poseCell.source = 'sheet';
+            poseCell.group = null;
+            poseCell.meta = null;
+            poseCell.now = null;
+            poseCell.canvas = this.spriteCanvas;
+            poseCell.dx = dx;
+            poseCell.dy = dy;
+            poseCell.drawScale = CROWD_LOD_SCALE;
+            this._layoutGroundMarks(this._stableContentWidth() * CROWD_LOD_SCALE);
+            const frameGeometry = this._frameGeometry || (this._frameGeometry = {});
+            frameGeometry.cell = cell;
+            frameGeometry.dx = dx;
+            frameGeometry.dy = dy;
+            frameGeometry.bounds = bounds;
+            frameGeometry.cellSize = undefined;
+            frameGeometry.drawScale = CROWD_LOD_SCALE;
+            frameGeometry.poseGroup = null;
+            frameGeometry.poseFrame = -1;
+            frameGeometry.markCell = null;
+            frameGeometry.markPose = null;
+            frameGeometry.seated = false;
+            frameGeometry.lod = true;
+            const recordArgs = this._gpuRecordArgs || (this._gpuRecordArgs = {});
+            recordArgs.cell = cell;
+            recordArgs.dx = dx;
+            recordArgs.dy = dy;
+            recordArgs.drawScale = CROWD_LOD_SCALE;
+            recordArgs.profileKey = profileKey;
+            recordArgs.spriteId = spriteId;
+            recordArgs.alpha = 1;
+            recordArgs.contentTopY = contentTopY;
+            recordArgs.identity = identity;
+            recordArgs.frameGeometry = frameGeometry;
+            recordArgs.pose = null;
+            recordArgs.lod = true;
+            recordArgs.layer = null;
+            this._setGpuFrameRecord(recordArgs);
+            if (!this.gpuWorldEnabled) this._drawBudgetImpostor(ctx);
             if (!this.gpuWorldEnabled && !departedTableau(this) && !this._occludedByWorld && !this._behindBuilding) {
                 this._drawToolGlyphBadge(ctx, this._labelTopY(contentTopY));
             }
@@ -5179,14 +5211,15 @@ export class AgentSprite {
             return;
         }
 
-        if (!this.selected && zoom < 1) {
+        if (!this.gpuWorldEnabled && !this.selected && zoom < 1) {
             this._lowZoomImpostor = true;
+            this._gpuFrameRecord = null;
+            this._layerFrame = null;
             // Plan 2.3 — the overview keeps the same single contact shadow.
             this._layoutGroundMarks(this._stableContentWidth());
-            if (!this.gpuWorldEnabled) drawGroundMarks(ctx, this._groundMarks);
-
+            drawGroundMarks(ctx, this._groundMarks);
             this._drawLowZoomImpostor(ctx, zoom);
-            if (departedTableau(this) && !this.gpuWorldEnabled) {
+            if (departedTableau(this)) {
                 this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
             }
             // T1 — waiting, errored and rate-limited agents are marked by the
@@ -5240,21 +5273,22 @@ export class AgentSprite {
         const markCell = bodyCell;
         const markPose = pose;
         const bodySource = pose ? pose.source : this.spriteCanvas;
-        this._poseCell = {
-            sx: bodyCell.sx,
-            sy: bodyCell.sy,
-            sw: bodyCell.sw,
-            sh: bodyCell.sh,
-            source: pose ? 'strip' : 'sheet',
-            group: pose ? pose.group : null,
-            meta: pose ? pose.strip.meta : null,
-            now: pose ? pose.now : null,
-            canvas: bodySource,
-            // Where this cell was laid out (world texels); the x-ray re-blits it.
-            dx: 0,
-            dy: 0,
-            drawScale: 1,
-        };
+        const poseCell = this._poseCell || (this._poseCell = {
+            sx: 0, sy: 0, sw: 0, sh: 0, source: 'sheet', group: null, meta: null, now: null, canvas: null, dx: 0, dy: 0, drawScale: 1,
+        });
+        poseCell.sx = bodyCell.sx;
+        poseCell.sy = bodyCell.sy;
+        poseCell.sw = bodyCell.sw;
+        poseCell.sh = bodyCell.sh;
+        poseCell.source = pose ? 'strip' : 'sheet';
+        poseCell.group = pose ? pose.group : null;
+        poseCell.meta = pose ? pose.strip.meta : null;
+        poseCell.now = pose ? pose.now : null;
+        poseCell.canvas = bodySource;
+        // Where this cell was laid out (world texels); the x-ray re-blits it.
+        poseCell.dx = 0;
+        poseCell.dy = 0;
+        poseCell.drawScale = 1;
         const cellSize = this.spriteSheet?.cellSize || 92;
         const bounds = this._getCellContentBounds(this._layerProfile ? bodyCell : cell, pose);
         // Explicit 0 / 0 / -1 / 0 breathing step keyed by `this.frame` (seeded
@@ -5350,40 +5384,42 @@ export class AgentSprite {
         // rows) keeps the runtime weapon in that hand; any other strip pose
         // with a sheathed grip parks it (below).
         const poseGripFrame = pose ? this._poseGripFrame(spriteId, pose) : -1;
-        const frameGeometry = {
-            cell,
-            dx,
-            dy,
-            bounds,
-            cellSize,
-            drawScale: 1,
-            poseGroup: poseGripFrame >= 0 ? pose.group : null,
-            poseFrame: poseGripFrame,
-            markCell,
-            markPose,
-            // On a seat or sitting on the ground: the body below the seat
-            // line is clipped, so the hem and cuff are not there to mark.
-            seated: Boolean(seat) || distress === DISTRESS_LIMITED,
-        };
+        const frameGeometry = this._frameGeometry || (this._frameGeometry = {});
+        frameGeometry.cell = cell;
+        frameGeometry.dx = dx;
+        frameGeometry.dy = dy;
+        frameGeometry.bounds = bounds;
+        frameGeometry.cellSize = cellSize;
+        frameGeometry.drawScale = 1;
+        frameGeometry.poseGroup = poseGripFrame >= 0 ? pose.group : null;
+        frameGeometry.poseFrame = poseGripFrame;
+        frameGeometry.markCell = markCell;
+        frameGeometry.markPose = markPose;
+        // On a seat or sitting on the ground: the body below the seat
+        // line is clipped, so the hem and cuff are not there to mark.
+        frameGeometry.seated = Boolean(seat) || distress === DISTRESS_LIMITED;
+        frameGeometry.lod = false;
         this._layoutLanternMark(frameGeometry);
         this._layoutArtifactMark(frameGeometry);
         this._layoutRibbonMark(frameGeometry);
         this._layoutCairnMark(frameGeometry);
-        this._setGpuFrameRecord({
-            cell: pose ? cell : bodyCell,
-            dx,
-            dy,
-            drawScale: 1,
-            profileKey,
-            spriteId,
-            alpha: archiveProgress > 0 ? Math.max(0, 1 - archiveProgress) : 1,
-            contentTopY,
-            identity,
-            frameGeometry,
-            // 2.2 — the resident renderer samples the same authored cell the
-            // Canvas body blits, so both backends show one pose.
-            pose,
-        });
+        const recordArgs = this._gpuRecordArgs || (this._gpuRecordArgs = {});
+        recordArgs.cell = pose ? cell : bodyCell;
+        recordArgs.dx = dx;
+        recordArgs.dy = dy;
+        recordArgs.drawScale = 1;
+        recordArgs.profileKey = profileKey;
+        recordArgs.spriteId = spriteId;
+        recordArgs.alpha = archiveProgress > 0 ? Math.max(0, 1 - archiveProgress) : 1;
+        recordArgs.contentTopY = contentTopY;
+        recordArgs.identity = identity;
+        recordArgs.frameGeometry = frameGeometry;
+        // 2.2 — the resident renderer samples the same authored cell the
+        // Canvas body blits, so both backends show one pose.
+        recordArgs.pose = pose;
+        recordArgs.lod = false;
+        recordArgs.layer = null;
+        this._setGpuFrameRecord(recordArgs);
         // Agent records are submitted independently of terrain coverage, even
         // beyond the island. Only the resident backend owns their body paint.
         const canvasBody = !this.gpuWorldEnabled;
@@ -6565,17 +6601,36 @@ export class AgentSprite {
         }
         if (sheet) {
             const original = pose?.cell || record.cell;
-            const cell = { ...original, sx: original.sx - sheet.x, sy: original.sy - sheet.y };
+            const cell = this._layerCell || (this._layerCell = { sx: 0, sy: 0, sw: 0, sh: 0 });
+            cell.sx = original.sx - sheet.x;
+            cell.sy = original.sy - sheet.y;
+            cell.sw = original.sw;
+            cell.sh = original.sh;
             if (record.lod) {
                 cell.sx /= 2;
                 cell.sy /= 2;
                 cell.sw /= 2;
-                cell.sh = Math.ceil(cell.sh/2);
+                cell.sh = Math.ceil(cell.sh / 2);
             }
             const hat = this._cellHead(original, pose, record.drawScale, false);
-            this._layerFrame = { hat, sheathed: pose?.strip?.meta?.grip?.sheathe && !(record.frameGeometry.poseFrame >= 0) };
-            this.gpuOverlayRenderer.setFrameRecord({ ...record, layer: { sheet, cell, palette: profile.palette } });
-        } else this.gpuOverlayRenderer.setFrameRecord(record);
+            const lf = this._layerFrameObj || (this._layerFrameObj = { hat: null, sheathed: false });
+            lf.hat = hat;
+            lf.sheathed = Boolean(pose?.strip?.meta?.grip?.sheathe && !(record.frameGeometry.poseFrame >= 0));
+            this._layerFrame = lf;
+            const layerDesc = this._layerDesc || (this._layerDesc = { sheet: null, cell: null, palette: null });
+            layerDesc.sheet = sheet;
+            layerDesc.cell = cell;
+            layerDesc.palette = profile.palette;
+            if (record === this._gpuRecordArgs) {
+                record.layer = layerDesc;
+                this.gpuOverlayRenderer.setFrameRecord(record);
+            } else {
+                this.gpuOverlayRenderer.setFrameRecord({ ...record, layer: layerDesc });
+            }
+        } else {
+            if (record === this._gpuRecordArgs) record.layer = null;
+            this.gpuOverlayRenderer.setFrameRecord(record);
+        }
         const frame = this._gpuFrameRecord;
         if (!frame?.sharedLayer && (frame?.materialSource || frame?.emissiveSource)) {
             GPU_AGENT_CHANNEL_ATLAS_RECORDS.set(this._resourceOwnerKey, {
@@ -8413,7 +8468,7 @@ export class AgentSprite {
     // redrawn over it: the frame names it after the world instead, as the
     // resident overlay names every body (WorldFrameRenderer).
     drawDeferredNameTag(ctx) {
-        if ((this._onOpenFloor || this.selected) && !this.gpuWorldEnabled) {
+        if ((this._onOpenFloor || this.selected) && !this.gpuWorldEnabled && !this._lowZoomImpostor) {
             if (typeof this.withBridgeLift === 'function') this.withBridgeLift(() => this._drawNameTag(ctx));
             else this._drawNameTag(ctx);
         }

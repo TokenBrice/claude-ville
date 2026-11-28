@@ -295,7 +295,7 @@ export function sampleFramePressure(nowMs, inputs) {
     ensureSharedPressure();
     const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : defaultNow();
     // FP-4: an 8 ms quantum reuses its snapshot before reading frame health,
-    // which builds the renderer's full diagnostics (up to 13 callers a frame).
+    // which can summarize active profile rings (up to 13 callers a frame).
     const quant = Math.floor(now / 8);
     if (Number.isFinite(lastSampleQuant) && quant === lastSampleQuant && inputs == null) {
         return lastSnapshot;

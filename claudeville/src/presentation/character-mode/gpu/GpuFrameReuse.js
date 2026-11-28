@@ -2,9 +2,15 @@
 // presentation commits the baseline; failed staging/rendering cannot poison it.
 export class GpuFrameReuse {
     constructor() {
-        this._scalars = [];
+        this._presentedScalars = [];
+        this._currentScalars = [];
         this._bytes = [];
         this._valid = false;
+        this._scalarCount = 0;
+        this._byteCount = 0;
+        this._presentedScalarCount = 0;
+        this._presentedByteCount = 0;
+        this.same = false;
     }
 
     begin() {
@@ -16,25 +22,48 @@ export class GpuFrameReuse {
 
     scalar(value) {
         const index = this._scalarCount++;
-        const slot = this._scalars[index] || (this._scalars[index] = {});
-        if (!Object.is(slot.presented, value)) this.same = false;
-        slot.current = value;
+        if (this.same && !Object.is(this._presentedScalars[index], value)) this.same = false;
+        this._currentScalars[index] = value;
     }
 
     bytes(source, length = source.byteLength, offset = 0) {
         const index = this._byteCount++;
-        const slot = this._bytes[index] || (this._bytes[index] = { saved: new Uint8Array(0), length: -1 });
+        const slot = this._bytes[index] || (this._bytes[index] = {
+            saved: new Uint8Array(0),
+            saved32: null,
+            length: -1,
+            buffer: null,
+            offset: -1,
+            view: null,
+            view32: null,
+        });
         const buffer = source.buffer || source;
         const start = (source.byteOffset || 0) + offset;
         if (slot.buffer !== buffer || slot.offset !== start || slot.view?.byteLength !== length) {
             slot.buffer = buffer;
             slot.offset = start;
             slot.view = new Uint8Array(buffer, start, length);
+            slot.view32 = (start & 3) === 0 && length >= 16 ? new Uint32Array(buffer, start, length >> 2) : null;
         }
         if (slot.length !== length) this.same = false;
         else if (this.same) {
-            for (let byte = 0; byte < length; byte++) {
-                if (slot.saved[byte] !== slot.view[byte]) {
+            const view = slot.view;
+            const saved = slot.saved;
+            let byte = 0;
+            if (slot.view32 && slot.saved32) {
+                const view32 = slot.view32;
+                const saved32 = slot.saved32;
+                const words = view32.length;
+                for (let word = 0; word < words; word++) {
+                    if (saved32[word] !== view32[word]) {
+                        this.same = false;
+                        return;
+                    }
+                }
+                byte = words << 2;
+            }
+            for (; byte < length; byte++) {
+                if (saved[byte] !== view[byte]) {
                     this.same = false;
                     break;
                 }
@@ -50,24 +79,44 @@ export class GpuFrameReuse {
 
     commit() {
         if (this.unchanged()) return;
-        for (let index = 0; index < this._scalarCount; index++) {
-            const slot = this._scalars[index];
-            slot.presented = slot.current;
+        const scalarCount = this._scalarCount;
+        const presented = this._presentedScalars;
+        const current = this._currentScalars;
+        for (let index = 0; index < scalarCount; index++) {
+            presented[index] = current[index];
         }
+        presented.length = scalarCount;
+        current.length = scalarCount;
         for (let index = 0; index < this._byteCount; index++) {
             const slot = this._bytes[index];
             const length = slot.view.byteLength;
-            if (slot.saved.byteLength < length) slot.saved = new Uint8Array(2 ** Math.ceil(Math.log2(Math.max(1, length))));
+            if (slot.saved.byteLength < length) {
+                const capacity = Math.max(4, 2 ** Math.ceil(Math.log2(Math.max(4, length))));
+                slot.saved = new Uint8Array(capacity);
+                slot.saved32 = new Uint32Array(slot.saved.buffer);
+            }
             slot.saved.set(slot.view);
             slot.length = length;
         }
-        this._presentedScalarCount = this._scalarCount;
+        this._presentedScalarCount = scalarCount;
         this._presentedByteCount = this._byteCount;
         this._valid = true;
     }
 
     invalidate() {
         this._valid = false;
+    }
+
+    reset() {
+        this._valid = false;
+        this._presentedScalars.length = 0;
+        this._currentScalars.length = 0;
+        this._bytes.length = 0;
+        this._scalarCount = 0;
+        this._byteCount = 0;
+        this._presentedScalarCount = 0;
+        this._presentedByteCount = 0;
+        this.same = false;
     }
 }
 
@@ -112,8 +161,10 @@ export function stageGpuFrameBindings(reuse, renderer, batches, marks) {
 }
 
 function stageBatches(reuse, batches) {
-    reuse.scalar(batches.length);
-    for (const batch of batches) {
+    const length = batches.length;
+    reuse.scalar(length);
+    for (let index = 0; index < length; index++) {
+        const batch = batches[index];
         reuse.scalar(batch.count);
         reuse.scalar(batch.instanceOffset);
         reuse.scalar(batch.tail);

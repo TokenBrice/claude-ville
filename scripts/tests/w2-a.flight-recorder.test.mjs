@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 
 import {
     FRAME_ENVELOPE_EMA_ALPHA,
@@ -73,6 +74,8 @@ test('disabled envelope is scalar-only and does not create a ring', () => {
     assert.equal('p95AppTotalMs' in env, false);
 
     const snap = snapshotFrameEnvelope(env);
+    assert.equal(snapshotFrameEnvelope(env, { gpuMs: null }).gpuMs, null);
+    assert.equal(snapshotFrameEnvelope(env, { gpuMs: 0 }).gpuMs, 0);
     assert.equal(snap.appUpdateMs, 2);
     assert.equal(snap.appRenderMs, 3);
     assert.equal(snap.appTotalMs, 5);
@@ -84,6 +87,20 @@ test('disabled envelope is scalar-only and does not create a ring', () => {
     assert.equal(typeof snap.appTotalMs, 'number');
     assert.equal(typeof snap.hostGapMs, 'number');
     assert.equal(Array.isArray(snap.attribution), false);
+});
+
+test('the frame governor can read backend timing without taking a resource snapshot', () => {
+    const ladder = { getState: () => ({ effectiveLevel: 1, lastDecisionReason: 'paced' }) };
+    const gpu = { qualityLadder: ladder, gpuMs: 0.75, getDiagnostics: assert.fail };
+    const fx = { ladder, timerExtension: {}, gpuMs: null, getDiagnostics: assert.fail };
+    const read = state => IsometricRenderer.prototype.frameHealth.call(state);
+    const resident = read({ gpuWorld: gpu });
+    assert.equal(resident.gpuMs, 0.75);
+    assert.equal(resident.qualityReason, 'paced');
+    assert.equal(read({ postFx: fx }).gpuMs, null);
+    fx.gpuMs = 0;
+    assert.equal(read({ postFx: fx }).gpuMs, 0);
+    assert.equal(read({}).qualityLevel, null);
 });
 
 test('a long task outside the app window is host gap, not render', () => {

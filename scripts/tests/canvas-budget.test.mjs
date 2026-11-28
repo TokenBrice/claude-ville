@@ -8,6 +8,22 @@ import {
     unifiedRendererResourceAccounting,
 } from '../../claudeville/src/presentation/character-mode/CanvasBudget.js';
 import { displayPixelZoomSteps } from '../../claudeville/src/presentation/character-mode/Camera.js';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
+
+test('idle water canvases count toward the volatile budget and release on suspension', () => {
+    const recycled = { width: 384, height: 192 };
+    const renderer = Object.assign(Object.create(IsometricRenderer.prototype), {
+        _canvasWater: { canvasPool: [recycled] },
+        _screenDpr: () => 1,
+        _releaseTerrainArtifactWork() {},
+        getTerrainCacheDiagnostics: () => null,
+        getWorldPerformanceDiagnostics: () => null,
+    });
+    assert.equal(renderer.getCanvasBudget().volatile.idleWaterChunks, 384 * 192);
+    renderer.releaseVolatileCaches();
+    assert.equal(recycled.width * recycled.height, 0);
+    assert.equal(renderer.getCanvasBudget().volatile.idleWaterChunks, 0);
+});
 
 test('GPU accounting names and sums textures, attachments, and buffers once', () => {
     const resources = gpuResourceAccounting({

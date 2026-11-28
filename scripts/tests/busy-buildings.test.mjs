@@ -78,6 +78,16 @@ test('1. Forge banks whenever work.forge is closed, with a short 5–10 s cooldo
     renderer._updateForgeGlow(16);
     assert.equal(renderer._restMaskShowing(forge), false);
     assert.equal(renderer._forgeWarmRemainingMs, FORGE_BANK_COOLDOWN_MS);
+    assert.equal(renderer._forgeGlow, 0.62);
+
+    // Steady active ticks must hold at target (0.62) without alternating decay below target,
+    // and ritual cooldown must clamp at target rather than dipping to floor.
+    renderer._updateForgeGlow(50);
+    renderer._updateForgeGlow(50);
+    assert.equal(renderer._forgeGlow, 0.62, 'active forge glow stays steady at target without 2-frame sawtooth');
+    renderer._forgeGlow = 0.63;
+    renderer._updateForgeGlow(50);
+    assert.equal(renderer._forgeGlow, 0.62, 'post-ritual decay clamps at active target rather than undershooting');
 
     // Worker leaves: stays warm during cooldown against flicker.
     gates.update({ workingIdsByType: new Map() });

@@ -51,6 +51,49 @@ export const PLANAR_COLLAR_PX = 8;
 export const PLANAR_CONTACT_BAND_PX = 2;
 export const PLANAR_MAX_SHIFT_PX = 2;
 
+export const PLANAR_BED_MAX_BYTES = 1024 * 1024;
+export const PLANAR_BED_MIN_STRIP_HEIGHT = 64;
+export const PLANAR_BED_MAX_STRIP_HEIGHT = 256;
+
+/**
+ * Projects a world-space `planarRect = [left, top, width, height]` into
+ * GL-row backing-pixel coordinates clipped to `[0, viewportWidth) x [0, viewportHeight)`.
+ * When `visible` is false (`w <= 0 || h <= 0`), the basin cannot affect any
+ * viewport pixel, so callers can skip both the render-pass split and mirror capture.
+ */
+export function projectPlanarBasinRect(planarRect, cameraXy, cameraScale, viewportWidth, viewportHeight) {
+    if (!planarRect || !(planarRect[2] > 0) || !(planarRect[3] > 0)
+        || !(cameraScale > 0) || !(viewportWidth > 0) || !(viewportHeight > 0)) {
+        return { x: 0, y: 0, w: 0, h: 0, visible: false };
+    }
+    const [left, top, width, height] = planarRect;
+    const cx = cameraXy?.[0] || 0;
+    const cy = cameraXy?.[1] || 0;
+    const x = Math.max(0, Math.floor((left + cx) * cameraScale));
+    const y = Math.max(0, viewportHeight - Math.ceil((top + height + cy) * cameraScale));
+    const w = Math.min(viewportWidth, Math.ceil((left + width + cx) * cameraScale)) - x;
+    const h = Math.min(viewportHeight, viewportHeight - Math.floor((top + cy) * cameraScale)) - y;
+    return { x, y, w, h, visible: w > 0 && h > 0 };
+}
+
+/**
+ * Chooses the clean-bed strip scratch height within `[minHeight, maxHeight]`
+ * bounded to `maxBytes` (default 1 MiB for RGBA8) and capped by `viewportHeight`.
+ * Depends only on `bedWidth` and `viewportHeight`, so panning never reallocates.
+ */
+export function selectPlanarBedStripHeight(bedWidth, viewportHeight, {
+    maxBytes = PLANAR_BED_MAX_BYTES,
+    minHeight = PLANAR_BED_MIN_STRIP_HEIGHT,
+    maxHeight = PLANAR_BED_MAX_STRIP_HEIGHT,
+} = {}) {
+    const safeW = Math.max(1, Math.floor(Number(bedWidth) || 1));
+    const safeH = Math.max(1, Math.floor(Number(viewportHeight) || 1));
+    const rowBytes = safeW * 4;
+    const budgetRows = Math.floor(Math.max(rowBytes, Number(maxBytes) || PLANAR_BED_MAX_BYTES) / rowBytes);
+    const clamped = Math.max(minHeight, Math.min(maxHeight, budgetRows));
+    return Math.min(clamped, safeH);
+}
+
 export const PLANAR_DEPTH_MIN = -2048;
 export const PLANAR_DEPTH_MAX = 6144;
 export const PLANAR_DEPTH_SPAN = PLANAR_DEPTH_MAX - PLANAR_DEPTH_MIN;
@@ -1059,6 +1102,20 @@ export class PlanarWaterPass {
         this._lastRect = [0, 0, 0, 0];
         this._activeBasin = 0;
         this._revision = 0;
+        this._mirrorStale = true;
+    }
+
+    /**
+     * Marks the cached mirror target stale (for example when the projected
+     * basin leaves the viewport and mirror capture is suspended), guaranteeing
+     * a fresh mirror capture on the first frame the basin re-enters view.
+     */
+    markMirrorStale() {
+        this._mirrorStale = true;
+    }
+
+    needsMirrorCapture() {
+        return this._mirrorStale || this._mirrorClearCount === 0;
     }
 
     async prepare(device, {
@@ -1219,6 +1276,7 @@ export class PlanarWaterPass {
         });
 
         this._allocatedBytes = this.width * this.height * 4 * 2;
+        this._mirrorStale = true;
         this.ready = true;
         return this;
     }
@@ -1261,6 +1319,7 @@ export class PlanarWaterPass {
         waterZ = 0,
         basinId = 0,
         records = [],
+        admittedCount = null,
         mirrorBatches = [],
         bedCopy = null, captureMirror = true,
         resolveTargetView = null,
@@ -1285,27 +1344,32 @@ export class PlanarWaterPass {
         const validRect = [Math.floor(planarRect[0] || 0), Math.floor(planarRect[1] || 0), rectW, rectH];
 
         const sources = Array.isArray(records) ? records : [];
-        const admission = { basinId: basinId || null };
-        this._admittedRecords = 0;
-        for (const source of sources) if (isMirrorAdmittedRecord(source, admission)) this._admittedRecords++;
-        this._rejectedRecords = sources.length - this._admittedRecords;
+        if (typeof admittedCount === 'number' && Number.isFinite(admittedCount)) {
+            this._admittedRecords = Math.max(0, Math.floor(admittedCount));
+            this._rejectedRecords = Math.max(0, sources.length - this._admittedRecords);
+        } else if (captureMirror) {
+            const admission = { basinId: basinId || null };
+            this._admittedRecords = 0;
+            for (const source of sources) if (isMirrorAdmittedRecord(source, admission)) this._admittedRecords++;
+            this._rejectedRecords = sources.length - this._admittedRecords;
+        }
         this._lastRect = validRect;
         this._activeBasin = basinId >>> 0;
         this._revision = revision >>> 0;
 
-        writeUniforms(PLANAR_MIRROR_UNIFORM_LAYOUT, this._mirrorViews, {
-            planarRect: validRect,
-            basinParams: [waterZ, PLANAR_CONTACT_BAND_PX, PLANAR_COLLAR_PX, PLANAR_MAX_SHIFT_PX],
-            depthRange: [PLANAR_DEPTH_MIN, PLANAR_DEPTH_MAX, PLANAR_DEPTH_RECIP, 0],
-            gradeGain, gradeExposure, gradePurkinje, gradeSaturation, gradeLift, gradeGamma, gradeHighlight, gradeShadow,
-            targetSize: [this.width, this.height, 1 / this.width, 1 / this.height],
-        });
-        this.device.queue.writeBuffer(this.mirrorUniformBuffer, 0, this._mirrorViews.buffer);
-
         // Pass 1: Reflected mirror capture — always clears to transparent black
         // (0,0,0,0) and depth 1.0 so valid-empty = reflected sky and departed
-        // hulls are purged cleanly.
+        // hulls are purged cleanly. Skip uniform staging when mirror capture is
+        // intentionally held on a cadence off-frame.
         if (captureMirror) {
+            writeUniforms(PLANAR_MIRROR_UNIFORM_LAYOUT, this._mirrorViews, {
+                planarRect: validRect,
+                basinParams: [waterZ, PLANAR_CONTACT_BAND_PX, PLANAR_COLLAR_PX, PLANAR_MAX_SHIFT_PX],
+                depthRange: [PLANAR_DEPTH_MIN, PLANAR_DEPTH_MAX, PLANAR_DEPTH_RECIP, 0],
+                gradeGain, gradeExposure, gradePurkinje, gradeSaturation, gradeLift, gradeGamma, gradeHighlight, gradeShadow,
+                targetSize: [this.width, this.height, 1 / this.width, 1 / this.height],
+            });
+            this.device.queue.writeBuffer(this.mirrorUniformBuffer, 0, this._mirrorViews.buffer);
             const mirrorPass = encoder.beginRenderPass({
                 label: 'planar-water-mirror-capture',
                 colorAttachments: [{
@@ -1322,6 +1386,7 @@ export class PlanarWaterPass {
                 },
             });
             this._mirrorClearCount++;
+            this._mirrorStale = false;
             if (rectW > 0 && rectH > 0) {
                 mirrorPass.setScissorRect?.(0, 0, rectW, rectH);
                 mirrorPass.setViewport?.(0, 0, this.width, this.height, 0, 1);
@@ -1425,6 +1490,7 @@ export class PlanarWaterPass {
         this.device = null;
         this.ready = false;
         this._allocatedBytes = 0;
+        this._mirrorStale = true;
     }
 
     getDiagnostics() {
@@ -1439,6 +1505,7 @@ export class PlanarWaterPass {
             totalBytes: this.width * this.height * 4 * 2,
             allocatedBytes: this._allocatedBytes,
             mirrorClearCount: this._mirrorClearCount,
+            mirrorStale: this._mirrorStale,
             admittedRecords: this._admittedRecords,
             rejectedRecords: this._rejectedRecords,
             lastRect: [...this._lastRect],

@@ -69,6 +69,14 @@ try {
         atmosphere?.setSeed?.(4242);
         atmosphere?.freeze?.();
     });
+    // Wait for cold terrain artifact lookup/bake and the first real presented
+    // frame before stepping poses; `_bootState === 'ready'` alone fires while
+    // `presentGeneration` is still 0.
+    await page.waitForFunction(
+        () => (window.__claudeVilleApp?.renderer?.presentGeneration ?? 0) >= 1,
+        null,
+        { timeout: 30000 },
+    );
 
     for (const phase of phases) {
         await page.evaluate((hour) => window.__claudeVilleAtmosphere?.setHour?.(hour), phase.hour);
@@ -87,9 +95,20 @@ try {
 }
 
 async function capturePose(page, name, pose, targetType) {
-    const result = await page.evaluate((nextPose) => window.cameraSet(nextPose), pose);
-    if (!result) throw new Error(`cameraSet failed for ${name}`);
-    await page.waitForTimeout(180);
+    const beforeGen = await page.evaluate((nextPose) => {
+        const renderer = window.__claudeVilleApp?.renderer;
+        const prev = renderer?.presentGeneration ?? 0;
+        if (!window.cameraSet(nextPose)) return null;
+        if (renderer) renderer._idleFrameDirty = true;
+        return prev;
+    }, pose);
+    if (beforeGen === null) throw new Error(`cameraSet failed for ${name}`);
+    await page.waitForFunction(
+        (prev) => (window.__claudeVilleApp?.renderer?.presentGeneration ?? 0) > prev,
+        beforeGen,
+        { timeout: 15000 },
+    );
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
     if (targetType) {
         const target = await page.evaluate((type) => {

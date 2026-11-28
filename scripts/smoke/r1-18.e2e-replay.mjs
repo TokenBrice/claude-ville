@@ -564,21 +564,49 @@ class ReplayWebSocket {
 
 function startIsolatedServer(fixtures) {
   return new Promise((resolve, reject) => {
+    const childEnv = {
+      ...process.env,
+      HOME: fixtures.home,
+      USERPROFILE: fixtures.home,
+      // Isolate XDG and provider state directories from the host so the replay
+      // server cannot read real user credentials (e.g. glm-acp-agent) or state.
+      XDG_CONFIG_HOME: path.join(fixtures.home, '.config'),
+      XDG_DATA_HOME: path.join(fixtures.home, '.local', 'share'),
+      XDG_STATE_HOME: path.join(fixtures.home, '.local', 'state'),
+      XDG_CACHE_HOME: path.join(fixtures.home, '.cache'),
+      CLAUDEVILLE_DISABLE_GIT_ENRICHMENT: '1',
+      CLAUDEVILLE_REPOSITORY_SCAN_ROOT: path.join(fixtures.home, 'repositories'),
+      CLAUDEVILLE_DELTA_SNAPSHOT_INTERVAL_MS: String(DELTA_SNAPSHOT_INTERVAL_MS),
+      CLAUDEVILLE_OPENCODE_CONFIG_DIR: path.join(fixtures.home, '.config', 'opencode'),
+      CLAUDEVILLE_OPENCODE_STATE_DIR: path.join(fixtures.home, '.local', 'share', 'opencode'),
+      CLAUDEVILLE_OPENCODE_DB: path.join(fixtures.home, '.local', 'share', 'opencode', 'opencode.db'),
+      CLAUDEVILLE_OPENCODE_SQLITE_STRATEGY: fixtures.openCodeStrategy,
+      CLAUDEVILLE_CODEX_STATE_DIR: path.join(fixtures.home, '.local', 'state', 'codex-cc-mcp'),
+      CLAUDEVILLE_DEEPSEEK_STATE_DIR: path.join(fixtures.home, '.local', 'state', 'deepseek-cc-mcp'),
+      CLAUDEVILLE_GLM_STATE_DIR: path.join(fixtures.home, '.local', 'state', 'glm-cc-mcp'),
+      ACP_GLM_SESSION_DIR: path.join(fixtures.home, '.local', 'state', 'glm-acp-agent', 'sessions'),
+      CLAUDEVILLE_ANTIGRAVITY_DIR: path.join(fixtures.home, '.gemini', 'antigravity-cli'),
+      CLAUDEVILLE_T3_DIR: path.join(fixtures.home, '.t3'),
+    };
+    // Strip host GLM/z.AI and provider credential overrides so live network
+    // quota fetches cannot inject external `/usage/glm` deltas mid-replay.
+    for (const key of [
+      'ZAI_API_KEY',
+      'GLM_MCP_API_KEY',
+      'Z_AI_API_KEY',
+      'GLM_QUOTA_URL',
+      'ACP_GLM_BASE_URL',
+      'CODEX_CC_STATE_DIR',
+      'GEMINI_HOME',
+      'HOBOTNICA_HOME',
+      'CLAUDEVILLE_HOBOTNICA_TOKEN_FILE',
+    ]) {
+      delete childEnv[key];
+    }
+
     const child = spawn(process.execPath, [SERVER_BOOTSTRAP, SERVER_MODULE], {
       cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        HOME: fixtures.home,
-        USERPROFILE: fixtures.home,
-        CLAUDEVILLE_DISABLE_GIT_ENRICHMENT: '1',
-        CLAUDEVILLE_DELTA_SNAPSHOT_INTERVAL_MS: String(DELTA_SNAPSHOT_INTERVAL_MS),
-        CLAUDEVILLE_OPENCODE_CONFIG_DIR: path.join(fixtures.home, '.config', 'opencode'),
-        CLAUDEVILLE_OPENCODE_STATE_DIR: path.join(fixtures.home, '.local', 'share', 'opencode'),
-        CLAUDEVILLE_OPENCODE_DB: path.join(fixtures.home, '.local', 'share', 'opencode', 'opencode.db'),
-        CLAUDEVILLE_OPENCODE_SQLITE_STRATEGY: fixtures.openCodeStrategy,
-        CLAUDEVILLE_DEEPSEEK_STATE_DIR: path.join(fixtures.home, '.local', 'state', 'deepseek-cc-mcp'),
-        CLAUDEVILLE_GLM_STATE_DIR: path.join(fixtures.home, '.local', 'state', 'glm-cc-mcp'),
-      },
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

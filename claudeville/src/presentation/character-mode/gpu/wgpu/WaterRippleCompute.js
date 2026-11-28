@@ -59,6 +59,168 @@ export const RIPPLE_IMPULSE_KINDS = Object.freeze({
     rain: 4,
 });
 
+// Match the rain vertex shader (wgsl/rain.js) so each CPU-queued storm impulse
+// lands at its exact drop's ground coordinate and hash order.
+export function rainCellHash(value) {
+    let x = Math.imul(value ^ (value >>> 16), 0x7feb352d);
+    x = Math.imul(x ^ (x >>> 15), 0x846ca68b);
+    return (x ^ (x >>> 16)) >>> 0;
+}
+
+/**
+ * Computes the tight wet-cell AABB inside the ripple grid from an RGBA8
+ * boundary buffer (`boundary[4 * cell] > 0` = water). Used to clip storm
+ * rain-cell iteration in O(1) before hashing any cell.
+ */
+export function computeWetRippleBounds(boundary, width = RIPPLE_GRID_WIDTH, height = RIPPLE_GRID_HEIGHT) {
+    let minX = width;
+    let maxX = -1;
+    let minY = height;
+    let maxY = -1;
+    if (boundary && width > 0 && height > 0) {
+        const limit = Math.min(width * height, Math.floor(boundary.length / 4));
+        for (let cell = 0; cell < limit; cell++) {
+            if (!boundary[cell * 4]) continue;
+            const y = Math.floor(cell / width);
+            const x = cell - y * width;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+    }
+    const empty = maxX < minX || maxY < minY;
+    return Object.freeze({ minX, maxX, minY, maxY, empty });
+}
+
+/**
+ * Intersects the viewport rain-cell rect `[ox, ox + cols) x [oy, oy + rows)`
+ * with the ripple grid (or its tighter wet AABB) before hashing cells.
+ * Any rain cell outside the returned half-open range `[startX, endX) x
+ * [startY, endY)` can never produce a ground coordinate inside the active
+ * ripple grid, so skipping it preserves exact cell coordinates and hash order.
+ */
+export function intersectRainCellsWithRippleGrid({
+    ox = 0,
+    oy = 0,
+    cols = 0,
+    rows = 0,
+    cellSize = 32,
+    rippleOrigin = [0, 0],
+    rippleScale = 1,
+    gridWidth = RIPPLE_GRID_WIDTH,
+    gridHeight = RIPPLE_GRID_HEIGHT,
+    wetBounds = null,
+} = {}) {
+    if (!(cols > 0) || !(rows > 0) || !(cellSize > 0) || !(rippleScale > 0)
+        || !(gridWidth > 0) || !(gridHeight > 0)) {
+        return { startX: 0, endX: 0, startY: 0, endY: 0, empty: true };
+    }
+    if (wetBounds?.empty) {
+        return { startX: 0, endX: 0, startY: 0, endY: 0, empty: true };
+    }
+    const gMinX = wetBounds ? Math.max(0, wetBounds.minX) : 0;
+    const gMaxX = wetBounds ? Math.min(gridWidth - 1, wetBounds.maxX) : gridWidth - 1;
+    const gMinY = wetBounds ? Math.max(0, wetBounds.minY) : 0;
+    const gMaxY = wetBounds ? Math.min(gridHeight - 1, wetBounds.maxY) : gridHeight - 1;
+    if (gMaxX < gMinX || gMaxY < gMinY) {
+        return { startX: 0, endX: 0, startY: 0, endY: 0, empty: true };
+    }
+
+    // For a cell cx, integer ground coordinate rx lies in [cx*cellSize, (cx+1)*cellSize - 1].
+    // Mapping into ripple grid is gx = floor((rx - originX) * scale).
+    // gx >= gMinX requires rx >= originX + gMinX / scale (conservatively floored by 1 cell margin).
+    // gx <= gMaxX requires rx < originX + (gMaxX + 1) / scale (conservatively ceiled by +1).
+    const invScale = 1 / rippleScale;
+    const worldMinX = rippleOrigin[0] + gMinX * invScale;
+    const worldMaxX = rippleOrigin[0] + (gMaxX + 1) * invScale;
+    const worldMinY = rippleOrigin[1] + gMinY * invScale;
+    const worldMaxY = rippleOrigin[1] + (gMaxY + 1) * invScale;
+
+    const startX = Math.max(ox, Math.floor(worldMinX / cellSize));
+    const endX = Math.min(ox + cols, Math.floor(worldMaxX / cellSize) + 1);
+    const startY = Math.max(oy, Math.floor(worldMinY / cellSize));
+    const endY = Math.min(oy + rows, Math.floor(worldMaxY / cellSize) + 1);
+    const empty = startX >= endX || startY >= endY;
+    return { startX, endX, startY, endY, empty };
+}
+
+/**
+ * Evaluates storm rain-drop impacts over the ripple-grid intersection in exact
+ * row-major `(cy, cx)` hash order and calls `onImpulse(rx, ry)` for each drop
+ * that crossed its impact phase since `previousPhases`.
+ */
+export function collectRainRippleImpulses({
+    uniforms,
+    rainInstances = 0,
+    previousPhases = null,
+    cellSize = 32,
+    layerCuts = null,
+    rippleOrigin = [0, 0],
+    rippleScale = 1,
+    gridWidth = RIPPLE_GRID_WIDTH,
+    gridHeight = RIPPLE_GRID_HEIGHT,
+    wetBounds = null,
+    onImpulse = null,
+} = {}) {
+    if (!uniforms || !rainInstances || !previousPhases || typeof onImpulse !== 'function') {
+        return { scannedCells: 0, emitted: 0 };
+    }
+    const ox = uniforms[0];
+    const oy = uniforms[1];
+    const cols = uniforms[2];
+    if (!(cols > 0)) return { scannedCells: 0, emitted: 0 };
+    const rows = Math.ceil(rainInstances / cols);
+    const range = intersectRainCellsWithRippleGrid({
+        ox, oy, cols, rows, cellSize, rippleOrigin, rippleScale, gridWidth, gridHeight, wetBounds,
+    });
+    if (range.empty) return { scannedCells: 0, emitted: 0 };
+
+    const seedSalt = uniforms[3];
+    const density = uniforms[4];
+    const phase0 = uniforms[8];
+    const phase1 = uniforms[9];
+    const phase2 = uniforms[10];
+    const prev0 = previousPhases[0];
+    const prev1 = previousPhases[1];
+    const prev2 = previousPhases[2];
+    const cut0 = layerCuts?.cut0 ?? 0.34;
+    const cut1 = layerCuts?.cut1 ?? 0.72;
+    const invU32 = 1 / 4294967296;
+
+    let emitted = 0;
+    const scannedCells = (range.endY - range.startY) * (range.endX - range.startX);
+    for (let cy = range.startY; cy < range.endY; cy++) {
+        const yTerm = Math.imul(cy + 32768, 0xd8163841) ^ seedSalt;
+        const baseY = cy * cellSize;
+        for (let cx = range.startX; cx < range.endX; cx++) {
+            const seed = rainCellHash(Math.imul(cx + 32768, 0x8da6b343) ^ yTerm);
+            if (seed * invU32 >= density) continue;
+            const pick = rainCellHash(seed ^ 0x68e31da4) * invU32;
+            let phase;
+            let previous;
+            if (pick < cut0) {
+                phase = phase0;
+                previous = prev0;
+            } else if (pick < cut1) {
+                phase = phase1;
+                previous = prev1;
+            } else {
+                phase = phase2;
+                previous = prev2;
+            }
+            if (previous == null) continue;
+            const impact = 1 - rainCellHash(seed + 3) * invU32;
+            if (!((phase >= previous) ? impact > previous && impact <= phase : impact > previous || impact <= phase)) continue;
+            const rx = cx * cellSize + Math.floor(rainCellHash(seed + 1) * invU32 * cellSize);
+            const ry = baseY + Math.floor(rainCellHash(seed + 2) * invU32 * cellSize);
+            onImpulse(rx, ry);
+            emitted++;
+        }
+    }
+    return { scannedCells, emitted };
+}
+
 export const RIPPLE_COMPUTE_BINDING = Object.freeze({
     params: 0,
     previousState: 1,
